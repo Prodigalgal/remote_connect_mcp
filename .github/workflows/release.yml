@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -count=1 ./...
+      - run: go vet ./...
+
+  package:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            suffix: .exe
+            archive: zip
+          - goos: windows
+            goarch: arm64
+            suffix: .exe
+            archive: zip
+          - goos: linux
+            goarch: amd64
+            suffix: ""
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            suffix: ""
+            archive: tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build and package
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          SUFFIX: ${{ matrix.suffix }}
+          ARCHIVE: ${{ matrix.archive }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          name="remote-mcp-${VERSION}-${GOOS}-${GOARCH}"
+          root="package/${name}"
+          mkdir -p "${root}/dist/${GOOS}-${GOARCH}"
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "${root}/dist/${GOOS}-${GOARCH}/remote-mcp${SUFFIX}" ./cmd/remote-mcp
+          cp README.md LICENSE NOTICE remote-mcp.env.example start-remote-mcp.cmd start-remote-mcp.sh "${root}/"
+          chmod +x "${root}/start-remote-mcp.sh"
+          if [[ "${ARCHIVE}" == "zip" ]]; then
+            (cd package && zip -qr "../${name}.zip" "${name}")
+            sha256sum "${name}.zip" > "${name}.zip.sha256"
+          else
+            tar -C package -czf "${name}.tar.gz" "${name}"
+            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remote-mcp-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            remote-mcp-*.zip
+            remote-mcp-*.zip.sha256
+            remote-mcp-*.tar.gz
+            remote-mcp-*.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" release/* --repo "${GITHUB_REPOSITORY}" --generate-notes --verify-tag

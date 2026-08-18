@@ -1,0 +1,8 @@
+/dist/
+/.remote-mcp/
+/.env
+/remote-mcp.env
+/vendor/
+/.research/
+*.log
+*.tmp

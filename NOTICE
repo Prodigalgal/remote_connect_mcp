@@ -1,0 +1,16 @@
+Remote MCP
+Copyright (c) 2026
+
+This project was independently implemented after studying public MCP projects,
+including:
+
+- https://github.com/xyTom/coding-tools-mcp
+- https://github.com/hoangcoderr/chatgpt-local-coder
+- https://github.com/achetronic/filesystem-mcp
+- https://github.com/sonirico/mcp-shell
+- https://github.com/oraios/serena
+- https://github.com/idosal/git-mcp
+- https://github.com/modelcontextprotocol/servers
+
+It uses github.com/modelcontextprotocol/go-sdk under that project's license.
+No source code from the reference repositories is copied into Remote MCP.
