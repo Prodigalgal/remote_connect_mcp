@@ -13,16 +13,16 @@ import (
 )
 
 func TestHelperProcess(t *testing.T) {
-	if os.Getenv("REMOTE_MCP_PROCESS_HELPER") != "1" {
+	if os.Getenv("REMOTE_CONNECT_MCP_PROCESS_HELPER") != "1" {
 		return
 	}
 	fmt.Print("helper-output")
-	if os.Getenv("REMOTE_MCP_PROCESS_STDIN") == "1" {
+	if os.Getenv("REMOTE_CONNECT_MCP_PROCESS_STDIN") == "1" {
 		data, _ := io.ReadAll(os.Stdin)
 		fmt.Print("stdin:" + string(data))
 		os.Exit(0)
 	}
-	if os.Getenv("REMOTE_MCP_PROCESS_SLEEP") == "1" {
+	if os.Getenv("REMOTE_CONNECT_MCP_PROCESS_SLEEP") == "1" {
 		time.Sleep(30 * time.Second)
 	}
 	os.Exit(0)
@@ -38,7 +38,7 @@ func TestManagerOutputAndKill(t *testing.T) {
 		}
 	}
 	entry, err := manager.Start(context.Background(), command, t.TempDir(), map[string]string{
-		"REMOTE_MCP_PROCESS_HELPER": "1",
+		"REMOTE_CONNECT_MCP_PROCESS_HELPER": "1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -57,8 +57,8 @@ func TestManagerOutputAndKill(t *testing.T) {
 	}
 
 	interactive, err := manager.Start(context.Background(), command, t.TempDir(), map[string]string{
-		"REMOTE_MCP_PROCESS_HELPER": "1",
-		"REMOTE_MCP_PROCESS_STDIN":  "1",
+		"REMOTE_CONNECT_MCP_PROCESS_HELPER": "1",
+		"REMOTE_CONNECT_MCP_PROCESS_STDIN":  "1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -79,8 +79,8 @@ func TestManagerOutputAndKill(t *testing.T) {
 	}
 
 	sleeping, err := manager.Start(context.Background(), command, t.TempDir(), map[string]string{
-		"REMOTE_MCP_PROCESS_HELPER": "1",
-		"REMOTE_MCP_PROCESS_SLEEP":  "1",
+		"REMOTE_CONNECT_MCP_PROCESS_HELPER": "1",
+		"REMOTE_CONNECT_MCP_PROCESS_SLEEP":  "1",
 	})
 	if err != nil {
 		t.Fatal(err)

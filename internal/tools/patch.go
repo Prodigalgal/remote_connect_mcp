@@ -332,7 +332,7 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".remote-mcp-*")
+	file, err := os.CreateTemp(filepath.Dir(path), ".remote_connect_mcp-*")
 	if err != nil {
 		return err
 	}

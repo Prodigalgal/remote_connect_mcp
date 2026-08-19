@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/Prodigalgal/remote-mcp/internal/winjob"
+	"github.com/Prodigalgal/remote_connect_mcp/internal/winjob"
 )
 
 type platformJob = *winjob.Job

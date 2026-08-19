@@ -14,11 +14,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	processes "github.com/Prodigalgal/remote-mcp/internal/process"
+	processes "github.com/Prodigalgal/remote_connect_mcp/internal/process"
 )
 
 type Service struct {
-	Workspace string
+	DefaultCWD string
 	Version   string
 	Processes *processes.Manager
 	Logger    *slog.Logger
@@ -29,7 +29,7 @@ func (s *Service) Register(server *mcp.Server) {
 	openWorld := true
 	destructive := true
 
-	mcp.AddTool(server, &mcp.Tool{Name: "server_info", Description: "Show server, platform, workspace, and paging details.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &closedWorld}}, s.serverInfo)
+	mcp.AddTool(server, &mcp.Tool{Name: "server_info", Description: "Show server, platform, default cwd, and paging details. Authenticated calls can access the whole machine.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &closedWorld}}, s.serverInfo)
 	mcp.AddTool(server, &mcp.Tool{Name: "list_files", Description: "List files and directories with compact pagination.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &closedWorld}}, s.listFiles)
 	mcp.AddTool(server, &mcp.Tool{Name: "search_text", Description: "Search file text using literal or regular-expression matching.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &closedWorld}}, s.searchText)
 	mcp.AddTool(server, &mcp.Tool{Name: "read_file", Description: "Read text or bytes from any local path in bounded pages.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &closedWorld}}, s.readFile)
@@ -44,9 +44,9 @@ type serverInfoArgs struct{}
 func (s *Service) serverInfo(ctx context.Context, _ *mcp.CallToolRequest, _ serverInfoArgs) (*mcp.CallToolResult, any, error) {
 	start := time.Now()
 	result := map[string]any{
-		"name": "remote-mcp", "version": s.Version, "os": runtime.GOOS, "arch": runtime.GOARCH,
-		"workspace": s.Workspace, "shell": shellName(), "tools": 8,
-		"scope": "authenticated calls may access any path and run any command; workspace is only the default cwd",
+		"name": "remote_connect_mcp", "version": s.Version, "os": runtime.GOOS, "arch": runtime.GOARCH,
+		"default_cwd": s.DefaultCWD, "shell": shellName(), "tools": 8,
+		"scope": "authenticated calls may access any local path and run any command; default_cwd is not an access boundary",
 	}
 	s.log("server_info", start, nil)
 	return jsonResult(result)
@@ -55,7 +55,7 @@ func (s *Service) serverInfo(ctx context.Context, _ *mcp.CallToolRequest, _ serv
 func (s *Service) resolvePath(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" || path == "." {
-		return s.Workspace, nil
+		return s.DefaultCWD, nil
 	}
 	if strings.HasPrefix(path, "~"+string(filepath.Separator)) || path == "~" {
 		home, err := os.UserHomeDir()
@@ -65,7 +65,7 @@ func (s *Service) resolvePath(path string) (string, error) {
 		path = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~"), string(filepath.Separator)))
 	}
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(s.Workspace, path)
+		path = filepath.Join(s.DefaultCWD, path)
 	}
 	return filepath.Clean(path), nil
 }

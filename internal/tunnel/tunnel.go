@@ -184,8 +184,8 @@ func sanitizeLine(line string, values ...string) string {
 
 func cloudflaredEnvironment() []string {
 	blocked := map[string]bool{
-		"REMOTE_MCP_TOKEN":        true,
-		"REMOTE_MCP_TUNNEL_TOKEN": true,
+		"REMOTE_CONNECT_MCP_TOKEN":        true,
+		"REMOTE_CONNECT_MCP_TUNNEL_TOKEN": true,
 		"CLOUDFLARE_API_TOKEN":    true,
 		"CLOUDFLARE_API_KEY":      true,
 		"CLOUDFLARE_EMAIL":        true,

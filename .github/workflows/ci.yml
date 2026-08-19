@@ -53,4 +53,4 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -trimpath -o "remote-mcp${{ matrix.suffix }}" ./cmd/remote-mcp
+        run: go build -trimpath -o "remote_connect_mcp${{ matrix.suffix }}" ./cmd/remote_connect_mcp

@@ -17,12 +17,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/Prodigalgal/remote-mcp/internal/auth"
-	cloudflareapi "github.com/Prodigalgal/remote-mcp/internal/cloudflare"
-	"github.com/Prodigalgal/remote-mcp/internal/config"
-	processes "github.com/Prodigalgal/remote-mcp/internal/process"
-	"github.com/Prodigalgal/remote-mcp/internal/tools"
-	"github.com/Prodigalgal/remote-mcp/internal/tunnel"
+	"github.com/Prodigalgal/remote_connect_mcp/internal/auth"
+	cloudflareapi "github.com/Prodigalgal/remote_connect_mcp/internal/cloudflare"
+	"github.com/Prodigalgal/remote_connect_mcp/internal/config"
+	processes "github.com/Prodigalgal/remote_connect_mcp/internal/process"
+	"github.com/Prodigalgal/remote_connect_mcp/internal/tools"
+	"github.com/Prodigalgal/remote_connect_mcp/internal/tunnel"
 )
 
 var version = "dev"
@@ -43,13 +43,13 @@ func run() error {
 	processManager := processes.NewManager(cfg.StateDir)
 	defer processManager.Close()
 
-	server := mcp.NewServer(&mcp.Implementation{Name: "remote-mcp", Version: version}, &mcp.ServerOptions{
-		Instructions: "Workspace is the default cwd, not a sandbox. Prefer search/read in small pages and follow cursors. Use apply_patch for precise edits and exec_command for builds or tests. Authenticated tools may access any path and run any command.",
+	server := mcp.NewServer(&mcp.Implementation{Name: "remote_connect_mcp", Version: version}, &mcp.ServerOptions{
+		Instructions: "The default cwd is only a convenience, not a sandbox or access boundary. Authenticated tools can access any local path and run any command. Prefer search/read in small pages and follow cursors. Use apply_patch for precise edits and exec_command for builds or tests.",
 		PageSize:     20,
 		KeepAlive:    30 * time.Second,
 	})
 	toolService := &tools.Service{
-		Workspace: cfg.Workspace, Version: version, Processes: processManager, Logger: logger,
+		DefaultCWD: cfg.DefaultCWD, Version: version, Processes: processManager, Logger: logger,
 	}
 	toolService.Register(server)
 
@@ -149,16 +149,16 @@ func printBanner(cfg config.Config, manager *tunnel.Manager, ctx context.Context
 		publicURL = endpointURL(cfg.PublicURL)
 	}
 	fmt.Println()
-	fmt.Println("remote-mcp", version)
+	fmt.Println("remote_connect_mcp", version)
 	fmt.Println("Config    :", cfg.EnvFile)
-	fmt.Println("Workspace :", cfg.Workspace)
+	fmt.Println("Default CWD:", cfg.DefaultCWD)
 	fmt.Println("Local URL :", cfg.LocalURL())
 	if publicURL != "" {
 		fmt.Println("Public URL:", publicURL)
 	} else if manager.Enabled() {
 		fmt.Println("Public URL: tunnel is starting; watch cloudflared logs")
 	} else {
-		fmt.Println("Public URL: disabled (set REMOTE_MCP_TUNNEL_TOKEN or REMOTE_MCP_QUICK_TUNNEL=1)")
+		fmt.Println("Public URL: disabled (set REMOTE_CONNECT_MCP_TUNNEL_TOKEN or REMOTE_CONNECT_MCP_QUICK_TUNNEL=1)")
 	}
 	copied := copyTokenToClipboard(cfg.Token)
 	if copied {

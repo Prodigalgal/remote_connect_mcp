@@ -16,8 +16,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	remoteauth "github.com/Prodigalgal/remote-mcp/internal/auth"
-	processes "github.com/Prodigalgal/remote-mcp/internal/process"
+	remoteauth "github.com/Prodigalgal/remote_connect_mcp/internal/auth"
+	processes "github.com/Prodigalgal/remote_connect_mcp/internal/process"
 )
 
 type bearerRoundTripper struct {
@@ -48,7 +48,7 @@ func TestStreamableHTTPToolSurface(t *testing.T) {
 	defer processManager.Close()
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "test"}, nil)
 	service := &Service{
-		Workspace: workspace, Version: "test", Processes: processManager,
+		DefaultCWD: workspace, Version: "test", Processes: processManager,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	service.Register(server)
@@ -102,10 +102,21 @@ func TestStreamableHTTPToolSurface(t *testing.T) {
 		}
 		return result
 	}
-	call("server_info", map[string]any{})
+	infoResult := call("server_info", map[string]any{})
+	var info map[string]any
+	if err := json.Unmarshal([]byte(infoResult.Content[0].(*mcp.TextContent).Text), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info["default_cwd"] != workspace {
+		t.Fatalf("default_cwd = %v, want %s", info["default_cwd"], workspace)
+	}
+	if !strings.Contains(info["scope"].(string), "any local path") {
+		t.Fatalf("scope does not describe full-machine access: %v", info["scope"])
+	}
 	call("list_files", map[string]any{"path": ".", "depth": 1})
 	call("search_text", map[string]any{"query": "beta", "path": "."})
 	call("read_file", map[string]any{"path": "hello.txt"})
+	call("read_file", map[string]any{"path": filepath.Join(workspace, "hello.txt")})
 	call("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Update File: hello.txt\n@@\n alpha\n-beta\n+gamma\n*** End Patch"})
 	data, err := os.ReadFile(filepath.Join(workspace, "hello.txt"))
 	if err != nil {

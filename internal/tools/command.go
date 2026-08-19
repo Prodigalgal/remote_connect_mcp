@@ -10,7 +10,7 @@ import (
 
 type execCommandArgs struct {
 	Command        string            `json:"command" jsonschema:"Shell command to run"`
-	Cwd            string            `json:"cwd,omitempty" jsonschema:"Working directory; default workspace"`
+	Cwd            string            `json:"cwd,omitempty" jsonschema:"Working directory; default current directory"`
 	Env            map[string]string `json:"env,omitempty" jsonschema:"Environment variables to add or override"`
 	Background     bool              `json:"background,omitempty" jsonschema:"Return immediately with a process ID"`
 	TimeoutSeconds *int              `json:"timeout_seconds,omitempty" jsonschema:"Foreground timeout; default 120; 0 means unlimited"`

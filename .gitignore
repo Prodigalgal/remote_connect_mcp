@@ -1,7 +1,7 @@
 /dist/
-/.remote-mcp/
+/.remote_connect_mcp/
 /.env
-/remote-mcp.env
+/remote_connect_mcp.env
 /vendor/
 /.research/
 *.log

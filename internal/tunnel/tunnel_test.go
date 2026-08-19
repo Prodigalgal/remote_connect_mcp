@@ -25,14 +25,14 @@ func TestEmptyTokenDoesNotRewriteLogs(t *testing.T) {
 }
 
 func TestCloudflaredEnvironmentRemovesSecrets(t *testing.T) {
-	t.Setenv("REMOTE_MCP_TOKEN", "mcp-secret")
+	t.Setenv("REMOTE_CONNECT_MCP_TOKEN", "mcp-secret")
 	t.Setenv("CLOUDFLARE_API_TOKEN", "cf-secret")
-	t.Setenv("REMOTE_MCP_SAFE_VALUE", "visible")
+	t.Setenv("REMOTE_CONNECT_MCP_SAFE_VALUE", "visible")
 	joined := strings.Join(cloudflaredEnvironment(), "\n")
 	if strings.Contains(joined, "mcp-secret") || strings.Contains(joined, "cf-secret") {
 		t.Fatalf("secret leaked into cloudflared environment")
 	}
-	if !strings.Contains(joined, "REMOTE_MCP_SAFE_VALUE=visible") {
+	if !strings.Contains(joined, "REMOTE_CONNECT_MCP_SAFE_VALUE=visible") {
 		t.Fatalf("non-secret environment variable was removed")
 	}
 }

@@ -28,8 +28,8 @@ try {
         $env:GOARCH = $target.Arch
         $directory = Join-Path $root "dist\$($target.OS)-$($target.Arch)"
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
-        $output = Join-Path $directory "remote-mcp$($target.Suffix)"
-        & $goExe build -mod=mod -trimpath -ldflags "-s -w -X main.version=$version" -o $output ./cmd/remote-mcp
+        $output = Join-Path $directory "remote_connect_mcp$($target.Suffix)"
+        & $goExe build -mod=mod -trimpath -ldflags "-s -w -X main.version=$version" -o $output ./cmd/remote_connect_mcp
         if ($LASTEXITCODE -ne 0) { throw "Build failed for $($target.OS)/$($target.Arch)." }
         Write-Host "Built $output"
     }

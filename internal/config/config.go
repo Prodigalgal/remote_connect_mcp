@@ -14,7 +14,7 @@ import (
 const DefaultPort = 8765
 
 type Config struct {
-	Workspace      string
+	DefaultCWD     string
 	EnvFile        string
 	Host           string
 	Port           int
@@ -48,26 +48,26 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	workspace := env("REMOTE_MCP_WORKSPACE", cwd)
-	workspace, err = filepath.Abs(workspace)
+	defaultCWD := env("REMOTE_CONNECT_MCP_DEFAULT_CWD", cwd)
+	defaultCWD, err = filepath.Abs(defaultCWD)
 	if err != nil {
-		return Config{}, fmt.Errorf("resolve workspace: %w", err)
+		return Config{}, fmt.Errorf("resolve default cwd: %w", err)
 	}
-	info, err := os.Stat(workspace)
+	info, err := os.Stat(defaultCWD)
 	if err != nil {
-		return Config{}, fmt.Errorf("workspace: %w", err)
+		return Config{}, fmt.Errorf("default cwd: %w", err)
 	}
 	if !info.IsDir() {
-		return Config{}, fmt.Errorf("workspace is not a directory: %s", workspace)
+		return Config{}, fmt.Errorf("default cwd is not a directory: %s", defaultCWD)
 	}
 
-	port, err := envInt("REMOTE_MCP_PORT", DefaultPort)
+	port, err := envInt("REMOTE_CONNECT_MCP_PORT", DefaultPort)
 	if err != nil || port < 1 || port > 65535 {
-		return Config{}, fmt.Errorf("invalid REMOTE_MCP_PORT")
+		return Config{}, fmt.Errorf("invalid REMOTE_CONNECT_MCP_PORT")
 	}
-	maxBody, err := envInt64("REMOTE_MCP_MAX_REQUEST_BYTES", 16*1024*1024)
+	maxBody, err := envInt64("REMOTE_CONNECT_MCP_MAX_REQUEST_BYTES", 16*1024*1024)
 	if err != nil || maxBody < 1024 {
-		return Config{}, fmt.Errorf("invalid REMOTE_MCP_MAX_REQUEST_BYTES")
+		return Config{}, fmt.Errorf("invalid REMOTE_CONNECT_MCP_MAX_REQUEST_BYTES")
 	}
 
 	stateDir, err := stateDirectory()
@@ -78,52 +78,52 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("create state directory: %w", err)
 	}
 
-	token := strings.TrimSpace(os.Getenv("REMOTE_MCP_TOKEN"))
+	token := strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_TOKEN"))
 	if token == "" {
-		return Config{}, errors.New("REMOTE_MCP_TOKEN is required; set a fixed bearer token before starting")
+		return Config{}, errors.New("REMOTE_CONNECT_MCP_TOKEN is required; set a fixed bearer token before starting")
 	}
 	if strings.ContainsAny(token, "\r\n") {
-		return Config{}, errors.New("REMOTE_MCP_TOKEN must be one line")
+		return Config{}, errors.New("REMOTE_CONNECT_MCP_TOKEN must be one line")
 	}
 
 	cloudflare := CloudflareProvision{
-		AutoProvision: envBool("REMOTE_MCP_CF_AUTOPROVISION"),
+		AutoProvision: envBool("REMOTE_CONNECT_MCP_CF_AUTOPROVISION"),
 		APIToken:      strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN")),
 		AccountID:     strings.TrimSpace(os.Getenv("CLOUDFLARE_ACCOUNT_ID")),
 		ZoneID:        strings.TrimSpace(os.Getenv("CLOUDFLARE_ZONE_ID")),
 		ZoneName:      strings.TrimSpace(os.Getenv("CLOUDFLARE_ZONE_NAME")),
-		Hostname:      strings.TrimSpace(os.Getenv("REMOTE_MCP_PUBLIC_HOSTNAME")),
-		TunnelName:    strings.TrimSpace(os.Getenv("REMOTE_MCP_TUNNEL_NAME")),
+		Hostname:      strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_PUBLIC_HOSTNAME")),
+		TunnelName:    strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_TUNNEL_NAME")),
 	}
 	if cloudflare.AutoProvision {
 		if cloudflare.APIToken == "" {
-			return Config{}, errors.New("CLOUDFLARE_API_TOKEN is required when REMOTE_MCP_CF_AUTOPROVISION=1")
+			return Config{}, errors.New("CLOUDFLARE_API_TOKEN is required when REMOTE_CONNECT_MCP_CF_AUTOPROVISION=1")
 		}
 		if cloudflare.Hostname == "" {
-			return Config{}, errors.New("REMOTE_MCP_PUBLIC_HOSTNAME is required when REMOTE_MCP_CF_AUTOPROVISION=1")
+			return Config{}, errors.New("REMOTE_CONNECT_MCP_PUBLIC_HOSTNAME is required when REMOTE_CONNECT_MCP_CF_AUTOPROVISION=1")
 		}
-		if strings.TrimSpace(os.Getenv("REMOTE_MCP_TUNNEL_CONFIG")) != "" {
-			return Config{}, errors.New("REMOTE_MCP_TUNNEL_CONFIG cannot be combined with Cloudflare auto-provisioning")
+		if strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_TUNNEL_CONFIG")) != "" {
+			return Config{}, errors.New("REMOTE_CONNECT_MCP_TUNNEL_CONFIG cannot be combined with Cloudflare auto-provisioning")
 		}
 	}
 
-	publicURL := strings.TrimRight(strings.TrimSpace(os.Getenv("REMOTE_MCP_PUBLIC_URL")), "/")
-	quickTunnel := envBool("REMOTE_MCP_QUICK_TUNNEL")
+	publicURL := strings.TrimRight(strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_PUBLIC_URL")), "/")
+	quickTunnel := envBool("REMOTE_CONNECT_MCP_QUICK_TUNNEL")
 	if cloudflare.AutoProvision {
 		publicURL = "https://" + strings.TrimRight(cloudflare.Hostname, ".")
 		quickTunnel = false
 	}
 
 	return Config{
-		Workspace:      workspace,
+		DefaultCWD:     defaultCWD,
 		EnvFile:        envFile,
-		Host:           env("REMOTE_MCP_HOST", "127.0.0.1"),
+		Host:           env("REMOTE_CONNECT_MCP_HOST", "127.0.0.1"),
 		Port:           port,
 		Token:          token,
 		PublicURL:      publicURL,
-		TunnelToken:    strings.TrimSpace(os.Getenv("REMOTE_MCP_TUNNEL_TOKEN")),
-		TunnelConfig:   strings.TrimSpace(os.Getenv("REMOTE_MCP_TUNNEL_CONFIG")),
-		Cloudflared:    strings.TrimSpace(os.Getenv("REMOTE_MCP_CLOUDFLARED")),
+		TunnelToken:    strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_TUNNEL_TOKEN")),
+		TunnelConfig:   strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_TUNNEL_CONFIG")),
+		Cloudflared:    strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_CLOUDFLARED")),
 		QuickTunnel:    quickTunnel,
 		StateDir:       stateDir,
 		MaxRequestBody: maxBody,
@@ -170,7 +170,7 @@ func envBool(name string) bool {
 }
 
 func stateDirectory() (string, error) {
-	if value := strings.TrimSpace(os.Getenv("REMOTE_MCP_STATE_DIR")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_STATE_DIR")); value != "" {
 		return filepath.Abs(value)
 	}
 	if runtime.GOOS == "windows" {
@@ -178,14 +178,14 @@ func stateDirectory() (string, error) {
 		if base == "" {
 			base = os.TempDir()
 		}
-		return filepath.Join(base, "remote-mcp"), nil
+		return filepath.Join(base, "remote_connect_mcp"), nil
 	}
 	if base := os.Getenv("XDG_STATE_HOME"); base != "" {
-		return filepath.Join(base, "remote-mcp"), nil
+		return filepath.Join(base, "remote_connect_mcp"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".local", "state", "remote-mcp"), nil
+	return filepath.Join(home, ".local", "state", "remote_connect_mcp"), nil
 }

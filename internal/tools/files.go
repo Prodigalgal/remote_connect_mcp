@@ -20,7 +20,7 @@ import (
 )
 
 type listFilesArgs struct {
-	Path          string `json:"path,omitempty" jsonschema:"Path; default workspace"`
+	Path          string `json:"path,omitempty" jsonschema:"Path; default current directory"`
 	Depth         int    `json:"depth,omitempty" jsonschema:"Recursion depth; default 2; -1 unlimited"`
 	IncludeHidden bool   `json:"include_hidden,omitempty" jsonschema:"Include dot-prefixed entries"`
 	Cursor        string `json:"cursor,omitempty" jsonschema:"Next cursor from prior call"`
@@ -127,7 +127,7 @@ func (s *Service) listFiles(ctx context.Context, _ *mcp.CallToolRequest, args li
 
 type searchTextArgs struct {
 	Query         string   `json:"query" jsonschema:"Literal text or regular expression"`
-	Path          string   `json:"path,omitempty" jsonschema:"File or directory; default workspace"`
+	Path          string   `json:"path,omitempty" jsonschema:"File or directory; default current directory"`
 	Regex         bool     `json:"regex,omitempty" jsonschema:"Treat query as Go regular expression"`
 	CaseSensitive bool     `json:"case_sensitive,omitempty"`
 	Include       []string `json:"include,omitempty" jsonschema:"Optional filepath globs"`

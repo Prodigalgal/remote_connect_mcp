@@ -337,7 +337,7 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 	request.Header.Set("Authorization", "Bearer "+c.token)
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "remote-mcp/0.1")
+	request.Header.Set("User-Agent", "remote_connect_mcp/0.1")
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

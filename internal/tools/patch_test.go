@@ -57,7 +57,7 @@ func TestApplyPatchTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := &Service{
-		Workspace: root,
+		DefaultCWD: root,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	patch := "*** Begin Patch\n" +

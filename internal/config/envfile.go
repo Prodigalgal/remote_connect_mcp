@@ -10,10 +10,10 @@ import (
 )
 
 func loadEnvFile(cwd string) (string, error) {
-	configured, explicit := os.LookupEnv("REMOTE_MCP_ENV_FILE")
+	configured, explicit := os.LookupEnv("REMOTE_CONNECT_MCP_ENV_FILE")
 	path := strings.TrimSpace(configured)
 	if path == "" {
-		path = filepath.Join(cwd, "remote-mcp.env")
+		path = filepath.Join(cwd, "remote_connect_mcp.env")
 	} else if !filepath.IsAbs(path) {
 		path = filepath.Join(cwd, path)
 	}

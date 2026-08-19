@@ -12,9 +12,9 @@ for TARGET in windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
   ARCH=${TARGET#*/}
   SUFFIX=
   [ "$OS" = windows ] && SUFFIX=.exe
-  OUT="dist/$OS-$ARCH/remote-mcp$SUFFIX"
+  OUT="dist/$OS-$ARCH/remote_connect_mcp$SUFFIX"
   mkdir -p "$(dirname "$OUT")"
   CGO_ENABLED=0 GOOS="$OS" GOARCH="$ARCH" go build -mod=mod -trimpath \
-    -ldflags "-s -w -X main.version=$VERSION" -o "$OUT" ./cmd/remote-mcp
+    -ldflags "-s -w -X main.version=$VERSION" -o "$OUT" ./cmd/remote_connect_mcp
   echo "Built $OUT"
 done

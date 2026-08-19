@@ -1,4 +1,4 @@
-module github.com/Prodigalgal/remote-mcp
+module github.com/Prodigalgal/remote_connect_mcp
 
 go 1.25.0
 

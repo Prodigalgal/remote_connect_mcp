@@ -58,13 +58,13 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          name="remote-mcp-${VERSION}-${GOOS}-${GOARCH}"
+          name="remote_connect_mcp-${VERSION}-${GOOS}-${GOARCH}"
           root="package/${name}"
           mkdir -p "${root}/dist/${GOOS}-${GOARCH}"
           go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
-            -o "${root}/dist/${GOOS}-${GOARCH}/remote-mcp${SUFFIX}" ./cmd/remote-mcp
-          cp README.md LICENSE NOTICE remote-mcp.env.example start-remote-mcp.cmd start-remote-mcp.sh "${root}/"
-          chmod +x "${root}/start-remote-mcp.sh"
+            -o "${root}/dist/${GOOS}-${GOARCH}/remote_connect_mcp${SUFFIX}" ./cmd/remote_connect_mcp
+          cp README.md LICENSE NOTICE remote_connect_mcp.env.example start-remote_connect_mcp.cmd start-remote_connect_mcp.sh "${root}/"
+          chmod +x "${root}/start-remote_connect_mcp.sh"
           if [[ "${ARCHIVE}" == "zip" ]]; then
             (cd package && zip -qr "../${name}.zip" "${name}")
             sha256sum "${name}.zip" > "${name}.zip.sha256"
@@ -74,12 +74,12 @@ jobs:
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: remote-mcp-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: remote_connect_mcp-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
-            remote-mcp-*.zip
-            remote-mcp-*.zip.sha256
-            remote-mcp-*.tar.gz
-            remote-mcp-*.tar.gz.sha256
+            remote_connect_mcp-*.zip
+            remote_connect_mcp-*.zip.sha256
+            remote_connect_mcp-*.tar.gz
+            remote_connect_mcp-*.tar.gz.sha256
           if-no-files-found: error
 
   release:
