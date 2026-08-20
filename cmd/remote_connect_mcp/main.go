@@ -54,11 +54,19 @@ func run() error {
 	toolService.Register(server)
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+		// ChatGPT Web uses the 2026-07-28 stateless MCP flow after discovery.
+		// Stateless is required for that protocol version on Streamable HTTP.
+		Stateless:                   true,
 		SessionTimeout:             time.Hour,
 		DisableLocalhostProtection: true,
 	})
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", auth.Bearer(cfg.Token, mcpHandler))
+	authenticatedMCP := auth.Bearer(cfg.Token, mcpHandler)
+	// ChatGPT first probes the origin root during connector discovery, even
+	// when its configured URL ends in /mcp. Keep /mcp as the canonical URL,
+	// and make / an authenticated compatibility alias for that probe.
+	mux.Handle("/mcp", authenticatedMCP)
+	mux.Handle("/", authenticatedMCP)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": version})

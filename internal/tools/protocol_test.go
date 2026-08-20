@@ -52,8 +52,12 @@ func TestStreamableHTTPToolSurface(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	service.Register(server)
-	handler := remoteauth.Bearer("test-token", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
-	httpServer := httptest.NewServer(handler)
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true})
+	authenticatedMCP := remoteauth.Bearer("test-token", mcpHandler)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", authenticatedMCP)
+	mux.Handle("/", authenticatedMCP)
+	httpServer := httptest.NewServer(mux)
 	defer httpServer.Close()
 
 	response, err := http.Post(httpServer.URL, "application/json", strings.NewReader("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}"))
@@ -68,12 +72,15 @@ func TestStreamableHTTPToolSurface(t *testing.T) {
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "test"}, nil)
 	httpClient := &http.Client{Transport: bearerRoundTripper{token: "test-token", base: http.DefaultTransport}}
 	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
-		Endpoint: httpServer.URL, HTTPClient: httpClient, DisableStandaloneSSE: true,
+		Endpoint: httpServer.URL + "/", HTTPClient: httpClient, DisableStandaloneSSE: true,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer session.Close()
+	if initialized := session.InitializeResult(); initialized == nil || initialized.ProtocolVersion != "2026-07-28" {
+		t.Fatalf("protocol version = %v, want 2026-07-28", initialized)
+	}
 
 	listed, err := session.ListTools(context.Background(), nil)
 	if err != nil {

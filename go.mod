@@ -3,7 +3,7 @@ module github.com/Prodigalgal/remote_connect_mcp
 go 1.25.0
 
 require (
-	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/modelcontextprotocol/go-sdk v1.7.1-0.20260817122113-1fcaf0c39375
 	golang.org/x/sys v0.41.0
 )
 
