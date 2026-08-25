@@ -1,0 +1,94 @@
+package center
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/Prodigalgal/remote_connect_mcp/internal/protocol"
+)
+
+type bearerTransport struct {
+	token string
+	base  http.RoundTripper
+}
+
+func (t bearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	clone := request.Clone(request.Context())
+	clone.Header = request.Header.Clone()
+	clone.Header.Set("Authorization", "Bearer "+t.token)
+	return t.base.RoundTrip(clone)
+}
+
+func TestHTTPRegistrationAdminAndMCP(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHTTPHandler(store, HTTPConfig{
+		Version: "test", MCPToken: "mcp-secret", AdminToken: "admin-secret", EnrollmentToken: "enroll-secret",
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	registerBody, _ := json.Marshal(protocol.RegisterRequest{Name: "machine-a", OS: "linux", Arch: "arm64"})
+	registerRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/agent/v1/register", bytes.NewReader(registerBody))
+	registerRequest.Header.Set("Authorization", "Bearer enroll-secret")
+	registerRequest.Header.Set("Content-Type", "application/json")
+	registerResponse, err := http.DefaultClient.Do(registerRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registerResponse.Body.Close()
+	if registerResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("register status = %d", registerResponse.StatusCode)
+	}
+	var registered protocol.RegisterResponse
+	if err := json.NewDecoder(registerResponse.Body).Decode(&registered); err != nil {
+		t.Fatal(err)
+	}
+
+	unauthorized, err := http.Get(server.URL + "/api/v1/machines")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorized.Body.Close()
+	if unauthorized.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized admin status = %d", unauthorized.StatusCode)
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "test"}, nil)
+	httpClient := &http.Client{Transport: bearerTransport{token: "mcp-secret", base: http.DefaultTransport}}
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
+		Endpoint: server.URL + "/", HTTPClient: httpClient, DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if initialized := session.InitializeResult(); initialized == nil || initialized.ProtocolVersion != "2026-07-28" {
+		t.Fatalf("protocol result = %+v", initialized)
+	}
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools.Tools) != 6 {
+		t.Fatalf("tool count = %d, want 6", len(tools.Tools))
+	}
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "machines_list", Arguments: map[string]any{}})
+	if err != nil || result.IsError {
+		t.Fatalf("machines_list result=%+v err=%v", result, err)
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("machines_list content = %+v", result.Content)
+	}
+}

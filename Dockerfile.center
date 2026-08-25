@@ -1,0 +1,18 @@
+FROM golang:1.25.0-bookworm AS build
+
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /out/remote-connect-mcp-center ./cmd/remote-connect-mcp-center
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/remote-connect-mcp-center /usr/local/bin/remote-connect-mcp-center
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/remote-connect-mcp-center"]

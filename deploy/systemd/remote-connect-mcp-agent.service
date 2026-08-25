@@ -1,0 +1,23 @@
+[Unit]
+Description=Remote Connect MCP machine agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/
+EnvironmentFile=/etc/remote-connect-mcp-agent/agent.env
+ExecStart=/opt/remote-connect-mcp-agent/remote-connect-mcp-agent
+Restart=always
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: remote-connect-mcp
+  labels:
+    app.kubernetes.io/name: remote-connect-mcp
+    app.kubernetes.io/part-of: remote-connect-mcp

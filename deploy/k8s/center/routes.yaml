@@ -1,0 +1,56 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: remote-connect-mcp-http-redirect
+  namespace: remote-connect-mcp
+  labels:
+    app.kubernetes.io/name: remote-connect-mcp-center
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: mnnu-gateway
+      namespace: gateway-system
+      sectionName: http
+  hostnames:
+    - gateway.example.invalid
+    - console.example.invalid
+    - agent.example.invalid
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: remote-connect-mcp
+  namespace: remote-connect-mcp
+  labels:
+    app.kubernetes.io/name: remote-connect-mcp-center
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: mnnu-gateway
+      namespace: gateway-system
+      sectionName: https
+  hostnames:
+    - gateway.example.invalid
+    - console.example.invalid
+    - agent.example.invalid
+  rules:
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: remote-connect-mcp-center
+          port: 8080
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+      timeouts:
+        request: 0s
+        backendRequest: 0s

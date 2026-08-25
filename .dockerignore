@@ -1,0 +1,9 @@
+.git
+.github
+.research
+.remote_connect_mcp
+dist
+deploy
+*.log
+*.tmp
+remote_connect_mcp.env
