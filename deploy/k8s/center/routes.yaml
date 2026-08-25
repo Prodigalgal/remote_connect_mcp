@@ -17,7 +17,11 @@ spec:
     - console.example.invalid
     - agent.example.invalid
   rules:
-    - filters:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
         - type: RequestRedirect
           requestRedirect:
             scheme: https
@@ -47,6 +51,7 @@ spec:
           kind: Service
           name: remote-connect-mcp-center
           port: 8080
+          weight: 1
       matches:
         - path:
             type: PathPrefix
