@@ -34,7 +34,7 @@ Center / MCP Gateway / Task Store / Web Console
 | Web 控制台 | `https://console.example.invalid/console/` |
 | Agent 注册与任务通道 | `https://agent.example.invalid` |
 
-Center 有公网 K8S 入口，因此不使用 Cloudflare Tunnel。Cloudflare 只负责 DNS/CDN/WAF；三个域名都指向同一个 Envoy Gateway 和 Center Service。
+Center 有公网 K8S 入口，因此不使用 Cloudflare Tunnel。Cloudflare 仅作为权威 DNS，三个记录均为 DNS-only，直接指向同一个 Envoy Gateway 和 Center Service，不经过 Cloudflare 代理、CDN 或 WAF。
 
 ## 为什么命令不会再卡住
 
