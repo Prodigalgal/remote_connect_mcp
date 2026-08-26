@@ -200,6 +200,18 @@ CI 在 Windows/Linux 上运行测试和静态检查，并交叉构建 Windows/Li
 
 生产令牌应由部署平台的 Secret 管理；Agent 注册后获得独立机器 Token，Center 只保存其 SHA-256 摘要。不要把任何真实令牌提交到 Git。
 
+### Center 控制台轮换
+
+控制台的“访问令牌轮换”区域可以轮换 MCP、Admin 和 Enrollment Token。可以手工输入，也可以在浏览器中生成随机值；新值不会由 Center 返回，Center 的持久化状态只保存 SHA-256 摘要。轮换支持 `0-86400` 秒旧令牌宽限期：
+
+- MCP：在宽限期内把新值更新到 ChatGPT Web 连接器，URL 和工具面不变；
+- Admin：成功后当前控制台标签页自动切换到新值；
+- Enrollment：不影响已经注册的机器身份，只影响后续首次注册或重新注册。
+
+控制台轮换结果会跨 Center 重启保留。Center 同时记录上次加载的环境变量摘要；如果 K8S Secret/env 的值发生变化，下一次启动会把它识别为运维恢复操作，以 env 新值接管对应 Token 并清除旧宽限值。因此忘记 Admin Token 时仍可从 Kubernetes 恢复。
+
+### K8S/env 恢复轮换
+
 在已配置生产 kubeconfig 的 PowerShell 7 中轮换令牌：
 
 ```powershell
@@ -208,7 +220,7 @@ CI 在 Windows/Linux 上运行测试和静态检查，并交叉构建 Windows/Li
 ./scripts/rotate-center-token.ps1 -Kind enrollment
 ```
 
-脚本通过安全输入提示读取新值，不把令牌写进命令行历史；随后同步本机私密 env 和 Kubernetes Secret、滚动重启 Center，并执行健康与对应鉴权检查。失败时自动恢复旧 Secret 和 env。轮换 MCP Token 后，需要在 ChatGPT Web 连接器中更新令牌；URL 和工具面不变。轮换 Admin Token 后需要重新登录控制台。轮换 Enrollment Token 不影响已注册机器的独立身份，但新安装 Agent 必须使用新值。
+该脚本主要作为忘记 Admin Token、PVC 恢复或需要同步本机灾备副本时的恢复入口。它通过安全输入提示读取新值，不把令牌写进命令行历史；随后同步本机私密 env 和 Kubernetes Secret、滚动重启 Center，并执行健康与对应鉴权检查。失败时自动恢复旧 Secret 和 env。
 
 ## License
 

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -34,10 +35,13 @@ func TestHTTPRegistrationAdminAndMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := NewHTTPHandler(store, HTTPConfig{
+	handler, err := NewHTTPHandler(store, HTTPConfig{
 		Version: "test", MCPToken: "mcp-secret", AdminToken: "admin-secret", EnrollmentToken: "enroll-secret",
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -95,6 +99,64 @@ func TestHTTPRegistrationAdminAndMCP(t *testing.T) {
 	}
 }
 
+func TestHTTPAdminTokenRotation(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHTTPHandler(store, HTTPConfig{
+		Version: "test", MCPToken: "mcp-secret", AdminToken: "admin-secret", EnrollmentToken: "enroll-secret",
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	newToken := strings.Repeat("n", 40)
+	body, _ := json.Marshal(map[string]any{"new_token": newToken, "grace_seconds": 0})
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/tokens/admin/rotate", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("rotate status = %d", response.StatusCode)
+	}
+
+	oldRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/tokens", nil)
+	oldRequest.Header.Set("Authorization", "Bearer admin-secret")
+	oldResponse, err := http.DefaultClient.Do(oldRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldResponse.Body.Close()
+	if oldResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old admin status = %d, want 401", oldResponse.StatusCode)
+	}
+
+	newRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/tokens", nil)
+	newRequest.Header.Set("Authorization", "Bearer "+newToken)
+	newResponse, err := http.DefaultClient.Do(newRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newResponse.Body.Close()
+	if newResponse.StatusCode != http.StatusOK {
+		t.Fatalf("new admin status = %d, want 200", newResponse.StatusCode)
+	}
+	var payload struct {
+		Tokens []AccessTokenView `json:"tokens"`
+	}
+	if err := json.NewDecoder(newResponse.Body).Decode(&payload); err != nil || len(payload.Tokens) != 3 {
+		t.Fatalf("token payload=%+v err=%v", payload, err)
+	}
+}
+
 func TestUpgradeCampaignCachesArtifactAtCenter(t *testing.T) {
 	payload := []byte("signed agent release payload")
 	digest := sha256.Sum256(payload)
@@ -120,11 +182,14 @@ func TestUpgradeCampaignCachesArtifactAtCenter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := NewHTTPHandler(store, HTTPConfig{
+	handler, err := NewHTTPHandler(store, HTTPConfig{
 		Version: "test", MCPToken: "mcp", AdminToken: "admin", EnrollmentToken: "enroll",
 		ReleaseBaseURL: release.URL, AgentPublicURL: "https://agents.example.test",
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(handler)
 	defer server.Close()
 

@@ -1,11 +1,78 @@
 package center
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Prodigalgal/remote_connect_mcp/internal/protocol"
 )
+
+func TestAccessTokenRotationPersistenceGraceAndEnvironmentRecovery(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := map[string]string{
+		AccessTokenMCP: strings.Repeat("m", 40), AccessTokenAdmin: strings.Repeat("a", 40), AccessTokenEnrollment: strings.Repeat("e", 40),
+	}
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	if err := store.ConfigureAccessTokens(initial, now); err != nil {
+		t.Fatal(err)
+	}
+	if !store.AuthenticateAccessToken(AccessTokenAdmin, initial[AccessTokenAdmin], now) {
+		t.Fatal("environment admin token was rejected")
+	}
+	rotated := strings.Repeat("n", 40)
+	view, err := store.RotateAccessToken(AccessTokenAdmin, rotated, time.Minute, now.Add(time.Second))
+	if err != nil || view.Source != "center" || view.PreviousValidUntil == nil {
+		t.Fatalf("rotation view=%+v err=%v", view, err)
+	}
+	if !store.AuthenticateAccessToken(AccessTokenAdmin, initial[AccessTokenAdmin], now.Add(30*time.Second)) || !store.AuthenticateAccessToken(AccessTokenAdmin, rotated, now.Add(30*time.Second)) {
+		t.Fatal("active and grace-period admin tokens should both be accepted")
+	}
+	if store.AuthenticateAccessToken(AccessTokenAdmin, initial[AccessTokenAdmin], now.Add(2*time.Minute)) {
+		t.Fatal("expired previous admin token was accepted")
+	}
+	if err := store.ConfigureAccessTokens(initial, now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !store.AuthenticateAccessToken(AccessTokenAdmin, rotated, now.Add(3*time.Minute)) {
+		t.Fatal("unchanged environment unexpectedly replaced the Center rotation")
+	}
+
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.ConfigureAccessTokens(initial, now.Add(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !reopened.AuthenticateAccessToken(AccessTokenAdmin, rotated, now.Add(4*time.Minute)) {
+		t.Fatal("Center rotation did not survive restart")
+	}
+	recovery := mapsClone(initial)
+	recovery[AccessTokenAdmin] = strings.Repeat("r", 40)
+	if err := reopened.ConfigureAccessTokens(recovery, now.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !reopened.AuthenticateAccessToken(AccessTokenAdmin, recovery[AccessTokenAdmin], now.Add(5*time.Minute)) || reopened.AuthenticateAccessToken(AccessTokenAdmin, rotated, now.Add(5*time.Minute)) {
+		t.Fatal("changed environment did not take over as the recovery token")
+	}
+	views := reopened.ListAccessTokens(now.Add(5 * time.Minute))
+	if len(views) != 3 || views[1].Kind != AccessTokenAdmin || views[1].Source != "environment" {
+		t.Fatalf("token views = %+v", views)
+	}
+}
+
+func mapsClone(source map[string]string) map[string]string {
+	result := make(map[string]string, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
 
 func TestStoreTaskLifecycleAndPersistence(t *testing.T) {
 	dir := t.TempDir()

@@ -35,11 +35,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	handler := center.NewHTTPHandler(store, center.HTTPConfig{
+	handler, err := center.NewHTTPHandler(store, center.HTTPConfig{
 		Version: version, MCPToken: config.mcpToken, AdminToken: config.adminToken,
 		EnrollmentToken: config.enrollmentToken, ConsoleHostname: config.consoleHostname,
 		ReleaseBaseURL: config.releaseBaseURL, AgentPublicURL: config.agentPublicURL, Logger: logger,
 	})
+	if err != nil {
+		return err
+	}
+	config.mcpToken = ""
+	config.adminToken = ""
+	config.enrollmentToken = ""
 	server := &http.Server{
 		Addr: config.address, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout: 75 * time.Second, WriteTimeout: 0,

@@ -21,10 +21,13 @@ func TestAgentCompletesTaskAcrossCenterInterruption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	centerHandler := center.NewHTTPHandler(store, center.HTTPConfig{
+	centerHandler, err := center.NewHTTPHandler(store, center.HTTPConfig{
 		Version: "test", MCPToken: "mcp", AdminToken: "admin", EnrollmentToken: "enroll",
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var available atomic.Bool
 	available.Store(true)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

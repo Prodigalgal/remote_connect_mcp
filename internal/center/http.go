@@ -3,7 +3,6 @@ package center
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -38,7 +37,7 @@ type HTTPServer struct {
 	config HTTPConfig
 }
 
-func NewHTTPHandler(store *Store, config HTTPConfig) http.Handler {
+func NewHTTPHandler(store *Store, config HTTPConfig) (http.Handler, error) {
 	if strings.TrimSpace(config.ReleaseBaseURL) == "" {
 		config.ReleaseBaseURL = "https://github.com/Prodigalgal/remote_connect_mcp/releases/download"
 	}
@@ -47,9 +46,21 @@ func NewHTTPHandler(store *Store, config HTTPConfig) http.Handler {
 		config.AgentPublicURL = "https://agent.example.invalid"
 	}
 	config.AgentPublicURL = strings.TrimRight(config.AgentPublicURL, "/")
+	if err := store.ConfigureAccessTokens(map[string]string{
+		AccessTokenMCP: config.MCPToken, AccessTokenAdmin: config.AdminToken, AccessTokenEnrollment: config.EnrollmentToken,
+	}, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	config.MCPToken = ""
+	config.AdminToken = ""
+	config.EnrollmentToken = ""
 	server := &HTTPServer{store: store, config: config}
-	mcpHandler := auth.Bearer(config.MCPToken, NewMCPHandler(store, config.Version))
-	adminHandler := auth.Bearer(config.AdminToken, http.HandlerFunc(server.serveAdminAPI))
+	mcpHandler := auth.BearerValidator(func(token string) bool {
+		return store.AuthenticateAccessToken(AccessTokenMCP, token, time.Now().UTC())
+	}, NewMCPHandler(store, config.Version))
+	adminHandler := auth.BearerValidator(func(token string) bool {
+		return store.AuthenticateAccessToken(AccessTokenAdmin, token, time.Now().UTC())
+	}, http.HandlerFunc(server.serveAdminAPI))
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": config.Version})
@@ -72,7 +83,7 @@ func NewHTTPHandler(store *Store, config HTTPConfig) http.Handler {
 		}
 		mcpHandler.ServeHTTP(w, r)
 	}))
-	return requestAudit(config.Logger, mux)
+	return requestAudit(config.Logger, mux), nil
 }
 
 func (s *HTTPServer) serveRegister(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +91,7 @@ func (s *HTTPServer) serveRegister(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if !validBearer(r, s.config.EnrollmentToken) {
+	if !s.store.AuthenticateAccessToken(AccessTokenEnrollment, bearerValue(r), time.Now().UTC()) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid enrollment token"})
 		return
 	}
@@ -299,7 +310,32 @@ func (s *HTTPServer) serveAdminAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if path == "tokens" && r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]any{"tokens": s.store.ListAccessTokens(time.Now().UTC())})
+		return
+	}
 	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[0] == "tokens" && parts[2] == "rotate" && r.Method == http.MethodPost {
+		var req struct {
+			NewToken     string `json:"new_token"`
+			GraceSeconds int    `json:"grace_seconds"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if req.GraceSeconds < 0 || req.GraceSeconds > 86400 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "grace_seconds must be between 0 and 86400"})
+			return
+		}
+		result, err := s.store.RotateAccessToken(parts[1], req.NewToken, time.Duration(req.GraceSeconds)*time.Second, time.Now().UTC())
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	if len(parts) == 3 && parts[0] == "upgrades" && r.Method == http.MethodPost {
 		campaign, err := s.store.ControlUpgradeCampaign(parts[1], parts[2])
 		if err != nil {
@@ -530,11 +566,6 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
-}
-
-func validBearer(r *http.Request, expected string) bool {
-	actual := bearerValue(r)
-	return len(actual) == len(expected) && subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) == 1
 }
 
 func bearerValue(r *http.Request) string {

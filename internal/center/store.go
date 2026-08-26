@@ -65,6 +65,10 @@ type Task struct {
 }
 
 const (
+	AccessTokenMCP        = "mcp"
+	AccessTokenAdmin      = "admin"
+	AccessTokenEnrollment = "enrollment"
+
 	UpgradeRunning   = "running"
 	UpgradePaused    = "paused"
 	UpgradeCompleted = "completed"
@@ -77,6 +81,22 @@ const (
 	UpgradeSucceeded   = "completed"
 	UpgradeFailed      = "failed"
 )
+
+type AccessTokenState struct {
+	CurrentHash        string     `json:"current_hash"`
+	PreviousHash       string     `json:"previous_hash,omitempty"`
+	PreviousValidUntil *time.Time `json:"previous_valid_until,omitempty"`
+	EnvironmentHash    string     `json:"environment_hash"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	Source             string     `json:"source"`
+}
+
+type AccessTokenView struct {
+	Kind               string     `json:"kind"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	Source             string     `json:"source"`
+	PreviousValidUntil *time.Time `json:"previous_valid_until,omitempty"`
+}
 
 type UpgradeTarget struct {
 	MachineID  string     `json:"machine_id"`
@@ -111,9 +131,10 @@ type CreateUpgradeCampaignRequest struct {
 }
 
 type persistedState struct {
-	Machines map[string]*Machine         `json:"machines"`
-	Tasks    map[string]*Task            `json:"tasks"`
-	Upgrades map[string]*UpgradeCampaign `json:"upgrades,omitempty"`
+	Machines     map[string]*Machine          `json:"machines"`
+	Tasks        map[string]*Task             `json:"tasks"`
+	Upgrades     map[string]*UpgradeCampaign  `json:"upgrades,omitempty"`
+	AccessTokens map[string]*AccessTokenState `json:"access_tokens,omitempty"`
 }
 
 type Store struct {
@@ -140,7 +161,7 @@ func OpenStore(dir string) (*Store, error) {
 	s := &Store{
 		dir: dir, statePath: filepath.Join(dir, "state.json"), outputDir: outputDir,
 		state: persistedState{
-			Machines: map[string]*Machine{}, Tasks: map[string]*Task{}, Upgrades: map[string]*UpgradeCampaign{},
+			Machines: map[string]*Machine{}, Tasks: map[string]*Task{}, Upgrades: map[string]*UpgradeCampaign{}, AccessTokens: map[string]*AccessTokenState{},
 		},
 		changed: make(chan struct{}),
 	}
@@ -161,7 +182,146 @@ func OpenStore(dir string) (*Store, error) {
 	if s.state.Upgrades == nil {
 		s.state.Upgrades = map[string]*UpgradeCampaign{}
 	}
+	if s.state.AccessTokens == nil {
+		s.state.AccessTokens = map[string]*AccessTokenState{}
+	}
 	return s, nil
+}
+
+func (s *Store) ConfigureAccessTokens(tokens map[string]string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for _, kind := range accessTokenKinds() {
+		token := strings.TrimSpace(tokens[kind])
+		if err := validateConfiguredAccessToken(token); err != nil {
+			return fmt.Errorf("%s token: %w", kind, err)
+		}
+		environmentHash := hashToken(token)
+		state := s.state.AccessTokens[kind]
+		if state == nil || state.CurrentHash == "" {
+			s.state.AccessTokens[kind] = &AccessTokenState{
+				CurrentHash: environmentHash, EnvironmentHash: environmentHash, UpdatedAt: now.UTC(), Source: "environment",
+			}
+			changed = true
+			continue
+		}
+		if state.EnvironmentHash != environmentHash {
+			state.CurrentHash = environmentHash
+			state.EnvironmentHash = environmentHash
+			state.PreviousHash = ""
+			state.PreviousValidUntil = nil
+			state.UpdatedAt = now.UTC()
+			state.Source = "environment"
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.saveLocked()
+}
+
+func (s *Store) AuthenticateAccessToken(kind, token string, now time.Time) bool {
+	if token == "" {
+		return false
+	}
+	actual := hashToken(token)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.state.AccessTokens[kind]
+	if state == nil {
+		return false
+	}
+	if constantHashEqual(actual, state.CurrentHash) {
+		return true
+	}
+	return state.PreviousHash != "" && state.PreviousValidUntil != nil && now.Before(*state.PreviousValidUntil) && constantHashEqual(actual, state.PreviousHash)
+}
+
+func (s *Store) RotateAccessToken(kind, token string, grace time.Duration, now time.Time) (AccessTokenView, error) {
+	if !validAccessTokenKind(kind) {
+		return AccessTokenView{}, errors.New("invalid token kind")
+	}
+	token = strings.TrimSpace(token)
+	if err := validateAccessToken(token); err != nil {
+		return AccessTokenView{}, err
+	}
+	if grace < 0 || grace > 24*time.Hour {
+		return AccessTokenView{}, errors.New("grace period must be between 0 and 86400 seconds")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.state.AccessTokens[kind]
+	if state == nil || state.CurrentHash == "" {
+		return AccessTokenView{}, errors.New("access tokens are not configured")
+	}
+	newHash := hashToken(token)
+	if constantHashEqual(newHash, state.CurrentHash) {
+		return AccessTokenView{}, errors.New("new token must differ from the active token")
+	}
+	if grace > 0 {
+		until := now.UTC().Add(grace)
+		state.PreviousHash = state.CurrentHash
+		state.PreviousValidUntil = &until
+	} else {
+		state.PreviousHash = ""
+		state.PreviousValidUntil = nil
+	}
+	state.CurrentHash = newHash
+	state.UpdatedAt = now.UTC()
+	state.Source = "center"
+	if err := s.saveLocked(); err != nil {
+		return AccessTokenView{}, err
+	}
+	return accessTokenView(kind, state, now), nil
+}
+
+func (s *Store) ListAccessTokens(now time.Time) []AccessTokenView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]AccessTokenView, 0, 3)
+	for _, kind := range accessTokenKinds() {
+		if state := s.state.AccessTokens[kind]; state != nil {
+			result = append(result, accessTokenView(kind, state, now))
+		}
+	}
+	return result
+}
+
+func accessTokenView(kind string, state *AccessTokenState, now time.Time) AccessTokenView {
+	view := AccessTokenView{Kind: kind, UpdatedAt: state.UpdatedAt, Source: state.Source}
+	if state.PreviousValidUntil != nil && now.Before(*state.PreviousValidUntil) {
+		until := *state.PreviousValidUntil
+		view.PreviousValidUntil = &until
+	}
+	return view
+}
+
+func accessTokenKinds() []string {
+	return []string{AccessTokenMCP, AccessTokenAdmin, AccessTokenEnrollment}
+}
+
+func validAccessTokenKind(kind string) bool {
+	return kind == AccessTokenMCP || kind == AccessTokenAdmin || kind == AccessTokenEnrollment
+}
+
+func validateAccessToken(token string) error {
+	if len(token) < 32 || len(token) > 4096 || strings.ContainsAny(token, "\r\n") {
+		return errors.New("token must be one line and between 32 and 4096 characters")
+	}
+	return nil
+}
+
+func validateConfiguredAccessToken(token string) error {
+	if token == "" || len(token) > 4096 || strings.ContainsAny(token, "\r\n") {
+		return errors.New("token must be a non-empty line with at most 4096 characters")
+	}
+	return nil
+}
+
+func constantHashEqual(actual, expected string) bool {
+	return len(actual) == len(expected) && subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) == 1
 }
 
 func (s *Store) Register(req protocol.RegisterRequest) (protocol.RegisterResponse, error) {
