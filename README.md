@@ -105,6 +105,33 @@ Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 C
 
 Linux systemd 模板和安装脚本位于 [`deploy/systemd`](deploy/systemd) 与 [`scripts/install-agent.sh`](scripts/install-agent.sh)。Agent 不监听端口，不需要域名、Cloudflare Tunnel 或入站防火墙规则。
 
+### Windows 服务
+
+Windows AMD64/ARM64 使用同一个 Agent 二进制，并以原生 Windows SCM 服务运行。请在管理员 PowerShell 7 中执行：
+
+```powershell
+./scripts/install-agent.ps1 `
+  -BinaryPath ./remote-connect-mcp-agent.exe `
+  -EnrollmentToken '<center enrollment token>' `
+  -AgentName '<Headscale given_name>' `
+  -DefaultCwd 'C:\'
+```
+
+服务名为 `RemoteConnectMCPAgent`，默认自动启动，异常退出按 5/15/30 秒重启。状态、进程和日志：
+
+```powershell
+Get-Service RemoteConnectMCPAgent
+Get-CimInstance Win32_Service -Filter "Name='RemoteConnectMCPAgent'"
+Get-Content "$env:ProgramData\RemoteConnectMCPAgent\agent.log" -Tail 100
+```
+
+安装器把 Center 配置写入服务专属注册表环境，状态和日志目录 ACL 仅允许 SYSTEM 与本机管理员访问。卸载时默认保留机器身份；需要同时清除身份时增加 `-PurgeState`：
+
+```powershell
+./scripts/install-agent.ps1 -Uninstall
+./scripts/install-agent.ps1 -Uninstall -PurgeState
+```
+
 ## 连接 ChatGPT
 
 在 ChatGPT Business 工作区开发者模式中创建远程 MCP：

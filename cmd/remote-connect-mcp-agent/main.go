@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/Prodigalgal/remote_connect_mcp/internal/agent"
 )
@@ -30,7 +29,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return runPlatform(func(ctx context.Context) error {
+		return runAgent(ctx, config)
+	})
+}
+
+func runAgent(ctx context.Context, config config) error {
+	logger, closeLog, err := newLogger(config.logFile)
+	if err != nil {
+		return err
+	}
+	defer closeLog()
 	client, err := agent.New(agent.Config{
 		CenterURL: config.centerURL, EnrollmentToken: config.enrollmentToken, Name: config.name,
 		DefaultCWD: config.defaultCWD, StateDir: config.stateDir, MaxConcurrency: config.maxConcurrency,
@@ -40,15 +49,13 @@ func run() error {
 		return err
 	}
 	defer client.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	logger.Info("agent started", "name", config.name, "center", config.centerURL, "os", runtime.GOOS, "arch", runtime.GOARCH, "version", version)
 	return client.Run(ctx)
 }
 
 type config struct {
-	centerURL, enrollmentToken, name, defaultCWD, stateDir string
-	maxConcurrency                                         int
+	centerURL, enrollmentToken, name, defaultCWD, stateDir, logFile string
+	maxConcurrency                                                  int
 }
 
 func loadConfig() (config, error) {
@@ -71,7 +78,9 @@ func loadConfig() (config, error) {
 		enrollmentToken: strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN")),
 		name:            env("REMOTE_CONNECT_MCP_AGENT_NAME", hostname),
 		defaultCWD:      env("REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD", cwd),
-		stateDir:        stateDir, maxConcurrency: maxConcurrency,
+		stateDir:        stateDir,
+		logFile:         strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_AGENT_LOG_FILE")),
+		maxConcurrency:  maxConcurrency,
 	}
 	if result.centerURL == "" || result.enrollmentToken == "" {
 		return config{}, errors.New("REMOTE_CONNECT_MCP_AGENT_CENTER_URL and REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN are required")
@@ -80,6 +89,31 @@ func loadConfig() (config, error) {
 		return config{}, errors.New("agent enrollment token must be one line")
 	}
 	return result, nil
+}
+
+func newLogger(logFile string) (*slog.Logger, func(), error) {
+	var writer io.Writer = os.Stdout
+	closeLog := func() {}
+	if logFile != "" {
+		path, err := filepath.Abs(logFile)
+		if err != nil {
+			return nil, closeLog, fmt.Errorf("resolve agent log file: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, closeLog, fmt.Errorf("create agent log directory: %w", err)
+		}
+		if info, err := os.Stat(path); err == nil && info.Size() > 20*1024*1024 {
+			_ = os.Remove(path + ".1")
+			_ = os.Rename(path, path+".1")
+		}
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return nil, closeLog, fmt.Errorf("open agent log file: %w", err)
+		}
+		writer = file
+		closeLog = func() { _ = file.Close() }
+	}
+	return slog.New(slog.NewJSONHandler(writer, &slog.HandlerOptions{Level: slog.LevelInfo})), closeLog, nil
 }
 
 func env(name, fallback string) string {

@@ -69,6 +69,10 @@ jobs:
           mkdir -p "${root}/deploy/systemd"
           cp deploy/systemd/remote-connect-mcp-agent.service deploy/systemd/agent.env.example scripts/install-agent.sh "${root}/deploy/systemd/"
           chmod +x "${root}/deploy/systemd/install-agent.sh"
+          if [[ "${GOOS}" = "windows" ]]; then
+            mkdir -p "${root}/deploy/windows"
+            cp scripts/install-agent.ps1 "${root}/deploy/windows/"
+          fi
           if [[ "${ARCHIVE}" == "zip" ]]; then
             (cd package && zip -qr "../${name}.zip" "${name}")
             sha256sum "${name}.zip" > "${name}.zip.sha256"
