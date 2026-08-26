@@ -21,6 +21,7 @@ import (
 
 	processes "github.com/Prodigalgal/remote_connect_mcp/internal/process"
 	"github.com/Prodigalgal/remote_connect_mcp/internal/protocol"
+	"github.com/Prodigalgal/remote_connect_mcp/internal/updater"
 )
 
 type Config struct {
@@ -45,9 +46,10 @@ type Agent struct {
 	client    *http.Client
 	processes *processes.Manager
 
-	mu       sync.Mutex
-	identity identity
-	running  map[string]*runningTask
+	mu        sync.Mutex
+	identity  identity
+	running   map[string]*runningTask
+	upgrading bool
 }
 
 type runningTask struct {
@@ -138,6 +140,14 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			interruptedReported = true
 		}
+		if err := a.reportUpgradeResult(ctx); err != nil {
+			a.config.Logger.Warn("could not report upgrade result; retrying", "error", err, "delay", delay)
+			if !waitRetry(ctx, delay) {
+				return nil
+			}
+			delay = nextRetryDelay(delay)
+			continue
+		}
 		response, err := a.poll(ctx)
 		if err == nil {
 			delay = time.Second
@@ -218,6 +228,9 @@ func (a *Agent) poll(ctx context.Context) (protocol.PollResponse, error) {
 		running = append(running, id)
 	}
 	available := a.config.MaxConcurrency - len(a.running)
+	if a.upgrading {
+		available = 0
+	}
 	a.mu.Unlock()
 	sort.Strings(running)
 	var response protocol.PollResponse
@@ -229,9 +242,70 @@ func (a *Agent) applyPoll(ctx context.Context, response protocol.PollResponse) {
 	for _, id := range response.CancelTaskIDs {
 		a.cancelTask(id)
 	}
+	if response.Upgrade != nil {
+		a.startUpgrade(ctx, *response.Upgrade)
+		return
+	}
 	if response.Task != nil {
 		a.startTask(ctx, *response.Task)
 	}
+}
+
+func (a *Agent) startUpgrade(ctx context.Context, plan protocol.UpgradePlan) {
+	a.mu.Lock()
+	if a.upgrading || len(a.running) > 0 {
+		a.mu.Unlock()
+		return
+	}
+	a.upgrading = true
+	a.mu.Unlock()
+	go func() {
+		a.config.Logger.Info("agent upgrade started", "campaign_id", plan.CampaignID, "version", plan.Version)
+		if err := a.reportUpgrade(ctx, plan.CampaignID, UpgradeDownloading, ""); err != nil {
+			a.failUpgrade(ctx, plan, err)
+			return
+		}
+		err := updater.PrepareAndLaunch(ctx, plan, a.config.StateDir, platformServiceName(), a.config.Logger, func() error {
+			return a.reportUpgrade(ctx, plan.CampaignID, UpgradeInstalling, "")
+		})
+		if err != nil {
+			a.failUpgrade(ctx, plan, err)
+			return
+		}
+		a.config.Logger.Info("upgrade helper launched; waiting for service restart", "campaign_id", plan.CampaignID, "version", plan.Version)
+		<-ctx.Done()
+	}()
+}
+
+func (a *Agent) failUpgrade(ctx context.Context, plan protocol.UpgradePlan, err error) {
+	a.config.Logger.Error("agent upgrade failed", "campaign_id", plan.CampaignID, "version", plan.Version, "error", err)
+	_ = a.reportUpgrade(ctx, plan.CampaignID, UpgradeFailed, err.Error())
+	a.mu.Lock()
+	a.upgrading = false
+	a.mu.Unlock()
+}
+
+const (
+	UpgradeDownloading = "downloading"
+	UpgradeInstalling  = "installing"
+	UpgradeFailed      = "failed"
+)
+
+func (a *Agent) reportUpgrade(ctx context.Context, campaignID, status, errorText string) error {
+	return a.agentJSON(ctx, http.MethodPost, "/agent/v1/upgrade/status", protocol.UpgradeStatusRequest{
+		CampaignID: campaignID, Status: status, Error: errorText,
+	}, nil)
+}
+
+func (a *Agent) reportUpgradeResult(ctx context.Context) error {
+	result, err := updater.ConsumeResult(a.config.StateDir)
+	if err != nil || result == nil {
+		return err
+	}
+	if err := a.reportUpgrade(ctx, result.CampaignID, result.Status, result.Error); err != nil {
+		return err
+	}
+	return updater.RemoveResult(a.config.StateDir)
 }
 
 func (a *Agent) startTask(parent context.Context, command protocol.TaskCommand) {

@@ -64,9 +64,56 @@ type Task struct {
 	LeaseUntil     *time.Time        `json:"lease_until,omitempty"`
 }
 
+const (
+	UpgradeRunning   = "running"
+	UpgradePaused    = "paused"
+	UpgradeCompleted = "completed"
+	UpgradeCanceled  = "canceled"
+
+	UpgradePending     = "pending"
+	UpgradeOffered     = "offered"
+	UpgradeDownloading = "downloading"
+	UpgradeInstalling  = "installing"
+	UpgradeSucceeded   = "completed"
+	UpgradeFailed      = "failed"
+)
+
+type UpgradeTarget struct {
+	MachineID  string     `json:"machine_id"`
+	Status     string     `json:"status"`
+	Error      string     `json:"error,omitempty"`
+	Attempts   int        `json:"attempts"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	LeaseUntil *time.Time `json:"lease_until,omitempty"`
+}
+
+type UpgradeCampaign struct {
+	ID          string                              `json:"id"`
+	Version     string                              `json:"version"`
+	Status      string                              `json:"status"`
+	CanaryCount int                                 `json:"canary_count"`
+	BatchSize   int                                 `json:"batch_size"`
+	ActiveLimit int                                 `json:"active_limit"`
+	Artifacts   map[string]protocol.UpgradeArtifact `json:"artifacts"`
+	Targets     []UpgradeTarget                     `json:"targets"`
+	CreatedAt   time.Time                           `json:"created_at"`
+	UpdatedAt   time.Time                           `json:"updated_at"`
+	FinishedAt  *time.Time                          `json:"finished_at,omitempty"`
+}
+
+type CreateUpgradeCampaignRequest struct {
+	Version     string
+	CanaryCount int
+	BatchSize   int
+	MachineIDs  []string
+	Artifacts   map[string]protocol.UpgradeArtifact
+}
+
 type persistedState struct {
-	Machines map[string]*Machine `json:"machines"`
-	Tasks    map[string]*Task    `json:"tasks"`
+	Machines map[string]*Machine         `json:"machines"`
+	Tasks    map[string]*Task            `json:"tasks"`
+	Upgrades map[string]*UpgradeCampaign `json:"upgrades,omitempty"`
 }
 
 type Store struct {
@@ -92,7 +139,9 @@ func OpenStore(dir string) (*Store, error) {
 	}
 	s := &Store{
 		dir: dir, statePath: filepath.Join(dir, "state.json"), outputDir: outputDir,
-		state:   persistedState{Machines: map[string]*Machine{}, Tasks: map[string]*Task{}},
+		state: persistedState{
+			Machines: map[string]*Machine{}, Tasks: map[string]*Task{}, Upgrades: map[string]*UpgradeCampaign{},
+		},
 		changed: make(chan struct{}),
 	}
 	data, err := os.ReadFile(s.statePath)
@@ -108,6 +157,9 @@ func OpenStore(dir string) (*Store, error) {
 	}
 	if s.state.Tasks == nil {
 		s.state.Tasks = map[string]*Task{}
+	}
+	if s.state.Upgrades == nil {
+		s.state.Upgrades = map[string]*UpgradeCampaign{}
 	}
 	return s, nil
 }
@@ -280,6 +332,187 @@ func (s *Store) CancelTask(id string) (Task, error) {
 	return cloneTask(task), nil
 }
 
+func (s *Store) CreateUpgradeCampaign(req CreateUpgradeCampaignRequest) (UpgradeCampaign, error) {
+	version := strings.TrimSpace(req.Version)
+	if version == "" {
+		return UpgradeCampaign{}, errors.New("upgrade version is required")
+	}
+	if len(req.MachineIDs) == 0 {
+		return UpgradeCampaign{}, errors.New("at least one machine is required")
+	}
+	id, err := randomID("upgrade")
+	if err != nil {
+		return UpgradeCampaign{}, err
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, campaign := range s.state.Upgrades {
+		if campaign.Status == UpgradeRunning || campaign.Status == UpgradePaused {
+			return UpgradeCampaign{}, fmt.Errorf("upgrade campaign %s is still %s", campaign.ID, campaign.Status)
+		}
+	}
+	seen := map[string]bool{}
+	targets := make([]UpgradeTarget, 0, len(req.MachineIDs))
+	for _, machineID := range req.MachineIDs {
+		machineID = strings.TrimSpace(machineID)
+		machine := s.state.Machines[machineID]
+		if machine == nil {
+			return UpgradeCampaign{}, fmt.Errorf("machine %s not found", machineID)
+		}
+		if seen[machineID] {
+			continue
+		}
+		seen[machineID] = true
+		key := machine.OS + "/" + machine.Arch
+		artifact, ok := req.Artifacts[key]
+		if !ok || strings.TrimSpace(artifact.URL) == "" || len(strings.TrimSpace(artifact.SHA256)) != 64 {
+			return UpgradeCampaign{}, fmt.Errorf("upgrade artifact for %s is unavailable", key)
+		}
+		status := UpgradePending
+		finishedAt := (*time.Time)(nil)
+		if machine.Version == version {
+			status = UpgradeSucceeded
+			finishedAt = &now
+		}
+		targets = append(targets, UpgradeTarget{MachineID: machineID, Status: status, UpdatedAt: now, FinishedAt: finishedAt})
+	}
+	if len(targets) == 0 {
+		return UpgradeCampaign{}, errors.New("upgrade target list is empty")
+	}
+	canary := req.CanaryCount
+	if canary <= 0 {
+		canary = 1
+	}
+	if canary > len(targets) {
+		canary = len(targets)
+	}
+	batch := req.BatchSize
+	if batch <= 0 {
+		batch = 3
+	}
+	campaign := &UpgradeCampaign{
+		ID: id, Version: version, Status: UpgradeRunning, CanaryCount: canary, BatchSize: batch,
+		ActiveLimit: canary, Artifacts: cloneArtifacts(req.Artifacts), Targets: targets,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	reconcileUpgradeLocked(campaign, s.state.Machines, now)
+	s.state.Upgrades[id] = campaign
+	if err := s.saveLocked(); err != nil {
+		delete(s.state.Upgrades, id)
+		return UpgradeCampaign{}, err
+	}
+	s.notifyLocked()
+	return cloneUpgradeCampaign(campaign), nil
+}
+
+func (s *Store) ListUpgradeCampaigns(limit int) []UpgradeCampaign {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]UpgradeCampaign, 0, len(s.state.Upgrades))
+	for _, campaign := range s.state.Upgrades {
+		result = append(result, cloneUpgradeCampaign(campaign))
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result
+}
+
+func (s *Store) ControlUpgradeCampaign(id, action string) (UpgradeCampaign, error) {
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	campaign := s.state.Upgrades[id]
+	if campaign == nil {
+		return UpgradeCampaign{}, fmt.Errorf("upgrade campaign %s not found", id)
+	}
+	switch action {
+	case "resume":
+		if campaign.Status == UpgradeCompleted || campaign.Status == UpgradeCanceled {
+			return UpgradeCampaign{}, fmt.Errorf("upgrade campaign %s is already terminal", id)
+		}
+		for index := range campaign.Targets {
+			target := &campaign.Targets[index]
+			if target.Status == UpgradeFailed {
+				target.Status = UpgradePending
+				target.Error = ""
+				target.LeaseUntil = nil
+				target.FinishedAt = nil
+				target.UpdatedAt = now
+			}
+		}
+		campaign.Status = UpgradeRunning
+		campaign.FinishedAt = nil
+		reconcileUpgradeLocked(campaign, s.state.Machines, now)
+	case "cancel":
+		if campaign.Status != UpgradeCompleted {
+			campaign.Status = UpgradeCanceled
+			campaign.FinishedAt = &now
+		}
+	default:
+		return UpgradeCampaign{}, fmt.Errorf("unsupported upgrade action %q", action)
+	}
+	campaign.UpdatedAt = now
+	if err := s.saveLocked(); err != nil {
+		return UpgradeCampaign{}, err
+	}
+	s.notifyLocked()
+	return cloneUpgradeCampaign(campaign), nil
+}
+
+func (s *Store) UpdateUpgradeStatus(machineID string, req protocol.UpgradeStatusRequest) (UpgradeCampaign, error) {
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	campaign := s.state.Upgrades[strings.TrimSpace(req.CampaignID)]
+	if campaign == nil {
+		return UpgradeCampaign{}, fmt.Errorf("upgrade campaign %s not found", req.CampaignID)
+	}
+	var target *UpgradeTarget
+	for index := range campaign.Targets {
+		if campaign.Targets[index].MachineID == machineID {
+			target = &campaign.Targets[index]
+			break
+		}
+	}
+	if target == nil {
+		return UpgradeCampaign{}, fmt.Errorf("machine %s is not part of campaign %s", machineID, campaign.ID)
+	}
+	switch req.Status {
+	case UpgradeDownloading, UpgradeInstalling:
+		lease := now.Add(15 * time.Minute)
+		target.Status = req.Status
+		target.LeaseUntil = &lease
+		target.Error = ""
+	case UpgradeFailed:
+		target.Status = UpgradeFailed
+		target.Error = strings.TrimSpace(req.Error)
+		target.LeaseUntil = nil
+		target.FinishedAt = &now
+		campaign.Status = UpgradePaused
+	case UpgradeSucceeded:
+		target.Status = UpgradeSucceeded
+		target.Error = ""
+		target.LeaseUntil = nil
+		target.FinishedAt = &now
+	default:
+		return UpgradeCampaign{}, fmt.Errorf("invalid upgrade status %q", req.Status)
+	}
+	target.UpdatedAt = now
+	campaign.UpdatedAt = now
+	reconcileUpgradeLocked(campaign, s.state.Machines, now)
+	if err := s.saveLocked(); err != nil {
+		return UpgradeCampaign{}, err
+	}
+	s.notifyLocked()
+	return cloneUpgradeCampaign(campaign), nil
+}
+
 func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...protocol.AgentMetadata) (protocol.PollResponse, error) {
 	now := time.Now().UTC()
 	s.mu.Lock()
@@ -300,7 +533,10 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 		}
 	}
 	sort.Strings(response.CancelTaskIDs)
-	if req.AvailableSlots > 0 {
+	if len(req.RunningTaskIDs) == 0 && len(response.CancelTaskIDs) == 0 {
+		response.Upgrade = s.upgradePlanLocked(machineID, now)
+	}
+	if response.Upgrade == nil && req.AvailableSlots > 0 {
 		var candidates []*Task
 		for _, task := range s.state.Tasks {
 			if task.MachineID != machineID {
@@ -327,6 +563,91 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 		return protocol.PollResponse{}, err
 	}
 	return response, nil
+}
+
+func (s *Store) upgradePlanLocked(machineID string, now time.Time) *protocol.UpgradePlan {
+	for _, campaign := range s.state.Upgrades {
+		if campaign.Status != UpgradeRunning {
+			continue
+		}
+		reconcileUpgradeLocked(campaign, s.state.Machines, now)
+		for index := range campaign.Targets {
+			target := &campaign.Targets[index]
+			if target.MachineID != machineID || index >= campaign.ActiveLimit || target.Status == UpgradeSucceeded {
+				continue
+			}
+			if target.LeaseUntil != nil && now.Before(*target.LeaseUntil) && target.Status != UpgradePending {
+				return nil
+			}
+			machine := s.state.Machines[machineID]
+			if machine == nil || machine.Version == campaign.Version {
+				return nil
+			}
+			artifact, ok := campaign.Artifacts[machine.OS+"/"+machine.Arch]
+			if !ok {
+				target.Status = UpgradeFailed
+				target.Error = "artifact is unavailable for " + machine.OS + "/" + machine.Arch
+				target.FinishedAt = &now
+				campaign.Status = UpgradePaused
+				return nil
+			}
+			lease := now.Add(5 * time.Minute)
+			target.Status = UpgradeOffered
+			target.Attempts++
+			target.UpdatedAt = now
+			target.LeaseUntil = &lease
+			campaign.UpdatedAt = now
+			return &protocol.UpgradePlan{CampaignID: campaign.ID, Version: campaign.Version, URL: artifact.URL, SHA256: artifact.SHA256}
+		}
+	}
+	return nil
+}
+
+func reconcileUpgradeLocked(campaign *UpgradeCampaign, machines map[string]*Machine, now time.Time) {
+	if campaign.Status == UpgradeCanceled {
+		return
+	}
+	allCompleted := true
+	for index := range campaign.Targets {
+		target := &campaign.Targets[index]
+		if machine := machines[target.MachineID]; machine != nil && machine.Version == campaign.Version && target.Status != UpgradeSucceeded {
+			target.Status = UpgradeSucceeded
+			target.Error = ""
+			target.LeaseUntil = nil
+			target.UpdatedAt = now
+			target.FinishedAt = &now
+		}
+		if target.Status == UpgradeFailed {
+			campaign.Status = UpgradePaused
+		}
+		if target.Status != UpgradeSucceeded {
+			allCompleted = false
+		}
+	}
+	if allCompleted {
+		campaign.Status = UpgradeCompleted
+		campaign.ActiveLimit = len(campaign.Targets)
+		campaign.FinishedAt = &now
+		campaign.UpdatedAt = now
+		return
+	}
+	if campaign.Status != UpgradeRunning {
+		return
+	}
+	for campaign.ActiveLimit < len(campaign.Targets) {
+		waveCompleted := true
+		for index := 0; index < campaign.ActiveLimit; index++ {
+			if campaign.Targets[index].Status != UpgradeSucceeded {
+				waveCompleted = false
+				break
+			}
+		}
+		if !waveCompleted {
+			break
+		}
+		campaign.ActiveLimit = min(campaign.ActiveLimit+campaign.BatchSize, len(campaign.Targets))
+		campaign.UpdatedAt = now
+	}
 }
 
 func updateMachineMetadata(machine *Machine, metadata protocol.AgentMetadata) {
@@ -520,6 +841,24 @@ func cloneMap(source map[string]string) map[string]string {
 		result[key] = value
 	}
 	return result
+}
+
+func cloneArtifacts(source map[string]protocol.UpgradeArtifact) map[string]protocol.UpgradeArtifact {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string]protocol.UpgradeArtifact, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
+func cloneUpgradeCampaign(campaign *UpgradeCampaign) UpgradeCampaign {
+	copy := *campaign
+	copy.Artifacts = cloneArtifacts(campaign.Artifacts)
+	copy.Targets = append([]UpgradeTarget(nil), campaign.Targets...)
+	return copy
 }
 
 func randomID(prefix string) (string, error) {

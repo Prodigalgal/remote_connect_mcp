@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ type HTTPConfig struct {
 	AdminToken      string
 	EnrollmentToken string
 	ConsoleHostname string
+	ReleaseBaseURL  string
 	Logger          *slog.Logger
 }
 
@@ -33,6 +35,10 @@ type HTTPServer struct {
 }
 
 func NewHTTPHandler(store *Store, config HTTPConfig) http.Handler {
+	if strings.TrimSpace(config.ReleaseBaseURL) == "" {
+		config.ReleaseBaseURL = "https://github.com/Prodigalgal/remote_connect_mcp/releases/download"
+	}
+	config.ReleaseBaseURL = strings.TrimRight(config.ReleaseBaseURL, "/")
 	server := &HTTPServer{store: store, config: config}
 	mcpHandler := auth.Bearer(config.MCPToken, NewMCPHandler(store, config.Version))
 	adminHandler := auth.Bearer(config.AdminToken, http.HandlerFunc(server.serveAdminAPI))
@@ -95,6 +101,10 @@ func (s *HTTPServer) serveAgentAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(path, "/")
+	if len(parts) == 2 && parts[0] == "upgrade" && parts[1] == "status" {
+		s.serveAgentUpgradeStatus(w, r, machineID)
+		return
+	}
 	if len(parts) == 3 && parts[0] == "tasks" {
 		switch parts[2] {
 		case "state":
@@ -106,6 +116,24 @@ func (s *HTTPServer) serveAgentAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.NotFound(w, r)
+}
+
+func (s *HTTPServer) serveAgentUpgradeStatus(w http.ResponseWriter, r *http.Request, machineID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var req protocol.UpgradeStatusRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	campaign, err := s.store.UpdateUpgradeStatus(machineID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, campaign)
 }
 
 func (s *HTTPServer) serveAgentPoll(w http.ResponseWriter, r *http.Request, machineID string) {
@@ -235,7 +263,43 @@ func (s *HTTPServer) serveAdminAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if path == "upgrades" {
+		switch r.Method {
+		case http.MethodGet:
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			writeJSON(w, http.StatusOK, map[string]any{"upgrades": s.store.ListUpgradeCampaigns(limit)})
+		case http.MethodPost:
+			var req struct {
+				Version     string   `json:"version"`
+				CanaryCount int      `json:"canary_count"`
+				BatchSize   int      `json:"batch_size"`
+				MachineIDs  []string `json:"machine_ids,omitempty"`
+			}
+			if err := decodeJSON(r, &req); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			campaign, err := s.createUpgradeCampaign(r.Context(), req.Version, req.CanaryCount, req.BatchSize, req.MachineIDs)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusCreated, campaign)
+		default:
+			methodNotAllowed(w, http.MethodGet, http.MethodPost)
+		}
+		return
+	}
 	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[0] == "upgrades" && r.Method == http.MethodPost {
+		campaign, err := s.store.ControlUpgradeCampaign(parts[1], parts[2])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, campaign)
+		return
+	}
 	if len(parts) >= 2 && parts[0] == "tasks" {
 		taskID := parts[1]
 		if len(parts) == 2 && r.Method == http.MethodGet {
@@ -269,6 +333,82 @@ func (s *HTTPServer) serveAdminAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.NotFound(w, r)
+}
+
+func (s *HTTPServer) createUpgradeCampaign(ctx context.Context, version string, canaryCount, batchSize int, machineIDs []string) (UpgradeCampaign, error) {
+	version = strings.TrimSpace(version)
+	if version == "" || !strings.HasPrefix(version, "v") || strings.ContainsAny(version, "/\\\r\n\t ") {
+		return UpgradeCampaign{}, errors.New("version must be a release tag such as v1.3.0")
+	}
+	machines := s.store.ListMachines(time.Now().UTC())
+	byID := make(map[string]MachineView, len(machines))
+	for _, machine := range machines {
+		byID[machine.ID] = machine
+	}
+	if len(machineIDs) == 0 {
+		for _, machine := range machines {
+			if machine.Online {
+				machineIDs = append(machineIDs, machine.ID)
+			}
+		}
+	}
+	platforms := map[string]bool{}
+	for _, machineID := range machineIDs {
+		machine, ok := byID[machineID]
+		if !ok {
+			return UpgradeCampaign{}, fmt.Errorf("machine %s not found", machineID)
+		}
+		platforms[machine.OS+"/"+machine.Arch] = true
+	}
+	artifacts := make(map[string]protocol.UpgradeArtifact, len(platforms))
+	for platform := range platforms {
+		parts := strings.SplitN(platform, "/", 2)
+		if len(parts) != 2 || parts[0] != "linux" && parts[0] != "windows" || parts[1] != "amd64" && parts[1] != "arm64" {
+			return UpgradeCampaign{}, fmt.Errorf("platform %s is unsupported", platform)
+		}
+		suffix := ""
+		if parts[0] == "windows" {
+			suffix = ".exe"
+		}
+		name := "remote-connect-mcp-agent-" + version + "-" + parts[0] + "-" + parts[1] + suffix
+		url := s.config.ReleaseBaseURL + "/" + version + "/" + name
+		sha, err := fetchReleaseSHA(ctx, url+".sha256")
+		if err != nil {
+			return UpgradeCampaign{}, fmt.Errorf("resolve %s: %w", platform, err)
+		}
+		artifacts[platform] = protocol.UpgradeArtifact{OS: parts[0], Arch: parts[1], URL: url, SHA256: sha}
+	}
+	return s.store.CreateUpgradeCampaign(CreateUpgradeCampaignRequest{
+		Version: version, CanaryCount: canaryCount, BatchSize: batchSize, MachineIDs: machineIDs, Artifacts: artifacts,
+	})
+}
+
+func fetchReleaseSHA(ctx context.Context, url string) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("checksum endpoint returned HTTP %d", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 4096))
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 || len(fields[0]) != 64 {
+		return "", errors.New("checksum file is invalid")
+	}
+	if _, err := hex.DecodeString(fields[0]); err != nil {
+		return "", errors.New("checksum is not hexadecimal")
+	}
+	return strings.ToLower(fields[0]), nil
 }
 
 func decodeJSON(r *http.Request, target any) error {

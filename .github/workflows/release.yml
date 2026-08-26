@@ -65,6 +65,9 @@ jobs:
             -o "${root}/dist/${GOOS}-${GOARCH}/remote-connect-mcp-center${SUFFIX}" ./cmd/remote-connect-mcp-center
           go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
             -o "${root}/dist/${GOOS}-${GOARCH}/remote-connect-mcp-agent${SUFFIX}" ./cmd/remote-connect-mcp-agent
+          raw_agent="remote-connect-mcp-agent-${VERSION}-${GOOS}-${GOARCH}${SUFFIX}"
+          cp "${root}/dist/${GOOS}-${GOARCH}/remote-connect-mcp-agent${SUFFIX}" "${raw_agent}"
+          sha256sum "${raw_agent}" > "${raw_agent}.sha256"
           cp README.md LICENSE NOTICE "${root}/"
           mkdir -p "${root}/deploy/systemd"
           cp deploy/systemd/remote-connect-mcp-agent.service deploy/systemd/agent.env.example scripts/install-agent.sh "${root}/deploy/systemd/"
@@ -88,6 +91,7 @@ jobs:
             remote-connect-mcp-*.zip.sha256
             remote-connect-mcp-*.tar.gz
             remote-connect-mcp-*.tar.gz.sha256
+            remote-connect-mcp-agent-*
           if-no-files-found: error
 
   release:

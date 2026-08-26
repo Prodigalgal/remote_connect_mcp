@@ -13,11 +13,19 @@ import (
 	"strings"
 
 	"github.com/Prodigalgal/remote_connect_mcp/internal/agent"
+	"github.com/Prodigalgal/remote_connect_mcp/internal/updater"
 )
 
 var version = "dev"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "apply-update" {
+		if err := updater.RunHelper(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "update helper fatal:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "fatal:", err)
 		os.Exit(1)

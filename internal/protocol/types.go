@@ -43,6 +43,27 @@ type PollRequest struct {
 type PollResponse struct {
 	Task          *TaskCommand `json:"task,omitempty"`
 	CancelTaskIDs []string     `json:"cancel_task_ids,omitempty"`
+	Upgrade       *UpgradePlan `json:"upgrade,omitempty"`
+}
+
+type UpgradeArtifact struct {
+	OS     string `json:"os"`
+	Arch   string `json:"arch"`
+	URL    string `json:"url"`
+	SHA256 string `json:"sha256"`
+}
+
+type UpgradePlan struct {
+	CampaignID string `json:"campaign_id"`
+	Version    string `json:"version"`
+	URL        string `json:"url"`
+	SHA256     string `json:"sha256"`
+}
+
+type UpgradeStatusRequest struct {
+	CampaignID string `json:"campaign_id"`
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
 }
 
 type TaskCommand struct {

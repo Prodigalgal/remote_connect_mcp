@@ -37,7 +37,8 @@ func run() error {
 	}
 	handler := center.NewHTTPHandler(store, center.HTTPConfig{
 		Version: version, MCPToken: config.mcpToken, AdminToken: config.adminToken,
-		EnrollmentToken: config.enrollmentToken, ConsoleHostname: config.consoleHostname, Logger: logger,
+		EnrollmentToken: config.enrollmentToken, ConsoleHostname: config.consoleHostname,
+		ReleaseBaseURL: config.releaseBaseURL, Logger: logger,
 	})
 	server := &http.Server{
 		Addr: config.address, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
@@ -64,7 +65,7 @@ func run() error {
 }
 
 type config struct {
-	address, stateDir, mcpToken, adminToken, enrollmentToken, consoleHostname string
+	address, stateDir, mcpToken, adminToken, enrollmentToken, consoleHostname, releaseBaseURL string
 }
 
 func loadConfig() (config, error) {
@@ -80,6 +81,7 @@ func loadConfig() (config, error) {
 		adminToken:      strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN")),
 		enrollmentToken: strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN")),
 		consoleHostname: strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_CENTER_CONSOLE_HOSTNAME")),
+		releaseBaseURL:  env("REMOTE_CONNECT_MCP_CENTER_RELEASE_BASE_URL", "https://github.com/Prodigalgal/remote_connect_mcp/releases/download"),
 	}
 	for name, value := range map[string]string{
 		"REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN":        result.mcpToken,

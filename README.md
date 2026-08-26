@@ -3,7 +3,7 @@
 [![CI](https://github.com/Prodigalgal/remote_connect_mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Prodigalgal/remote_connect_mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统。ChatGPT 只连接一个 MCP Gateway；每台目标机器运行一个主动连接 Center 的 Agent。Center 同时提供机器注册、持久化异步任务、断线续传和 Web 控制台。
+Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统。ChatGPT 只连接一个 MCP Gateway；每台目标机器运行一个主动连接 Center 的 Agent。Center 同时提供机器注册、持久化异步任务、断线续传、Web 控制台和 Agent 集群升级编排。
 
 项目不代理其他 MCP，也不在 Agent 内设置路径或命令白名单。通过鉴权后，Agent 能以其系统账户权限访问整台机器并执行任意命令。
 
@@ -72,6 +72,21 @@ ChatGPT 连接器使用固定 `/mcp` URL、固定 Bearer Token 和上述 6 个�
 - 新内部能力优先扩展 Center/Agent 协议和控制台，不新增或重命名 MCP 工具。
 - 只有 MCP Token 泄露需要修改 ChatGPT 认证；确实改变工具 Schema 时，ChatGPT 可能需要重新扫描工具，但仍不更换 URL。
 
+## Agent 自动无感升级
+
+Center 直接控制 Agent 版本，不需要逐台 SSH、RDP 或重新配置 ChatGPT：
+
+1. 发布页提供 Linux/Windows、AMD64/ARM64 的原始 Agent 二进制和 `.sha256` 文件；
+2. 管理员在控制台填写 `v*` 发布标签，设置金丝雀数量和后续批次大小；
+3. Center 先向金丝雀 Agent 下发对应平台的 HTTPS 下载地址和 SHA-256；
+4. Agent 仅在没有运行中命令时接收升级，校验下载包后启动独立升级 Helper；
+5. Helper 停止服务、原子替换二进制、重新启动并检查服务状态；启动失败会恢复 `.previous` 版本；
+6. Center 根据 Agent 心跳中的实际版本确认成功，再自动放行下一批；任意机器失败都会暂停整个活动，管理员确认后可重试或取消。
+
+升级活动及逐机状态持久化在 Center 状态目录中，Center Pod 重启后会继续。升级只改变 Agent 二进制，不改变机器身份、每机凭据、服务配置或 ChatGPT MCP 工具。
+
+首个支持本能力的版本需要沿用现有安装脚本人工引导一次；此后版本均可由 Center 自升级。发布包必须来自受信任的 GitHub Release，Center 和 Agent 都会拒绝缺失或不匹配的 SHA-256。
+
 ## Web 控制台
 
 控制台使用独立的 Center Admin Token，支持：
@@ -81,6 +96,7 @@ ChatGPT 连接器使用固定 `/mcp` URL、固定 Bearer Token 和上述 6 个�
 - 查看最近任务、执行状态和完整输出；
 - 取消排队或运行中的任务；
 - 每 3 秒自动刷新机器、任务和当前输出。
+- 创建全在线机器升级活动，并查看金丝雀、批次、逐机结果；失败后可重试或取消。
 
 管理 Token 只保存在浏览器当前标签页的 `sessionStorage`，关闭标签页后消失。
 
@@ -95,6 +111,7 @@ ChatGPT 连接器使用固定 `/mcp` URL、固定 Bearer Token 和上述 6 个�
 | `REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN` | 必填 | Web 控制台/API Token |
 | `REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN` | 必填 | Agent 首次注册 Token |
 | `REMOTE_CONNECT_MCP_CENTER_CONSOLE_HOSTNAME` | 空 | 控制台域名，用于根路径跳转 |
+| `REMOTE_CONNECT_MCP_CENTER_RELEASE_BASE_URL` | GitHub Releases 下载基址 | Agent 发布包和 `.sha256` 的基址；仅测试或私有镜像源需要覆盖 |
 
 Center 使用一个 RWO PVC 和单副本 `Recreate` Deployment。状态文件采用临时文件、`fsync` 和原子替换；任务输出独立存储并分页读取。
 
@@ -170,7 +187,7 @@ go build ./cmd/remote-connect-mcp-agent
 
 CI 在 Windows/Linux 上运行测试和静态检查，并交叉构建 Windows/Linux AMD64/ARM64 的 Center 和 Agent。
 
-`publish-center.yml` 将 Center 构建为 `linux/amd64`、`linux/arm64` Docker manifest，并推送到 `docker.io/speedproxy/remote-connect-mcp-center`。推送 `v*` 标签会生成四个平台的 Center 和 Agent 发布包及 SHA-256 文件。
+`publish-center.yml` 将 Center 构建为 `linux/amd64`、`linux/arm64` Docker manifest，并推送到 `docker.io/speedproxy/remote-connect-mcp-center`。推送 `v*` 标签会生成四个平台的 Center 和 Agent 压缩发布包及 SHA-256 文件，同时发布供自动升级直接下载的原始 Agent 二进制及其 `.sha256` 文件。
 
 ## 从 v0.3 迁移
 

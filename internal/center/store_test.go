@@ -113,3 +113,55 @@ func TestCancelQueuedTaskIsTerminal(t *testing.T) {
 		t.Fatalf("canceled task was dispatched: %+v", poll.Task)
 	}
 }
+
+func TestUpgradeCampaignAdvancesCanaryAndPausesOnFailure(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Register(protocol.RegisterRequest{Name: "first", OS: "linux", Arch: "amd64", Version: "v1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Register(protocol.RegisterRequest{Name: "second", OS: "windows", Arch: "amd64", Version: "v1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	campaign, err := store.CreateUpgradeCampaign(CreateUpgradeCampaignRequest{
+		Version: "v2.0.0", CanaryCount: 1, BatchSize: 1, MachineIDs: []string{first.MachineID, second.MachineID},
+		Artifacts: map[string]protocol.UpgradeArtifact{
+			"linux/amd64":   {OS: "linux", Arch: "amd64", URL: "https://example.test/linux", SHA256: digest},
+			"windows/amd64": {OS: "windows", Arch: "amd64", URL: "https://example.test/windows", SHA256: digest},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPoll, err := store.Poll(first.MachineID, protocol.PollRequest{AvailableSlots: 1})
+	if err != nil || firstPoll.Upgrade == nil || firstPoll.Upgrade.CampaignID != campaign.ID {
+		t.Fatalf("first canary plan=%+v err=%v", firstPoll.Upgrade, err)
+	}
+	secondPoll, err := store.Poll(second.MachineID, protocol.PollRequest{AvailableSlots: 1})
+	if err != nil || secondPoll.Upgrade != nil {
+		t.Fatalf("second machine was offered before canary completed: %+v err=%v", secondPoll.Upgrade, err)
+	}
+	_, err = store.Poll(first.MachineID, protocol.PollRequest{}, protocol.AgentMetadata{Version: "v2.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPoll, err = store.Poll(second.MachineID, protocol.PollRequest{AvailableSlots: 1})
+	if err != nil || secondPoll.Upgrade == nil {
+		t.Fatalf("second wave was not offered: %+v err=%v", secondPoll.Upgrade, err)
+	}
+	paused, err := store.UpdateUpgradeStatus(second.MachineID, protocol.UpgradeStatusRequest{
+		CampaignID: campaign.ID, Status: UpgradeFailed, Error: "download failed",
+	})
+	if err != nil || paused.Status != UpgradePaused {
+		t.Fatalf("campaign was not paused: %+v err=%v", paused, err)
+	}
+	resumed, err := store.ControlUpgradeCampaign(campaign.ID, "resume")
+	if err != nil || resumed.Status != UpgradeRunning || resumed.Targets[1].Status != UpgradePending {
+		t.Fatalf("campaign was not resumed: %+v err=%v", resumed, err)
+	}
+}
