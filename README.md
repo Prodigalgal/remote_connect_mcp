@@ -190,17 +190,15 @@ CI 在 Windows/Linux 上运行测试和静态检查，并交叉构建 Windows/Li
 
 `publish-center.yml` 将 Center 构建为 `linux/amd64`、`linux/arm64` Docker manifest，并推送到 `docker.io/speedproxy/remote-connect-mcp-center`。推送 `v*` 标签会生成四个平台的 Center 和 Agent 压缩发布包及 SHA-256 文件，同时发布供自动升级直接下载的原始 Agent 二进制及其 `.sha256` 文件。
 
-## 从 v0.3 迁移
+## 敏感配置
 
-v0.3 是每台机器直接暴露 MCP 的单机架构。迁移到 Center 后：
+仓库内不保存运行令牌，也不再使用项目根目录 `.env`。生产环境使用三类独立令牌：
 
-1. 部署 Center、HTTPS Route、证书和三个 `remote-connect-mcp-*` DNS 记录；
-2. 在目标机器安装 Agent 并确认控制台显示在线；
-3. 用 Center MCP Gateway 替换 ChatGPT 中的旧连接器；
-4. 验证跨四台机器的命令、长任务、输出分页和断线恢复；
-5. 停止并删除旧 `remote_connect_mcp.service`、旧 Cloudflare Tunnel 和旧 DNS 记录。
+- MCP Token：只供 ChatGPT Web 连接器使用；
+- Admin Token：只供控制台和管理 API 使用；
+- Enrollment Token：只供新 Agent 首次注册使用。
 
-旧服务只在新链路完成端到端验收后移除，避免迁移过程中失去管理入口。
+生产令牌应由部署平台的 Secret 管理；Agent 注册后获得独立机器 Token，Center 只保存其 SHA-256 摘要。不要把任何真实令牌提交到 Git。
 
 ## License
 

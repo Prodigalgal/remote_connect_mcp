@@ -10,7 +10,11 @@ if (-not $go) {
     throw "Go was not found."
 }
 $goExe = if ($go.Source) { $go.Source } else { $go.FullName }
-$version = "0.1.0"
+$version = (& $goExe env GOVERSION).Trim()
+$gitVersion = git describe --tags --always --dirty 2>$null
+if ($LASTEXITCODE -eq 0 -and $gitVersion) {
+    $version = $gitVersion.Trim()
+}
 $targets = @(
     @{ OS = "windows"; Arch = "amd64"; Suffix = ".exe" },
     @{ OS = "windows"; Arch = "arm64"; Suffix = ".exe" },
@@ -28,10 +32,12 @@ try {
         $env:GOARCH = $target.Arch
         $directory = Join-Path $root "dist\$($target.OS)-$($target.Arch)"
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
-        $output = Join-Path $directory "remote_connect_mcp$($target.Suffix)"
-        & $goExe build -mod=mod -trimpath -ldflags "-s -w -X main.version=$version" -o $output ./cmd/remote_connect_mcp
-        if ($LASTEXITCODE -ne 0) { throw "Build failed for $($target.OS)/$($target.Arch)." }
-        Write-Host "Built $output"
+        foreach ($component in @("center", "agent")) {
+            $output = Join-Path $directory "remote-connect-mcp-$component$($target.Suffix)"
+            & $goExe build -mod=mod -trimpath -ldflags "-s -w -X main.version=$version" -o $output "./cmd/remote-connect-mcp-$component"
+            if ($LASTEXITCODE -ne 0) { throw "Build failed for $component $($target.OS)/$($target.Arch)." }
+            Write-Host "Built $output"
+        }
     }
 }
 finally {
