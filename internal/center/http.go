@@ -334,22 +334,23 @@ func (s *HTTPServer) serveAdminAPI(w http.ResponseWriter, r *http.Request) {
 				Name           string `json:"name"`
 				ExpiresSeconds int    `json:"expires_seconds"`
 				MaxUses        int    `json:"max_uses"`
+				Persistent     bool   `json:"persistent"`
 			}
 			if err := decodeJSON(r, &req); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			if req.ExpiresSeconds == 0 {
+			if !req.Persistent && req.ExpiresSeconds == 0 {
 				req.ExpiresSeconds = 86400
 			}
-			if req.MaxUses == 0 {
+			if !req.Persistent && req.MaxUses == 0 {
 				req.MaxUses = 1
 			}
-			if req.ExpiresSeconds < 300 || req.ExpiresSeconds > 2592000 {
+			if !req.Persistent && (req.ExpiresSeconds < 300 || req.ExpiresSeconds > 2592000) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expires_seconds must be between 300 and 2592000"})
 				return
 			}
-			view, token, err := s.store.CreateEnrollmentToken(req.Name, time.Duration(req.ExpiresSeconds)*time.Second, req.MaxUses, time.Now().UTC())
+			view, token, err := s.store.CreateEnrollmentToken(req.Name, time.Duration(req.ExpiresSeconds)*time.Second, req.MaxUses, req.Persistent, time.Now().UTC())
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return

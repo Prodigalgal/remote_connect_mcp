@@ -81,7 +81,7 @@ func TestScopedEnrollmentTokenLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 26, 13, 0, 0, 0, time.UTC)
-	view, token, err := store.CreateEnrollmentToken("machine-new", time.Hour, 1, now)
+	view, token, err := store.CreateEnrollmentToken("machine-new", time.Hour, 1, false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestScopedEnrollmentTokenLifecycle(t *testing.T) {
 		t.Fatalf("listed enrollment tokens = %+v", listed)
 	}
 
-	revocable, _, err := store.CreateEnrollmentToken("machine-revoked", time.Hour, 1, now)
+	revocable, _, err := store.CreateEnrollmentToken("machine-revoked", time.Hour, 1, false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestScopedEnrollmentTokenLifecycle(t *testing.T) {
 	if err != nil || revoked.Status != "revoked" {
 		t.Fatalf("revoked=%+v err=%v", revoked, err)
 	}
-	expired, _, err := store.CreateEnrollmentToken("machine-expired", 5*time.Minute, 1, now)
+	expired, _, err := store.CreateEnrollmentToken("machine-expired", 5*time.Minute, 1, false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestScopedEnrollmentTokenIsConsumedAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	_, token, err := store.CreateEnrollmentToken("machine-race", time.Hour, 1, now)
+	_, token, err := store.CreateEnrollmentToken("machine-race", time.Hour, 1, false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,6 +168,39 @@ func TestScopedEnrollmentTokenIsConsumedAtomically(t *testing.T) {
 	}
 	if matched != 2 || succeeded != 1 {
 		t.Fatalf("matched=%d succeeded=%d, want 2 and 1", matched, succeeded)
+	}
+}
+
+func TestPersistentMachineEnrollmentTokenCanReRegisterOnlyItsMachine(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	view, token, err := store.CreateEnrollmentToken("machine-longterm", 0, 0, true, now)
+	if err != nil || !view.Persistent || view.ExpiresAt != nil || view.MaxUses != 0 {
+		t.Fatalf("persistent view=%+v err=%v", view, err)
+	}
+	first, matched, err := store.RegisterWithScopedEnrollmentToken(protocol.RegisterRequest{Name: "machine-longterm"}, token, now.Add(time.Hour))
+	if !matched || err != nil {
+		t.Fatalf("first registration matched=%t err=%v", matched, err)
+	}
+	second, matched, err := store.RegisterWithScopedEnrollmentToken(protocol.RegisterRequest{Name: "machine-longterm"}, token, now.Add(365*24*time.Hour))
+	if !matched || err != nil || second.MachineID != first.MachineID || second.Token == first.Token {
+		t.Fatalf("second registration=%+v matched=%t err=%v", second, matched, err)
+	}
+	if _, matched, err := store.RegisterWithScopedEnrollmentToken(protocol.RegisterRequest{Name: "another-machine"}, token, now.Add(time.Hour)); !matched || err == nil {
+		t.Fatalf("wrong machine matched=%t err=%v", matched, err)
+	}
+	listed := store.ListEnrollmentTokens(now.Add(365*24*time.Hour), 10)
+	if len(listed) != 1 || listed[0].Status != "active" || listed[0].Uses != 2 || !listed[0].Persistent {
+		t.Fatalf("persistent list = %+v", listed)
+	}
+	if _, err := store.RevokeEnrollmentToken(view.ID, now.Add(365*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, matched, err := store.RegisterWithScopedEnrollmentToken(protocol.RegisterRequest{Name: "machine-longterm"}, token, now.Add(365*24*time.Hour)); !matched || err == nil {
+		t.Fatalf("revoked persistent token matched=%t err=%v", matched, err)
 	}
 }
 

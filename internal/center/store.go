@@ -104,8 +104,9 @@ type EnrollmentToken struct {
 	TokenHash  string     `json:"token_hash"`
 	MaxUses    int        `json:"max_uses"`
 	Uses       int        `json:"uses"`
+	Persistent bool       `json:"persistent,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  time.Time  `json:"expires_at"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 }
@@ -116,8 +117,9 @@ type EnrollmentTokenView struct {
 	Status     string     `json:"status"`
 	MaxUses    int        `json:"max_uses"`
 	Uses       int        `json:"uses"`
+	Persistent bool       `json:"persistent"`
 	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  time.Time  `json:"expires_at"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 }
@@ -352,16 +354,21 @@ func constantHashEqual(actual, expected string) bool {
 	return len(actual) == len(expected) && subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) == 1
 }
 
-func (s *Store) CreateEnrollmentToken(name string, ttl time.Duration, maxUses int, now time.Time) (EnrollmentTokenView, string, error) {
+func (s *Store) CreateEnrollmentToken(name string, ttl time.Duration, maxUses int, persistent bool, now time.Time) (EnrollmentTokenView, string, error) {
 	name = strings.TrimSpace(name)
 	if !validEnrollmentName(name) {
 		return EnrollmentTokenView{}, "", errors.New("machine name must contain only letters, digits, dots, underscores, or hyphens and be at most 128 characters")
 	}
-	if ttl < 5*time.Minute || ttl > 30*24*time.Hour {
-		return EnrollmentTokenView{}, "", errors.New("token lifetime must be between 300 and 2592000 seconds")
-	}
-	if maxUses < 1 || maxUses > 100 {
-		return EnrollmentTokenView{}, "", errors.New("max_uses must be between 1 and 100")
+	if !persistent {
+		if ttl < 5*time.Minute || ttl > 30*24*time.Hour {
+			return EnrollmentTokenView{}, "", errors.New("token lifetime must be between 300 and 2592000 seconds")
+		}
+		if maxUses < 1 || maxUses > 100 {
+			return EnrollmentTokenView{}, "", errors.New("max_uses must be between 1 and 100")
+		}
+	} else {
+		ttl = 0
+		maxUses = 0
 	}
 	id, err := randomID("enrollment")
 	if err != nil {
@@ -373,8 +380,10 @@ func (s *Store) CreateEnrollmentToken(name string, ttl time.Duration, maxUses in
 	}
 	token := "rcmcp_enroll_" + random
 	created := now.UTC()
-	record := &EnrollmentToken{
-		ID: id, Name: name, TokenHash: hashToken(token), MaxUses: maxUses, CreatedAt: created, ExpiresAt: created.Add(ttl),
+	record := &EnrollmentToken{ID: id, Name: name, TokenHash: hashToken(token), MaxUses: maxUses, Persistent: persistent, CreatedAt: created}
+	if !persistent {
+		expires := created.Add(ttl)
+		record.ExpiresAt = &expires
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -439,16 +448,18 @@ func (s *Store) RegisterWithScopedEnrollmentToken(req protocol.RegisterRequest, 
 		return protocol.RegisterResponse{}, false, nil
 	}
 	effectiveName := registrationName(req)
-	if matched.RevokedAt != nil || !now.Before(matched.ExpiresAt) || matched.Uses >= matched.MaxUses || !strings.EqualFold(effectiveName, matched.Name) {
+	expired := matched.ExpiresAt != nil && !now.Before(*matched.ExpiresAt)
+	used := matched.MaxUses > 0 && matched.Uses >= matched.MaxUses
+	if matched.RevokedAt != nil || expired || used || !strings.EqualFold(effectiveName, matched.Name) {
 		return protocol.RegisterResponse{}, true, errors.New("invalid enrollment token")
 	}
 	response, err := s.registerLocked(req, now.UTC())
 	if err != nil {
 		return protocol.RegisterResponse{}, true, err
 	}
-	used := now.UTC()
+	consumedAt := now.UTC()
 	matched.Uses++
-	matched.LastUsedAt = &used
+	matched.LastUsedAt = &consumedAt
 	if err := s.saveLocked(); err != nil {
 		return protocol.RegisterResponse{}, true, err
 	}
@@ -460,13 +471,13 @@ func enrollmentTokenView(record *EnrollmentToken, now time.Time) EnrollmentToken
 	status := "active"
 	if record.RevokedAt != nil {
 		status = "revoked"
-	} else if !now.Before(record.ExpiresAt) {
+	} else if record.ExpiresAt != nil && !now.Before(*record.ExpiresAt) {
 		status = "expired"
-	} else if record.Uses >= record.MaxUses {
+	} else if record.MaxUses > 0 && record.Uses >= record.MaxUses {
 		status = "used"
 	}
 	return EnrollmentTokenView{
-		ID: record.ID, Name: record.Name, Status: status, MaxUses: record.MaxUses, Uses: record.Uses,
+		ID: record.ID, Name: record.Name, Status: status, MaxUses: record.MaxUses, Uses: record.Uses, Persistent: record.Persistent,
 		CreatedAt: record.CreatedAt, ExpiresAt: record.ExpiresAt, LastUsedAt: record.LastUsedAt, RevokedAt: record.RevokedAt,
 	}
 }

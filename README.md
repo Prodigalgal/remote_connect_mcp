@@ -120,9 +120,9 @@ Kubernetes 模板位于 [`deploy/k8s/center`](deploy/k8s/center)。真实 Token 
 
 ### 新增机器注册 Token
 
-日常接入新 Agent 时，在 Center 控制台的“新增机器注册令牌”区域填写稳定机器名称，选择有效期并生成一次性 Token。明文只在创建响应和当前浏览器页面显示一次，Center 仅持久化 SHA-256 摘要。Token 与机器名称绑定，默认只能成功注册一次，可在使用前撤销。
+日常接入新 Agent 时，在 Center 控制台的“新增机器注册令牌”区域填写稳定机器名称并选择模式。推荐使用“一台机器一个长期 Token”：它永不过期、只允许注册绑定的机器名，可用于该机器安装、重装或身份文件丢失后的恢复，直到管理员手工撤销。也可创建 1 小时至 30 天有效、成功注册一次后失效的一次性 Token。
 
-把页面生成的三项配置复制到目标机器后启动安装器。Agent 注册成功会换取每机独立身份 Token；一次性注册 Token 随即变为 `used`。机器在生成 Token 时无需在线，只需在有效期内完成首次启动。共享 `REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN` 继续作为 K8S/env 应急注册入口，不建议日常分发。
+明文只在创建响应和当前浏览器页面显示一次，Center 仅持久化 SHA-256 摘要。把页面生成的 Token 或对应平台安装命令复制到目标机器后启动安装器；Agent 注册成功会换取日常轮询使用的每机独立身份 Token，长期注册 Token 不参与日常连接。共享 `REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN` 继续作为 K8S/env 应急注册入口，不建议日常分发。
 
 ## Agent 配置
 
