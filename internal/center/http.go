@@ -2,6 +2,7 @@ package center
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -11,6 +12,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +29,7 @@ type HTTPConfig struct {
 	EnrollmentToken string
 	ConsoleHostname string
 	ReleaseBaseURL  string
+	AgentPublicURL  string
 	Logger          *slog.Logger
 }
 
@@ -39,6 +43,10 @@ func NewHTTPHandler(store *Store, config HTTPConfig) http.Handler {
 		config.ReleaseBaseURL = "https://github.com/Prodigalgal/remote_connect_mcp/releases/download"
 	}
 	config.ReleaseBaseURL = strings.TrimRight(config.ReleaseBaseURL, "/")
+	if strings.TrimSpace(config.AgentPublicURL) == "" {
+		config.AgentPublicURL = "https://agent.example.invalid"
+	}
+	config.AgentPublicURL = strings.TrimRight(config.AgentPublicURL, "/")
 	server := &HTTPServer{store: store, config: config}
 	mcpHandler := auth.Bearer(config.MCPToken, NewMCPHandler(store, config.Version))
 	adminHandler := auth.Bearer(config.AdminToken, http.HandlerFunc(server.serveAdminAPI))
@@ -53,6 +61,7 @@ func NewHTTPHandler(store *Store, config HTTPConfig) http.Handler {
 	mux.Handle("/api/v1/", adminHandler)
 	mux.HandleFunc("/agent/v1/register", server.serveRegister)
 	mux.HandleFunc("/agent/v1/", server.serveAgentAPI)
+	mux.HandleFunc("/agent-artifacts/", server.serveAgentArtifact)
 	mux.HandleFunc("/console", serveConsole)
 	mux.HandleFunc("/console/", serveConsole)
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -376,11 +385,106 @@ func (s *HTTPServer) createUpgradeCampaign(ctx context.Context, version string, 
 		if err != nil {
 			return UpgradeCampaign{}, fmt.Errorf("resolve %s: %w", platform, err)
 		}
-		artifacts[platform] = protocol.UpgradeArtifact{OS: parts[0], Arch: parts[1], URL: url, SHA256: sha}
+		if err := s.cacheReleaseArtifact(ctx, version, name, url, sha); err != nil {
+			return UpgradeCampaign{}, fmt.Errorf("cache %s: %w", platform, err)
+		}
+		cachedURL := s.config.AgentPublicURL + "/agent-artifacts/" + version + "/" + name
+		artifacts[platform] = protocol.UpgradeArtifact{OS: parts[0], Arch: parts[1], URL: cachedURL, SHA256: sha}
 	}
 	return s.store.CreateUpgradeCampaign(CreateUpgradeCampaignRequest{
 		Version: version, CanaryCount: canaryCount, BatchSize: batchSize, MachineIDs: machineIDs, Artifacts: artifacts,
 	})
+}
+
+func (s *HTTPServer) serveAgentArtifact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/agent-artifacts/"), "/")
+	if len(parts) != 2 || !safeArtifactComponent(parts[0]) || !safeArtifactComponent(parts[1]) {
+		http.NotFound(w, r)
+		return
+	}
+	path := filepath.Join(s.store.dir, "agent-artifacts", parts[0], parts[1])
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeFile(w, r, path)
+}
+
+func (s *HTTPServer) cacheReleaseArtifact(ctx context.Context, version, name, sourceURL, expectedSHA string) error {
+	if !safeArtifactComponent(version) || !safeArtifactComponent(name) {
+		return errors.New("artifact path is invalid")
+	}
+	dir := filepath.Join(s.store.dir, "agent-artifacts", version)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	destination := filepath.Join(dir, name)
+	if data, err := os.ReadFile(destination); err == nil {
+		sum := sha256.Sum256(data)
+		if hex.EncodeToString(sum[:]) == expectedSHA {
+			return nil
+		}
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("User-Agent", "remote-connect-mcp-center-artifact-cache")
+	response, err := (&http.Client{Timeout: 15 * time.Minute}).Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("artifact endpoint returned HTTP %d", response.StatusCode)
+	}
+	temp, err := os.CreateTemp(dir, name+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	hash := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(temp, hash), io.LimitReader(response.Body, 100*1024*1024+1))
+	closeErr := temp.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if written > 100*1024*1024 {
+		return errors.New("artifact exceeds 100 MiB")
+	}
+	if actual := hex.EncodeToString(hash.Sum(nil)); actual != expectedSHA {
+		return fmt.Errorf("artifact SHA-256 mismatch: got %s", actual)
+	}
+	if err := os.Chmod(tempName, 0o600); err != nil {
+		return err
+	}
+	_ = os.Remove(destination)
+	return os.Rename(tempName, destination)
+}
+
+func safeArtifactComponent(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("._-", character) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func fetchReleaseSHA(ctx context.Context, url string) (string, error) {

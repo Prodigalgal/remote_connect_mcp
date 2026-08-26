@@ -78,14 +78,14 @@ Center 直接控制 Agent 版本，不需要逐台 SSH、RDP 或重新配置 Cha
 
 1. 发布页提供 Linux/Windows、AMD64/ARM64 的原始 Agent 二进制和 `.sha256` 文件；
 2. 管理员在控制台填写 `v*` 发布标签，设置金丝雀数量和后续批次大小；
-3. Center 先向金丝雀 Agent 下发对应平台的 HTTPS 下载地址和 SHA-256；
+3. Center 从受信任 Release 下载并校验各平台二进制，缓存到持久卷，再向金丝雀 Agent 下发 Center HTTPS 下载地址和 SHA-256；
 4. Agent 仅在没有运行中命令时接收升级，校验下载包后启动独立升级 Helper；
 5. Helper 停止服务、原子替换二进制、重新启动并检查服务状态；启动失败会恢复 `.previous` 版本；
 6. Center 根据 Agent 心跳中的实际版本确认成功，再自动放行下一批；任意机器失败都会暂停整个活动，管理员确认后可重试或取消。
 
 升级活动及逐机状态持久化在 Center 状态目录中，Center Pod 重启后会继续。升级只改变 Agent 二进制，不改变机器身份、每机凭据、服务配置或 ChatGPT MCP 工具。
 
-首个支持本能力的版本需要沿用现有安装脚本人工引导一次；此后版本均可由 Center 自升级。发布包必须来自受信任的 GitHub Release，Center 和 Agent 都会拒绝缺失或不匹配的 SHA-256。
+首个支持本能力的版本需要沿用现有安装脚本人工引导一次；此后版本均可由 Center 自升级。发布包必须来自受信任的 GitHub Release，Center 和 Agent 都会拒绝缺失或不匹配的 SHA-256。Agent 不直接依赖 GitHub 网络；同一版本只由 Center 下载一次，所有机器通过固定 Agent 域名读取缓存。
 
 ## Web 控制台
 
@@ -112,6 +112,7 @@ Center 直接控制 Agent 版本，不需要逐台 SSH、RDP 或重新配置 Cha
 | `REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN` | 必填 | Agent 首次注册 Token |
 | `REMOTE_CONNECT_MCP_CENTER_CONSOLE_HOSTNAME` | 空 | 控制台域名，用于根路径跳转 |
 | `REMOTE_CONNECT_MCP_CENTER_RELEASE_BASE_URL` | GitHub Releases 下载基址 | Agent 发布包和 `.sha256` 的基址；仅测试或私有镜像源需要覆盖 |
+| `REMOTE_CONNECT_MCP_CENTER_PUBLIC_AGENT_URL` | `https://agent.example.invalid` | Agent 访问 Center 发布包缓存的公网基址 |
 
 Center 使用一个 RWO PVC 和单副本 `Recreate` Deployment。状态文件采用临时文件、`fsync` 和原子替换；任务输出独立存储并分页读取。
 

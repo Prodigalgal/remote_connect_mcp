@@ -3,7 +3,9 @@ package center
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -90,5 +92,75 @@ func TestHTTPRegistrationAdminAndMCP(t *testing.T) {
 	}
 	if len(result.Content) != 1 {
 		t.Fatalf("machines_list content = %+v", result.Content)
+	}
+}
+
+func TestUpgradeCampaignCachesArtifactAtCenter(t *testing.T) {
+	payload := []byte("signed agent release payload")
+	digest := sha256.Sum256(payload)
+	checksum := fmt.Sprintf("%x", digest[:])
+	release := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2.0.0/remote-connect-mcp-agent-v2.0.0-linux-amd64.sha256" {
+			_, _ = fmt.Fprintf(w, "%s  artifact\n", checksum)
+			return
+		}
+		if r.URL.Path == "/v2.0.0/remote-connect-mcp-agent-v2.0.0-linux-amd64" {
+			_, _ = w.Write(payload)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer release.Close()
+
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine, err := store.Register(protocol.RegisterRequest{Name: "cache-test", OS: "linux", Arch: "amd64", Version: "v1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHTTPHandler(store, HTTPConfig{
+		Version: "test", MCPToken: "mcp", AdminToken: "admin", EnrollmentToken: "enroll",
+		ReleaseBaseURL: release.URL, AgentPublicURL: "https://agents.example.test",
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"version": "v2.0.0", "canary_count": 1, "batch_size": 1, "machine_ids": []string{machine.MachineID},
+	})
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/upgrades", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer admin")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(response.Body)
+		t.Fatalf("create campaign status=%d body=%s", response.StatusCode, data)
+	}
+	var campaign UpgradeCampaign
+	if err := json.NewDecoder(response.Body).Decode(&campaign); err != nil {
+		t.Fatal(err)
+	}
+	if got := campaign.Artifacts["linux/amd64"].URL; got != "https://agents.example.test/agent-artifacts/v2.0.0/remote-connect-mcp-agent-v2.0.0-linux-amd64" {
+		t.Fatalf("cached artifact URL = %s", got)
+	}
+
+	artifactResponse, err := http.Get(server.URL + "/agent-artifacts/v2.0.0/remote-connect-mcp-agent-v2.0.0-linux-amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifactResponse.Body.Close()
+	data, err := io.ReadAll(artifactResponse.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifactResponse.StatusCode != http.StatusOK || !bytes.Equal(data, payload) {
+		t.Fatalf("cached artifact status=%d data=%q", artifactResponse.StatusCode, data)
 	}
 }
