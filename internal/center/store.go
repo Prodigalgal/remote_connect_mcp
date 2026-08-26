@@ -98,6 +98,30 @@ type AccessTokenView struct {
 	PreviousValidUntil *time.Time `json:"previous_valid_until,omitempty"`
 }
 
+type EnrollmentToken struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	TokenHash  string     `json:"token_hash"`
+	MaxUses    int        `json:"max_uses"`
+	Uses       int        `json:"uses"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+}
+
+type EnrollmentTokenView struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	Status     string     `json:"status"`
+	MaxUses    int        `json:"max_uses"`
+	Uses       int        `json:"uses"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+}
+
 type UpgradeTarget struct {
 	MachineID  string     `json:"machine_id"`
 	Status     string     `json:"status"`
@@ -135,6 +159,7 @@ type persistedState struct {
 	Tasks        map[string]*Task             `json:"tasks"`
 	Upgrades     map[string]*UpgradeCampaign  `json:"upgrades,omitempty"`
 	AccessTokens map[string]*AccessTokenState `json:"access_tokens,omitempty"`
+	Enrollments  map[string]*EnrollmentToken  `json:"enrollment_tokens,omitempty"`
 }
 
 type Store struct {
@@ -161,7 +186,7 @@ func OpenStore(dir string) (*Store, error) {
 	s := &Store{
 		dir: dir, statePath: filepath.Join(dir, "state.json"), outputDir: outputDir,
 		state: persistedState{
-			Machines: map[string]*Machine{}, Tasks: map[string]*Task{}, Upgrades: map[string]*UpgradeCampaign{}, AccessTokens: map[string]*AccessTokenState{},
+			Machines: map[string]*Machine{}, Tasks: map[string]*Task{}, Upgrades: map[string]*UpgradeCampaign{}, AccessTokens: map[string]*AccessTokenState{}, Enrollments: map[string]*EnrollmentToken{},
 		},
 		changed: make(chan struct{}),
 	}
@@ -184,6 +209,9 @@ func OpenStore(dir string) (*Store, error) {
 	}
 	if s.state.AccessTokens == nil {
 		s.state.AccessTokens = map[string]*AccessTokenState{}
+	}
+	if s.state.Enrollments == nil {
+		s.state.Enrollments = map[string]*EnrollmentToken{}
 	}
 	return s, nil
 }
@@ -324,11 +352,167 @@ func constantHashEqual(actual, expected string) bool {
 	return len(actual) == len(expected) && subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) == 1
 }
 
-func (s *Store) Register(req protocol.RegisterRequest) (protocol.RegisterResponse, error) {
+func (s *Store) CreateEnrollmentToken(name string, ttl time.Duration, maxUses int, now time.Time) (EnrollmentTokenView, string, error) {
+	name = strings.TrimSpace(name)
+	if !validEnrollmentName(name) {
+		return EnrollmentTokenView{}, "", errors.New("machine name must contain only letters, digits, dots, underscores, or hyphens and be at most 128 characters")
+	}
+	if ttl < 5*time.Minute || ttl > 30*24*time.Hour {
+		return EnrollmentTokenView{}, "", errors.New("token lifetime must be between 300 and 2592000 seconds")
+	}
+	if maxUses < 1 || maxUses > 100 {
+		return EnrollmentTokenView{}, "", errors.New("max_uses must be between 1 and 100")
+	}
+	id, err := randomID("enrollment")
+	if err != nil {
+		return EnrollmentTokenView{}, "", err
+	}
+	random, err := randomToken(32)
+	if err != nil {
+		return EnrollmentTokenView{}, "", err
+	}
+	token := "rcmcp_enroll_" + random
+	created := now.UTC()
+	record := &EnrollmentToken{
+		ID: id, Name: name, TokenHash: hashToken(token), MaxUses: maxUses, CreatedAt: created, ExpiresAt: created.Add(ttl),
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Enrollments[id] = record
+	if err := s.saveLocked(); err != nil {
+		delete(s.state.Enrollments, id)
+		return EnrollmentTokenView{}, "", err
+	}
+	return enrollmentTokenView(record, created), token, nil
+}
+
+func (s *Store) ListEnrollmentTokens(now time.Time, limit int) []EnrollmentTokenView {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	records := make([]*EnrollmentToken, 0, len(s.state.Enrollments))
+	for _, record := range s.state.Enrollments {
+		records = append(records, record)
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].CreatedAt.After(records[j].CreatedAt) })
+	if len(records) > limit {
+		records = records[:limit]
+	}
+	result := make([]EnrollmentTokenView, 0, len(records))
+	for _, record := range records {
+		result = append(result, enrollmentTokenView(record, now.UTC()))
+	}
+	return result
+}
+
+func (s *Store) RevokeEnrollmentToken(id string, now time.Time) (EnrollmentTokenView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record := s.state.Enrollments[strings.TrimSpace(id)]
+	if record == nil {
+		return EnrollmentTokenView{}, errors.New("enrollment token not found")
+	}
+	if record.RevokedAt == nil {
+		revoked := now.UTC()
+		record.RevokedAt = &revoked
+		if err := s.saveLocked(); err != nil {
+			return EnrollmentTokenView{}, err
+		}
+	}
+	return enrollmentTokenView(record, now.UTC()), nil
+}
+
+func (s *Store) RegisterWithScopedEnrollmentToken(req protocol.RegisterRequest, token string, now time.Time) (protocol.RegisterResponse, bool, error) {
+	actual := hashToken(token)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var matched *EnrollmentToken
+	for _, record := range s.state.Enrollments {
+		if constantHashEqual(actual, record.TokenHash) {
+			matched = record
+			break
+		}
+	}
+	if matched == nil {
+		return protocol.RegisterResponse{}, false, nil
+	}
+	effectiveName := registrationName(req)
+	if matched.RevokedAt != nil || !now.Before(matched.ExpiresAt) || matched.Uses >= matched.MaxUses || !strings.EqualFold(effectiveName, matched.Name) {
+		return protocol.RegisterResponse{}, true, errors.New("invalid enrollment token")
+	}
+	response, err := s.registerLocked(req, now.UTC())
+	if err != nil {
+		return protocol.RegisterResponse{}, true, err
+	}
+	used := now.UTC()
+	matched.Uses++
+	matched.LastUsedAt = &used
+	if err := s.saveLocked(); err != nil {
+		return protocol.RegisterResponse{}, true, err
+	}
+	s.notifyLocked()
+	return response, true, nil
+}
+
+func enrollmentTokenView(record *EnrollmentToken, now time.Time) EnrollmentTokenView {
+	status := "active"
+	if record.RevokedAt != nil {
+		status = "revoked"
+	} else if !now.Before(record.ExpiresAt) {
+		status = "expired"
+	} else if record.Uses >= record.MaxUses {
+		status = "used"
+	}
+	return EnrollmentTokenView{
+		ID: record.ID, Name: record.Name, Status: status, MaxUses: record.MaxUses, Uses: record.Uses,
+		CreatedAt: record.CreatedAt, ExpiresAt: record.ExpiresAt, LastUsedAt: record.LastUsedAt, RevokedAt: record.RevokedAt,
+	}
+}
+
+func registrationName(req protocol.RegisterRequest) string {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		name = strings.TrimSpace(req.Hostname)
 	}
+	return name
+}
+
+func validEnrollmentName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for index, character := range name {
+		valid := character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '.' || character == '_' || character == '-'
+		if !valid || index == 0 && (character == '.' || character == '_' || character == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) Register(req protocol.RegisterRequest) (protocol.RegisterResponse, error) {
+	name := registrationName(req)
+	if name == "" {
+		return protocol.RegisterResponse{}, errors.New("machine name is required")
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	response, err := s.registerLocked(req, now)
+	if err != nil {
+		return protocol.RegisterResponse{}, err
+	}
+	if err := s.saveLocked(); err != nil {
+		return protocol.RegisterResponse{}, err
+	}
+	s.notifyLocked()
+	return response, nil
+}
+
+func (s *Store) registerLocked(req protocol.RegisterRequest, now time.Time) (protocol.RegisterResponse, error) {
+	name := registrationName(req)
 	if name == "" {
 		return protocol.RegisterResponse{}, errors.New("machine name is required")
 	}
@@ -336,9 +520,6 @@ func (s *Store) Register(req protocol.RegisterRequest) (protocol.RegisterRespons
 	if err != nil {
 		return protocol.RegisterResponse{}, err
 	}
-	now := time.Now().UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	var machine *Machine
 	for _, candidate := range s.state.Machines {
 		if strings.EqualFold(candidate.Name, name) {
@@ -363,10 +544,6 @@ func (s *Store) Register(req protocol.RegisterRequest) (protocol.RegisterRespons
 	machine.UpdatedAt = now
 	machine.LastSeen = now
 	machine.TokenHash = hashToken(token)
-	if err := s.saveLocked(); err != nil {
-		return protocol.RegisterResponse{}, err
-	}
-	s.notifyLocked()
 	return protocol.RegisterResponse{MachineID: machine.ID, Token: token}, nil
 }
 

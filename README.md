@@ -118,6 +118,12 @@ Center 使用一个 RWO PVC 和单副本 `Recreate` Deployment。状态文件采
 
 Kubernetes 模板位于 [`deploy/k8s/center`](deploy/k8s/center)。真实 Token 必须通过集群外私密来源创建为 `remote-connect-mcp-secrets`，不要提交 `secret.example.yaml` 的替换版本。
 
+### 新增机器注册 Token
+
+日常接入新 Agent 时，在 Center 控制台的“新增机器注册令牌”区域填写稳定机器名称，选择有效期并生成一次性 Token。明文只在创建响应和当前浏览器页面显示一次，Center 仅持久化 SHA-256 摘要。Token 与机器名称绑定，默认只能成功注册一次，可在使用前撤销。
+
+把页面生成的三项配置复制到目标机器后启动安装器。Agent 注册成功会换取每机独立身份 Token；一次性注册 Token 随即变为 `used`。机器在生成 Token 时无需在线，只需在有效期内完成首次启动。共享 `REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN` 继续作为 K8S/env 应急注册入口，不建议日常分发。
+
 ## Agent 配置
 
 | 环境变量 | 默认值 | 说明 |

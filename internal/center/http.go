@@ -91,16 +91,26 @@ func (s *HTTPServer) serveRegister(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if !s.store.AuthenticateAccessToken(AccessTokenEnrollment, bearerValue(r), time.Now().UTC()) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid enrollment token"})
-		return
-	}
 	var req protocol.RegisterRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	result, err := s.store.Register(req)
+	token := bearerValue(r)
+	result, matched, err := s.store.RegisterWithScopedEnrollmentToken(req, token, time.Now().UTC())
+	if matched {
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid enrollment token"})
+			return
+		}
+		writeJSON(w, http.StatusCreated, result)
+		return
+	}
+	if !s.store.AuthenticateAccessToken(AccessTokenEnrollment, token, time.Now().UTC()) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid enrollment token"})
+		return
+	}
+	result, err = s.store.Register(req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -314,7 +324,52 @@ func (s *HTTPServer) serveAdminAPI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"tokens": s.store.ListAccessTokens(time.Now().UTC())})
 		return
 	}
+	if path == "enrollment-tokens" {
+		switch r.Method {
+		case http.MethodGet:
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			writeJSON(w, http.StatusOK, map[string]any{"enrollment_tokens": s.store.ListEnrollmentTokens(time.Now().UTC(), limit)})
+		case http.MethodPost:
+			var req struct {
+				Name           string `json:"name"`
+				ExpiresSeconds int    `json:"expires_seconds"`
+				MaxUses        int    `json:"max_uses"`
+			}
+			if err := decodeJSON(r, &req); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			if req.ExpiresSeconds == 0 {
+				req.ExpiresSeconds = 86400
+			}
+			if req.MaxUses == 0 {
+				req.MaxUses = 1
+			}
+			if req.ExpiresSeconds < 300 || req.ExpiresSeconds > 2592000 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expires_seconds must be between 300 and 2592000"})
+				return
+			}
+			view, token, err := s.store.CreateEnrollmentToken(req.Name, time.Duration(req.ExpiresSeconds)*time.Second, req.MaxUses, time.Now().UTC())
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{"enrollment": view, "token": token})
+		default:
+			methodNotAllowed(w, http.MethodGet, http.MethodPost)
+		}
+		return
+	}
 	parts := strings.Split(path, "/")
+	if len(parts) == 3 && parts[0] == "enrollment-tokens" && parts[2] == "revoke" && r.Method == http.MethodPost {
+		result, err := s.store.RevokeEnrollmentToken(parts[1], time.Now().UTC())
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	if len(parts) == 3 && parts[0] == "tokens" && parts[2] == "rotate" && r.Method == http.MethodPost {
 		var req struct {
 			NewToken     string `json:"new_token"`

@@ -2,6 +2,7 @@ package center
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -72,6 +73,102 @@ func mapsClone(source map[string]string) map[string]string {
 		result[key] = value
 	}
 	return result
+}
+
+func TestScopedEnrollmentTokenLifecycle(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 26, 13, 0, 0, 0, time.UTC)
+	view, token, err := store.CreateEnrollmentToken("machine-new", time.Hour, 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Status != "active" || !strings.HasPrefix(token, "rcmcp_enroll_") || strings.Contains(view.ID, token) {
+		t.Fatalf("created enrollment view=%+v token prefix=%t", view, strings.HasPrefix(token, "rcmcp_enroll_"))
+	}
+	if _, matched, err := store.RegisterWithScopedEnrollmentToken(protocol.RegisterRequest{Name: "wrong-machine"}, token, now.Add(time.Minute)); !matched || err == nil {
+		t.Fatalf("wrong machine matched=%t err=%v", matched, err)
+	}
+	registered, matched, err := store.RegisterWithScopedEnrollmentToken(protocol.RegisterRequest{Name: "machine-new", OS: "linux", Arch: "amd64"}, token, now.Add(2*time.Minute))
+	if !matched || err != nil || registered.MachineID == "" || registered.Token == "" {
+		t.Fatalf("registration=%+v matched=%t err=%v", registered, matched, err)
+	}
+	if !store.AuthenticateAgent(registered.MachineID, registered.Token) {
+		t.Fatal("issued machine identity was rejected")
+	}
+	if _, matched, err := store.RegisterWithScopedEnrollmentToken(protocol.RegisterRequest{Name: "machine-new"}, token, now.Add(3*time.Minute)); !matched || err == nil {
+		t.Fatalf("used token matched=%t err=%v", matched, err)
+	}
+	listed := store.ListEnrollmentTokens(now.Add(3*time.Minute), 10)
+	if len(listed) != 1 || listed[0].Status != "used" || listed[0].Uses != 1 {
+		t.Fatalf("listed enrollment tokens = %+v", listed)
+	}
+
+	revocable, _, err := store.CreateEnrollmentToken("machine-revoked", time.Hour, 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := store.RevokeEnrollmentToken(revocable.ID, now.Add(time.Minute))
+	if err != nil || revoked.Status != "revoked" {
+		t.Fatalf("revoked=%+v err=%v", revoked, err)
+	}
+	expired, _, err := store.CreateEnrollmentToken("machine-expired", 5*time.Minute, 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed = store.ListEnrollmentTokens(now.Add(6*time.Minute), 10)
+	var expiredStatus string
+	for _, candidate := range listed {
+		if candidate.ID == expired.ID {
+			expiredStatus = candidate.Status
+		}
+	}
+	if expiredStatus != "expired" {
+		t.Fatalf("expired token status = %q", expiredStatus)
+	}
+}
+
+func TestScopedEnrollmentTokenIsConsumedAtomically(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	_, token, err := store.CreateEnrollmentToken("machine-race", time.Hour, 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		matched bool
+		err     error
+	}
+	results := make(chan result, 2)
+	var wait sync.WaitGroup
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, matched, err := store.RegisterWithScopedEnrollmentToken(protocol.RegisterRequest{Name: "machine-race"}, token, now.Add(time.Second))
+			results <- result{matched: matched, err: err}
+		}()
+	}
+	wait.Wait()
+	close(results)
+	succeeded := 0
+	matched := 0
+	for candidate := range results {
+		if candidate.matched {
+			matched++
+		}
+		if candidate.err == nil {
+			succeeded++
+		}
+	}
+	if matched != 2 || succeeded != 1 {
+		t.Fatalf("matched=%d succeeded=%d, want 2 and 1", matched, succeeded)
+	}
 }
 
 func TestStoreTaskLifecycleAndPersistence(t *testing.T) {

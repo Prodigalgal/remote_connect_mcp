@@ -157,6 +157,73 @@ func TestHTTPAdminTokenRotation(t *testing.T) {
 	}
 }
 
+func TestHTTPScopedEnrollmentTokenIsReturnedOnceAndConsumed(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHTTPHandler(store, HTTPConfig{
+		Version: "test", MCPToken: "mcp-secret", AdminToken: "admin-secret", EnrollmentToken: "enroll-secret",
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	createBody, _ := json.Marshal(map[string]any{"name": "machine-scoped", "expires_seconds": 3600, "max_uses": 1})
+	createRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/enrollment-tokens", bytes.NewReader(createBody))
+	createRequest.Header.Set("Authorization", "Bearer admin-secret")
+	createRequest.Header.Set("Content-Type", "application/json")
+	createResponse, err := http.DefaultClient.Do(createRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResponse.Body.Close()
+	var created struct {
+		Enrollment EnrollmentTokenView `json:"enrollment"`
+		Token      string              `json:"token"`
+	}
+	if err := json.NewDecoder(createResponse.Body).Decode(&created); err != nil || createResponse.StatusCode != http.StatusCreated || created.Token == "" {
+		t.Fatalf("created=%+v status=%d err=%v", created, createResponse.StatusCode, err)
+	}
+
+	registerBody, _ := json.Marshal(protocol.RegisterRequest{Name: "machine-scoped", OS: "linux", Arch: "amd64"})
+	registerRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/agent/v1/register", bytes.NewReader(registerBody))
+	registerRequest.Header.Set("Authorization", "Bearer "+created.Token)
+	registerRequest.Header.Set("Content-Type", "application/json")
+	registerResponse, err := http.DefaultClient.Do(registerRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerResponse.Body.Close()
+	if registerResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("register status = %d", registerResponse.StatusCode)
+	}
+
+	listRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/enrollment-tokens", nil)
+	listRequest.Header.Set("Authorization", "Bearer admin-secret")
+	listResponse, err := http.DefaultClient.Do(listRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listResponse.Body.Close()
+	data, err := io.ReadAll(listResponse.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(created.Token)) || bytes.Contains(data, []byte("token_hash")) {
+		t.Fatal("enrollment list leaked token material")
+	}
+	var listed struct {
+		EnrollmentTokens []EnrollmentTokenView `json:"enrollment_tokens"`
+	}
+	if err := json.Unmarshal(data, &listed); err != nil || len(listed.EnrollmentTokens) != 1 || listed.EnrollmentTokens[0].Status != "used" {
+		t.Fatalf("listed=%+v err=%v", listed, err)
+	}
+}
+
 func TestUpgradeCampaignCachesArtifactAtCenter(t *testing.T) {
 	payload := []byte("signed agent release payload")
 	digest := sha256.Sum256(payload)
