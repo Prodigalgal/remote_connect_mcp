@@ -165,3 +165,38 @@ func TestUpgradeCampaignAdvancesCanaryAndPausesOnFailure(t *testing.T) {
 		t.Fatalf("campaign was not resumed: %+v err=%v", resumed, err)
 	}
 }
+
+func TestUpgradeOfferUsesShortRetryLease(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine, err := store.Register(protocol.RegisterRequest{Name: "retry", OS: "linux", Arch: "amd64", Version: "v1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	campaign, err := store.CreateUpgradeCampaign(CreateUpgradeCampaignRequest{
+		Version: "v2.0.0", MachineIDs: []string{machine.MachineID},
+		Artifacts: map[string]protocol.UpgradeArtifact{
+			"linux/amd64": {OS: "linux", Arch: "amd64", URL: "https://example.test/agent", SHA256: digest},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Poll(machine.MachineID, protocol.PollRequest{AvailableSlots: 1}); err != nil {
+		t.Fatal(err)
+	}
+	listed := store.ListUpgradeCampaigns(1)[0]
+	target := listed.Targets[0]
+	if target.Status != UpgradeOffered || target.LeaseUntil == nil {
+		t.Fatalf("target was not offered: %+v", target)
+	}
+	if lease := target.LeaseUntil.Sub(target.UpdatedAt); lease > 31*time.Second {
+		t.Fatalf("offer retry lease = %s, want at most 31s", lease)
+	}
+	if listed.ID != campaign.ID {
+		t.Fatalf("listed campaign = %s, want %s", listed.ID, campaign.ID)
+	}
+}

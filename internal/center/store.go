@@ -591,7 +591,7 @@ func (s *Store) upgradePlanLocked(machineID string, now time.Time) *protocol.Upg
 				campaign.Status = UpgradePaused
 				return nil
 			}
-			lease := now.Add(5 * time.Minute)
+			lease := now.Add(30 * time.Second)
 			target.Status = UpgradeOffered
 			target.Attempts++
 			target.UpdatedAt = now
