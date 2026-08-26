@@ -577,7 +577,9 @@ func (s *Store) upgradePlanLocked(machineID string, now time.Time) *protocol.Upg
 				continue
 			}
 			if target.LeaseUntil != nil && now.Before(*target.LeaseUntil) && target.Status != UpgradePending {
-				return nil
+				if target.Status != UpgradeOffered || now.Sub(target.UpdatedAt) < 30*time.Second {
+					return nil
+				}
 			}
 			machine := s.state.Machines[machineID]
 			if machine == nil || machine.Version == campaign.Version {

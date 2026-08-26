@@ -196,6 +196,21 @@ func TestUpgradeOfferUsesShortRetryLease(t *testing.T) {
 	if lease := target.LeaseUntil.Sub(target.UpdatedAt); lease > 31*time.Second {
 		t.Fatalf("offer retry lease = %s, want at most 31s", lease)
 	}
+	store.mu.Lock()
+	storedTarget := &store.state.Upgrades[campaign.ID].Targets[0]
+	oldUpdate := time.Now().UTC().Add(-time.Minute)
+	legacyLease := time.Now().UTC().Add(4 * time.Minute)
+	storedTarget.UpdatedAt = oldUpdate
+	storedTarget.LeaseUntil = &legacyLease
+	store.mu.Unlock()
+	retry, err := store.Poll(machine.MachineID, protocol.PollRequest{AvailableSlots: 1})
+	if err != nil || retry.Upgrade == nil {
+		t.Fatalf("legacy offer was not retried promptly: plan=%+v err=%v", retry.Upgrade, err)
+	}
+	listed = store.ListUpgradeCampaigns(1)[0]
+	if listed.Targets[0].Attempts != 2 {
+		t.Fatalf("offer attempts = %d, want 2", listed.Targets[0].Attempts)
+	}
 	if listed.ID != campaign.ID {
 		t.Fatalf("listed campaign = %s, want %s", listed.ID, campaign.ID)
 	}
