@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -117,10 +118,15 @@ func (s *HTTPServer) serveAgentPoll(w http.ResponseWriter, r *http.Request, mach
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	metadata, err := decodeAgentMetadata(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	deadline := time.NewTimer(20 * time.Second)
 	defer deadline.Stop()
 	for {
-		result, err := s.store.Poll(machineID, req)
+		result, err := s.store.Poll(machineID, req, metadata)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -139,6 +145,25 @@ func (s *HTTPServer) serveAgentPoll(w http.ResponseWriter, r *http.Request, mach
 		case <-changed:
 		}
 	}
+}
+
+func decodeAgentMetadata(r *http.Request) (protocol.AgentMetadata, error) {
+	encoded := strings.TrimSpace(r.Header.Get("X-Agent-Metadata"))
+	if encoded == "" {
+		return protocol.AgentMetadata{}, nil
+	}
+	if len(encoded) > 16*1024 {
+		return protocol.AgentMetadata{}, errors.New("agent metadata header is too large")
+	}
+	data, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return protocol.AgentMetadata{}, errors.New("invalid agent metadata encoding")
+	}
+	var metadata protocol.AgentMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return protocol.AgentMetadata{}, errors.New("invalid agent metadata JSON")
+	}
+	return metadata, nil
 }
 
 func (s *HTTPServer) serveAgentTaskState(w http.ResponseWriter, r *http.Request, machineID, taskID string) {

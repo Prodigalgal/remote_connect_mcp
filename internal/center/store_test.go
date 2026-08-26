@@ -30,12 +30,18 @@ func TestStoreTaskLifecycleAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	poll, err := store.Poll(registered.MachineID, protocol.PollRequest{AvailableSlots: 1})
+	poll, err := store.Poll(registered.MachineID, protocol.PollRequest{AvailableSlots: 1}, protocol.AgentMetadata{
+		Name: "oracle-a", Hostname: "oracle-a-new", OS: "linux", Arch: "arm64", Version: "v2", DefaultCWD: "/",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if poll.Task == nil || poll.Task.ID != task.ID {
 		t.Fatalf("polled task = %+v, want %s", poll.Task, task.ID)
+	}
+	machine, ok := store.GetMachine(registered.MachineID, time.Now().UTC())
+	if !ok || machine.Version != "v2" || machine.Hostname != "oracle-a-new" || machine.DefaultCWD != "/" {
+		t.Fatalf("heartbeat metadata was not refreshed: %+v", machine)
 	}
 	started := time.Now().UTC()
 	if _, err := store.UpdateTask(registered.MachineID, task.ID, protocol.TaskUpdateRequest{Status: protocol.TaskRunning, StartedAt: &started}); err != nil {

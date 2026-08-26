@@ -62,6 +62,16 @@ Agent 服务本身重启时，systemd 会终止其子进程；Agent 重启后会
 
 工具数量固定为 6 个，机器数量不会扩大 ChatGPT 的工具元数据。每次机器操作都必须显式传入 `machine_id`。
 
+## 升级兼容契约
+
+ChatGPT 连接器使用固定 `/mcp` URL、固定 Bearer Token 和上述 6 个稳定工具。Center、Agent、控制台、存储实现和机器数量升级时不得要求重新创建 ChatGPT 连接器。
+
+- Center 通过 GitOps 固定镜像摘要升级；Service、HTTPRoute、PVC、域名和 Secret 名称保持不变。
+- Agent 先在少量机器试运行，再按批次升级；心跳会持续刷新实际版本、平台和默认目录。
+- Center 必须兼容至少上一版 Agent；Agent 元数据使用可忽略的 HTTP Header 上报，使旧 Center 能安全忽略新字段。
+- 新内部能力优先扩展 Center/Agent 协议和控制台，不新增或重命名 MCP 工具。
+- 只有 MCP Token 泄露需要修改 ChatGPT 认证；确实改变工具 Schema 时，ChatGPT 可能需要重新扫描工具，但仍不更换 URL。
+
 ## Web 控制台
 
 控制台使用独立的 Center Admin Token，支持：

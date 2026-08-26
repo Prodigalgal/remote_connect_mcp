@@ -416,6 +416,15 @@ func (a *Agent) doJSON(ctx context.Context, method, path string, request, respon
 	httpRequest.Header.Set("Accept", "application/json")
 	if machineID != "" {
 		httpRequest.Header.Set("X-Machine-ID", machineID)
+		hostname, _ := os.Hostname()
+		metadata, err := json.Marshal(protocol.AgentMetadata{
+			Name: a.config.Name, Hostname: hostname, OS: runtime.GOOS, Arch: runtime.GOARCH,
+			Version: a.config.Version, DefaultCWD: a.config.DefaultCWD,
+		})
+		if err != nil {
+			return err
+		}
+		httpRequest.Header.Set("X-Agent-Metadata", base64.RawURLEncoding.EncodeToString(metadata))
 	}
 	if request != nil {
 		httpRequest.Header.Set("Content-Type", "application/json")

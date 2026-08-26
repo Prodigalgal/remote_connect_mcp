@@ -26,6 +26,15 @@ type RegisterResponse struct {
 	Token     string `json:"token"`
 }
 
+type AgentMetadata struct {
+	Name       string `json:"name"`
+	Hostname   string `json:"hostname"`
+	OS         string `json:"os"`
+	Arch       string `json:"arch"`
+	Version    string `json:"version"`
+	DefaultCWD string `json:"default_cwd"`
+}
+
 type PollRequest struct {
 	RunningTaskIDs []string `json:"running_task_ids,omitempty"`
 	AvailableSlots int      `json:"available_slots"`

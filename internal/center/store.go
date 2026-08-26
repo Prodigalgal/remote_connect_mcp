@@ -280,13 +280,16 @@ func (s *Store) CancelTask(id string) (Task, error) {
 	return cloneTask(task), nil
 }
 
-func (s *Store) Poll(machineID string, req protocol.PollRequest) (protocol.PollResponse, error) {
+func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...protocol.AgentMetadata) (protocol.PollResponse, error) {
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	machine := s.state.Machines[machineID]
 	if machine == nil {
 		return protocol.PollResponse{}, fmt.Errorf("machine %s not found", machineID)
+	}
+	if len(metadata) > 0 {
+		updateMachineMetadata(machine, metadata[0])
 	}
 	machine.LastSeen = now
 	machine.UpdatedAt = now
@@ -324,6 +327,27 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest) (protocol.PollR
 		return protocol.PollResponse{}, err
 	}
 	return response, nil
+}
+
+func updateMachineMetadata(machine *Machine, metadata protocol.AgentMetadata) {
+	if value := strings.TrimSpace(metadata.Name); value != "" {
+		machine.Name = value
+	}
+	if value := strings.TrimSpace(metadata.Hostname); value != "" {
+		machine.Hostname = value
+	}
+	if value := strings.TrimSpace(metadata.OS); value != "" {
+		machine.OS = value
+	}
+	if value := strings.TrimSpace(metadata.Arch); value != "" {
+		machine.Arch = value
+	}
+	if value := strings.TrimSpace(metadata.Version); value != "" {
+		machine.Version = value
+	}
+	if value := strings.TrimSpace(metadata.DefaultCWD); value != "" {
+		machine.DefaultCWD = value
+	}
 }
 
 func (s *Store) UpdateTask(machineID, taskID string, req protocol.TaskUpdateRequest) (Task, error) {
