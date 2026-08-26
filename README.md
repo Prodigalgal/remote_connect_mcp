@@ -200,6 +200,16 @@ CI 在 Windows/Linux 上运行测试和静态检查，并交叉构建 Windows/Li
 
 生产令牌应由部署平台的 Secret 管理；Agent 注册后获得独立机器 Token，Center 只保存其 SHA-256 摘要。不要把任何真实令牌提交到 Git。
 
+在已配置生产 kubeconfig 的 PowerShell 7 中轮换令牌：
+
+```powershell
+./scripts/rotate-center-token.ps1 -Kind mcp
+./scripts/rotate-center-token.ps1 -Kind admin
+./scripts/rotate-center-token.ps1 -Kind enrollment
+```
+
+脚本通过安全输入提示读取新值，不把令牌写进命令行历史；随后同步本机私密 env 和 Kubernetes Secret、滚动重启 Center，并执行健康与对应鉴权检查。失败时自动恢复旧 Secret 和 env。轮换 MCP Token 后，需要在 ChatGPT Web 连接器中更新令牌；URL 和工具面不变。轮换 Admin Token 后需要重新登录控制台。轮换 Enrollment Token 不影响已注册机器的独立身份，但新安装 Agent 必须使用新值。
+
 ## License
 
 [MIT](LICENSE)
