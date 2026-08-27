@@ -3,6 +3,7 @@ package center
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -186,7 +187,7 @@ func TestLegacyPersistentEnrollmentTokensAreRevokedOnOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dir+"\\state.json", data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store, err := OpenStore(dir)
