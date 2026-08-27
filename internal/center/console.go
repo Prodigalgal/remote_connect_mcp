@@ -2,9 +2,12 @@ package center
 
 import (
 	"net/http"
+	"strings"
 )
 
-func serveConsole(w http.ResponseWriter, r *http.Request) {
+const agentURLPlaceholder = "https://agent.example.invalid"
+
+func serveConsole(w http.ResponseWriter, r *http.Request, agentPublicURL string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w, http.MethodGet, http.MethodHead)
 		return
@@ -15,7 +18,10 @@ func serveConsole(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
 	if r.Method == http.MethodGet {
-		_, _ = w.Write([]byte(consoleHTML))
+		if strings.TrimSpace(agentPublicURL) == "" {
+			agentPublicURL = agentURLPlaceholder
+		}
+		_, _ = w.Write([]byte(strings.ReplaceAll(consoleHTML, agentURLPlaceholder, strings.TrimRight(agentPublicURL, "/"))))
 	}
 }
 

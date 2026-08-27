@@ -11,7 +11,7 @@ func TestConsoleEnrollmentInstallerActions(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/console/", nil)
 	response := httptest.NewRecorder()
 
-	serveConsole(response, request)
+	serveConsole(response, request, "https://agents.example.test")
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("console status = %d", response.Code)
@@ -30,5 +30,11 @@ func TestConsoleEnrollmentInstallerActions(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Errorf("console is missing %q", expected)
 		}
+	}
+	if !strings.Contains(body, "https://agents.example.test") {
+		t.Error("console did not inject the configured agent URL")
+	}
+	if strings.Contains(body, agentURLPlaceholder) {
+		t.Error("console leaked the agent URL placeholder")
 	}
 }

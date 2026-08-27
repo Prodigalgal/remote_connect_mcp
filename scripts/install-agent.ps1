@@ -3,7 +3,7 @@ param(
     [switch]$Uninstall,
     [switch]$PurgeState,
     [string]$BinaryPath,
-    [string]$CenterUrl = "https://agent.example.invalid",
+	[string]$CenterUrl = "https://agent.example.invalid",
     [string]$EnrollmentToken = $env:REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN,
     [string]$AgentName = $env:COMPUTERNAME,
     [string]$DefaultCwd = "C:\",

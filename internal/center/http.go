@@ -73,8 +73,12 @@ func NewHTTPHandler(store *Store, config HTTPConfig) (http.Handler, error) {
 	mux.HandleFunc("/agent/v1/register", server.serveRegister)
 	mux.HandleFunc("/agent/v1/", server.serveAgentAPI)
 	mux.HandleFunc("/agent-artifacts/", server.serveAgentArtifact)
-	mux.HandleFunc("/console", serveConsole)
-	mux.HandleFunc("/console/", serveConsole)
+	mux.HandleFunc("/console", func(w http.ResponseWriter, r *http.Request) {
+		serveConsole(w, r, config.AgentPublicURL)
+	})
+	mux.HandleFunc("/console/", func(w http.ResponseWriter, r *http.Request) {
+		serveConsole(w, r, config.AgentPublicURL)
+	})
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := strings.Split(r.Host, ":")[0]
 		if config.ConsoleHostname != "" && strings.EqualFold(host, config.ConsoleHostname) {

@@ -112,7 +112,7 @@ Center 直接控制 Agent 版本，不需要逐台 SSH、RDP 或重新配置 Cha
 | `REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN` | 必填 | Agent 首次注册 Token |
 | `REMOTE_CONNECT_MCP_CENTER_CONSOLE_HOSTNAME` | 空 | 控制台域名，用于根路径跳转 |
 | `REMOTE_CONNECT_MCP_CENTER_RELEASE_BASE_URL` | GitHub Releases 下载基址 | Agent 发布包和 `.sha256` 的基址；仅测试或私有镜像源需要覆盖 |
-| `REMOTE_CONNECT_MCP_CENTER_PUBLIC_AGENT_URL` | `https://agent.example.invalid` | Agent 访问 Center 发布包缓存的公网基址 |
+| `REMOTE_CONNECT_MCP_CENTER_PUBLIC_AGENT_URL` | `https://agent.example.invalid` | Agent 访问 Center 发布包缓存的公网基址；生产环境请通过私有部署配置覆盖 |
 
 Center 使用一个 RWO PVC 和单副本 `Recreate` Deployment。状态文件采用临时文件、`fsync` 和原子替换；任务输出独立存储并分页读取。
 
@@ -225,6 +225,8 @@ CI 在 Windows/Linux 上运行测试和静态检查，并交叉构建 Windows/Li
 ./scripts/rotate-center-token.ps1 -Kind admin
 ./scripts/rotate-center-token.ps1 -Kind enrollment
 ```
+
+脚本默认读取当前目录的 `center.env`；生产环境请通过 `-EnvFile` 显式传入本机私密文件路径。不要把真实 env 文件提交到 Git。
 
 该脚本主要作为忘记 Admin Token、PVC 恢复或需要同步本机灾备副本时的恢复入口。它通过安全输入提示读取新值，不把令牌写进命令行历史；随后同步本机私密 env 和 Kubernetes Secret、滚动重启 Center，并执行健康与对应鉴权检查。失败时自动恢复旧 Secret 和 env。
 

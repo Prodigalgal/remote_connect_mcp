@@ -12,7 +12,11 @@ param(
 
     [string]$SecretName = "remote-connect-mcp-secrets",
 
-    [string]$DeploymentName = "remote-connect-mcp-center"
+    [string]$DeploymentName = "remote-connect-mcp-center",
+
+    [string]$ConsoleUrl = "https://console.example.invalid",
+
+    [string]$McpUrl = "https://gateway.example.invalid"
 )
 
 $ErrorActionPreference = "Stop"
@@ -77,7 +81,7 @@ function Set-LiveSecretValue([string]$SecretKey, [string]$Value) {
 
 function Test-NewCredential([string]$TokenKind, [string]$Token) {
     if ($TokenKind -eq "admin") {
-        Invoke-RestMethod -Uri "https://console.example.invalid/api/v1/machines" -Headers @{ Authorization = "Bearer $Token" } | Out-Null
+        Invoke-RestMethod -Uri "$ConsoleUrl/api/v1/machines" -Headers @{ Authorization = "Bearer $Token" } | Out-Null
         return
     }
     if ($TokenKind -eq "mcp") {
@@ -98,7 +102,7 @@ function Test-NewCredential([string]$TokenKind, [string]$Token) {
             "Mcp-Protocol-Version" = "2026-07-28"
             "Mcp-Method" = "server/discover"
         }
-        $response = Invoke-WebRequest -Method Post -Uri "https://gateway.example.invalid/mcp" -Headers $headers -ContentType "application/json" -Body $body
+        $response = Invoke-WebRequest -Method Post -Uri "$McpUrl/mcp" -Headers $headers -ContentType "application/json" -Body $body
         if ($response.StatusCode -ne 200 -or $response.Content -notmatch '"resultType":"complete"') {
             throw "The new MCP token failed the public server/discover probe."
         }
@@ -143,7 +147,7 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Center rollout did not complete."
     }
-    $health = Invoke-RestMethod -Uri "https://gateway.example.invalid/healthz"
+    $health = Invoke-RestMethod -Uri "$McpUrl/healthz"
     if ($health.status -ne "ok") {
         throw "Center health check failed."
     }

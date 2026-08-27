@@ -1,6 +1,7 @@
 /dist/
 /.remote_connect_mcp/
 /.env
+/center.env
 /remote_connect_mcp.env
 /vendor/
 /.research/

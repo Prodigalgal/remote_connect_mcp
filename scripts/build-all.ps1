@@ -2,12 +2,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $go = Get-Command go -ErrorAction SilentlyContinue
 if (-not $go) {
-    $go = Get-ChildItem -Path "Go installation directory" -Filter go.exe -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -like "*\bin\go.exe" } |
-        Select-Object -First 1
-}
-if (-not $go) {
-    throw "Go was not found."
+    throw "Go was not found on PATH. Install Go 1.25+ and run this script again."
 }
 $goExe = if ($go.Source) { $go.Source } else { $go.FullName }
 $version = (& $goExe env GOVERSION).Trim()
