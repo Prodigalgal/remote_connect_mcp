@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -96,6 +97,41 @@ func TestHTTPRegistrationAdminAndMCP(t *testing.T) {
 	}
 	if len(result.Content) != 1 {
 		t.Fatalf("machines_list content = %+v", result.Content)
+	}
+
+	start := time.Now()
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: "command_start", Arguments: map[string]any{
+		"machine_id": registered.MachineID, "command": "echo detached", "idempotency_key": "http-test-command-1",
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("command_start result=%+v err=%v", result, err)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("command_start blocked for %s, want less than 1s", elapsed)
+	}
+	tasks := store.ListTasks(10)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(tasks))
+	}
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: "command_start", Arguments: map[string]any{
+		"machine_id": registered.MachineID, "command": "echo detached", "idempotency_key": "http-test-command-1",
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("idempotent command_start retry result=%+v err=%v", result, err)
+	}
+	if tasks = store.ListTasks(10); len(tasks) != 1 {
+		t.Fatalf("idempotent MCP retry left %d tasks, want 1", len(tasks))
+	}
+
+	start = time.Now()
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: "task_wait", Arguments: map[string]any{
+		"task_id": tasks[0].ID,
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("task_wait result=%+v err=%v", result, err)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("default task_wait blocked for %s, want less than 1s", elapsed)
 	}
 }
 

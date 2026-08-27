@@ -98,4 +98,5 @@ type CreateTaskRequest struct {
 	CWD            string            `json:"cwd,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	IdempotencyKey string            `json:"idempotency_key,omitempty"`
 }

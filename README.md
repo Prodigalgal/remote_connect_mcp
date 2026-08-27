@@ -40,12 +40,16 @@ Center 有公网 K8S 入口，因此不使用 Cloudflare Tunnel。Cloudflare 仅
 
 命令执行和 MCP HTTP 请求已经解耦：
 
-1. `command_start` 把命令写入 Center，立即返回持久化 `task_id`。
+1. `command_start` 把命令写入 Center，默认不等待 Agent，立即返回持久化 `task_id`。
 2. Agent 领取任务后在本机独立进程中执行，stdout/stderr 持续写入本机受限日志。
 3. Agent 按字节偏移上传输出；重复分片不会重复追加。
 4. Center 或网络中断时命令继续运行，Agent 使用指数退避和随机抖动自动重连。
 5. 重连后 Agent 从 Center 已确认的偏移继续补传输出和最终状态。
-6. ChatGPT 使用 `task_wait` 或 `task_output` 获取有界输出，不需要让一次 HTTP 调用等待整个命令完成。
+6. ChatGPT 使用非阻塞的 `task_wait` 或 `task_output` 获取有界输出，不需要让一次 HTTP 调用等待整个命令完成。
+
+`command_start` 支持 `idempotency_key`。同一机器使用相同键和相同参数重试时，Center 返回原任务而不会重复执行；如果相同键对应不同参数，Center 会拒绝请求。ChatGPT 应为每个逻辑命令生成一次稳定键，并在连接超时重试时复用。
+
+长时间或无人值守任务应在创建后立即向用户返回 `task_id`，不要在同一个 ChatGPT 回合中连续轮询。之后可以在新消息中查询任务，也可以直接通过 Web 控制台查看持久化状态和输出。ChatGPT Web 显示消息超时时，应先检查任务列表，确认任务是否已经创建，再决定是否重试。
 
 Agent 服务本身重启时，systemd 会终止其子进程；Agent 重启后会把未完成任务报告为失败，避免静默重复执行非幂等命令。普通网络断线不会终止命令。
 
@@ -56,7 +60,7 @@ Agent 服务本身重启时，systemd 会终止其子进程；Agent 重启后会
 | `machines_list` | 列出机器 ID、平台和在线状态 |
 | `machine_info` | 查看单台机器的心跳、默认目录和 Agent 版本 |
 | `command_start` | 在指定机器创建异步命令任务 |
-| `task_wait` | 最多等待 20 秒，返回状态变化或下一页输出 |
+| `task_wait` | 默认立即返回当前状态；可选短暂等待状态变化或下一页输出 |
 | `task_output` | 按字节游标分页读取完整任务输出 |
 | `task_cancel` | 取消排队或正在运行的任务 |
 

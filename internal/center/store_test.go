@@ -288,6 +288,83 @@ func TestStoreTaskLifecycleAndPersistence(t *testing.T) {
 	}
 }
 
+func TestCreateTaskIdempotency(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := store.Register(protocol.RegisterRequest{Name: "idempotency-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := protocol.CreateTaskRequest{
+		MachineID: registered.MachineID, Command: "echo once", CWD: "/tmp",
+		Env: map[string]string{"MODE": "test"}, IdempotencyKey: "chat-turn-1234",
+	}
+	first, err := store.CreateTask(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateTask(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("idempotent retry created %s, want original %s", second.ID, first.ID)
+	}
+	if tasks := store.ListTasks(10); len(tasks) != 1 {
+		t.Fatalf("idempotent retry left %d tasks, want 1", len(tasks))
+	}
+
+	request.Command = "echo different"
+	if _, err := store.CreateTask(request); err == nil || !strings.Contains(err.Error(), "different task request") {
+		t.Fatalf("reused key with different command error = %v", err)
+	}
+
+	request.IdempotencyKey = ""
+	firstWithoutKey, err := store.CreateTask(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondWithoutKey, err := store.CreateTask(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstWithoutKey.ID == secondWithoutKey.ID {
+		t.Fatal("requests without idempotency keys were unexpectedly deduplicated")
+	}
+}
+
+func TestCreateTaskIdempotencySurvivesStoreRestart(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := store.Register(protocol.RegisterRequest{Name: "restart-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := protocol.CreateTaskRequest{
+		MachineID: registered.MachineID, Command: "echo durable", IdempotencyKey: "durable-command-1",
+	}
+	first, err := store.CreateTask(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := reopened.CreateTask(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("retry after restart created %s, want original %s", second.ID, first.ID)
+	}
+}
+
 func TestCancelQueuedTaskIsTerminal(t *testing.T) {
 	store, err := OpenStore(t.TempDir())
 	if err != nil {

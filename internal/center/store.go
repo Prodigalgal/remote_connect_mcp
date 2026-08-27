@@ -53,6 +53,7 @@ type Task struct {
 	CWD            string            `json:"cwd,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	IdempotencyKey string            `json:"idempotency_key,omitempty"`
 	Status         string            `json:"status"`
 	ExitCode       *int              `json:"exit_code,omitempty"`
 	Error          string            `json:"error,omitempty"`
@@ -625,19 +626,38 @@ func (s *Store) CreateTask(req protocol.CreateTaskRequest) (Task, error) {
 	if req.TimeoutSeconds < 0 {
 		return Task{}, errors.New("timeout_seconds cannot be negative")
 	}
+	machineID := strings.TrimSpace(req.MachineID)
+	cwd := strings.TrimSpace(req.CWD)
+	env := cloneMap(req.Env)
+	idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
+	if err := validateIdempotencyKey(idempotencyKey); err != nil {
+		return Task{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.Machines[machineID] == nil {
+		return Task{}, fmt.Errorf("machine %s not found", machineID)
+	}
+	if idempotencyKey != "" {
+		for _, existing := range s.state.Tasks {
+			if existing.MachineID != machineID || existing.IdempotencyKey != idempotencyKey {
+				continue
+			}
+			if existing.Command != command || existing.CWD != cwd || existing.TimeoutSeconds != req.TimeoutSeconds || !equalStringMaps(existing.Env, env) {
+				return Task{}, errors.New("idempotency_key is already used by a different task request")
+			}
+			return cloneTask(existing), nil
+		}
+	}
 	id, err := randomID("task")
 	if err != nil {
 		return Task{}, err
 	}
 	now := time.Now().UTC()
 	task := &Task{
-		ID: id, MachineID: strings.TrimSpace(req.MachineID), Command: command, CWD: strings.TrimSpace(req.CWD),
-		Env: cloneMap(req.Env), TimeoutSeconds: req.TimeoutSeconds, Status: protocol.TaskQueued, CreatedAt: now,
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.state.Machines[task.MachineID] == nil {
-		return Task{}, fmt.Errorf("machine %s not found", task.MachineID)
+		ID: id, MachineID: machineID, Command: command, CWD: cwd, Env: env,
+		TimeoutSeconds: req.TimeoutSeconds, IdempotencyKey: idempotencyKey,
+		Status: protocol.TaskQueued, CreatedAt: now,
 	}
 	s.state.Tasks[task.ID] = task
 	if err := s.saveLocked(); err != nil {
@@ -646,6 +666,35 @@ func (s *Store) CreateTask(req protocol.CreateTaskRequest) (Task, error) {
 	}
 	s.notifyLocked()
 	return cloneTask(task), nil
+}
+
+func validateIdempotencyKey(key string) error {
+	if key == "" {
+		return nil
+	}
+	if len(key) > 128 {
+		return errors.New("idempotency_key cannot exceed 128 characters")
+	}
+	for _, char := range key {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-' || char == '_' || char == '.' || char == ':' {
+			continue
+		}
+		return errors.New("idempotency_key may contain only letters, digits, dot, colon, underscore, and hyphen")
+	}
+	return nil
+}
+
+func equalStringMaps(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		other, ok := right[key]
+		if !ok || other != value {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) GetTask(id string) (Task, bool) {

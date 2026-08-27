@@ -15,7 +15,7 @@ import (
 
 func NewMCPHandler(store *Store, version string) http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: "remote-connect-mcp-center", Version: version}, &mcp.ServerOptions{
-		Instructions: "Control registered machines through durable asynchronous tasks. Call machines_list first, pass machine_id explicitly, start commands, then use task_wait or task_output. Commands continue on the agent when its center connection is interrupted.",
+		Instructions: "Control registered machines through durable asynchronous tasks. Call machines_list first and pass machine_id explicitly. For command_start, generate one stable idempotency_key per logical command so a transport retry cannot run it twice. Return the task_id promptly. For long or unattended work, do not repeatedly poll in the same chat turn; check later with task_wait or task_output. Commands continue on the agent when its center connection is interrupted.",
 		PageSize:     50,
 	})
 	registerMCPTools(server, store)
@@ -56,36 +56,37 @@ func registerMCPTools(server *mcp.Server, store *Store) {
 		CWD            string            `json:"cwd,omitempty" jsonschema:"Working directory; agent default when omitted"`
 		Env            map[string]string `json:"env,omitempty" jsonschema:"Environment variables to add or override"`
 		TimeoutSeconds int               `json:"timeout_seconds,omitempty" jsonschema:"Execution timeout; 0 means unlimited"`
-		WaitMS         int               `json:"wait_ms,omitempty" jsonschema:"Wait up to 15000 ms for initial progress; default 1500"`
+		IdempotencyKey string            `json:"idempotency_key,omitempty" jsonschema:"Stable unique key for this logical command; reuse the same key when retrying"`
+		WaitMS         int               `json:"wait_ms,omitempty" jsonschema:"Optional initial progress wait up to 15000 ms; default 0 returns immediately"`
 	}
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "command_start", Description: "Queue a shell command and return a durable task ID; long commands never hold the MCP request open indefinitely.",
+		Name: "command_start", Description: "Queue a shell command and immediately return a durable task ID. Use a stable idempotency_key so retries return the original task instead of executing twice.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, OpenWorldHint: &openWorld},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args commandStartArgs) (*mcp.CallToolResult, any, error) {
 		waitMS := args.WaitMS
-		if waitMS == 0 {
-			waitMS = 1500
-		}
 		if waitMS < 0 || waitMS > 15000 {
 			return nil, nil, fmt.Errorf("wait_ms must be between 0 and 15000")
 		}
 		task, err := store.CreateTask(protocol.CreateTaskRequest{
-			MachineID: args.MachineID, Command: args.Command, CWD: args.CWD, Env: args.Env, TimeoutSeconds: args.TimeoutSeconds,
+			MachineID: args.MachineID, Command: args.Command, CWD: args.CWD, Env: args.Env,
+			TimeoutSeconds: args.TimeoutSeconds, IdempotencyKey: args.IdempotencyKey,
 		})
 		if err != nil {
 			return nil, nil, err
 		}
-		task = waitForTask(ctx, store, task.ID, 0, time.Duration(waitMS)*time.Millisecond)
+		if waitMS > 0 {
+			task = waitForTask(ctx, store, task.ID, 0, time.Duration(waitMS)*time.Millisecond)
+		}
 		return taskResult(store, task, 0, 16*1024)
 	})
 
 	type taskWaitArgs struct {
 		TaskID string `json:"task_id" jsonschema:"Task ID returned by command_start"`
 		Cursor int64  `json:"cursor,omitempty" jsonschema:"Known output byte cursor"`
-		WaitMS int    `json:"wait_ms,omitempty" jsonschema:"Long-poll wait up to 20000 ms; default 15000"`
+		WaitMS int    `json:"wait_ms,omitempty" jsonschema:"Optional long-poll wait up to 20000 ms; default 0 returns current state immediately"`
 	}
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "task_wait", Description: "Wait for task state or output progress and return the next bounded output page.",
+		Name: "task_wait", Description: "Read task state and the next bounded output page. Default is non-blocking; use a short positive wait only when the user asks to monitor now.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &closedWorld},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args taskWaitArgs) (*mcp.CallToolResult, any, error) {
 		task, ok := store.GetTask(strings.TrimSpace(args.TaskID))
@@ -93,13 +94,10 @@ func registerMCPTools(server *mcp.Server, store *Store) {
 			return nil, nil, fmt.Errorf("task %s not found", args.TaskID)
 		}
 		waitMS := args.WaitMS
-		if waitMS == 0 {
-			waitMS = 15000
-		}
 		if waitMS < 0 || waitMS > 20000 {
 			return nil, nil, fmt.Errorf("wait_ms must be between 0 and 20000")
 		}
-		if task.OutputBytes <= args.Cursor && !terminalStatus(task.Status) {
+		if waitMS > 0 && task.OutputBytes <= args.Cursor && !terminalStatus(task.Status) {
 			task = waitForTask(ctx, store, task.ID, args.Cursor, time.Duration(waitMS)*time.Millisecond)
 		}
 		return taskResult(store, task, args.Cursor, 32*1024)
@@ -177,7 +175,7 @@ func nextAction(task Task, more bool) string {
 	if terminalStatus(task.Status) {
 		return "task is finished"
 	}
-	return "call task_wait with next_cursor"
+	return "task is still active; for long or unattended work report the task_id now and check later; do not repeatedly poll in the same chat turn"
 }
 
 func terminalStatus(status string) bool {
