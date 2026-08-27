@@ -99,16 +99,16 @@ type AccessTokenView struct {
 }
 
 type EnrollmentToken struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	TokenHash  string     `json:"token_hash"`
-	MaxUses    int        `json:"max_uses"`
-	Uses       int        `json:"uses"`
-	Persistent bool       `json:"persistent,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
-	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
-	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	ID               string     `json:"id"`
+	Name             string     `json:"name"`
+	TokenHash        string     `json:"token_hash"`
+	MaxUses          int        `json:"max_uses"`
+	Uses             int        `json:"uses"`
+	LegacyPersistent bool       `json:"persistent,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	LastUsedAt       *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt        *time.Time `json:"revoked_at,omitempty"`
 }
 
 type EnrollmentTokenView struct {
@@ -117,7 +117,6 @@ type EnrollmentTokenView struct {
 	Status     string     `json:"status"`
 	MaxUses    int        `json:"max_uses"`
 	Uses       int        `json:"uses"`
-	Persistent bool       `json:"persistent"`
 	CreatedAt  time.Time  `json:"created_at"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
@@ -215,7 +214,38 @@ func OpenStore(dir string) (*Store, error) {
 	if s.state.Enrollments == nil {
 		s.state.Enrollments = map[string]*EnrollmentToken{}
 	}
+	if migrateLegacyEnrollmentTokens(s.state.Enrollments, time.Now().UTC()) {
+		if err := s.saveLocked(); err != nil {
+			return nil, fmt.Errorf("persist enrollment token migration: %w", err)
+		}
+	}
 	return s, nil
+}
+
+// migrateLegacyEnrollmentTokens invalidates the removed persistent enrollment
+// token variant and clamps all historical records to one successful use. The
+// plaintext token was never persisted, so revocation is the only safe way to
+// retire an old token without affecting Agent identity credentials.
+func migrateLegacyEnrollmentTokens(records map[string]*EnrollmentToken, now time.Time) bool {
+	changed := false
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		if record.LegacyPersistent {
+			revoked := now.UTC()
+			if record.RevokedAt == nil {
+				record.RevokedAt = &revoked
+			}
+			record.LegacyPersistent = false
+			changed = true
+		}
+		if record.MaxUses != 1 {
+			record.MaxUses = 1
+			changed = true
+		}
+	}
+	return changed
 }
 
 func (s *Store) ConfigureAccessTokens(tokens map[string]string, now time.Time) error {
@@ -354,21 +384,13 @@ func constantHashEqual(actual, expected string) bool {
 	return len(actual) == len(expected) && subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) == 1
 }
 
-func (s *Store) CreateEnrollmentToken(name string, ttl time.Duration, maxUses int, persistent bool, now time.Time) (EnrollmentTokenView, string, error) {
+func (s *Store) CreateEnrollmentToken(name string, ttl time.Duration, now time.Time) (EnrollmentTokenView, string, error) {
 	name = strings.TrimSpace(name)
 	if !validEnrollmentName(name) {
 		return EnrollmentTokenView{}, "", errors.New("machine name must contain only letters, digits, dots, underscores, or hyphens and be at most 128 characters")
 	}
-	if !persistent {
-		if ttl < 5*time.Minute || ttl > 30*24*time.Hour {
-			return EnrollmentTokenView{}, "", errors.New("token lifetime must be between 300 and 2592000 seconds")
-		}
-		if maxUses < 1 || maxUses > 100 {
-			return EnrollmentTokenView{}, "", errors.New("max_uses must be between 1 and 100")
-		}
-	} else {
-		ttl = 0
-		maxUses = 0
+	if ttl < 5*time.Minute || ttl > 30*24*time.Hour {
+		return EnrollmentTokenView{}, "", errors.New("token lifetime must be between 300 and 2592000 seconds")
 	}
 	id, err := randomID("enrollment")
 	if err != nil {
@@ -380,11 +402,8 @@ func (s *Store) CreateEnrollmentToken(name string, ttl time.Duration, maxUses in
 	}
 	token := "rcmcp_enroll_" + random
 	created := now.UTC()
-	record := &EnrollmentToken{ID: id, Name: name, TokenHash: hashToken(token), MaxUses: maxUses, Persistent: persistent, CreatedAt: created}
-	if !persistent {
-		expires := created.Add(ttl)
-		record.ExpiresAt = &expires
-	}
+	expires := created.Add(ttl)
+	record := &EnrollmentToken{ID: id, Name: name, TokenHash: hashToken(token), MaxUses: 1, CreatedAt: created, ExpiresAt: &expires}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state.Enrollments[id] = record
@@ -477,7 +496,7 @@ func enrollmentTokenView(record *EnrollmentToken, now time.Time) EnrollmentToken
 		status = "used"
 	}
 	return EnrollmentTokenView{
-		ID: record.ID, Name: record.Name, Status: status, MaxUses: record.MaxUses, Uses: record.Uses, Persistent: record.Persistent,
+		ID: record.ID, Name: record.Name, Status: status, MaxUses: record.MaxUses, Uses: record.Uses,
 		CreatedAt: record.CreatedAt, ExpiresAt: record.ExpiresAt, LastUsedAt: record.LastUsedAt, RevokedAt: record.RevokedAt,
 	}
 }

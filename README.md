@@ -120,9 +120,9 @@ Kubernetes 模板位于 [`deploy/k8s/center`](deploy/k8s/center)。真实 Token 
 
 ### 新增机器注册 Token
 
-日常接入新 Agent 时，在 Center 控制台的“新增机器注册令牌”区域填写稳定机器名称并选择模式。推荐使用“一台机器一个长期 Token”：它永不过期、只允许注册绑定的机器名，可用于该机器安装、重装或身份文件丢失后的恢复，直到管理员手工撤销。也可创建 1 小时至 30 天有效、成功注册一次后失效的一次性 Token。
+日常接入新 Agent、重装 Agent 或恢复丢失的身份文件时，在 Center 控制台的“新增机器注册令牌”区域填写稳定机器名称，生成 1 小时至 30 天有效的一次性 Token。Token 与机器名称绑定，成功注册一次后立即失效；每次安装、重装或身份恢复都必须重新生成一个 Token。
 
-明文只在创建响应和当前浏览器页面显示一次，Center 仅持久化 SHA-256 摘要。把页面生成的 Token 或对应平台安装命令复制到目标机器后启动安装器；Agent 注册成功会换取日常轮询使用的每机独立身份 Token，长期注册 Token 不参与日常连接。共享 `REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN` 继续作为 K8S/env 应急注册入口，不建议日常分发。
+明文只在创建响应和当前浏览器页面显示一次，Center 仅持久化 SHA-256 摘要。把页面生成的 Token 或对应平台安装命令复制到目标机器后启动安装器；Agent 注册成功会换取日常轮询使用的每机独立身份 Token。共享 `REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN` 继续作为 K8S/env 应急注册入口，不建议日常分发。
 
 ## Agent 配置
 
@@ -135,7 +135,7 @@ Kubernetes 模板位于 [`deploy/k8s/center`](deploy/k8s/center)。真实 Token 
 | `REMOTE_CONNECT_MCP_AGENT_STATE_DIR` | Linux `/var/lib/remote-connect-mcp-agent` | Agent 身份和本机任务输出目录 |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY` | `1` | 同时运行任务数，范围 1–32 |
 
-Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 Center，原始值以 `0600` 权限保存在 Agent 状态目录。Center 吊销或重置凭据后，Agent 会自动重新注册。
+Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 Center，原始值以 `0600` 权限保存在 Agent 状态目录。若身份被吊销或丢失，请在 Center 重新生成一次性 Token，更新目标 Agent 的配置并重启；正常的 Center 重启和共享令牌轮换不会影响已注册 Agent。
 
 Linux systemd 模板和安装脚本位于 [`deploy/systemd`](deploy/systemd) 与 [`scripts/install-agent.sh`](scripts/install-agent.sh)。Agent 不监听端口，不需要域名、Cloudflare Tunnel 或入站防火墙规则。
 

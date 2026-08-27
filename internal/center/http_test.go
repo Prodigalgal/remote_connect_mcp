@@ -172,7 +172,20 @@ func TestHTTPScopedEnrollmentTokenIsReturnedOnceAndConsumed(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	createBody, _ := json.Marshal(map[string]any{"name": "machine-scoped", "expires_seconds": 3600, "max_uses": 1})
+	legacyBody, _ := json.Marshal(map[string]any{"name": "machine-legacy", "persistent": true})
+	legacyRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/enrollment-tokens", bytes.NewReader(legacyBody))
+	legacyRequest.Header.Set("Authorization", "Bearer admin-secret")
+	legacyRequest.Header.Set("Content-Type", "application/json")
+	legacyResponse, err := http.DefaultClient.Do(legacyRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyResponse.Body.Close()
+	if legacyResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("legacy persistent token status = %d, want %d", legacyResponse.StatusCode, http.StatusBadRequest)
+	}
+
+	createBody, _ := json.Marshal(map[string]any{"name": "machine-scoped", "expires_seconds": 3600})
 	createRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/enrollment-tokens", bytes.NewReader(createBody))
 	createRequest.Header.Set("Authorization", "Bearer admin-secret")
 	createRequest.Header.Set("Content-Type", "application/json")
@@ -213,7 +226,7 @@ func TestHTTPScopedEnrollmentTokenIsReturnedOnceAndConsumed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(data, []byte(created.Token)) || bytes.Contains(data, []byte("token_hash")) {
+	if bytes.Contains(data, []byte(created.Token)) || bytes.Contains(data, []byte("token_hash")) || bytes.Contains(data, []byte("persistent")) {
 		t.Fatal("enrollment list leaked token material")
 	}
 	var listed struct {
