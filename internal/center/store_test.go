@@ -365,6 +365,65 @@ func TestCreateTaskIdempotencySurvivesStoreRestart(t *testing.T) {
 	}
 }
 
+func TestPollCoalescesHeartbeatPersistenceButPersistsTransitions(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := store.Register(protocol.RegisterRequest{Name: "heartbeat-test", OS: "linux", Arch: "amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "state.json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Poll(registered.MachineID, protocol.PollRequest{AvailableSlots: 1}, protocol.AgentMetadata{
+		Name: "heartbeat-test", OS: "linux", Arch: "amd64",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("heartbeat-only poll unexpectedly rewrote persisted state")
+	}
+
+	store.mu.Lock()
+	store.lastPersistedAt = time.Now().UTC().Add(-31 * time.Second)
+	store.mu.Unlock()
+	if _, err := store.Poll(registered.MachineID, protocol.PollRequest{AvailableSlots: 1}); err != nil {
+		t.Fatal(err)
+	}
+	coalesced, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(coalesced) == string(before) {
+		t.Fatal("coalesced heartbeat was not persisted after the interval")
+	}
+
+	task, err := store.CreateTask(protocol.CreateTaskRequest{MachineID: registered.MachineID, Command: "echo transition"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Poll(registered.MachineID, protocol.PollRequest{AvailableSlots: 1}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, ok := reopened.GetTask(task.ID)
+	if !ok || persisted.Status != protocol.TaskDispatching {
+		t.Fatalf("dispatched task transition was not persisted: %+v, ok=%v", persisted, ok)
+	}
+}
+
 func TestCancelQueuedTaskIsTerminal(t *testing.T) {
 	store, err := OpenStore(t.TempDir())
 	if err != nil {

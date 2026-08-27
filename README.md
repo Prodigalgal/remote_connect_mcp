@@ -118,7 +118,7 @@ Center 直接控制 Agent 版本，不需要逐台 SSH、RDP 或重新配置 Cha
 | `REMOTE_CONNECT_MCP_CENTER_RELEASE_BASE_URL` | GitHub Releases 下载基址 | Agent 发布包和 `.sha256` 的基址；仅测试或私有镜像源需要覆盖 |
 | `REMOTE_CONNECT_MCP_CENTER_PUBLIC_AGENT_URL` | `https://agent.example.invalid` | Agent 访问 Center 发布包缓存的公网基址；生产环境请通过私有部署配置覆盖 |
 
-Center 使用一个 RWO PVC 和单副本 `Recreate` Deployment。状态文件采用临时文件、`fsync` 和原子替换；任务输出独立存储并分页读取。
+Center 使用一个 RWO PVC 和单副本 `Recreate` Deployment。状态文件采用临时文件、`fsync` 和原子替换；任务输出独立存储并分页读取。任务创建、状态变化和升级变化会立即持久化；高频 Agent 心跳在内存中实时更新，并按全局 30 秒窗口合并落盘，避免心跳写入阻塞 MCP 查询。
 
 Kubernetes 模板位于 [`deploy/k8s/center`](deploy/k8s/center)。真实 Token 必须通过集群外私密来源创建为 `remote-connect-mcp-secrets`，不要提交 `secret.example.yaml` 的替换版本。
 

@@ -165,12 +165,13 @@ type persistedState struct {
 }
 
 type Store struct {
-	mu        sync.Mutex
-	dir       string
-	statePath string
-	outputDir string
-	state     persistedState
-	changed   chan struct{}
+	mu              sync.Mutex
+	dir             string
+	statePath       string
+	outputDir       string
+	state           persistedState
+	changed         chan struct{}
+	lastPersistedAt time.Time
 }
 
 func OpenStore(dir string) (*Store, error) {
@@ -190,7 +191,7 @@ func OpenStore(dir string) (*Store, error) {
 		state: persistedState{
 			Machines: map[string]*Machine{}, Tasks: map[string]*Task{}, Upgrades: map[string]*UpgradeCampaign{}, AccessTokens: map[string]*AccessTokenState{}, Enrollments: map[string]*EnrollmentToken{},
 		},
-		changed: make(chan struct{}),
+		changed: make(chan struct{}), lastPersistedAt: time.Now().UTC(),
 	}
 	data, err := os.ReadFile(s.statePath)
 	if err == nil {
@@ -937,8 +938,9 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 	if machine == nil {
 		return protocol.PollResponse{}, fmt.Errorf("machine %s not found", machineID)
 	}
+	metadataChanged := false
 	if len(metadata) > 0 {
-		updateMachineMetadata(machine, metadata[0])
+		metadataChanged = updateMachineMetadata(machine, metadata[0])
 	}
 	machine.LastSeen = now
 	machine.UpdatedAt = now
@@ -975,8 +977,15 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 			}
 		}
 	}
-	if err := s.saveLocked(); err != nil {
-		return protocol.PollResponse{}, err
+	// Heartbeats update the in-memory online state on every poll, but persisting
+	// the complete state file for every Agent would serialize all MCP reads
+	// behind multiple fsync calls. Any state transition is still persisted
+	// immediately; heartbeat-only writes are coalesced globally.
+	persist := metadataChanged || response.Task != nil || response.Upgrade != nil || now.Sub(s.lastPersistedAt) >= 30*time.Second
+	if persist {
+		if err := s.saveLocked(); err != nil {
+			return protocol.PollResponse{}, err
+		}
 	}
 	return response, nil
 }
@@ -1068,25 +1077,45 @@ func reconcileUpgradeLocked(campaign *UpgradeCampaign, machines map[string]*Mach
 	}
 }
 
-func updateMachineMetadata(machine *Machine, metadata protocol.AgentMetadata) {
+func updateMachineMetadata(machine *Machine, metadata protocol.AgentMetadata) bool {
+	changed := false
 	if value := strings.TrimSpace(metadata.Name); value != "" {
-		machine.Name = value
+		if machine.Name != value {
+			machine.Name = value
+			changed = true
+		}
 	}
 	if value := strings.TrimSpace(metadata.Hostname); value != "" {
-		machine.Hostname = value
+		if machine.Hostname != value {
+			machine.Hostname = value
+			changed = true
+		}
 	}
 	if value := strings.TrimSpace(metadata.OS); value != "" {
-		machine.OS = value
+		if machine.OS != value {
+			machine.OS = value
+			changed = true
+		}
 	}
 	if value := strings.TrimSpace(metadata.Arch); value != "" {
-		machine.Arch = value
+		if machine.Arch != value {
+			machine.Arch = value
+			changed = true
+		}
 	}
 	if value := strings.TrimSpace(metadata.Version); value != "" {
-		machine.Version = value
+		if machine.Version != value {
+			machine.Version = value
+			changed = true
+		}
 	}
 	if value := strings.TrimSpace(metadata.DefaultCWD); value != "" {
-		machine.DefaultCWD = value
+		if machine.DefaultCWD != value {
+			machine.DefaultCWD = value
+			changed = true
+		}
 	}
+	return changed
 }
 
 func (s *Store) UpdateTask(machineID, taskID string, req protocol.TaskUpdateRequest) (Task, error) {
@@ -1216,7 +1245,7 @@ func (s *Store) notifyLocked() {
 }
 
 func (s *Store) saveLocked() error {
-	data, err := json.MarshalIndent(s.state, "", "  ")
+	data, err := json.Marshal(s.state)
 	if err != nil {
 		return err
 	}
@@ -1241,7 +1270,11 @@ func (s *Store) saveLocked() error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tempName, s.statePath)
+	if err := os.Rename(tempName, s.statePath); err != nil {
+		return err
+	}
+	s.lastPersistedAt = time.Now().UTC()
+	return nil
 }
 
 func cloneTask(task *Task) Task {
