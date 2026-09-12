@@ -33,6 +33,13 @@ import java.util.logging.Logger;
 final class DurableCommandRunner implements Runnable {
     private static final Logger LOG = Logger.getLogger(DurableCommandRunner.class.getName());
     private static final int CHUNK_SIZE = 16 * 1024;
+    /**
+     * Windows can deliver Process.onExit after the process handle is already
+     * observed as terminated. Give the original watcher a bounded, event-based
+     * grace period to persist the real exit code before recovery treats the
+     * result as an unknown offline failure.
+     */
+    private static final Duration COMPLETION_RECORD_GRACE = Duration.ofSeconds(10);
 
     private final AgentConfig config;
     private final AgentIdentity identity;
@@ -306,7 +313,7 @@ final class DurableCommandRunner implements Runnable {
     private DurableTaskStore.Record awaitCompletedRecord(DurableTaskStore.Record current)
             throws InterruptedException {
         if (current == null || current.completed()) return current;
-        return store.awaitCompleted(current, java.time.Duration.ofSeconds(2));
+        return store.awaitCompleted(current, COMPLETION_RECORD_GRACE);
     }
 
     private void sendState(TaskUpdateRequest update) throws IOException, InterruptedException {
