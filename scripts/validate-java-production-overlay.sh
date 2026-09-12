@@ -131,6 +131,18 @@ if ! printf '%s\n' "$durable_guard_block" | grep -q -E -- 'value:[[:space:]]*"?t
   fail 'RCM_CENTER_REQUIRE_DURABLE_STORAGE must be true in the overlay/base'
 fi
 
+persistence_mode_block="$(
+  {
+    grep -R -n -I -A1 -- 'name:[[:space:]]*RCM_CENTER_PERSISTENCE_MODE[[:space:]]*$' "$overlay" || true
+    if [[ -d "$base" ]]; then
+      grep -R -n -I -A1 -- 'name:[[:space:]]*RCM_CENTER_PERSISTENCE_MODE[[:space:]]*$' "$base" || true
+    fi
+  }
+)"
+if ! printf '%s\n' "$persistence_mode_block" | grep -q -E -- 'value:[[:space:]]*postgres[[:space:]]*$'; then
+  fail 'RCM_CENTER_PERSISTENCE_MODE must be postgres in the overlay/base'
+fi
+
 # A Center version must be explicit and must not retain the public template
 # value.  This is checked separately because image digests and displayed
 # release versions intentionally live in different Kustomize fields.
