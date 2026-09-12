@@ -35,6 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/scan-repository-secrets.sh
+          bash scripts/validate-java-production-overlay.sh --template
       - name: Resolve release coordinates
         id: coordinates
         shell: bash

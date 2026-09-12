@@ -134,6 +134,23 @@ rcm-center --import-go /path/to/old-center-state-directory
 3. 先运行 Argo CD `PreSync` migration Job，再滚动 Center Deployment。
 4. 验收 `/api/v1/healthz`、`/api/v1/readyz`、MCP `initialize`/`tools/list`、Agent 注册/轮询、长任务超时和断线恢复。
 
+### 生产 Overlay 预检
+
+仓库中的 `deploy/k8s/overlays/java-production` 只是一份公开、占位安全的
+模板，不应直接同步到集群。将它复制到集群外的私有部署层，替换三个
+`remote-connect-mcp-*` 域名、Center/Console 镜像的 SHA-256 digest、Center
+版本和外部 Secret 后，先执行：
+
+```bash
+bash scripts/validate-java-production-overlay.sh --strict /path/to/private/java-production
+kustomize build /path/to/private/java-production > /tmp/rcm-java-rendered.yaml
+```
+
+预检会拒绝 `example.invalid`/`replace-me`/旧模板版本、可变镜像 tag、重复或格式错误的
+路由主机名，以及内联 Kubernetes Secret；若本机有 `kustomize` 或 `kubectl`，还会检查最终
+渲染结果是否仍含占位符并确认镜像按 digest 固定。预检通过也不等于生产切换授权，仍需完成
+迁移 Job、旁路路由、ChatGPT Web MCP、Agent canary、备份恢复和回滚验收。
+
 云上双区集群可先使用 `deploy/k8s/overlays/java-production`：它把镜像切换到
 `ghcr.io/prodigalgal/remote-connect-mcp-{center-java,console}` 的版本标签、三个
 `remote-connect-mcp-*.example.invalid` 占位路由（MCP、Agent、控制台）并启用 Agent WebSocket

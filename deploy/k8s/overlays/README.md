@@ -18,8 +18,15 @@ Before a production sync:
 4. Render and inspect the result before applying:
 
    ```sh
+   bash scripts/validate-java-production-overlay.sh --strict deploy/k8s/overlays/java-production
    kustomize build deploy/k8s/overlays/java-production
    ```
+
+   The checked-in overlay is intentionally a public template and will fail
+   `--strict` until it is copied into a private deployment layer with real
+   `remote-connect-mcp-*` hostnames, immutable image digests and an external
+   Secret. CI runs the non-deploying `--template` mode to ensure those
+   placeholders remain safe in the public repository.
 
 The overlay does not alter the existing Go Deployment or ChatGPT connector;
 it is a migration candidate until the separate canary and rollback acceptance

@@ -30,6 +30,9 @@ jobs:
       - name: Enforce event-driven wait paths
         shell: bash
         run: bash scripts/check-event-driven.sh
+      - name: Validate public Java production overlay template
+        shell: bash
+        run: bash scripts/validate-java-production-overlay.sh --template
 
   jvm-and-console:
     strategy:
