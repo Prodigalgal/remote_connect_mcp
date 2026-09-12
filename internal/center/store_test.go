@@ -365,6 +365,59 @@ func TestCreateTaskIdempotencySurvivesStoreRestart(t *testing.T) {
 	}
 }
 
+func TestWorkspaceMachineRejectsTaskOutsideRoot(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := store.Register(protocol.RegisterRequest{
+		Name: "workspace-machine", OS: "linux", Arch: "amd64",
+		DefaultCWD: "/srv/project", ScopeMode: protocol.ScopeModeWorkspace, WorkspaceRoot: "/srv/project",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateTask(protocol.CreateTaskRequest{MachineID: registered.MachineID, Command: "pwd", CWD: "src"}); err != nil {
+		t.Fatalf("relative workspace task was rejected: %v", err)
+	}
+	if _, err := store.CreateTask(protocol.CreateTaskRequest{MachineID: registered.MachineID, Command: "pwd", CWD: "/etc"}); err == nil {
+		t.Fatal("absolute path outside workspace was accepted")
+	}
+	if _, err := store.CreateTask(protocol.CreateTaskRequest{MachineID: registered.MachineID, Command: "pwd", CWD: "../../etc"}); err == nil {
+		t.Fatal("relative traversal outside workspace was accepted")
+	}
+}
+
+func TestWorkspaceRegistrationRejectsInvalidPolicy(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Register(protocol.RegisterRequest{
+		Name: "invalid-workspace", OS: "linux", Arch: "amd64",
+		DefaultCWD: "/tmp", ScopeMode: protocol.ScopeModeWorkspace, WorkspaceRoot: "/srv/project",
+	}); err == nil {
+		t.Fatal("workspace registration with outside default cwd was accepted")
+	}
+}
+
+func TestMachineCapabilitiesAreNormalizedAndReported(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := store.Register(protocol.RegisterRequest{
+		Name: "capability-machine", OS: "linux", Arch: "amd64", Capabilities: []string{"Desktop", "command", "desktop", "bad value"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine, ok := store.GetMachine(registered.MachineID, time.Now().UTC())
+	if !ok || len(machine.Capabilities) != 2 || machine.Capabilities[0] != "command" || machine.Capabilities[1] != "desktop" {
+		t.Fatalf("machine capabilities = %+v", machine)
+	}
+}
+
 func TestPollCoalescesHeartbeatPersistenceButPersistsTransitions(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenStore(dir)
@@ -421,6 +474,38 @@ func TestPollCoalescesHeartbeatPersistenceButPersistsTransitions(t *testing.T) {
 	persisted, ok := reopened.GetTask(task.ID)
 	if !ok || persisted.Status != protocol.TaskDispatching {
 		t.Fatalf("dispatched task transition was not persisted: %+v, ok=%v", persisted, ok)
+	}
+}
+
+func TestPollRefreshesRunningTaskLease(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := store.Register(protocol.RegisterRequest{Name: "lease-machine", OS: "linux", Arch: "amd64", DefaultCWD: "/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(protocol.CreateTaskRequest{MachineID: registered.MachineID, Command: "sleep 60"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Poll(registered.MachineID, protocol.PollRequest{AvailableSlots: 1})
+	if err != nil || first.Task == nil {
+		t.Fatalf("initial poll = %+v err=%v", first, err)
+	}
+	dispatched, _ := store.GetTask(task.ID)
+	if dispatched.LeaseUntil == nil {
+		t.Fatal("dispatched task has no lease")
+	}
+	firstLease := *dispatched.LeaseUntil
+	time.Sleep(5 * time.Millisecond)
+	if _, err := store.Poll(registered.MachineID, protocol.PollRequest{RunningTaskIDs: []string{task.ID}, AvailableSlots: 0}); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, _ := store.GetTask(task.ID)
+	if refreshed.Status != protocol.TaskRunning || refreshed.LeaseUntil == nil || !refreshed.LeaseUntil.After(firstLease) {
+		t.Fatalf("refreshed task = %+v", refreshed)
 	}
 }
 
@@ -552,5 +637,40 @@ func TestUpgradeOfferUsesShortRetryLease(t *testing.T) {
 	}
 	if listed.ID != campaign.ID {
 		t.Fatalf("listed campaign = %s, want %s", listed.ID, campaign.ID)
+	}
+}
+
+func TestUpgradeCanProceedWithDurableTaskOnly(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine, err := store.Register(protocol.RegisterRequest{
+		Name: "durable-upgrade", OS: "linux", Arch: "amd64", Version: "v1.0.0", Capabilities: []string{"durable_tasks"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(protocol.CreateTaskRequest{MachineID: machine.MachineID, Command: "sleep 60"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err := store.Poll(machine.MachineID, protocol.PollRequest{AvailableSlots: 1})
+	if err != nil || dispatch.Task == nil {
+		t.Fatalf("durable task dispatch = %+v err=%v", dispatch, err)
+	}
+	digest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	campaign, err := store.CreateUpgradeCampaign(CreateUpgradeCampaignRequest{
+		Version: "v2.0.0", MachineIDs: []string{machine.MachineID},
+		Artifacts: map[string]protocol.UpgradeArtifact{
+			"linux/amd64": {OS: "linux", Arch: "amd64", URL: "https://example.test/agent", SHA256: digest},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	poll, err := store.Poll(machine.MachineID, protocol.PollRequest{RunningTaskIDs: []string{task.ID}, AvailableSlots: 0})
+	if err != nil || poll.Upgrade == nil || poll.Upgrade.CampaignID != campaign.ID {
+		t.Fatalf("upgrade was blocked by durable task: %+v err=%v", poll.Upgrade, err)
 	}
 }

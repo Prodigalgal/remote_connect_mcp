@@ -1,0 +1,510 @@
+package com.prodigalgal.remoteconnectmcp.center;
+
+import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
+import com.prodigalgal.remoteconnectmcp.protocol.ArtifactResponse;
+import com.prodigalgal.remoteconnectmcp.protocol.OutputResponse;
+import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
+import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
+import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
+import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import java.nio.charset.StandardCharsets;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Arrays;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.transaction.support.TransactionTemplate;
+
+/**
+ * PostgreSQL task adapter. Every state transition and output append is one
+ * transaction; TaskService keeps the in-memory adapter for protocol tests and
+ * development without PostgreSQL.
+ */
+final class JdbcTaskStore {
+    /**
+     * Task projection used by list/poll/state paths.  Output and artifact
+     * payloads are deliberately represented as NULL so PostgreSQL never
+     * materializes potentially multi-megabyte bytea values for ordinary
+     * heartbeats, task lists, or state transitions.
+     */
+    static final String SELECT_TASK_META = """
+            SELECT t.task_id, t.agent_id, t.kind, t.required_capability, t.command_text,
+                   t.cwd, t.environment, t.desktop_action, t.timeout_seconds,
+                   t.idempotency_key, t.status, t.lease_until, t.attempt,
+                   t.output_bytes, t.output_truncated, t.error_text, t.exit_code, t.created_at,
+                   t.dispatched_at, t.started_at, t.finished_at, t.updated_at,
+                   NULL::bytea AS output_data, a.bytes AS artifact_bytes, a.mime_type AS artifact_mime,
+                   a.sha256 AS artifact_sha256, NULL::bytea AS artifact_data
+              FROM rcm_task t
+              LEFT JOIN rcm_task_artifact a ON a.task_id = t.task_id
+            """;
+
+    private final JdbcTemplate jdbc;
+    private final TransactionTemplate transactions;
+
+    JdbcTaskStore(JdbcTemplate jdbc, TransactionTemplate transactions) {
+        this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
+        this.transactions = Objects.requireNonNull(transactions, "transactions");
+    }
+
+    TaskView create(String taskId, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt) {
+        var normalizedKey = idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey;
+        try {
+            return transactions.execute(status -> {
+                if (normalizedKey != null) {
+                    var existing = findByIdempotency(machineId, normalizedKey, true);
+                    if (existing != null) {
+                        if (sameCommand(existing.command(), command)) {
+                            return new TaskView(existing);
+                        }
+                        throw new IllegalArgumentException("idempotency key is already used with different task parameters");
+                    }
+                }
+                var state = new TaskState(taskId, machineId, command, normalizedKey, createdAt);
+                insert(state);
+                return new TaskView(state);
+            });
+        } catch (DuplicateKeyException race) {
+            // Two MCP retries can pass the pre-check concurrently. The unique
+            // database key wins; re-read the committed row and preserve the
+            // idempotent response instead of exposing a spurious 500.
+            if (normalizedKey != null) {
+                var existing = findByIdempotency(machineId, normalizedKey, false);
+                if (existing != null && sameCommand(existing.command(), command)) {
+                    return new TaskView(existing);
+                }
+            }
+            throw race;
+        }
+    }
+
+    Optional<TaskState> find(String taskId) {
+        if (taskId == null || taskId.isBlank()) {
+            return Optional.empty();
+        }
+        return jdbc.query(SELECT_TASK_META + " WHERE t.task_id = ?", ps -> ps.setString(1, taskId.trim()),
+                rs -> rs.next() ? Optional.of(readState(rs)) : Optional.empty());
+    }
+
+    boolean isDurableTask(String machineId, String taskId) {
+        return Boolean.TRUE.equals(jdbc.query("""
+                SELECT (agent_id = ? AND status NOT IN (?, ?, ?) AND timeout_seconds <= 0)
+                  FROM rcm_task WHERE task_id = ?
+                """, ps -> {
+            ps.setString(1, machineId);
+            ps.setString(2, TaskStatus.COMPLETED);
+            ps.setString(3, TaskStatus.FAILED);
+            ps.setString(4, TaskStatus.CANCELED);
+            ps.setString(5, taskId);
+        }, rs -> rs.next() && rs.getBoolean(1)));
+    }
+
+    List<TaskView> list(int offset, int limit) {
+        return jdbc.query(SELECT_TASK_META + " ORDER BY t.created_at DESC, t.task_id DESC OFFSET ? LIMIT ?", ps -> {
+            ps.setInt(1, offset);
+            ps.setInt(2, limit);
+        }, (rs, rowNum) -> new TaskView(readState(rs)));
+    }
+
+    Map<String, Long> taskStatusCounts() {
+        var counts = new java.util.TreeMap<String, Long>();
+        jdbc.query("SELECT status, COUNT(*) AS count FROM rcm_task GROUP BY status ORDER BY status",
+                (rs, rowNum) -> {
+                    counts.put(rs.getString("status"), rs.getLong("count"));
+                    return null;
+                });
+        return Map.copyOf(counts);
+    }
+
+    long outputBytesTotal() {
+        var value = jdbc.queryForObject("SELECT COALESCE(SUM(output_bytes), 0) FROM rcm_task", Long.class);
+        return value == null ? 0L : value;
+    }
+
+    TaskView cancel(String taskId) {
+        return transactions.execute(status -> {
+            var task = findForUpdateMeta(taskId);
+            if (task == null) {
+                throw new IllegalArgumentException("task not found");
+            }
+            if (!TaskStatus.terminal(task.status())) {
+                var next = TaskStatus.QUEUED.equals(task.status()) ? TaskStatus.CANCELED : TaskStatus.CANCEL_REQUESTED;
+                var finished = TaskStatus.CANCELED.equals(next) ? Instant.now() : null;
+                jdbc.update("""
+                        UPDATE rcm_task
+                           SET status = ?, finished_at = ?, lease_until = ?, updated_at = CURRENT_TIMESTAMP
+                         WHERE task_id = ?
+                        """, next, timestamp(finished), TaskStatus.CANCELED.equals(next) ? null : task.leaseUntil(), task.id());
+                task.status(next);
+                task.finishedAt(finished);
+                if (TaskStatus.CANCELED.equals(next)) {
+                    task.leaseUntil(null);
+                }
+            }
+            return new TaskView(task);
+        });
+    }
+
+    PollResponse poll(String machineId, PollRequest request) {
+        var availableSlots = request == null || request.availableSlots() == null ? 0 : request.availableSlots();
+        var capabilities = request == null || request.availableCapabilities() == null ? List.<String>of() : request.availableCapabilities();
+        return transactions.execute(status -> {
+            recoverExpiredLeases();
+            renewRunningLeases(machineId, request);
+            var cancelIds = jdbc.queryForList("""
+                    SELECT task_id FROM rcm_task
+                     WHERE agent_id = ? AND status = ?
+                     ORDER BY created_at LIMIT 64
+                    """, String.class, machineId, TaskStatus.CANCEL_REQUESTED);
+            if (availableSlots <= 0 || capabilities.isEmpty()) {
+                return new PollResponse(null, cancelIds, null);
+            }
+            var queued = jdbc.query(SELECT_TASK_META + """
+                     WHERE t.agent_id = ? AND t.status = ?
+                     ORDER BY t.created_at, t.task_id
+                     LIMIT 64 FOR UPDATE OF t SKIP LOCKED
+                    """, ps -> {
+                ps.setString(1, machineId);
+                ps.setString(2, TaskStatus.QUEUED);
+            }, (rs, rowNum) -> readState(rs));
+            var selected = queued.stream()
+                    .filter(task -> capabilities.contains(task.command().requiredCapability()))
+                    .findFirst();
+            if (selected.isEmpty()) {
+                return new PollResponse(null, cancelIds, null);
+            }
+            var task = selected.get();
+            var now = Instant.now();
+            var lease = now.plus(TaskService.LEASE_DURATION);
+            jdbc.update("""
+                    UPDATE rcm_task
+                       SET status = ?, dispatched_at = ?, lease_until = ?, attempt = attempt + 1,
+                           updated_at = CURRENT_TIMESTAMP
+                     WHERE task_id = ? AND status = ?
+                    """, TaskStatus.DISPATCHING, timestamp(now), timestamp(lease), task.id(), TaskStatus.QUEUED);
+            task.status(TaskStatus.DISPATCHING);
+            task.dispatchedAt(now);
+            task.leaseUntil(lease);
+            return new PollResponse(task.command(), cancelIds, null);
+        });
+    }
+
+    TaskView updateState(String machineId, String taskId, TaskUpdateRequest update) {
+        return transactions.execute(status -> {
+            var task = findForUpdateMeta(taskId);
+            if (task == null) {
+                throw new IllegalArgumentException("task not found");
+            }
+            if (!task.machineId().equals(machineId)) {
+                throw new SecurityException("task does not belong to this machine");
+            }
+            var next = update.status().trim().toLowerCase();
+            if (!validStatus(next)) {
+                throw new IllegalArgumentException("unsupported task status: " + next);
+            }
+            if (!allowedTransition(task.status(), next)) {
+                throw new IllegalArgumentException("invalid task transition: " + task.status() + " -> " + next);
+            }
+            var started = update.startedAt() == null && TaskStatus.RUNNING.equals(next) && task.startedAt() == null
+                    ? Instant.now() : update.startedAt();
+            var finished = update.finishedAt() != null ? update.finishedAt()
+                    : (TaskStatus.terminal(next) && task.finishedAt() == null ? Instant.now() : task.finishedAt());
+            var error = update.error() == null || update.error().isBlank() ? task.error() : compactError(update.error());
+            var truncated = task.outputTruncated() || update.outputTruncated();
+            jdbc.update("""
+                    UPDATE rcm_task
+                       SET status = ?, exit_code = ?, error_text = ?, started_at = ?, finished_at = ?,
+                           output_truncated = ?, lease_until = ?, updated_at = CURRENT_TIMESTAMP
+                     WHERE task_id = ? AND agent_id = ?
+                    """, next, update.exitCode() == null ? task.exitCode() : update.exitCode(), error,
+                    timestamp(started), timestamp(finished), truncated,
+                    TaskStatus.terminal(next) ? null : task.leaseUntil(), taskId, machineId);
+            task.status(next);
+            if (update.exitCode() != null) task.exitCode(update.exitCode());
+            task.error(error);
+            task.startedAt(started);
+            task.finishedAt(finished);
+            task.outputTruncated(truncated);
+            if (TaskStatus.terminal(next)) task.leaseUntil(null);
+            return new TaskView(task);
+        });
+    }
+
+    OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data) {
+        if (offset < 0 || data == null) {
+            throw new IllegalArgumentException("offset and data are required");
+        }
+        return transactions.execute(status -> {
+            // Lock only the small task row.  The output blob stays in
+            // PostgreSQL; replay validation reads just the overlapping slice
+            // and a new chunk is appended in-place, avoiding an O(n) Java
+            // byte-array copy for every upload.
+            var task = findForUpdateMeta(taskId);
+            if (task == null) throw new IllegalArgumentException("task not found");
+            if (!task.machineId().equals(machineId)) throw new SecurityException("task does not belong to this machine");
+            var currentBytes = task.outputBytes();
+            if (offset > currentBytes) throw new IllegalArgumentException("output offset is ahead of the confirmed cursor");
+            if (offset > Integer.MAX_VALUE - 1L) throw new IllegalArgumentException("output offset is outside the supported range");
+            var overlap = Math.toIntExact(Math.min((long) data.length, currentBytes - offset));
+            if (overlap > 0) {
+                var existing = jdbc.query("""
+                        SELECT substring(output_data FROM ? FOR ?) AS output_data
+                          FROM rcm_task_output
+                         WHERE task_id = ?
+                        """, ps -> {
+                    ps.setInt(1, Math.toIntExact(offset) + 1);
+                    ps.setInt(2, overlap);
+                    ps.setString(3, taskId.trim());
+                }, rs -> rs.next() ? rs.getBytes("output_data") : null);
+                if (existing == null || existing.length != overlap || !Arrays.equals(existing, Arrays.copyOf(data, overlap))) {
+                    throw new IllegalArgumentException("output replay does not match the confirmed bytes");
+                }
+            }
+            var appendFrom = overlap;
+            var remaining = Math.max(0L, TaskService.MAX_OUTPUT_BYTES - currentBytes);
+            var appendLength = Math.toIntExact(Math.min((long) data.length - appendFrom, remaining));
+            if (appendLength > 0) {
+                var append = Arrays.copyOfRange(data, appendFrom, appendFrom + appendLength);
+                var outputRows = jdbc.update("""
+                        UPDATE rcm_task_output
+                           SET output_data = COALESCE(output_data, ''::bytea) || CAST(? AS bytea),
+                               updated_at = CURRENT_TIMESTAMP
+                         WHERE task_id = ?
+                        """, append, taskId);
+                if (outputRows == 0) {
+                    jdbc.update("INSERT INTO rcm_task_output(task_id, output_data, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", taskId, append);
+                }
+            }
+            if (appendFrom + appendLength < data.length) task.outputTruncated(true);
+            var nextOffset = currentBytes + appendLength;
+            task.outputBytes(nextOffset);
+            jdbc.update("UPDATE rcm_task SET output_bytes = ?, output_truncated = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+                    nextOffset, task.outputTruncated(), taskId);
+            return new OutputResponse(nextOffset);
+        });
+    }
+
+    OutputPage readOutput(String taskId, long cursor, int limit) {
+        if (taskId == null || taskId.isBlank()) throw new IllegalArgumentException("taskId is required");
+        if (cursor < 0 || cursor > Integer.MAX_VALUE - 1L) {
+            throw new IllegalArgumentException("cursor is outside the supported output range");
+        }
+        if (limit <= 0 || limit > TaskService.MAX_OUTPUT_PAGE) {
+            throw new IllegalArgumentException("limit is outside the supported output range");
+        }
+        var start = Math.toIntExact(cursor) + 1;
+        var slice = jdbc.query("""
+                SELECT t.output_bytes, t.output_truncated, t.status,
+                       COALESCE(substring(o.output_data FROM ? FOR ?), ''::bytea) AS output_data
+                  FROM rcm_task t
+                  LEFT JOIN rcm_task_output o ON o.task_id = t.task_id
+                 WHERE t.task_id = ?
+                """, ps -> {
+            ps.setInt(1, start);
+            ps.setInt(2, limit);
+            ps.setString(3, taskId.trim());
+        }, rs -> {
+            if (!rs.next()) throw new IllegalArgumentException("task not found");
+            var data = rs.getBytes("output_data");
+            return new OutputSlice(rs.getLong("output_bytes"), rs.getBoolean("output_truncated"),
+                    rs.getString("status"), data == null ? new byte[0] : data);
+        });
+        if (cursor > slice.outputBytes()) throw new IllegalArgumentException("cursor is ahead of output");
+        var next = cursor + slice.data().length;
+        return new OutputPage(slice.data(), cursor, next,
+                next < slice.outputBytes() || (!TaskStatus.terminal(slice.status()) && slice.truncated()));
+    }
+
+    ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256, byte[] data) {
+        return transactions.execute(status -> {
+            var task = findForUpdateMeta(taskId);
+            if (task == null) throw new IllegalArgumentException("task not found");
+            if (!task.machineId().equals(machineId)) throw new SecurityException("task does not belong to this machine");
+            var existing = jdbc.query("SELECT sha256 FROM rcm_task_artifact WHERE task_id = ? FOR UPDATE", ps -> ps.setString(1, taskId),
+                    rs -> rs.next() ? rs.getString(1) : null);
+            if (existing != null) {
+                if (!existing.equalsIgnoreCase(sha256)) throw new IllegalArgumentException("task already has a different artifact");
+                return new ArtifactResponse(data.length, sha256);
+            }
+            jdbc.update("""
+                    INSERT INTO rcm_task_artifact(task_id, mime_type, object_key, bytes, sha256, artifact_data, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """, taskId, mimeType, "inline:" + taskId, data.length, sha256, data);
+            task.artifactBytes(data.length);
+            task.artifactMime(mimeType);
+            task.artifactSha256(sha256);
+            task.artifactData(data);
+            return new ArtifactResponse(data.length, sha256);
+        });
+    }
+
+    Optional<TaskService.ArtifactData> readArtifact(String taskId) {
+        if (taskId == null || taskId.isBlank()) return Optional.empty();
+        return jdbc.query("SELECT mime_type, sha256, artifact_data FROM rcm_task_artifact WHERE task_id = ?",
+                ps -> ps.setString(1, taskId.trim()), rs -> {
+                    if (!rs.next()) return Optional.empty();
+                    var data = rs.getBytes("artifact_data");
+                    if (data == null || data.length == 0) return Optional.empty();
+                    return Optional.of(new TaskService.ArtifactData(rs.getString("mime_type"), rs.getString("sha256"), data));
+                });
+    }
+
+    private void insert(TaskState state) {
+        var command = state.command();
+        var env = new String(JsonCodec.write(command.env()), StandardCharsets.UTF_8);
+        var desktop = command.desktop() == null ? null : new String(JsonCodec.write(command.desktop()), StandardCharsets.UTF_8);
+        jdbc.update("""
+                INSERT INTO rcm_task (
+                    task_id, agent_id, kind, required_capability, command_text, cwd,
+                    environment, desktop_action, timeout_seconds, idempotency_key,
+                    status, lease_until, attempt, output_bytes, output_truncated,
+                    error_text, created_at, dispatched_at, started_at, finished_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, 0, 0, false, ?, ?, ?, ?, ?, ?)
+                """, state.id(), state.machineId(), command.kind().wireValue(), command.requiredCapability(), command.command(),
+                command.cwd(), env, desktop, command.timeoutSeconds(), state.idempotencyKey(), state.status(), null,
+                null, timestamp(state.createdAt()), null, null, null, timestamp(state.createdAt()));
+        jdbc.update("INSERT INTO rcm_task_output(task_id, output_data, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", state.id(), new byte[0]);
+    }
+
+    private TaskState findForUpdateMeta(String taskId) {
+        if (taskId == null || taskId.isBlank()) return null;
+        return jdbc.query(SELECT_TASK_META + " WHERE t.task_id = ? FOR UPDATE OF t", ps -> ps.setString(1, taskId.trim()),
+                rs -> rs.next() ? readState(rs) : null);
+    }
+
+    private TaskState findByIdempotency(String machineId, String key, boolean forUpdate) {
+        var suffix = forUpdate ? " FOR UPDATE OF t" : "";
+        return jdbc.query(SELECT_TASK_META + " WHERE t.agent_id = ? AND t.idempotency_key = ?" + suffix, ps -> {
+            ps.setString(1, machineId);
+            ps.setString(2, key);
+        }, rs -> rs.next() ? readState(rs) : null);
+    }
+
+    private void recoverExpiredLeases() {
+        jdbc.update("""
+                UPDATE rcm_task SET status = ?, lease_until = NULL, updated_at = CURRENT_TIMESTAMP
+                 WHERE status = ? AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
+                """, TaskStatus.QUEUED, TaskStatus.DISPATCHING);
+        jdbc.update("""
+                UPDATE rcm_task SET status = ?, lease_until = NULL, updated_at = CURRENT_TIMESTAMP
+                 WHERE status = ? AND timeout_seconds <= 0
+                   AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
+                """, TaskStatus.QUEUED, TaskStatus.RUNNING);
+        jdbc.update("""
+                UPDATE rcm_task SET status = ?, error_text = COALESCE(error_text, ?),
+                       finished_at = CURRENT_TIMESTAMP, lease_until = NULL, updated_at = CURRENT_TIMESTAMP
+                 WHERE status = ? AND timeout_seconds > 0
+                   AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
+                """, TaskStatus.FAILED, "agent lease expired before timed command completed", TaskStatus.RUNNING);
+    }
+
+    private void renewRunningLeases(String machineId, PollRequest request) {
+        if (request == null || request.runningTaskIds() == null || request.runningTaskIds().isEmpty()) return;
+        var now = Instant.now();
+        var lease = now.plus(TaskService.LEASE_DURATION);
+        // Bind one task id per statement instead of relying on a driver-specific
+        // ARRAY binding for `ANY (?)`; this works with both PostgreSQL JDBC and
+        // lightweight recording templates used by protocol tests.
+        for (var taskId : request.runningTaskIds()) {
+            if (taskId == null || taskId.isBlank()) continue;
+                    jdbc.update("""
+                        UPDATE rcm_task SET status = CASE WHEN status IN (?, ?) AND timeout_seconds <= 0 THEN ? ELSE status END,
+                        started_at = CASE WHEN status IN (?, ?) AND timeout_seconds <= 0 AND started_at IS NULL THEN ? ELSE started_at END,
+                        lease_until = CASE WHEN status IN (?, ?, ?) AND timeout_seconds <= 0 THEN ? ELSE lease_until END,
+                        updated_at = CURRENT_TIMESTAMP
+                     WHERE agent_id = ? AND task_id = ? AND timeout_seconds <= 0 AND status IN (?, ?, ?)
+                    """, TaskStatus.DISPATCHING, TaskStatus.QUEUED, TaskStatus.RUNNING,
+                    TaskStatus.DISPATCHING, TaskStatus.QUEUED, timestamp(now),
+                    TaskStatus.DISPATCHING, TaskStatus.RUNNING, TaskStatus.QUEUED, timestamp(lease), machineId, taskId,
+                    TaskStatus.DISPATCHING, TaskStatus.RUNNING, TaskStatus.QUEUED);
+        }
+    }
+
+    private static TaskState readState(ResultSet rs) throws SQLException {
+        var taskId = rs.getString("task_id");
+        var kind = TaskKind.fromWireValue(rs.getString("kind"));
+        var environment = readEnvironment(rs.getString("environment"));
+        var desktopJson = rs.getString("desktop_action");
+        var desktop = desktopJson == null || desktopJson.isBlank() ? null : JsonCodec.read(desktopJson.getBytes(StandardCharsets.UTF_8), TaskCommand.DesktopAction.class);
+        var command = new TaskCommand(taskId, kind, rs.getString("required_capability"), rs.getString("command_text"),
+                rs.getString("cwd"), environment, rs.getInt("timeout_seconds"), desktop, instant(rs, "created_at"));
+        var output = rs.getBytes("output_data");
+        var artifactBytesValue = rs.getObject("artifact_bytes");
+        var artifactBytes = artifactBytesValue instanceof Number number ? number.longValue() : 0L;
+        var artifactData = rs.getBytes("artifact_data");
+        var state = TaskState.restore(taskId, rs.getString("agent_id"), command, rs.getString("idempotency_key"), instant(rs, "created_at"),
+                rs.getString("status"), numberValue(rs.getObject("exit_code")), rs.getString("error_text"),
+                rs.getBoolean("output_truncated"), instant(rs, "dispatched_at"), instant(rs, "started_at"), instant(rs, "finished_at"),
+                instant(rs, "lease_until"), output == null ? new byte[0] : output,
+                artifactBytes, rs.getString("artifact_mime"), rs.getString("artifact_sha256"),
+                artifactData == null ? new byte[0] : artifactData);
+        state.outputBytes(rs.getLong("output_bytes"));
+        return state;
+    }
+
+    private static Integer numberValue(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> readEnvironment(String value) {
+        if (value == null || value.isBlank()) return Map.of();
+        var raw = JsonCodec.read(value.getBytes(StandardCharsets.UTF_8), Map.class);
+        var result = new java.util.LinkedHashMap<String, String>();
+        raw.forEach((key, item) -> result.put(String.valueOf(key), item == null ? "" : String.valueOf(item)));
+        return Map.copyOf(result);
+    }
+
+    private static Instant instant(ResultSet rs, String column) throws SQLException {
+        var timestamp = rs.getTimestamp(column);
+        return timestamp == null ? null : timestamp.toInstant();
+    }
+
+    private static Timestamp timestamp(Instant value) {
+        return value == null ? null : Timestamp.from(value);
+    }
+
+    private static boolean sameCommand(TaskCommand left, TaskCommand right) {
+        return left.kind() == right.kind()
+                && Objects.equals(left.requiredCapability(), right.requiredCapability())
+                && Objects.equals(left.command(), right.command())
+                && Objects.equals(left.cwd(), right.cwd())
+                && Objects.equals(left.env(), right.env())
+                && left.timeoutSeconds() == right.timeoutSeconds()
+                && Objects.equals(left.desktop(), right.desktop());
+    }
+
+    private static boolean validStatus(String status) {
+        return TaskStatus.DISPATCHING.equals(status) || TaskStatus.RUNNING.equals(status)
+                || TaskStatus.COMPLETED.equals(status) || TaskStatus.FAILED.equals(status) || TaskStatus.CANCELED.equals(status);
+    }
+
+    private static boolean allowedTransition(String current, String next) {
+        // Retried HTTP updates can arrive after Center committed the first
+        // request but before its response reached the Agent.
+        if (Objects.equals(current, next)) {
+            return true;
+        }
+        if (TaskStatus.QUEUED.equals(current)) return TaskStatus.CANCELED.equals(next) || TaskStatus.DISPATCHING.equals(next);
+        if (TaskStatus.DISPATCHING.equals(current)) return TaskStatus.RUNNING.equals(next) || TaskStatus.FAILED.equals(next) || TaskStatus.CANCELED.equals(next);
+        if (TaskStatus.RUNNING.equals(current) || TaskStatus.CANCEL_REQUESTED.equals(current)) {
+            return TaskStatus.COMPLETED.equals(next) || TaskStatus.FAILED.equals(next) || TaskStatus.CANCELED.equals(next);
+        }
+        return false;
+    }
+
+    private static String compactError(String error) {
+        var value = error.trim();
+        return value.length() <= 4096 ? value : value.substring(0, 4096);
+    }
+
+    private record OutputSlice(long outputBytes, boolean truncated, String status, byte[] data) {
+    }
+}

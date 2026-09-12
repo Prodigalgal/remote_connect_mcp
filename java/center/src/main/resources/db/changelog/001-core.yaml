@@ -1,0 +1,292 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-core
+      author: remote-connect-mcp
+      labels: core
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - createTable:
+            tableName: rcm_agent
+            columns:
+              - column:
+                  name: agent_id
+                  type: varchar(128)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: machine_name
+                  type: varchar(512)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: host_id
+                  type: varchar(512)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: hostname
+                  type: varchar(255)
+              - column:
+                  name: os
+                  type: varchar(64)
+              - column:
+                  name: arch
+                  type: varchar(64)
+              - column:
+                  name: version
+                  type: varchar(128)
+              - column:
+                  name: default_cwd
+                  type: text
+              - column:
+                  name: scope_mode
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: workspace_root
+                  type: text
+              - column:
+                  name: capabilities
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: token_hash
+                  type: char(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_seen_at
+                  type: timestamptz
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - createIndex:
+            indexName: idx_rcm_agent_host
+            tableName: rcm_agent
+            columns:
+              - column:
+                  name: host_id
+              - column:
+                  name: updated_at
+        - createTable:
+            tableName: rcm_enrollment_token
+            columns:
+              - column:
+                  name: token_id
+                  type: varchar(128)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: token_hash
+                  type: char(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: requested_name
+                  type: varchar(512)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: max_uses
+                  type: integer
+                  constraints:
+                    nullable: false
+              - column:
+                  name: uses
+                  type: integer
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: timestamptz
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_used_at
+                  type: timestamptz
+              - column:
+                  name: revoked_at
+                  type: timestamptz
+        - createIndex:
+            indexName: idx_rcm_enrollment_active
+            tableName: rcm_enrollment_token
+            columns:
+              - column:
+                  name: requested_name
+              - column:
+                  name: expires_at
+        - createTable:
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: task_id
+                  type: varchar(128)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: agent_id
+                  type: varchar(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: kind
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: required_capability
+                  type: varchar(64)
+              - column:
+                  name: command_text
+                  type: text
+              - column:
+                  name: cwd
+                  type: text
+              - column:
+                  name: environment
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: desktop_action
+                  type: jsonb
+              - column:
+                  name: timeout_seconds
+                  type: integer
+                  constraints:
+                    nullable: false
+              - column:
+                  name: idempotency_key
+                  type: varchar(256)
+              - column:
+                  name: status
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: lease_until
+                  type: timestamptz
+              - column:
+                  name: attempt
+                  type: integer
+                  constraints:
+                    nullable: false
+              - column:
+                  name: output_bytes
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: output_truncated
+                  type: boolean
+                  constraints:
+                    nullable: false
+              - column:
+                  name: error_text
+                  type: text
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: started_at
+                  type: timestamptz
+              - column:
+                  name: finished_at
+                  type: timestamptz
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: rcm_task
+            baseColumnNames: agent_id
+            constraintName: fk_rcm_task_agent
+            referencedTableName: rcm_agent
+            referencedColumnNames: agent_id
+            onDelete: CASCADE
+        - addUniqueConstraint:
+            tableName: rcm_task
+            columnNames: agent_id, idempotency_key
+            constraintName: uq_rcm_task_idempotency
+        - createIndex:
+            indexName: idx_rcm_task_dispatch
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: agent_id
+              - column:
+                  name: status
+              - column:
+                  name: created_at
+        - createTable:
+            tableName: rcm_task_artifact
+            columns:
+              - column:
+                  name: task_id
+                  type: varchar(128)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: mime_type
+                  type: varchar(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: object_key
+                  type: varchar(512)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: bytes
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sha256
+                  type: char(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: rcm_task_artifact
+            baseColumnNames: task_id
+            constraintName: fk_rcm_artifact_task
+            referencedTableName: rcm_task
+            referencedColumnNames: task_id
+            onDelete: CASCADE
+      rollback:
+        - dropTable:
+            tableName: rcm_task_artifact
+        - dropTable:
+            tableName: rcm_task
+        - dropTable:
+            tableName: rcm_enrollment_token
+        - dropTable:
+            tableName: rcm_agent

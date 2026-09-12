@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Production overlay for the Java Center/React migration candidate.  The
+# sibling java-center directory is a base; secrets remain external to Git.
+resources:
+  - ../../java-center
+
+images:
+  - name: ghcr.io/replace-me/remote-connect-mcp-center-java
+    newName: ghcr.io/prodigalgal/remote-connect-mcp-center-java
+    newTag: v0.1.0
+  - name: ghcr.io/replace-me/remote-connect-mcp-console
+    newName: ghcr.io/prodigalgal/remote-connect-mcp-console
+    newTag: v0.1.0
+
+patches:
+  - path: center-production-patch.yaml
+  - path: console-production-patch.yaml
+  - path: route-production-patch.yaml

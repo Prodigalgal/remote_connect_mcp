@@ -1,0 +1,17 @@
+databaseChangeLog:
+  - include:
+      file: db/changelog/001-core.yaml
+  - include:
+      file: db/changelog/002-task-output.yaml
+  - include:
+      file: db/changelog/003-task-state-fields.yaml
+  - include:
+      file: db/changelog/004-artifact-data.yaml
+  - include:
+      file: db/changelog/005-upgrades.yaml
+  - include:
+      file: db/changelog/006-agent-config.yaml
+  - include:
+      file: db/changelog/007-projects-worktrees.yaml
+  - include:
+      file: db/changelog/008-agent-name-unique.yaml

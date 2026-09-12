@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - service.yaml
+  - migration-job.yaml
+  - deployment.yaml
+  - console.yaml
+  - routes.yaml
+images:
+  - name: ghcr.io/replace-me/remote-connect-mcp-center-java
+    newName: ghcr.io/replace-me/remote-connect-mcp-center-java
+    newTag: 0.1.0
+  - name: ghcr.io/replace-me/remote-connect-mcp-console
+    newName: ghcr.io/replace-me/remote-connect-mcp-console
+    newTag: 0.1.0

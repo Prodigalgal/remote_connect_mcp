@@ -1,0 +1,146 @@
+databaseChangeLog:
+  - changeSet:
+      id: 005-upgrades
+      author: remote-connect-mcp
+      labels: upgrades
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - createTable:
+            tableName: rcm_upgrade_campaign
+            columns:
+              - column:
+                  name: campaign_id
+                  type: varchar(180)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: version
+                  type: varchar(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: canary_count
+                  type: integer
+                  constraints:
+                    nullable: false
+              - column:
+                  name: batch_size
+                  type: integer
+                  constraints:
+                    nullable: false
+              - column:
+                  name: active_limit
+                  type: integer
+                  constraints:
+                    nullable: false
+              - column:
+                  name: artifacts
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: finished_at
+                  type: timestamptz
+        - createIndex:
+            indexName: idx_rcm_upgrade_campaign_status
+            tableName: rcm_upgrade_campaign
+            columns:
+              - column:
+                  name: status
+              - column:
+                  name: created_at
+        - createTable:
+            tableName: rcm_upgrade_target
+            columns:
+              - column:
+                  name: campaign_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: target_index
+                  type: integer
+                  constraints:
+                    nullable: false
+              - column:
+                  name: agent_id
+                  type: varchar(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: error_text
+                  type: text
+              - column:
+                  name: attempts
+                  type: integer
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: finished_at
+                  type: timestamptz
+              - column:
+                  name: lease_until
+                  type: timestamptz
+        - addPrimaryKey:
+            constraintName: pk_rcm_upgrade_target
+            tableName: rcm_upgrade_target
+            columnNames: campaign_id, agent_id
+        - addForeignKeyConstraint:
+            baseTableName: rcm_upgrade_target
+            baseColumnNames: campaign_id
+            constraintName: fk_rcm_upgrade_target_campaign
+            referencedTableName: rcm_upgrade_campaign
+            referencedColumnNames: campaign_id
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: rcm_upgrade_target
+            baseColumnNames: agent_id
+            constraintName: fk_rcm_upgrade_target_agent
+            referencedTableName: rcm_agent
+            referencedColumnNames: agent_id
+            onDelete: CASCADE
+        - createIndex:
+            indexName: idx_rcm_upgrade_target_dispatch
+            tableName: rcm_upgrade_target
+            columns:
+              - column:
+                  name: agent_id
+              - column:
+                  name: status
+              - column:
+                  name: lease_until
+      rollback:
+        - dropTable:
+            tableName: rcm_upgrade_target
+        - dropTable:
+            tableName: rcm_upgrade_campaign

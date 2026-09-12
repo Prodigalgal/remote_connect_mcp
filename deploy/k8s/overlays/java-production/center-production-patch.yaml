@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: remote-connect-mcp-java-center
+  namespace: remote-connect-mcp
+spec:
+  template:
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        infra.mnnu/node-class: core-public
+      containers:
+        - name: center
+          env:
+            - name: RCM_CENTER_VERSION
+              value: v0.1.0
+            - name: RCM_CENTER_AGENT_WEBSOCKET_ENABLED
+              value: "true"

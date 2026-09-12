@@ -1,0 +1,23 @@
+# Reproducible Center native-image build. The CI workflow pins the builder
+# digest; override BUILDER_IMAGE only when updating that digest intentionally.
+# Pin the multi-architecture builder manifest.  Update intentionally when
+# moving the GraalVM line and record the new digest in the release notes.
+ARG BUILDER_IMAGE=ghcr.io/graalvm/native-image-community:25@sha256:0d936f32bb8acb5bc60c41b33e05f064d7a6aaf36b726538296c54949bd4a3c0
+FROM ${BUILDER_IMAGE} AS build
+ARG RCM_CI_BUILD=false
+WORKDIR /src
+RUN test "$RCM_CI_BUILD" = "true" || (echo "Native Image Docker builds are GitHub Actions-only" >&2 && exit 2)
+ENV GITHUB_ACTIONS=${RCM_CI_BUILD}
+COPY . .
+RUN chmod +x ./gradlew && ./gradlew :center:nativeCompile --no-daemon --no-parallel
+
+FROM debian:13-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 65532 --no-create-home rcm
+USER 65532:65532
+COPY --from=build /src/center/build/native/nativeCompile/ /opt/rcm-center/
+RUN chmod 0755 /opt/rcm-center/rcm-center
+EXPOSE 8080
+ENTRYPOINT ["/opt/rcm-center/rcm-center"]

@@ -1,0 +1,33 @@
+databaseChangeLog:
+  - changeSet:
+      id: 006-agent-config
+      author: remote-connect-mcp
+      labels: agent-config
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_agent
+            columns:
+              - column:
+                  name: config_generation
+                  type: bigint
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: runtime_config
+                  type: jsonb
+                  defaultValueComputed: "'{}'::jsonb"
+                  constraints:
+                    nullable: false
+      rollback:
+        - dropColumn:
+            tableName: rcm_agent
+            columnName: runtime_config
+        - dropColumn:
+            tableName: rcm_agent
+            columnName: config_generation

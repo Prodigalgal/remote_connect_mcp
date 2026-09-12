@@ -1,0 +1,348 @@
+name: Java Native Release
+
+on:
+  push:
+    tags: ["java-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example v0.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: java-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.coordinates.outputs.version }}
+      tag: ${{ steps.coordinates.outputs.tag }}
+      publish: ${{ steps.coordinates.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Repository hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/scan-repository-secrets.sh
+      - name: Resolve release coordinates
+        id: coordinates
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "${REF_NAME}" == java-v* ]]; then
+            version="${REF_NAME#java-}"
+            tag="${REF_NAME}"
+            publish=true
+          elif [[ -n "${INPUT_VERSION}" ]]; then
+            version="${INPUT_VERSION#java-}"
+            [[ "${version}" == v* ]] || { echo "version must start with v (for example v0.2.0)" >&2; exit 1; }
+            tag="java-${version}"
+            # Manual dispatch is a build-only run. It must not create or
+            # overwrite a GitHub Release from an unverified branch.
+            publish=false
+          else
+            echo 'This workflow must run on a java-v* tag or workflow_dispatch with version=vX.Y.Z' >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "publish=${publish}" >> "${GITHUB_OUTPUT}"
+
+  jvm-and-console:
+    needs: prepare
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: remote_connect_mcp
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d remote_connect_mcp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      RCM_TEST_POSTGRES_URL: jdbc:postgresql://127.0.0.1:5432/remote_connect_mcp
+      RCM_TEST_POSTGRES_USERNAME: postgres
+      RCM_TEST_POSTGRES_PASSWORD: postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Java tests
+        working-directory: java
+        run: bash ./gradlew test --no-daemon
+      - name: PostgreSQL and Liquibase integration gate
+        working-directory: java
+        run: bash ./gradlew :center:test --tests '*PostgresIntegrationTest' --no-daemon
+      - name: PostgreSQL backup and restore gate
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: '5432'
+          PGDATABASE: remote_connect_mcp
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          RCM_BACKUP_OUTPUT_DIR: ${{ runner.temp }}/rcm-backups
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          bash ./scripts/backup-postgres.sh
+          dump="$(find "${RCM_BACKUP_OUTPUT_DIR}" -maxdepth 1 -name '*.dump' -print -quit)"
+          test -n "${dump}"
+          pg_restore --list "${dump}" >/dev/null
+          restore_db=remote_connect_mcp_restore
+          dropdb --if-exists --host "${PGHOST}" --port "${PGPORT}" --username "${PGUSER}" "${restore_db}"
+          createdb --host "${PGHOST}" --port "${PGPORT}" --username "${PGUSER}" "${restore_db}"
+          pg_restore --exit-on-error --no-owner --no-acl --host "${PGHOST}" --port "${PGPORT}" --username "${PGUSER}" --dbname "${restore_db}" "${dump}"
+          test "$(psql --host "${PGHOST}" --port "${PGPORT}" --username "${PGUSER}" --dbname "${restore_db}" -Atqc "SELECT to_regclass('public.rcm_agent')")" = 'rcm_agent'
+          dropdb --if-exists --host "${PGHOST}" --port "${PGPORT}" --username "${PGUSER}" "${restore_db}"
+      - name: React production build
+        working-directory: web
+        run: pnpm install --frozen-lockfile && pnpm build
+      - name: Validate browser worker syntax
+        run: node --check scripts/browser-worker.mjs
+
+  linux-native:
+    needs: [prepare, jvm-and-console]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Build and execute each Linux artifact on a runner with the same
+          # architecture.  This keeps the native smoke tests honest; an
+          # arm64 ELF must not be started directly by an amd64 shell.
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+      - name: Build target Linux Native Images
+        shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zip
+          mkdir -p "out/${TARGET_ARCH}"
+          docker buildx build --platform "linux/${TARGET_ARCH}" --target build \
+            --build-arg RCM_CI_BUILD=true \
+            --file java/Dockerfile.center.native --output "type=local,dest=out/center-${TARGET_ARCH}" java
+          docker buildx build --platform "linux/${TARGET_ARCH}" --target build \
+            --build-arg RCM_CI_BUILD=true \
+            --file java/Dockerfile.agent.native --output "type=local,dest=out/agent-${TARGET_ARCH}" java
+          center="$(find "out/center-${TARGET_ARCH}" -type f -name rcm-center -print -quit)"
+          agent="$(find "out/agent-${TARGET_ARCH}" -type f -name rcm-agent -print -quit)"
+          test -n "${center}" && test -n "${agent}"
+          center_bundle="out/${TARGET_ARCH}/center"
+          agent_bundle="out/${TARGET_ARCH}/agent"
+          mkdir -p "${center_bundle}" "${agent_bundle}"
+          cp "${center}" "${center_bundle}/rcm-center"
+          cp "${agent}" "${agent_bundle}/rcm-agent"
+          # Java Desktop may emit libawt/libfontmanager and other shared
+          # objects. Keep each executable with its own runtime libraries and
+          # never merge Center/Agent files with the same SONAME.
+          find "$(dirname "${center}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "${center_bundle}/" \;
+          find "$(dirname "${agent}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "${agent_bundle}/" \;
+          cp "${center}" "out/${TARGET_ARCH}/rcm-center"
+          cp "${agent}" "out/${TARGET_ARCH}/rcm-agent"
+          cp scripts/install-java-agent.sh deploy/systemd/remote-connect-mcp-agent.service deploy/systemd/agent.env.example README.md LICENSE NOTICE "out/${TARGET_ARCH}/"
+          chmod +x "out/${TARGET_ARCH}/rcm-center" "out/${TARGET_ARCH}/rcm-agent" "${center_bundle}/rcm-center" "${agent_bundle}/rcm-agent" "out/${TARGET_ARCH}/install-java-agent.sh"
+          (cd "${center_bundle}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS)
+          (cd "${agent_bundle}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS)
+          # Verify the actual target binaries, not only the JVM build or the
+          # image assembly.  The second smoke test exercises one-time
+          # enrollment, identity-only restart and a real command round trip.
+          RCM_SMOKE_PORT=18183 bash scripts/smoke-java.sh "${center_bundle}/rcm-center"
+          RCM_SMOKE_RESOURCE_REPORT="${RUNNER_TEMP}/rcm-agent-resource-${TARGET_ARCH}.json" \
+            bash scripts/smoke-java-agent.sh "${center_bundle}/rcm-center" "${agent_bundle}/rcm-agent" 18184
+          bash scripts/smoke-java-websocket.sh "${center_bundle}/rcm-center" 18185
+          agent_archive="remote-connect-mcp-agent-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          center_archive="remote-connect-mcp-center-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          agent_files=$(cd "${agent_bundle}" && find . -maxdepth 1 -type f \( -name 'rcm-agent' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
+          center_files=$(cd "${center_bundle}" && find . -maxdepth 1 -type f \( -name 'rcm-center' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
+          (cd "${agent_bundle}" && zip -q -j "${GITHUB_WORKSPACE}/${agent_archive}" ${agent_files})
+          (cd "${center_bundle}" && zip -q -j "${GITHUB_WORKSPACE}/${center_archive}" ${center_files})
+          sha256sum "${agent_archive}" > "${agent_archive}.sha256"
+          sha256sum "${center_archive}" > "${center_archive}.sha256"
+          bash scripts/verify-native-bundle.sh "${agent_archive}"
+          tar -C "out" -czf "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" "${TARGET_ARCH}"
+          sha256sum "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" > "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz.sha256"
+      - name: Generate native artifact attestation
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            out/${{ matrix.arch }}/rcm-center
+            out/${{ matrix.arch }}/rcm-agent
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: java-linux-${{ matrix.arch }}
+          path: |
+            remote-connect-mcp-*.tar.gz
+            remote-connect-mcp-*.tar.gz.sha256
+            remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.zip
+            remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-connect-mcp-center-*-linux-${{ matrix.arch }}.zip
+            remote-connect-mcp-center-*-linux-${{ matrix.arch }}.zip.sha256
+          if-no-files-found: error
+      - name: Upload Linux Agent resource report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-linux-${{ matrix.arch }}-resource
+          path: ${{ runner.temp }}/rcm-agent-resource-${{ matrix.arch }}.json
+          if-no-files-found: error
+
+  windows-native:
+    needs: [prepare, jvm-and-console]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: graalvm-community
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: false
+      - name: Build Windows amd64 Native Images
+        working-directory: java
+        shell: pwsh
+        # Native Image can consume several GiB per image. Serialize the two
+        # images so the Windows hosted runner does not page/OOM.
+        run: .\gradlew.bat :center:nativeCompile :agent:nativeCompile --no-daemon --no-parallel
+      - name: Native MCP and Agent smoke tests
+        shell: pwsh
+        run: |
+          .\scripts\smoke-java.ps1 -CenterBinary .\java\center\build\native\nativeCompile\rcm-center.exe -Port 18185
+          .\scripts\smoke-java-agent.ps1 -CenterBinary .\java\center\build\native\nativeCompile\rcm-center.exe -AgentBinary .\java\agent\build\native\nativeCompile\rcm-agent.exe -Port 18186 -ResourceReport "$env:RUNNER_TEMP\rcm-agent-resource-windows-amd64.json"
+          .\scripts\smoke-java-websocket.ps1 -CenterBinary .\java\center\build\native\nativeCompile\rcm-center.exe -Port 18187
+      - name: Package Windows amd64 artifacts
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD 'java-release-windows-amd64'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $centerOut = Join-Path $out 'center'
+          $agentOut = Join-Path $out 'agent'
+          New-Item -ItemType Directory -Force -Path $centerOut, $agentOut | Out-Null
+          Copy-Item java/center/build/native/nativeCompile/rcm-center.exe $centerOut/rcm-center.exe
+          Copy-Item java/agent/build/native/nativeCompile/rcm-agent.exe $agentOut/rcm-agent.exe
+          Get-ChildItem java/center/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $centerOut
+          Get-ChildItem java/agent/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $agentOut
+          Copy-Item scripts/install-java-agent.ps1, README.md, LICENSE, NOTICE $out
+          foreach ($bundle in @($centerOut, $agentOut)) {
+            Get-FileHash (Get-ChildItem $bundle -File | Where-Object { $_.Extension -in '.exe','.dll' }) -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content (Join-Path $bundle 'SHA256SUMS') -Encoding ascii
+          }
+          # The Agent updater consumes a flat bundle so the executable and all
+          # Native Image DLLs are replaced atomically.  Keep this asset name in
+          # sync with UpgradeService.resolveReleaseArtifact().
+          $agentArchive = Join-Path $PWD "remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"
+          Push-Location $agentOut
+          try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath $agentArchive -Force }
+          finally { Pop-Location }
+          (Get-FileHash "remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip.sha256" -Encoding ascii
+          & "$PWD/scripts/verify-native-bundle.ps1" -AgentArchive "$PWD/remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"
+          Compress-Archive -Path "$out/*" -DestinationPath "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Force
+          (Get-FileHash "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip.sha256" -Encoding ascii
+      - name: Generate native artifact attestation
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            java-release-windows-amd64/center/rcm-center.exe
+            java-release-windows-amd64/agent/rcm-agent.exe
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: java-windows-amd64
+          path: |
+            remote-connect-mcp-*.zip
+            remote-connect-mcp-*.zip.sha256
+          if-no-files-found: error
+      - name: Upload Windows Agent resource report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-windows-amd64-resource
+          path: ${{ runner.temp }}/rcm-agent-resource-windows-amd64.json
+          if-no-files-found: error
+
+  images:
+    needs: [prepare, jvm-and-console]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish Center and Agent images
+        env:
+          IMAGE_OWNER: prodigalgal
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64,linux/arm64 --build-arg RCM_CI_BUILD=true --file java/Dockerfile.center.native --tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-center-java:${RELEASE_VERSION}" --tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-center-java:latest" --provenance=true --sbom=true --push java
+          docker buildx build --platform linux/amd64,linux/arm64 --build-arg RCM_CI_BUILD=true --file java/Dockerfile.agent.native --tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-agent-java:${RELEASE_VERSION}" --tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-agent-java:latest" --provenance=true --sbom=true --push java
+          docker buildx build --platform linux/amd64,linux/arm64 --build-arg RCM_CI_BUILD=true --file web/Dockerfile --tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-console:${RELEASE_VERSION}" --tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-console:latest" --provenance=true --sbom=true --push web
+
+  release:
+    # Do not publish the GitHub Release until the multi-arch images have also
+    # finished pushing; the Release tag and GHCR image tags are one atomic
+    # rollout unit for Center/Agent upgrades.
+    needs: [prepare, linux-native, windows-native, images]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: release
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' assets < <(find release -maxdepth 1 -type f \( -name '*.zip' -o -name '*.zip.sha256' -o -name '*.tar.gz' -o -name '*.tar.gz.sha256' \) -print0 | sort -z)
+          ((${#assets[@]} > 0))
+          gh release create "${{ needs.prepare.outputs.tag }}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --generate-notes --verify-tag

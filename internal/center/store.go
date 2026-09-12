@@ -16,56 +16,75 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Prodigalgal/remote_connect_mcp/internal/desktop"
 	"github.com/Prodigalgal/remote_connect_mcp/internal/protocol"
+	"github.com/Prodigalgal/remote_connect_mcp/internal/workspace"
 )
 
 type Machine struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Hostname   string    `json:"hostname"`
-	OS         string    `json:"os"`
-	Arch       string    `json:"arch"`
-	Version    string    `json:"version"`
-	DefaultCWD string    `json:"default_cwd"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	LastSeen   time.Time `json:"last_seen"`
-	TokenHash  string    `json:"token_hash,omitempty"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	HostID        string    `json:"host_id,omitempty"`
+	Hostname      string    `json:"hostname"`
+	OS            string    `json:"os"`
+	Arch          string    `json:"arch"`
+	Version       string    `json:"version"`
+	DefaultCWD    string    `json:"default_cwd"`
+	ScopeMode     string    `json:"scope_mode,omitempty"`
+	WorkspaceRoot string    `json:"workspace_root,omitempty"`
+	Capabilities  []string  `json:"capabilities,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	LastSeen      time.Time `json:"last_seen"`
+	TokenHash     string    `json:"token_hash,omitempty"`
 }
 
 type MachineView struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Hostname   string    `json:"hostname"`
-	OS         string    `json:"os"`
-	Arch       string    `json:"arch"`
-	Version    string    `json:"version"`
-	DefaultCWD string    `json:"default_cwd"`
-	CreatedAt  time.Time `json:"created_at"`
-	LastSeen   time.Time `json:"last_seen"`
-	Online     bool      `json:"online"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	HostID        string    `json:"host_id,omitempty"`
+	Hostname      string    `json:"hostname"`
+	OS            string    `json:"os"`
+	Arch          string    `json:"arch"`
+	Version       string    `json:"version"`
+	DefaultCWD    string    `json:"default_cwd"`
+	ScopeMode     string    `json:"scope_mode"`
+	WorkspaceRoot string    `json:"workspace_root,omitempty"`
+	Capabilities  []string  `json:"capabilities,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	LastSeen      time.Time `json:"last_seen"`
+	Online        bool      `json:"online"`
 }
 
 type Task struct {
-	ID             string            `json:"id"`
-	MachineID      string            `json:"machine_id"`
-	Command        string            `json:"command"`
-	CWD            string            `json:"cwd,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
-	IdempotencyKey string            `json:"idempotency_key,omitempty"`
-	Status         string            `json:"status"`
-	ExitCode       *int              `json:"exit_code,omitempty"`
-	Error          string            `json:"error,omitempty"`
-	OutputBytes    int64             `json:"output_bytes"`
-	CreatedAt      time.Time         `json:"created_at"`
-	DispatchedAt   *time.Time        `json:"dispatched_at,omitempty"`
-	StartedAt      *time.Time        `json:"started_at,omitempty"`
-	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
-	LeaseUntil     *time.Time        `json:"lease_until,omitempty"`
+	ID                 string                  `json:"id"`
+	MachineID          string                  `json:"machine_id"`
+	Kind               string                  `json:"kind,omitempty"`
+	RequiredCapability string                  `json:"required_capability,omitempty"`
+	Command            string                  `json:"command"`
+	CWD                string                  `json:"cwd,omitempty"`
+	Env                map[string]string       `json:"env,omitempty"`
+	TimeoutSeconds     int                     `json:"timeout_seconds,omitempty"`
+	IdempotencyKey     string                  `json:"idempotency_key,omitempty"`
+	Desktop            *protocol.DesktopAction `json:"desktop,omitempty"`
+	Status             string                  `json:"status"`
+	ExitCode           *int                    `json:"exit_code,omitempty"`
+	Error              string                  `json:"error,omitempty"`
+	OutputBytes        int64                   `json:"output_bytes"`
+	OutputTruncated    bool                    `json:"output_truncated,omitempty"`
+	CreatedAt          time.Time               `json:"created_at"`
+	DispatchedAt       *time.Time              `json:"dispatched_at,omitempty"`
+	StartedAt          *time.Time              `json:"started_at,omitempty"`
+	FinishedAt         *time.Time              `json:"finished_at,omitempty"`
+	LeaseUntil         *time.Time              `json:"lease_until,omitempty"`
+	ArtifactMIME       string                  `json:"artifact_mime,omitempty"`
+	ArtifactBytes      int64                   `json:"artifact_bytes,omitempty"`
+	ArtifactSHA256     string                  `json:"artifact_sha256,omitempty"`
 }
 
 const (
+	taskLeaseDuration = 2 * time.Minute
+
 	AccessTokenMCP        = "mcp"
 	AccessTokenAdmin      = "admin"
 	AccessTokenEnrollment = "enrollment"
@@ -81,6 +100,8 @@ const (
 	UpgradeInstalling  = "installing"
 	UpgradeSucceeded   = "completed"
 	UpgradeFailed      = "failed"
+
+	taskArtifactMaxBytes = 8 * 1024 * 1024
 )
 
 type AccessTokenState struct {
@@ -169,6 +190,7 @@ type Store struct {
 	dir             string
 	statePath       string
 	outputDir       string
+	artifactDir     string
 	state           persistedState
 	changed         chan struct{}
 	lastPersistedAt time.Time
@@ -186,8 +208,12 @@ func OpenStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(outputDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create center state directory: %w", err)
 	}
+	artifactDir := filepath.Join(dir, "task-artifacts")
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create center artifact directory: %w", err)
+	}
 	s := &Store{
-		dir: dir, statePath: filepath.Join(dir, "state.json"), outputDir: outputDir,
+		dir: dir, statePath: filepath.Join(dir, "state.json"), outputDir: outputDir, artifactDir: artifactDir,
 		state: persistedState{
 			Machines: map[string]*Machine{}, Tasks: map[string]*Task{}, Upgrades: map[string]*UpgradeCampaign{}, AccessTokens: map[string]*AccessTokenState{}, Enrollments: map[string]*EnrollmentToken{},
 		},
@@ -548,6 +574,29 @@ func (s *Store) registerLocked(req protocol.RegisterRequest, now time.Time) (pro
 	if name == "" {
 		return protocol.RegisterResponse{}, errors.New("machine name is required")
 	}
+	hostID := strings.TrimSpace(req.HostID)
+	if hostID == "" {
+		hostID = strings.TrimSpace(req.Hostname)
+	}
+	if hostID == "" {
+		hostID = name
+	}
+	if err := validateHostID(hostID); err != nil {
+		return protocol.RegisterResponse{}, err
+	}
+	scopeMode, err := workspace.NormalizeMode(req.ScopeMode)
+	if err != nil {
+		return protocol.RegisterResponse{}, err
+	}
+	workspaceRoot := strings.TrimSpace(req.WorkspaceRoot)
+	if scopeMode == workspace.ModeWorkspace {
+		if err := workspace.ValidateRemote(scopeMode, req.OS, workspaceRoot, req.DefaultCWD, ""); err != nil {
+			return protocol.RegisterResponse{}, fmt.Errorf("workspace policy: %w", err)
+		}
+	} else {
+		workspaceRoot = ""
+	}
+	capabilities := workspace.NormalizeCapabilities(req.Capabilities)
 	token, err := randomToken(32)
 	if err != nil {
 		return protocol.RegisterResponse{}, err
@@ -564,19 +613,36 @@ func (s *Store) registerLocked(req protocol.RegisterRequest, now time.Time) (pro
 		if err != nil {
 			return protocol.RegisterResponse{}, err
 		}
-		machine = &Machine{ID: id, Name: name, CreatedAt: now}
+		machine = &Machine{ID: id, Name: name, HostID: hostID, CreatedAt: now}
 		s.state.Machines[id] = machine
 	}
 	machine.Name = name
+	machine.HostID = hostID
 	machine.Hostname = strings.TrimSpace(req.Hostname)
 	machine.OS = strings.TrimSpace(req.OS)
 	machine.Arch = strings.TrimSpace(req.Arch)
 	machine.Version = strings.TrimSpace(req.Version)
 	machine.DefaultCWD = strings.TrimSpace(req.DefaultCWD)
+	machine.ScopeMode = scopeMode
+	machine.WorkspaceRoot = workspaceRoot
+	machine.Capabilities = capabilities
 	machine.UpdatedAt = now
 	machine.LastSeen = now
 	machine.TokenHash = hashToken(token)
 	return protocol.RegisterResponse{MachineID: machine.ID, Token: token}, nil
+}
+
+func validateHostID(value string) error {
+	if value == "" || len(value) > 128 {
+		return errors.New("host_id must be 1-128 characters")
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("._:-", character) {
+			continue
+		}
+		return errors.New("host_id may contain only letters, digits, dot, colon, underscore, and hyphen")
+	}
+	return nil
 }
 
 func (s *Store) AuthenticateAgent(machineID, token string) bool {
@@ -593,8 +659,34 @@ func (s *Store) AuthenticateAgent(machineID, token string) bool {
 func (s *Store) ListMachines(now time.Time) []MachineView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result := make([]MachineView, 0, len(s.state.Machines))
-	for _, machine := range s.state.Machines {
+	return listMachinesLocked(s.state.Machines, now)
+}
+
+// ListMachinesPage is the bounded listing used by the MCP surface.  The
+// console/admin API can still request the complete inventory, while MCP calls
+// receive an explicit page so a large machine fleet cannot flood model
+// context in one tool response.
+func (s *Store) ListMachinesPage(now time.Time, offset, limit int) ([]MachineView, int) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all := listMachinesLocked(s.state.Machines, now)
+	total := len(all)
+	if offset >= total {
+		return []MachineView{}, total
+	}
+	end := min(offset+limit, total)
+	return all[offset:end], total
+}
+
+func listMachinesLocked(records map[string]*Machine, now time.Time) []MachineView {
+	result := make([]MachineView, 0, len(records))
+	for _, machine := range records {
 		result = append(result, machineView(machine, now))
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
@@ -612,39 +704,76 @@ func (s *Store) GetMachine(id string, now time.Time) (MachineView, bool) {
 }
 
 func machineView(machine *Machine, now time.Time) MachineView {
+	scopeMode := machine.ScopeMode
+	if scopeMode == "" {
+		scopeMode = workspace.ModeUnrestricted
+	}
 	return MachineView{
-		ID: machine.ID, Name: machine.Name, Hostname: machine.Hostname, OS: machine.OS, Arch: machine.Arch,
-		Version: machine.Version, DefaultCWD: machine.DefaultCWD, CreatedAt: machine.CreatedAt,
+		ID: machine.ID, Name: machine.Name, HostID: machine.HostID, Hostname: machine.Hostname, OS: machine.OS, Arch: machine.Arch,
+		Version: machine.Version, DefaultCWD: machine.DefaultCWD, ScopeMode: scopeMode, WorkspaceRoot: machine.WorkspaceRoot, Capabilities: append([]string(nil), machine.Capabilities...), CreatedAt: machine.CreatedAt,
 		LastSeen: machine.LastSeen, Online: now.Sub(machine.LastSeen) <= 45*time.Second,
 	}
 }
 
 func (s *Store) CreateTask(req protocol.CreateTaskRequest) (Task, error) {
-	command := strings.TrimSpace(req.Command)
-	if command == "" {
-		return Task{}, errors.New("command is required")
+	kind := strings.ToLower(strings.TrimSpace(req.Kind))
+	if kind == "" {
+		kind = protocol.TaskKindCommand
 	}
-	if req.TimeoutSeconds < 0 {
-		return Task{}, errors.New("timeout_seconds cannot be negative")
+	if kind != protocol.TaskKindCommand && kind != protocol.TaskKindDesktop {
+		return Task{}, fmt.Errorf("unsupported task kind %q", kind)
+	}
+	requiredCapability := strings.ToLower(strings.TrimSpace(req.RequiredCapability))
+	if kind == protocol.TaskKindDesktop {
+		requiredCapability = protocol.CapabilityDesktop
+		if req.Desktop == nil {
+			return Task{}, errors.New("desktop action is required")
+		}
+		if err := desktop.ValidateAction(desktop.Action{Operation: req.Desktop.Operation, Executable: req.Desktop.Executable, Args: req.Desktop.Args, CWD: req.Desktop.CWD}); err != nil {
+			return Task{}, err
+		}
+	} else if req.Desktop != nil {
+		return Task{}, errors.New("desktop action is only valid for desktop tasks")
+	}
+	if requiredCapability != "" && len(workspace.NormalizeCapabilities([]string{requiredCapability})) != 1 {
+		return Task{}, errors.New("required_capability is invalid")
+	}
+	command := strings.TrimSpace(req.Command)
+	if kind == protocol.TaskKindCommand && command == "" {
+		return Task{}, errors.New("command is required")
 	}
 	machineID := strings.TrimSpace(req.MachineID)
 	cwd := strings.TrimSpace(req.CWD)
 	env := cloneMap(req.Env)
+	if err := protocol.ValidateTaskInput(command, cwd, env, req.TimeoutSeconds); err != nil {
+		return Task{}, err
+	}
 	idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
 	if err := validateIdempotencyKey(idempotencyKey); err != nil {
 		return Task{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.state.Machines[machineID] == nil {
+	machine := s.state.Machines[machineID]
+	if machine == nil {
 		return Task{}, fmt.Errorf("machine %s not found", machineID)
+	}
+	if requiredCapability != "" && !hasCapability(machine.Capabilities, requiredCapability) {
+		return Task{}, fmt.Errorf("machine %s does not advertise capability %q", machineID, requiredCapability)
+	}
+	if err := workspace.ValidateRemote(machine.ScopeMode, machine.OS, machine.WorkspaceRoot, machine.DefaultCWD, cwd); err != nil {
+		return Task{}, fmt.Errorf("workspace policy: %w", err)
 	}
 	if idempotencyKey != "" {
 		for _, existing := range s.state.Tasks {
 			if existing.MachineID != machineID || existing.IdempotencyKey != idempotencyKey {
 				continue
 			}
-			if existing.Command != command || existing.CWD != cwd || existing.TimeoutSeconds != req.TimeoutSeconds || !equalStringMaps(existing.Env, env) {
+			existingKind := existing.Kind
+			if existingKind == "" {
+				existingKind = protocol.TaskKindCommand
+			}
+			if existingKind != kind || existing.RequiredCapability != requiredCapability || existing.Command != command || existing.CWD != cwd || existing.TimeoutSeconds != req.TimeoutSeconds || !equalStringMaps(existing.Env, env) || !equalDesktopActions(existing.Desktop, req.Desktop) {
 				return Task{}, errors.New("idempotency_key is already used by a different task request")
 			}
 			return cloneTask(existing), nil
@@ -656,8 +785,8 @@ func (s *Store) CreateTask(req protocol.CreateTaskRequest) (Task, error) {
 	}
 	now := time.Now().UTC()
 	task := &Task{
-		ID: id, MachineID: machineID, Command: command, CWD: cwd, Env: env,
-		TimeoutSeconds: req.TimeoutSeconds, IdempotencyKey: idempotencyKey,
+		ID: id, MachineID: machineID, Kind: kind, RequiredCapability: requiredCapability, Command: command, CWD: cwd, Env: env,
+		TimeoutSeconds: req.TimeoutSeconds, IdempotencyKey: idempotencyKey, Desktop: cloneDesktopAction(req.Desktop),
 		Status: protocol.TaskQueued, CreatedAt: now,
 	}
 	s.state.Tasks[task.ID] = task
@@ -692,6 +821,21 @@ func equalStringMaps(left, right map[string]string) bool {
 	for key, value := range left {
 		other, ok := right[key]
 		if !ok || other != value {
+			return false
+		}
+	}
+	return true
+}
+
+func equalDesktopActions(left, right *protocol.DesktopAction) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	if left.Operation != right.Operation || left.Executable != right.Executable || left.CWD != right.CWD || len(left.Args) != len(right.Args) {
+		return false
+	}
+	for index := range left.Args {
+		if left.Args[index] != right.Args[index] {
 			return false
 		}
 	}
@@ -945,19 +1089,37 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 	machine.LastSeen = now
 	machine.UpdatedAt = now
 	response := protocol.PollResponse{}
+	taskStatusChanged := false
+	for _, taskID := range req.RunningTaskIDs {
+		task := s.state.Tasks[taskID]
+		if task == nil || task.MachineID != machineID || terminalStatus(task.Status) {
+			continue
+		}
+		if task.Status == protocol.TaskDispatching {
+			task.Status = protocol.TaskRunning
+			taskStatusChanged = true
+		}
+		if task.Status == protocol.TaskRunning {
+			lease := now.Add(taskLeaseDuration)
+			task.LeaseUntil = &lease
+		}
+	}
 	for _, task := range s.state.Tasks {
 		if task.MachineID == machineID && task.Status == protocol.TaskCancelRequested {
 			response.CancelTaskIDs = append(response.CancelTaskIDs, task.ID)
 		}
 	}
 	sort.Strings(response.CancelTaskIDs)
-	if len(req.RunningTaskIDs) == 0 && len(response.CancelTaskIDs) == 0 {
+	if len(response.CancelTaskIDs) == 0 && s.upgradeSafeForRunningLocked(machineID, req.RunningTaskIDs) {
 		response.Upgrade = s.upgradePlanLocked(machineID, now)
 	}
 	if response.Upgrade == nil && req.AvailableSlots > 0 {
 		var candidates []*Task
 		for _, task := range s.state.Tasks {
 			if task.MachineID != machineID {
+				continue
+			}
+			if task.RequiredCapability != "" && !hasCapability(req.AvailableCapabilities, task.RequiredCapability) {
 				continue
 			}
 			if task.Status == protocol.TaskQueued || task.Status == protocol.TaskDispatching && task.LeaseUntil != nil && now.After(*task.LeaseUntil) {
@@ -967,13 +1129,13 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 		sort.Slice(candidates, func(i, j int) bool { return candidates[i].CreatedAt.Before(candidates[j].CreatedAt) })
 		if len(candidates) > 0 {
 			task := candidates[0]
-			lease := now.Add(45 * time.Second)
+			lease := now.Add(taskLeaseDuration)
 			task.Status = protocol.TaskDispatching
 			task.DispatchedAt = &now
 			task.LeaseUntil = &lease
 			response.Task = &protocol.TaskCommand{
-				ID: task.ID, Command: task.Command, CWD: task.CWD, Env: cloneMap(task.Env),
-				TimeoutSeconds: task.TimeoutSeconds, CreatedAt: task.CreatedAt,
+				ID: task.ID, Kind: task.Kind, RequiredCapability: task.RequiredCapability, Command: task.Command, CWD: task.CWD, Env: cloneMap(task.Env),
+				TimeoutSeconds: task.TimeoutSeconds, Desktop: cloneDesktopAction(task.Desktop), CreatedAt: task.CreatedAt,
 			}
 		}
 	}
@@ -981,13 +1143,39 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 	// the complete state file for every Agent would serialize all MCP reads
 	// behind multiple fsync calls. Any state transition is still persisted
 	// immediately; heartbeat-only writes are coalesced globally.
-	persist := metadataChanged || response.Task != nil || response.Upgrade != nil || now.Sub(s.lastPersistedAt) >= 30*time.Second
+	persist := metadataChanged || taskStatusChanged || response.Task != nil || response.Upgrade != nil || now.Sub(s.lastPersistedAt) >= 30*time.Second
 	if persist {
 		if err := s.saveLocked(); err != nil {
 			return protocol.PollResponse{}, err
 		}
 	}
 	return response, nil
+}
+
+func (s *Store) upgradeSafeForRunningLocked(machineID string, runningTaskIDs []string) bool {
+	if len(runningTaskIDs) == 0 {
+		return true
+	}
+	machine := s.state.Machines[machineID]
+	if machine == nil || !hasCapability(machine.Capabilities, "durable_tasks") {
+		return false
+	}
+	for _, taskID := range runningTaskIDs {
+		task := s.state.Tasks[taskID]
+		if task == nil || task.MachineID != machineID || task.TimeoutSeconds != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func hasCapability(capabilities []string, wanted string) bool {
+	for _, capability := range capabilities {
+		if capability == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) upgradePlanLocked(machineID string, now time.Time) *protocol.UpgradePlan {
@@ -1079,6 +1267,12 @@ func reconcileUpgradeLocked(campaign *UpgradeCampaign, machines map[string]*Mach
 
 func updateMachineMetadata(machine *Machine, metadata protocol.AgentMetadata) bool {
 	changed := false
+	if value := strings.TrimSpace(metadata.HostID); value != "" && machine.HostID == "" {
+		if validateHostID(value) == nil {
+			machine.HostID = value
+			changed = true
+		}
+	}
 	if value := strings.TrimSpace(metadata.Name); value != "" {
 		if machine.Name != value {
 			machine.Name = value
@@ -1110,12 +1304,44 @@ func updateMachineMetadata(machine *Machine, metadata protocol.AgentMetadata) bo
 		}
 	}
 	if value := strings.TrimSpace(metadata.DefaultCWD); value != "" {
-		if machine.DefaultCWD != value {
+		currentMode, _ := workspace.NormalizeMode(machine.ScopeMode)
+		allowed := currentMode != workspace.ModeWorkspace || workspace.ValidateRemote(currentMode, machine.OS, machine.WorkspaceRoot, value, "") == nil
+		if allowed && machine.DefaultCWD != value {
 			machine.DefaultCWD = value
 			changed = true
 		}
 	}
+	if capabilities := workspace.NormalizeCapabilities(metadata.Capabilities); len(capabilities) > 0 && !equalStrings(machine.Capabilities, capabilities) {
+		machine.Capabilities = capabilities
+		changed = true
+	}
+	// A legacy machine may have no persisted scope.  Allow an authenticated
+	// newer Agent to tighten that legacy record through its heartbeat, but
+	// never allow a heartbeat to loosen an existing workspace boundary or
+	// silently replace its root.  Root changes require re-registration/admin
+	// policy management so a compromised process cannot expand its authority.
+	if strings.TrimSpace(machine.ScopeMode) == "" || machine.ScopeMode == workspace.ModeUnrestricted {
+		if mode, err := workspace.NormalizeMode(metadata.ScopeMode); err == nil && mode == workspace.ModeWorkspace {
+			if workspace.ValidateRemote(mode, machine.OS, metadata.WorkspaceRoot, metadata.DefaultCWD, "") == nil {
+				machine.ScopeMode = mode
+				machine.WorkspaceRoot = strings.TrimSpace(metadata.WorkspaceRoot)
+				changed = true
+			}
+		}
+	}
 	return changed
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) UpdateTask(machineID, taskID string, req protocol.TaskUpdateRequest) (Task, error) {
@@ -1136,9 +1362,13 @@ func (s *Store) UpdateTask(machineID, taskID string, req protocol.TaskUpdateRequ
 	if task.Status == protocol.TaskCancelRequested && req.Status == protocol.TaskFailed {
 		req.Status = protocol.TaskCanceled
 	}
+	now := time.Now().UTC()
 	task.Status = req.Status
 	task.ExitCode = req.ExitCode
 	task.Error = strings.TrimSpace(req.Error)
+	if req.OutputTruncated {
+		task.OutputTruncated = true
+	}
 	if req.StartedAt != nil {
 		started := req.StartedAt.UTC()
 		task.StartedAt = &started
@@ -1148,10 +1378,14 @@ func (s *Store) UpdateTask(machineID, taskID string, req protocol.TaskUpdateRequ
 		task.FinishedAt = &finished
 	}
 	if (req.Status == protocol.TaskCompleted || req.Status == protocol.TaskFailed || req.Status == protocol.TaskCanceled) && task.FinishedAt == nil {
-		now := time.Now().UTC()
 		task.FinishedAt = &now
 	}
-	task.LeaseUntil = nil
+	if terminalStatus(task.Status) {
+		task.LeaseUntil = nil
+	} else {
+		lease := now.Add(taskLeaseDuration)
+		task.LeaseUntil = &lease
+	}
 	if err := s.saveLocked(); err != nil {
 		return Task{}, err
 	}
@@ -1190,6 +1424,133 @@ func (s *Store) AppendOutput(machineID, taskID string, offset int64, data []byte
 	}
 	s.notifyLocked()
 	return task.OutputBytes, nil
+}
+
+// SaveArtifact stores one bounded binary result for a task. Artifacts are
+// written atomically and kept outside state.json so a screenshot cannot make
+// every Center read or heartbeat payload large.
+func (s *Store) SaveArtifact(machineID, taskID, mimeType string, data []byte) (Task, error) {
+	if strings.TrimSpace(mimeType) != "image/png" {
+		return Task{}, errors.New("only image/png artifacts are supported")
+	}
+	if len(data) == 0 || len(data) > taskArtifactMaxBytes {
+		return Task{}, fmt.Errorf("artifact must be between 1 and %d bytes", taskArtifactMaxBytes)
+	}
+	if !safeTaskID(taskID) {
+		return Task{}, errors.New("invalid task id")
+	}
+	s.mu.Lock()
+	task := s.state.Tasks[taskID]
+	if task == nil || task.MachineID != machineID {
+		s.mu.Unlock()
+		return Task{}, fmt.Errorf("task %s not found", taskID)
+	}
+	path := s.artifactPath(taskID)
+	s.mu.Unlock()
+	if err := writeArtifact(path, data); err != nil {
+		return Task{}, err
+	}
+	hash := sha256.Sum256(data)
+	s.mu.Lock()
+	// Re-check ownership after the file write in case an administrator removed
+	// or replaced task state concurrently.
+	task = s.state.Tasks[taskID]
+	if task == nil || task.MachineID != machineID {
+		s.mu.Unlock()
+		_ = os.Remove(path)
+		return Task{}, fmt.Errorf("task %s not found", taskID)
+	}
+	task.ArtifactMIME = "image/png"
+	task.ArtifactBytes = int64(len(data))
+	task.ArtifactSHA256 = hex.EncodeToString(hash[:])
+	if err := s.saveLocked(); err != nil {
+		s.mu.Unlock()
+		return Task{}, err
+	}
+	s.notifyLocked()
+	result := cloneTask(task)
+	s.mu.Unlock()
+	return result, nil
+}
+
+func writeArtifact(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(dir, "artifact-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempName, path); err == nil {
+		return nil
+	} else {
+		_ = os.Remove(path)
+		if replaceErr := os.Rename(tempName, path); replaceErr != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ReadArtifact(taskID string) ([]byte, string, string, error) {
+	if !safeTaskID(taskID) {
+		return nil, "", "", errors.New("invalid task id")
+	}
+	s.mu.Lock()
+	task := s.state.Tasks[taskID]
+	if task == nil {
+		s.mu.Unlock()
+		return nil, "", "", fmt.Errorf("task %s not found", taskID)
+	}
+	mimeType, expectedHash := task.ArtifactMIME, task.ArtifactSHA256
+	path := s.artifactPath(taskID)
+	s.mu.Unlock()
+	if mimeType == "" || expectedHash == "" {
+		return nil, mimeType, expectedHash, errors.New("task has no artifact")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, mimeType, expectedHash, err
+	}
+	if len(data) == 0 || len(data) > taskArtifactMaxBytes {
+		return nil, mimeType, expectedHash, errors.New("artifact size is invalid")
+	}
+	hash := sha256.Sum256(data)
+	if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(hash[:])), []byte(expectedHash)) != 1 {
+		return nil, mimeType, expectedHash, errors.New("artifact checksum mismatch")
+	}
+	return data, mimeType, expectedHash, nil
+}
+
+func safeTaskID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("._-", character) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (s *Store) ReadOutput(taskID string, offset int64, limit int) ([]byte, int64, bool, error) {
@@ -1239,6 +1600,10 @@ func (s *Store) outputPath(taskID string) string {
 	return filepath.Join(s.outputDir, taskID+".log")
 }
 
+func (s *Store) artifactPath(taskID string) string {
+	return filepath.Join(s.artifactDir, taskID+".bin")
+}
+
 func (s *Store) notifyLocked() {
 	close(s.changed)
 	s.changed = make(chan struct{})
@@ -1280,7 +1645,17 @@ func (s *Store) saveLocked() error {
 func cloneTask(task *Task) Task {
 	copy := *task
 	copy.Env = cloneMap(task.Env)
+	copy.Desktop = cloneDesktopAction(task.Desktop)
 	return copy
+}
+
+func cloneDesktopAction(value *protocol.DesktopAction) *protocol.DesktopAction {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	copy.Args = append([]string(nil), value.Args...)
+	return &copy
 }
 
 func cloneMap(source map[string]string) map[string]string {

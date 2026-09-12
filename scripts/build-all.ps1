@@ -1,8 +1,21 @@
 $ErrorActionPreference = "Stop"
+
+if ($env:GITHUB_ACTIONS -ne 'true') {
+    throw 'Local compilation is disabled. Use the GitHub Actions Java/React and release workflows.'
+}
 $root = Split-Path -Parent $PSScriptRoot
+$javaBuild = Join-Path $root 'scripts\build-java.ps1'
+if (-not (Test-Path -LiteralPath $javaBuild)) {
+    throw "Java build script was not found: $javaBuild"
+}
+
+Write-Host '== Java/React production migration build ==' -ForegroundColor Cyan
+& $javaBuild
+
 $go = Get-Command go -ErrorAction SilentlyContinue
 if (-not $go) {
-    throw "Go was not found on PATH. Install Go 1.25+ and run this script again."
+    Write-Host 'Go compatibility baseline skipped because Go is not installed.' -ForegroundColor Yellow
+    return
 }
 $goExe = if ($go.Source) { $go.Source } else { $go.FullName }
 $version = (& $goExe env GOVERSION).Trim()
@@ -19,6 +32,7 @@ $targets = @(
 
 Push-Location $root
 try {
+    Write-Host '== Go compatibility baseline ==' -ForegroundColor Cyan
     & $goExe test -mod=mod ./...
     if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
     foreach ($target in $targets) {

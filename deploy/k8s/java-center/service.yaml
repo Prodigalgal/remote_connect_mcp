@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: remote-connect-mcp-java-center
+  namespace: remote-connect-mcp
+  labels:
+    app.kubernetes.io/name: remote-connect-mcp-java-center
+    app.kubernetes.io/part-of: remote-connect-mcp
+spec:
+  selector:
+    app.kubernetes.io/name: remote-connect-mcp-java-center
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
