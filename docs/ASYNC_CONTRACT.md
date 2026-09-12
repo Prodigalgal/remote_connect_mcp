@@ -21,6 +21,9 @@ Agent 的 `/agent/v1/poll` 响应可以携带可选 `config` 对象：
 - `command_start`、`desktop`、`browser` 只负责校验并创建任务，成功后立即返回 `task_id`；默认不等待子进程。
 - 项目/worktree 注册与 `git worktree add/remove` 同样只创建异步任务；创建完成前不能把 worktree 当作任务 cwd，重复请求应使用同一个 `idempotency_key`。
 - `task_wait` 仅允许显式的 0–20 秒短等待，用于减少一次往返；超时返回当前快照，不表示任务失败。
+- PostgreSQL 模式下，Center 会在读取任务行前捕获变更序号，并优先挂起等待
+  `LISTEN rcm_task_change`/`NOTIFY`，不会按固定间隔持续查询。通知丢失、监听器故障或
+  内存模式会回退到有界行检查；任务行始终是唯一事实来源。
 - `task_output` 使用字节 cursor 分页，单页最多 64 KiB；调用方必须保存 `next_cursor`，不能把整段输出塞回 MCP 上下文。
 - `idempotency_key` 在同一 Agent 上绑定命令参数；重试得到原任务视图，参数变化会被拒绝。
 - `task_cancel` 是幂等的：排队任务立即取消，已派发任务先进入 `cancel_requested`，由 Agent 杀掉进程并上报终态。
@@ -29,7 +32,7 @@ Agent 的 `/agent/v1/poll` 响应可以携带可选 `config` 对象：
 
 - MCP 使用官方 `McpAsyncServer`；工具处理返回 Reactor `Mono`，在可关闭的虚拟线程执行器上运行。
 - Agent/Admin Servlet 控制器返回 `CompletableFuture<ResponseEntity<?>>`。JDBC 是阻塞集成，但只运行在 Center 虚拟线程，不占住 Tomcat 容器载体线程。
-- PostgreSQL 写入以单事务完成状态、租约、游标和工件更新；数据库断线不会创建第二个任务。任务创建/取消/输出更新会 best-effort 发布 `pg_notify`，唤醒连接在其他 Center 副本上的 Agent；通知丢失时由 HTTPS 轮询补偿。
+- PostgreSQL 写入以单事务完成状态、租约、游标和工件更新；数据库断线不会创建第二个任务。任务创建/取消/状态/输出/工件更新会 best-effort 发布 `pg_notify`：一条通道唤醒其他 Center 副本上的 Agent，另一条通道唤醒 `task_wait`；通知丢失时分别由 HTTPS 轮询和有界行检查补偿。
 - `queued -> dispatching` 使用租约和 `SKIP LOCKED`；租约过期后回到队列，等待下一次心跳派发。
 
 ## Agent

@@ -48,21 +48,25 @@ public final class TaskService {
     private final Condition changed = lock.newCondition();
     private final JdbcTaskStore jdbcStore;
     private final AgentWakeRegistry wakes;
+    private final TaskChangeRegistry taskChanges;
 
     @Autowired
     public TaskService(AgentRegistry agents, ObjectProvider<JdbcTemplate> jdbcProvider,
                        ObjectProvider<TransactionTemplate> transactionProvider,
-                       ObjectProvider<AgentWakeRegistry> wakeProvider) {
+                       ObjectProvider<AgentWakeRegistry> wakeProvider,
+                       ObjectProvider<TaskChangeRegistry> taskChangeProvider) {
         this.agents = agents;
         var jdbc = jdbcProvider.getIfAvailable();
         this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactionProvider.getIfAvailable());
         this.wakes = wakeProvider.getIfAvailable();
+        this.taskChanges = taskChangeProvider.getIfAvailable();
     }
 
     TaskService(AgentRegistry agents) {
         this.agents = agents;
         this.jdbcStore = null;
         this.wakes = null;
+        this.taskChanges = null;
     }
 
     /** Package-private constructor used by the PostgreSQL contract tests. */
@@ -70,6 +74,7 @@ public final class TaskService {
         this.agents = agents;
         this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactions);
         this.wakes = null;
+        this.taskChanges = null;
     }
 
     public TaskView create(CreateTaskRequest request) {
@@ -96,6 +101,7 @@ public final class TaskService {
 
         if (jdbcStore != null) {
             var created = jdbcStore.create(id, request.machineId(), command, request.idempotencyKey(), command.createdAt());
+            signalChanged(id);
             signalWake(request.machineId());
             return created;
         }
@@ -186,7 +192,7 @@ public final class TaskService {
     public TaskView cancel(String taskId) {
         if (jdbcStore != null) {
             var view = jdbcStore.cancel(taskId);
-            signalChanged();
+            signalChanged(taskId);
             signalWake(view.machineId());
             return view;
         }
@@ -213,7 +219,6 @@ public final class TaskService {
     public PollResponse poll(String machineId, PollRequest request) {
         if (jdbcStore != null) {
             var response = jdbcStore.poll(machineId, request);
-            signalChanged();
             return response;
         }
         lock.lock();
@@ -257,7 +262,7 @@ public final class TaskService {
         }
         if (jdbcStore != null) {
             var view = jdbcStore.updateState(machineId, taskId, update);
-            signalChanged();
+            signalChanged(taskId);
             return view;
         }
         lock.lock();
@@ -305,7 +310,7 @@ public final class TaskService {
         }
         if (jdbcStore != null) {
             var response = jdbcStore.appendOutput(machineId, taskId, offset, data);
-            signalChanged();
+            signalChanged(taskId);
             return response;
         }
         lock.lock();
@@ -381,7 +386,7 @@ public final class TaskService {
         }
         if (jdbcStore != null) {
             var response = jdbcStore.appendArtifact(machineId, taskId, normalizedMime, digest, data);
-            signalChanged();
+            signalChanged(taskId);
             return response;
         }
         lock.lock();
@@ -432,6 +437,7 @@ public final class TaskService {
         if (jdbcStore != null) {
             var deadline = System.nanoTime() + timeout.toNanos();
             while (true) {
+                var observed = taskChanges == null ? 0L : taskChanges.version();
                 var task = jdbcStore.find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
                 if (task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
                     return new TaskView(task);
@@ -440,10 +446,14 @@ public final class TaskService {
                 if (remaining <= 0) {
                     return new TaskView(task);
                 }
-                // This loop runs on a virtual thread for MCP calls. It is a
-                // cross-Center fallback until LISTEN/NOTIFY is enabled; no
-                // platform request thread is held by the async MCP adapter.
-                Thread.sleep(Math.min(250, Math.max(1, Duration.ofNanos(remaining).toMillis())));
+                // LISTEN/NOTIFY is an acceleration hint. If the registry is
+                // unavailable, keep the bounded 250 ms row-check fallback;
+                // no platform request thread is held by the async adapter.
+                if (taskChanges == null) {
+                    Thread.sleep(Math.min(250, Math.max(1, Duration.ofNanos(remaining).toMillis())));
+                } else {
+                    taskChanges.awaitChange(observed, remaining);
+                }
             }
         }
         var deadline = System.nanoTime() + timeout.toNanos();
@@ -550,6 +560,10 @@ public final class TaskService {
     }
 
     private void signalChanged() {
+        signalChanged(null);
+    }
+
+    private void signalChanged(String taskId) {
         // Condition.signalAll() is only legal while holding its associated
         // lock.  The in-memory adapter already calls this method while the
         // lock is held, but the PostgreSQL adapter invokes it after its own
@@ -561,6 +575,9 @@ public final class TaskService {
             changed.signalAll();
         } finally {
             lock.unlock();
+        }
+        if (taskChanges != null && taskId != null && !taskId.isBlank()) {
+            taskChanges.signal(taskId);
         }
     }
 
