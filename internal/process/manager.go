@@ -434,8 +434,9 @@ func monitorRecoveredEntry(entry *Entry) {
 		entry.output.refreshSizeLocked()
 		entry.output.mu.Unlock()
 		if !processAlive(entry.pid) {
+			code, errorText, completed := awaitDurableCompletion(entry.recordPath, 2*time.Second)
 			entry.output.mu.Lock()
-			if code, errorText, ok := readDurableCompletion(entry.recordPath); ok {
+			if completed {
 				entry.exitCode = code
 				if errorText != "" {
 					entry.err = errors.New(errorText)
@@ -449,6 +450,25 @@ func monitorRecoveredEntry(entry *Entry) {
 			close(entry.done)
 			return
 		}
+	}
+}
+
+// awaitDurableCompletion gives the original Agent (when it is still shutting
+// down) a short window to persist the child's real exit code.  Without this
+// grace period, a restarted Agent can observe the process as a zombie before
+// cmd.Wait writes the completion record and incorrectly report a failure.
+// A crashed parent still falls through to the explicit offline error after the
+// bounded timeout, so recovery never blocks indefinitely.
+func awaitDurableCompletion(recordPath string, timeout time.Duration) (int, string, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if code, errorText, ok := readDurableCompletion(recordPath); ok {
+			return code, errorText, true
+		}
+		if !time.Now().Before(deadline) {
+			return -1, "", false
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 

@@ -3,8 +3,11 @@
 package process
 
 import (
+	"bytes"
 	"errors"
+	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 )
 
@@ -51,8 +54,31 @@ func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
+	// kill(pid, 0) also succeeds for a zombie until its current parent (or
+	// init) reaps it.  A restarted Agent has no Wait relationship with the
+	// child, so treating that zombie as alive makes durable recovery wait
+	// forever.  Read the Linux process state first and only fall back to the
+	// signal probe when /proc is unavailable.
+	if state, ok := linuxProcessState(pid); ok && (state == 'Z' || state == 'X') {
+		return false
+	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func linuxProcessState(pid int) (byte, bool) {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	// The executable name is enclosed in parentheses and may itself contain
+	// spaces or ')'.  The state byte is therefore the first byte after the
+	// final ')' followed by a space, not a fixed whitespace field index.
+	closeName := bytes.LastIndexByte(data, ')')
+	if closeName < 0 || closeName+2 >= len(data) || data[closeName+1] != ' ' {
+		return 0, false
+	}
+	return data[closeName+2], true
 }
 
 func processExitCode(pid int) (int, bool) {
