@@ -126,7 +126,7 @@ class TaskServiceTest {
     }
 
     @Test
-    void recoversDurableLeaseOnlyWithRunningTaskHintAndFailsTimedLease() {
+    void recoversDurableLeaseOnlyWithRunningTaskHintAndFailsTimedLease() throws Exception {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
@@ -147,7 +147,18 @@ class TaskServiceTest {
         tasks.poll(registration.machineId(), new PollRequest(List.of(durable.id()), 1, List.of("command")));
         tasks.updateState(registration.machineId(), timed.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false));
         tasks.find(timed.id()).orElseThrow().leaseUntil(java.time.Instant.now().minusSeconds(1));
+        var waiter = CompletableFuture.supplyAsync(() -> {
+            try {
+                return tasks.waitForChange(timed.id(), 0, java.time.Duration.ofSeconds(2));
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(exception);
+            }
+        });
+        Thread.sleep(100);
         tasks.poll(registration.machineId(), new PollRequest(List.of(durable.id()), 1, List.of("command")));
         assertEquals(TaskStatus.FAILED, tasks.find(timed.id()).orElseThrow().status());
+        assertEquals(TaskStatus.FAILED, waiter.get(1, TimeUnit.SECONDS).status(),
+                "lease expiry failure must wake task_wait subscribers");
     }
 }

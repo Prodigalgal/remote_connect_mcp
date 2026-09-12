@@ -153,6 +153,10 @@ final class JdbcTaskStore {
     }
 
     PollResponse poll(String machineId, PollRequest request) {
+        return pollWithRecovery(machineId, request).response();
+    }
+
+    PollResult pollWithRecovery(String machineId, PollRequest request) {
         var availableSlots = request == null || request.availableSlots() == null ? 0 : request.availableSlots();
         var capabilities = request == null || request.availableCapabilities() == null ? List.<String>of() : request.availableCapabilities();
         return transactions.execute(status -> {
@@ -160,7 +164,7 @@ final class JdbcTaskStore {
             // table sweep on every long-poll request would turn a large fleet
             // into repeated full-table scans; tasks are bound to one Agent,
             // so other machines are repaired when their own session polls.
-            recoverExpiredLeases(machineId);
+            var recoveredTaskIds = recoverExpiredLeases(machineId);
             renewRunningLeases(machineId, request);
             var cancelIds = jdbc.queryForList("""
                     SELECT task_id FROM rcm_task
@@ -168,7 +172,7 @@ final class JdbcTaskStore {
                      ORDER BY created_at LIMIT 64
                     """, String.class, machineId, TaskStatus.CANCEL_REQUESTED);
             if (availableSlots <= 0 || capabilities.isEmpty()) {
-                return new PollResponse(null, cancelIds, null);
+                return new PollResult(new PollResponse(null, cancelIds, null), recoveredTaskIds);
             }
             // Lock only the row that can actually be returned.  Locking a
             // larger batch and filtering capabilities in Java would make a
@@ -192,7 +196,7 @@ final class JdbcTaskStore {
                     .filter(task -> capabilities.contains(task.command().requiredCapability()))
                     .findFirst();
             if (selected.isEmpty()) {
-                return new PollResponse(null, cancelIds, null);
+                return new PollResult(new PollResponse(null, cancelIds, null), recoveredTaskIds);
             }
             var task = selected.get();
             var now = Instant.now();
@@ -207,8 +211,15 @@ final class JdbcTaskStore {
             task.attempt(task.attempt() + 1);
             task.dispatchedAt(now);
             task.leaseUntil(lease);
-            return new PollResponse(task.command(), cancelIds, null);
+            return new PollResult(new PollResponse(task.command(), cancelIds, null), recoveredTaskIds);
         });
+    }
+
+    record PollResult(PollResponse response, List<String> recoveredTaskIds) {
+        PollResult {
+            response = response == null ? new PollResponse(null, List.of(), null) : response;
+            recoveredTaskIds = recoveredTaskIds == null ? List.of() : List.copyOf(recoveredTaskIds);
+        }
     }
 
     TaskView updateState(String machineId, String taskId, TaskUpdateRequest update) {
@@ -402,7 +413,25 @@ final class JdbcTaskStore {
         }, rs -> rs.next() ? readState(rs) : null);
     }
 
-    private void recoverExpiredLeases(String machineId) {
+    private List<String> recoverExpiredLeases(String machineId) {
+        // Lock the small, machine-scoped set before repairing it.  This keeps
+        // concurrent Center replicas from both observing the same expired
+        // lease while still avoiding a fleet-wide sweep.
+        var expired = jdbc.query("""
+                SELECT task_id
+                  FROM rcm_task
+                 WHERE agent_id = ?
+                   AND lease_until IS NOT NULL
+                   AND lease_until <= CURRENT_TIMESTAMP
+                   AND status IN (?, ?)
+                 ORDER BY task_id
+                 FOR UPDATE
+                """, ps -> {
+            ps.setString(1, machineId);
+            ps.setString(2, TaskStatus.DISPATCHING);
+            ps.setString(3, TaskStatus.RUNNING);
+        }, (rs, rowNum) -> rs.getString("task_id"));
+        if (expired.isEmpty()) return List.of();
         jdbc.update("""
                 UPDATE rcm_task SET status = ?, lease_until = NULL, updated_at = CURRENT_TIMESTAMP
                  WHERE agent_id = ? AND status = ? AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
@@ -418,6 +447,7 @@ final class JdbcTaskStore {
                  WHERE agent_id = ? AND status = ? AND timeout_seconds > 0
                    AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
                 """, TaskStatus.FAILED, "agent lease expired before timed command completed", machineId, TaskStatus.RUNNING);
+        return List.copyOf(expired);
     }
 
     private void renewRunningLeases(String machineId, PollRequest request) {

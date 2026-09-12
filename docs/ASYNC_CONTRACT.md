@@ -34,7 +34,7 @@ Agent 的 `/agent/v1/poll` 响应可以携带可选 `config` 对象：
 - MCP 使用官方 `McpAsyncServer`；工具处理返回 Reactor `Mono`，在可关闭的虚拟线程执行器上运行。
 - Agent/Admin Servlet 控制器返回 `CompletableFuture<ResponseEntity<?>>`。JDBC 是阻塞集成，但只运行在 Center 虚拟线程，不占住 Tomcat 容器载体线程。
 - PostgreSQL 写入以单事务完成状态、租约、游标和工件更新；数据库断线不会创建第二个任务。任务创建/取消/状态变更会 best-effort 发布 `pg_notify`：一条通道唤醒其他 Center 副本上的 Agent，另一条通道唤醒 `task_wait`。高频输出/工件增量使用带任务摘要的 task-local 通知，跨副本也只唤醒等待同一任务的请求，不把每个 chunk 广播到所有 Admin/Agent；通知丢失时由长轮询截止时间和下一次显式读取补偿，不启动固定查询循环。
-- `queued -> dispatching` 使用租约和 `SKIP LOCKED`；新任务、取消和升级会按机器发送唤醒提示，租约过期后由下一次正常派发请求重新领取，不运行 Center 侧定时扫描。
+- `queued -> dispatching` 使用租约和 `SKIP LOCKED`；新任务、取消和升级会按机器发送唤醒提示，租约过期后由下一次正常派发请求按机器范围修复：无超时任务重新排队并允许原 Agent 带任务 ID 恢复，定时任务转为明确失败。修复产生的任务 ID 在事务提交后精准唤醒 `task_wait`，不运行 Center 侧定时扫描。
 
 ## Agent
 

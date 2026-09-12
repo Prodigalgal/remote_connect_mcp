@@ -221,7 +221,14 @@ public final class TaskService {
 
     public PollResponse poll(String machineId, PollRequest request) {
         if (jdbcStore != null) {
-            var response = jdbcStore.poll(machineId, request);
+            var result = jdbcStore.pollWithRecovery(machineId, request);
+            var response = result.response();
+            // Lease recovery changes are committed in the JDBC transaction;
+            // wake only the affected task waiters after commit.  Without this
+            // hand-off, a timed task that is failed (or a durable task that is
+            // re-queued) would remain invisible to task_wait until its caller
+            // deadline even though the row was already authoritative.
+            result.recoveredTaskIds().forEach(this::signalChanged);
             // A claim changes the authoritative task state from queued to
             // dispatching. Wake task_wait callers after the transaction so
             // they do not wait for an output chunk or the long-poll deadline.
@@ -231,7 +238,8 @@ public final class TaskService {
         lock.lock();
         try {
             var now = Instant.now();
-            recoverExpiredLeases(now);
+            var recoveredTaskIds = recoverExpiredLeases(now);
+            recoveredTaskIds.forEach(this::signalChanged);
             renewRunningLeases(machineId, request, now);
             var cancelIds = tasks.values().stream()
                     .filter(task -> task.machineId().equals(machineId) && TaskStatus.CANCEL_REQUESTED.equals(task.status()))
@@ -567,12 +575,14 @@ public final class TaskService {
         }
     }
 
-    private void recoverExpiredLeases(Instant now) {
+    private List<String> recoverExpiredLeases(Instant now) {
+        var changed = new ArrayList<String>();
         tasks.values().stream()
                 .filter(task -> TaskStatus.DISPATCHING.equals(task.status()) && task.leaseUntil() != null && !now.isBefore(task.leaseUntil()))
                 .forEach(task -> {
                     task.status(TaskStatus.QUEUED);
                     task.leaseUntil(null);
+                    changed.add(task.id());
                 });
         tasks.values().stream()
                 .filter(task -> TaskStatus.RUNNING.equals(task.status()) && task.leaseUntil() != null && !now.isBefore(task.leaseUntil()))
@@ -589,7 +599,9 @@ public final class TaskService {
                         task.error("agent lease expired before timed command completed");
                         task.finishedAt(now);
                     }
+                    changed.add(task.id());
                 });
+        return List.copyOf(changed);
     }
 
     private void renewRunningLeases(String machineId, PollRequest request, Instant now) {
