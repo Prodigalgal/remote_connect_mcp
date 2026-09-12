@@ -7,7 +7,14 @@ if (process.env.GITHUB_ACTIONS !== 'true') {
 
 const command = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 for (const args of [['exec', 'tsc', '-b'], ['exec', 'vite', 'build']]) {
-  const result = spawnSync(command, args, { stdio: 'inherit', shell: false })
+  // Windows exposes pnpm as a .cmd shim; Node cannot spawn that shim
+  // directly without a shell and reports EINVAL. The argument list is fixed
+  // below (no user-provided shell text), so enabling the native shell only on
+  // Windows is safe and keeps the Linux runner direct-exec path intact.
+  const result = spawnSync(command, args, {
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  })
   if (result.error) {
     console.error(result.error.message)
     process.exit(1)
