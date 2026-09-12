@@ -19,7 +19,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 65532 --no-create-home rcm
-USER 65532:65532
 COPY --from=build /src/agent/build/native/nativeCompile/ /opt/rcm-agent/
 RUN chmod 0755 /opt/rcm-agent/rcm-agent
+USER 65532:65532
 ENTRYPOINT ["/opt/rcm-agent/rcm-agent", "--run"]
