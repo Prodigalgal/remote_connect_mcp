@@ -106,6 +106,10 @@ jobs:
           RCM_SMOKE_RESOURCE_REPORT="$RUNNER_TEMP/rcm-agent-resource.json" \
             bash scripts/smoke-java-agent.sh "$CENTER_BINARY" "$AGENT_BINARY" 18181
           bash scripts/smoke-java-websocket.sh "$CENTER_BINARY" 18182
+      - name: Enforce Native Agent RSS budget
+        env:
+          RCM_AGENT_MAX_RSS_MIB: '256'
+        run: python3 scripts/check-agent-resource-report.py "$RUNNER_TEMP/rcm-agent-resource.json"
       - name: Upload Agent resource report
         if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

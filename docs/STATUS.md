@@ -57,7 +57,8 @@ Java 25 Center/Agent 与 React 控制台已经形成可独立验收的迁移候�
   编译进程的内存数字冒充运行时测量。Go 基线仓库内 Linux Agent 文件大小为 6,537,378 字节，但这
   只是磁盘体积，也不能替代同场景 RSS 对比。
 - `scripts/smoke-java-agent.sh/.ps1` 在 Agent 在线和任务闭环期间采样工作集峰值；Release/迁移工作流
-  将 JSON 作为私有 Actions 工件上传，不放入公开 Release，也不把单次 CI 峰值直接当作宿主机硬限制。
+  会先按 256 MiB 默认预算校验，再将 JSON 作为私有 Actions 工件上传，不放入公开 Release；
+  该门禁只约束 Native Agent 常驻烟测，不把单次编译峰值直接当作宿主机硬限制。
 
 ## 下一步生产顺序
 

@@ -194,6 +194,7 @@ jobs:
           RCM_SMOKE_RESOURCE_REPORT="${RUNNER_TEMP}/rcm-agent-resource-${TARGET_ARCH}.json" \
             bash scripts/smoke-java-agent.sh "${center_bundle}/rcm-center" "${agent_bundle}/rcm-agent" 18184
           bash scripts/smoke-java-websocket.sh "${center_bundle}/rcm-center" 18185
+          RCM_AGENT_MAX_RSS_MIB=256 python3 scripts/check-agent-resource-report.py "${RUNNER_TEMP}/rcm-agent-resource-${TARGET_ARCH}.json"
           agent_archive="remote-connect-mcp-agent-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
           center_archive="remote-connect-mcp-center-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
           agent_files=$(cd "${agent_bundle}" && find . -maxdepth 1 -type f \( -name 'rcm-agent' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
@@ -266,6 +267,8 @@ jobs:
           .\scripts\smoke-java.ps1 -CenterBinary .\java\center\build\native\nativeCompile\rcm-center.exe -Port 18185
           .\scripts\smoke-java-agent.ps1 -CenterBinary .\java\center\build\native\nativeCompile\rcm-center.exe -AgentBinary .\java\agent\build\native\nativeCompile\rcm-agent.exe -Port 18186 -ResourceReport "$env:RUNNER_TEMP\rcm-agent-resource-windows-amd64.json"
           .\scripts\smoke-java-websocket.ps1 -CenterBinary .\java\center\build\native\nativeCompile\rcm-center.exe -Port 18187
+          $env:RCM_AGENT_MAX_RSS_MIB = '256'
+          python scripts/check-agent-resource-report.py "$env:RUNNER_TEMP\rcm-agent-resource-windows-amd64.json"
       - name: Package Windows amd64 artifacts
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
