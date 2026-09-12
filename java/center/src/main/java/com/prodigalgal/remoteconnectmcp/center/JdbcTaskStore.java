@@ -166,13 +166,23 @@ final class JdbcTaskStore {
             if (availableSlots <= 0 || capabilities.isEmpty()) {
                 return new PollResponse(null, cancelIds, null);
             }
-            var queued = jdbc.query(SELECT_TASK_META + """
+            // Lock only the row that can actually be returned.  Locking a
+            // larger batch and filtering capabilities in Java would make a
+            // concurrent Center replica SKIP LOCKED every remaining queued
+            // row, causing a false "no task" response to the other poller.
+            // Capability values remain bind parameters; only the placeholder
+            // count is assembled from the already bounded request list.
+            var capabilityPlaceholders = String.join(", ", java.util.Collections.nCopies(capabilities.size(), "?"));
+            var queued = jdbc.query((SELECT_TASK_META + """
                      WHERE t.agent_id = ? AND t.status = ?
+                       AND t.required_capability IN (%s)
                      ORDER BY t.created_at, t.task_id
-                     LIMIT 64 FOR UPDATE OF t SKIP LOCKED
-                    """, ps -> {
-                ps.setString(1, machineId);
-                ps.setString(2, TaskStatus.QUEUED);
+                     LIMIT 1 FOR UPDATE OF t SKIP LOCKED
+                    """).formatted(capabilityPlaceholders), ps -> {
+                var index = 1;
+                ps.setString(index++, machineId);
+                ps.setString(index++, TaskStatus.QUEUED);
+                for (var capability : capabilities) ps.setString(index++, capability);
             }, (rs, rowNum) -> readState(rs));
             var selected = queued.stream()
                     .filter(task -> capabilities.contains(task.command().requiredCapability()))
