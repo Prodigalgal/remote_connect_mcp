@@ -242,6 +242,9 @@ func TestStoreTaskLifecycleAndPersistence(t *testing.T) {
 	if poll.Task == nil || poll.Task.ID != task.ID {
 		t.Fatalf("polled task = %+v, want %s", poll.Task, task.ID)
 	}
+	if dispatched, ok := store.GetTask(task.ID); !ok || dispatched.Attempt != 1 {
+		t.Fatalf("first dispatch attempt = %d, want 1", dispatched.Attempt)
+	}
 	machine, ok := store.GetMachine(registered.MachineID, time.Now().UTC())
 	if !ok || machine.Version != "v2" || machine.Hostname != "oracle-a-new" || machine.DefaultCWD != "/" {
 		t.Fatalf("heartbeat metadata was not refreshed: %+v", machine)

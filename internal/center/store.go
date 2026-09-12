@@ -68,6 +68,9 @@ type Task struct {
 	IdempotencyKey     string                  `json:"idempotency_key,omitempty"`
 	Desktop            *protocol.DesktopAction `json:"desktop,omitempty"`
 	Status             string                  `json:"status"`
+	// Attempt counts authoritative dispatch lease claims. It is persisted in
+	// state.json so a reconnect/reclaim is visible across Go Center restarts.
+	Attempt            int                     `json:"attempt,omitempty"`
 	ExitCode           *int                    `json:"exit_code,omitempty"`
 	Error              string                  `json:"error,omitempty"`
 	OutputBytes        int64                   `json:"output_bytes"`
@@ -1148,6 +1151,7 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 			task := candidates[0]
 			lease := now.Add(taskLeaseDuration)
 			task.Status = protocol.TaskDispatching
+			task.Attempt++
 			task.DispatchedAt = &now
 			task.LeaseUntil = &lease
 			response.Task = &protocol.TaskCommand{

@@ -14,7 +14,7 @@ Java 25 Center/Agent 与 React 控制台已经形成可独立验收的迁移候�
 | --- | --- | --- |
 | Java 工程 | `protocol`、`center`、`agent` Gradle 多模块，Java 25 toolchain | 过去的构建记录；当前由 GitHub Actions 重跑 |
 | MCP | Streamable HTTP `/mcp`、Bearer 校验、精简工具面、分页结果 | 过去的 `initialize`/`tools/list` 烟测记录；当前由 GitHub Actions 重跑 |
-| 任务可靠性 | 异步入队、幂等键、租约、取消、输出游标、断线重连、有界 spool、无超时任务恢复；过期租约区分可恢复持久任务与不可安全重放的定时任务；每次真正领取租约都会递增并暴露 `attempt`，便于识别断线后的重新投递；PostgreSQL 按任务摘要路由 `LISTEN/NOTIFY` 事件唤醒，高频输出只唤醒等待同一任务的请求（可跨 Center 副本），截止时间返回快照，不运行固定行读取循环 | Java Agent/Center 单元测试与 GitHub Actions 门禁 |
+| 任务可靠性 | 异步入队、幂等键、租约、取消、输出游标、断线重连、有界 spool、无超时任务恢复；过期租约区分可恢复持久任务与不可安全重放的定时任务；Go/Java 两条兼容实现每次真正领取租约都会递增并暴露 `attempt`，便于识别断线后的重新投递；PostgreSQL 按任务摘要路由 `LISTEN/NOTIFY` 事件唤醒，高频输出只唤醒等待同一任务的请求（可跨 Center 副本），截止时间返回快照，不运行固定行读取循环 | Java Agent/Center 单元测试与 GitHub Actions 门禁 |
 | 注册与身份 | 一次性 Enrollment Token，注册后换取每 Agent 日常 Token；身份文件原子写入 | Agent/Center 测试通过 |
 | 配置热更新 | Center 下发 generation、长轮询等待时间、兼容退避间隔和并发槽位；Agent 原子落盘并只接受更新代次 | `AgentRuntimeSettingsTest`、`AgentConfigurationServiceTest` |
 | Desktop | 同一安装包的用户会话 companion；截图/屏幕枚举、启动、点击/拖拽、组合按键、剪贴板、窗口聚焦和文本输入通过受保护 loopback IPC | `DesktopCompanionClientTest` 与协议测试通过 |

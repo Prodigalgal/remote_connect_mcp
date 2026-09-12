@@ -346,6 +346,7 @@ type mcpTaskView struct {
 	CWDTruncated       bool       `json:"cwd_truncated,omitempty"`
 	TimeoutSeconds     int        `json:"timeout_seconds,omitempty"`
 	Status             string     `json:"status"`
+	Attempt            int        `json:"attempt"`
 	ExitCode           *int       `json:"exit_code,omitempty"`
 	Error              string     `json:"error,omitempty"`
 	OutputBytes        int64      `json:"output_bytes"`
@@ -364,7 +365,7 @@ func compactTask(task Task) mcpTaskView {
 	errorText, _ := compactText(task.Error, mcpMaxErrorEcho)
 	return mcpTaskView{
 		ID: task.ID, MachineID: task.MachineID, Kind: task.Kind, RequiredCapability: task.RequiredCapability, Command: command, CommandTruncated: commandTruncated,
-		CWD: cwd, CWDTruncated: cwdTruncated, TimeoutSeconds: task.TimeoutSeconds, Status: task.Status, ExitCode: task.ExitCode,
+		CWD: cwd, CWDTruncated: cwdTruncated, TimeoutSeconds: task.TimeoutSeconds, Status: task.Status, Attempt: task.Attempt, ExitCode: task.ExitCode,
 		Error: errorText, OutputBytes: task.OutputBytes, OutputTruncated: task.OutputTruncated, ArtifactMIME: task.ArtifactMIME, ArtifactBytes: task.ArtifactBytes, ArtifactSHA256: task.ArtifactSHA256,
 		CreatedAt: task.CreatedAt, StartedAt: task.StartedAt, FinishedAt: task.FinishedAt,
 	}
