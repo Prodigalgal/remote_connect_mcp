@@ -52,7 +52,7 @@ Java 25 Center/Agent 与 React 控制台已经形成可独立验收的迁移候�
   3.8 GiB/6.2 GiB，Gradle 守护进程约 340 MiB。它们已停止，当前工作区没有 Java 构建进程。
 - 原因是 Native Image 编译峰值高且旧调用同时提交 Center、Agent；脚本和 GitHub Actions 现已使用
   `--no-parallel` 串行编译。今后不在开发机或目标宿主机编译 Native Image。
-- 运行时预算与编译峰值分开：Java Agent 不依赖 Spring，空闲只有心跳循环；默认并发 1、单任务输出
+- 运行时预算与编译峰值分开：Java Agent 不依赖 Spring，空闲只有一条有界 HTTPS 长轮询请求；默认并发 1、单任务输出
   64 MiB、聚合 spool 64 MiB。Native Agent 的目标 RSS 必须在 CI/目标平台用同一版本实测；当前没有把
   编译进程的内存数字冒充运行时测量。Go 基线仓库内 Linux Agent 文件大小为 6,537,378 字节，但这
   只是磁盘体积，也不能替代同场景 RSS 对比。
