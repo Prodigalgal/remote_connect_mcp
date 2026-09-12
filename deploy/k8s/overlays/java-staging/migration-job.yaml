@@ -1,0 +1,90 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: remote-connect-mcp-java-migration
+  namespace: remote-connect-mcp
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+  labels:
+    app.kubernetes.io/name: remote-connect-mcp-java-migration
+    app.kubernetes.io/part-of: remote-connect-mcp
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: remote-connect-mcp-java-migration
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      nodeSelector:
+        infra.mnnu/node-class: core-public
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command: ["sh", "-ec", "until pg_isready -h remote-connect-mcp-java-postgres -U rcm -d remote_connect_mcp; do sleep 2; done"]
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: remote-connect-mcp-java-postgres
+                  key: password
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      containers:
+        - name: liquibase
+          image: ghcr.io/prodigalgal/remote-connect-mcp-center-java:v0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["/opt/rcm-center/rcm-center", "--migrate"]
+          env:
+            - name: RCM_CENTER_PERSISTENCE_MODE
+              value: postgres
+            - name: RCM_CENTER_LIQUIBASE_ENABLED
+              value: "true"
+            - name: RCM_CENTER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: remote-connect-mcp-java-secrets
+                  key: database-url
+            - name: RCM_CENTER_DATABASE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: remote-connect-mcp-java-secrets
+                  key: database-username
+            - name: RCM_CENTER_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: remote-connect-mcp-java-secrets
+                  key: database-password
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

@@ -163,10 +163,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zip
           mkdir -p "out/${TARGET_ARCH}"
-          docker buildx build --platform "linux/${TARGET_ARCH}" --target build \
+          docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
             --build-arg RCM_CI_BUILD=true \
             --file java/Dockerfile.center.native --output "type=local,dest=out/center-${TARGET_ARCH}" java
-          docker buildx build --platform "linux/${TARGET_ARCH}" --target build \
+          docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
             --build-arg RCM_CI_BUILD=true \
             --file java/Dockerfile.agent.native --output "type=local,dest=out/agent-${TARGET_ARCH}" java
           center="$(find "out/center-${TARGET_ARCH}" -type f -name rcm-center -print -quit)"

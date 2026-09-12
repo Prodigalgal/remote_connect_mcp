@@ -1,0 +1,55 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: remote-connect-mcp-java-center
+  namespace: remote-connect-mcp
+  labels:
+    app.kubernetes.io/name: remote-connect-mcp-java-center
+    app.kubernetes.io/part-of: remote-connect-mcp
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: mnnu-gateway
+      namespace: gateway-system
+      sectionName: https
+  hostnames:
+    - remote-connect-mcp-java.fantong.eu.org
+    - remote-connect-mcp-agent-java.fantong.eu.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: remote-connect-mcp-java-center
+          port: 8080
+      timeouts:
+        request: 0s
+        backendRequest: 0s
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: remote-connect-mcp-java-console
+  namespace: remote-connect-mcp
+  labels:
+    app.kubernetes.io/name: remote-connect-mcp-java-console
+    app.kubernetes.io/part-of: remote-connect-mcp
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: mnnu-gateway
+      namespace: gateway-system
+      sectionName: https
+  hostnames:
+    - remote-connect-mcp-console-java.fantong.eu.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: remote-connect-mcp-java-console
+          port: 8080
