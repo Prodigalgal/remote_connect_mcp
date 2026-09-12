@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+# A newer push supersedes an older PR run.  Native Image is intentionally
+# expensive, so canceling stale runs avoids burning runner time while keeping
+# the latest commit fully gated.
+concurrency:
+  group: java-react-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   repository-hygiene:
     name: Repository hygiene

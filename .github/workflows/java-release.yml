@@ -205,12 +205,24 @@ jobs:
           bash scripts/verify-native-bundle.sh "${agent_archive}"
           tar -C "out" -czf "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" "${TARGET_ARCH}"
           sha256sum "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" > "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz.sha256"
+      - name: Generate Linux Native SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: out/${{ matrix.arch }}
+          format: spdx-json
+          output-file: remote-connect-mcp-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.spdx.json
+          artifact-name: java-linux-${{ matrix.arch }}-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
       - name: Generate native artifact attestation
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             out/${{ matrix.arch }}/rcm-center
             out/${{ matrix.arch }}/rcm-agent
+            remote-connect-mcp-*.tar.gz
+            remote-connect-mcp-*.zip
+            remote-connect-mcp-*.spdx.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: java-linux-${{ matrix.arch }}
@@ -221,6 +233,7 @@ jobs:
             remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.zip.sha256
             remote-connect-mcp-center-*-linux-${{ matrix.arch }}.zip
             remote-connect-mcp-center-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-connect-mcp-*.spdx.json
           if-no-files-found: error
       - name: Upload Linux Agent resource report
         if: success()
@@ -282,18 +295,30 @@ jobs:
           & "$PWD/scripts/verify-native-bundle.ps1" -AgentArchive "$PWD/remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"
           Compress-Archive -Path "$out/*" -DestinationPath "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Force
           (Get-FileHash "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip.sha256" -Encoding ascii
+      - name: Generate Windows Native SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: java-release-windows-amd64
+          format: spdx-json
+          output-file: remote-connect-mcp-${{ needs.prepare.outputs.version }}-windows-amd64.spdx.json
+          artifact-name: java-windows-amd64-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
       - name: Generate native artifact attestation
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             java-release-windows-amd64/center/rcm-center.exe
             java-release-windows-amd64/agent/rcm-agent.exe
+            remote-connect-mcp-*.zip
+            remote-connect-mcp-*.spdx.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: java-windows-amd64
           path: |
             remote-connect-mcp-*.zip
             remote-connect-mcp-*.zip.sha256
+            remote-connect-mcp-*.spdx.json
           if-no-files-found: error
       - name: Upload Windows Agent resource report
         if: success()
@@ -338,11 +363,21 @@ jobs:
         with:
           path: release
           merge-multiple: true
+      - name: Sign release assets with Sigstore
+        uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
+        with:
+          inputs: |
+            release/*.zip
+            release/*.tar.gz
+            release/*.zip.sha256
+            release/*.tar.gz.sha256
+            release/*.spdx.json
+          release-signing-artifacts: false
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mapfile -d '' assets < <(find release -maxdepth 1 -type f \( -name '*.zip' -o -name '*.zip.sha256' -o -name '*.tar.gz' -o -name '*.tar.gz.sha256' \) -print0 | sort -z)
+          mapfile -d '' assets < <(find release -maxdepth 1 -type f \( -name '*.zip' -o -name '*.zip.sha256' -o -name '*.tar.gz' -o -name '*.tar.gz.sha256' -o -name '*.spdx.json' -o -name '*.sigstore.json' \) -print0 | sort -z)
           ((${#assets[@]} > 0))
           gh release create "${{ needs.prepare.outputs.tag }}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --generate-notes --verify-tag
