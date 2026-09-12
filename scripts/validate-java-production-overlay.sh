@@ -64,7 +64,7 @@ routes="$overlay/route-production-patch.yaml"
 # The public overlay is deliberately a template.  Keep enough placeholders in
 # it to prevent a maintainer from accidentally committing a real deployment
 # configuration to the public repository.
-placeholder_count="$(rg -n -I -e 'example[.]invalid|replace-me|v0[.]1[.]0' "$overlay" | wc -l | tr -d ' ')" || placeholder_count=0
+placeholder_count="$(grep -R -n -I -E -- 'example[.]invalid|replace-me|v0[.]1[.]0' "$overlay" | wc -l | tr -d ' ')" || placeholder_count=0
 if [[ "$mode" == template ]]; then
   ((placeholder_count >= 3)) || fail 'template mode expects placeholder-safe domains/images to remain in the public overlay'
 else
@@ -75,14 +75,14 @@ fi
 # each image; tags alone are mutable and are not an acceptable production
 # pin.  The template is expected to use tags until a private overlay supplies
 # the two digests.
-image_names="$(rg -n -I -e '^[[:space:]]*-[[:space:]]+name:' "$kustomization" || true)"
-image_new_names="$(rg -n -I -e '^[[:space:]]+newName:' "$kustomization" || true)"
+image_names="$(grep -n -I -E -- '^[[:space:]]*-[[:space:]]+name:' "$kustomization" || true)"
+image_new_names="$(grep -n -I -E -- '^[[:space:]]+newName:' "$kustomization" || true)"
 image_count="$(printf '%s\n' "$image_names" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
 new_name_count="$(printf '%s\n' "$image_new_names" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
 ((image_count == 2)) || fail "expected two image entries, found $image_count"
 ((new_name_count == 2)) || fail "expected two newName entries, found $new_name_count"
 
-digest_matches="$(rg -n -I -e '^[[:space:]]+digest:[[:space:]]*sha256:[0-9A-Fa-f]{64}[[:space:]]*$' "$kustomization" || true)"
+digest_matches="$(grep -n -I -E -- '^[[:space:]]+digest:[[:space:]]*sha256:[0-9A-Fa-f]{64}[[:space:]]*$' "$kustomization" || true)"
 digest_count="$(printf '%s\n' "$digest_matches" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
 if [[ "$mode" == strict ]]; then
   ((digest_count == 2)) || fail "strict mode requires two SHA-256 image digests, found $digest_count"
@@ -92,7 +92,7 @@ fi
 
 # Every public route is intentionally prefixed with remote-connect-mcp-.  The
 # check also catches a malformed or missing hostname without echoing it.
-hostname_lines="$(rg -n -I -e '^[[:space:]]*-[[:space:]]+remote-connect-mcp-[A-Za-z0-9-]+[.][A-Za-z0-9.-]+[[:space:]]*$' "$routes" || true)"
+hostname_lines="$(grep -n -I -E -- '^[[:space:]]*-[[:space:]]+remote-connect-mcp-[A-Za-z0-9-]+[.][A-Za-z0-9.-]+[[:space:]]*$' "$routes" || true)"
 hostname_count="$(printf '%s\n' "$hostname_lines" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
 ((hostname_count == 3)) || fail "expected three remote-connect-mcp hostnames, found $hostname_count"
 hostname_values="$(printf '%s\n' "$hostname_lines" | sed -E 's/^[^:]+:[[:space:]]*-[[:space:]]*//; s/[[:space:]]+$//' | sort -u)"
@@ -102,15 +102,15 @@ unique_hostname_count="$(printf '%s\n' "$hostname_values" | sed '/^[[:space:]]*$
 # Secrets are intentionally external to Git.  A private overlay may reference
 # the existing Secret through the base, but must not add a Secret manifest or
 # inline stringData/data of its own.
-if rg -n -I -e '^[[:space:]]*kind:[[:space:]]*Secret([[:space:]]|$)|^[[:space:]]*(stringData|data):' "$overlay" >/dev/null; then
+if grep -R -n -I -E -- '^[[:space:]]*kind:[[:space:]]*Secret([[:space:]]|$)|^[[:space:]]*(stringData|data):' "$overlay" >/dev/null; then
   fail 'overlay must not contain an inline Secret, stringData or data block'
 fi
 base="$overlay/../../java-center"
 base="$(cd "$base" 2>/dev/null && pwd)" || fail 'overlay resource base ../../java-center is missing'
 if [[ -d "$base" ]]; then
-  rg -q -I -e 'name:[[:space:]]*remote-connect-mcp-java-secrets' "$base" || \
+  grep -R -q -I -E -- 'name:[[:space:]]*remote-connect-mcp-java-secrets' "$base" || \
     fail 'java-center base must reference the external remote-connect-mcp-java-secrets Secret'
-  secret_ref_count="$(rg -n -I -e '^[[:space:]]*secretKeyRef:' "$base" | wc -l | tr -d ' ')"
+  secret_ref_count="$(grep -R -n -I -E -- '^[[:space:]]*secretKeyRef:' "$base" | wc -l | tr -d ' ')"
   ((secret_ref_count >= 5)) || fail "java-center base has too few Secret references: $secret_ref_count"
 fi
 
@@ -118,10 +118,10 @@ fi
 # value.  This is checked separately because image digests and displayed
 # release versions intentionally live in different Kustomize fields.
 center_patch="$overlay/center-production-patch.yaml"
-if ! rg -q -I -e '^[[:space:]]*-[[:space:]]+name:[[:space:]]*RCM_CENTER_VERSION[[:space:]]*$' "$center_patch"; then
+if ! grep -q -I -E -- '^[[:space:]]*-[[:space:]]+name:[[:space:]]*RCM_CENTER_VERSION[[:space:]]*$' "$center_patch"; then
   fail 'center-production-patch.yaml must set RCM_CENTER_VERSION'
 fi
-if [[ "$mode" == strict ]] && ! rg -q -I -e '^[[:space:]]+value:[[:space:]]+v?[0-9]+[.][0-9]+[.][0-9]+[[:space:]]*$' "$center_patch"; then
+if [[ "$mode" == strict ]] && ! grep -q -I -E -- '^[[:space:]]+value:[[:space:]]+v?[0-9]+[.][0-9]+[.][0-9]+[[:space:]]*$' "$center_patch"; then
   fail 'strict mode requires a semantic Center version (for example v1.2.3)'
 fi
 
@@ -145,9 +145,9 @@ fi
 
 if [[ -n "$rendered" && -s "$rendered" ]]; then
   if [[ "$mode" == strict ]]; then
-    rg -n -I -e 'example[.]invalid|replace-me|v0[.]1[.]0|image:[^[:space:]]+:latest' "$rendered" >/dev/null && \
+    grep -n -I -E -- 'example[.]invalid|replace-me|v0[.]1[.]0|image:[^[:space:]]+:latest' "$rendered" >/dev/null && \
       fail 'rendered manifest still contains a template placeholder or latest image'
-    rendered_digest_count="$(rg -n -I -e 'image:[^[:space:]]+@sha256:[0-9A-Fa-f]{64}([[:space:]]|$)' "$rendered" | wc -l | tr -d ' ')"
+    rendered_digest_count="$(grep -n -I -E -- 'image:[^[:space:]]+@sha256:[0-9A-Fa-f]{64}([[:space:]]|$)' "$rendered" | wc -l | tr -d ' ')"
     ((rendered_digest_count >= 2)) || fail "rendered manifest has too few digest-pinned images: $rendered_digest_count"
   fi
 fi
