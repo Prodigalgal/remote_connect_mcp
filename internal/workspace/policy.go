@@ -91,6 +91,13 @@ func ResolveLocal(mode, root, defaultCWD, requested string) (string, error) {
 		return "", err
 	}
 	requested = strings.TrimSpace(requested)
+	// Treat both slash styles as separators before touching the filesystem.
+	// Tasks can be created by a Center running on another OS, and accepting a
+	// foreign-style `..\\child` as a literal Unix filename would return a
+	// misleading "path does not exist" error before the workspace boundary is
+	// checked. Normalizing here keeps traversal/symlink policy consistent across
+	// Agent platforms without changing the configured host-native root.
+	requested = strings.ReplaceAll(requested, `\`, "/")
 	candidate := requested
 	if candidate == "" {
 		candidate = defaultCWD
