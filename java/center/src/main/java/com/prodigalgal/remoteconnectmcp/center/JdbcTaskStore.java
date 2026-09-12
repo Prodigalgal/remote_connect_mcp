@@ -141,7 +141,7 @@ final class JdbcTaskStore {
                         UPDATE rcm_task
                            SET status = ?, finished_at = ?, lease_until = ?, updated_at = CURRENT_TIMESTAMP
                          WHERE task_id = ?
-                        """, next, timestamp(finished), TaskStatus.CANCELED.equals(next) ? null : task.leaseUntil(), task.id());
+                        """, next, timestamp(finished), TaskStatus.CANCELED.equals(next) ? null : timestamp(task.leaseUntil()), task.id());
                 task.status(next);
                 task.finishedAt(finished);
                 if (TaskStatus.CANCELED.equals(next)) {
@@ -225,7 +225,7 @@ final class JdbcTaskStore {
                      WHERE task_id = ? AND agent_id = ?
                     """, next, update.exitCode() == null ? task.exitCode() : update.exitCode(), error,
                     timestamp(started), timestamp(finished), truncated,
-                    TaskStatus.terminal(next) ? null : task.leaseUntil(), taskId, machineId);
+                    TaskStatus.terminal(next) ? null : timestamp(task.leaseUntil()), taskId, machineId);
             task.status(next);
             if (update.exitCode() != null) task.exitCode(update.exitCode());
             task.error(error);
