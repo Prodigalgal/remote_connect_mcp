@@ -14,7 +14,10 @@ dependencies {
     implementation("org.springframework:spring-jdbc")
     implementation("com.zaxxer:HikariCP")
     implementation("org.liquibase:liquibase-core")
-    runtimeOnly("org.postgresql:postgresql")
+    // The wake bridge uses PGConnection LISTEN/NOTIFY in addition to JDBC
+    // queries, so the PostgreSQL driver is on the compile classpath and is
+    // retained by Native Image.  It is still only activated in postgres mode.
+    implementation("org.postgresql:postgresql")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }

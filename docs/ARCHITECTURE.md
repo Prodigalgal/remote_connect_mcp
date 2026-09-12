@@ -111,11 +111,12 @@ Browser Agent 与 Desktop Agent 分离，Java Agent 负责身份、生命周期�
 
 ## 7. 连接与配置演进
 
-当前使用主动 HTTPS 轮询，Java 迁移后保持该回退通道；已加入可选的 WebSocket 唤醒提示通道，任务数据和认证仍由 HTTPS 负责，后续按兼容性增加：
+当前使用主动 HTTPS 轮询，Java 迁移后保持该回退通道；已加入可选的 WebSocket 唤醒提示通道，任务数据和认证仍由 HTTPS 负责。PostgreSQL 模式下 Center 还会用有界的 LISTEN/NOTIFY 在多副本之间转发唤醒提示；通知是 best-effort，丢失时仍由轮询修复，不把数据库通知当作任务状态来源。
 
 1. WebSocket：已实现为可选 wake-only 通道，适合普通公网反向代理并降低空闲等待延迟；消息丢失时由 HTTPS 轮询补偿；
-2. QUIC：在需要更低延迟和更强连接恢复时启用；
-3. Polling：保留为受限网络回退。
+2. PostgreSQL LISTEN/NOTIFY：已实现跨 Center 副本的 Agent 唤醒桥接，连接异常时自动退避重连；
+3. QUIC：在需要更低延迟和更强连接恢复时启用；
+4. Polling：保留为受限网络回退。
 
 Agent 心跳自描述版本、平台、HostID、角色、能力、范围策略和会话状态；当前已支持按单调递增 generation 热更新轮询间隔和并发槽位，并原子持久化。Token、身份、工作根目录和执行账户仍必须显式重注册或重启。
 

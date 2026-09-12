@@ -30,7 +30,7 @@ Java 25 Center/Agent 与 React 控制台已经形成可独立验收的迁移候�
 2. PostgreSQL：CI 已加入真实 PostgreSQL 16 服务容器的迁移/注册/任务/输出/工件往返及 custom-format 备份恢复门禁，并覆盖幂等并发与过期租约恢复；仍需补齐并发抢占、Center 重启场景和长输出压测，生产库恢复演练尚未执行。
 3. Browser Agent：Java Agent 已提供参考 `scripts/browser-worker.mjs`，可按环境加载 Playwright/Patchright/Comoufox，并支持 CSS/role/label/placeholder/text/test-id 结构化定位，返回有界快照、动作结果、截图、下载工件以及脱敏的网络/控制台/页面错误摘要；仍需在目标平台安装浏览器运行时并补齐稳定元素引用、持久会话和跨浏览器回归。
 4. Desktop Agent：基础截图、屏幕枚举、输入、剪贴板和 Windows 窗口聚焦已具备；Linux 窗口管理器差异、多显示器真实会话、UAC/权限场景和跨桌面回归仍需专门验收。
-5. 长连接：已实现可选 WebSocket wake-only 通道、客户端指数重连和 HTTPS 回退；仍需在真实反向代理/多副本环境完成灰度、序列号关联和故障演练，QUIC 尚未实现。
+5. 长连接：已实现可选 WebSocket wake-only 通道、客户端指数重连和 HTTPS 回退；PostgreSQL 模式新增跨 Center 副本的 LISTEN/NOTIFY 唤醒桥接（best-effort，丢失自动由轮询补偿）；仍需在真实反向代理/多副本环境完成灰度、序列号关联和故障演练，QUIC 尚未实现。
 6. Project Registry/Git worktree：已实现按 Agent 归属的项目注册、项目根/仓库路径边界、异步 `git worktree add/remove`、幂等键和项目/worktree 任务 cwd 解析；Center 不读取仓库内容，Agent 仍执行最终真实路径与权限校验。提交/差异审阅、显式合并、实际目标机 Git/权限回归仍待补齐。
 7. 控制台：基础管理流程、项目/worktree、全局搜索/基础筛选和有界任务输出查看可用，实时推送、审计详情和无障碍/视觉回归门禁尚未达到生产级完整度。
 8. 可观测性：Java Center/Go 基线均提供 Admin 鉴权的有界 `/metrics` 和脱敏日志约定，但还没有在集群接入告警规则、SLO、集中日志和升级失败通知。
