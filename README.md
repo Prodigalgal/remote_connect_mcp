@@ -74,7 +74,7 @@ Agent 默认将单个任务捕获的 stdout/stderr 限制为 64 MiB，所有普�
 | `task_output` | 按字节游标分页读取有界任务输出（默认 16 KiB，单次最多 64 KiB） |
 | `task_cancel` | 取消排队或正在运行的任务 |
 | `desktop` | 仅对声明 `desktop` 能力的用户会话 Agent 提供有界截图、屏幕枚举、应用启动、点击、拖拽、按键、文本、剪贴板和窗口聚焦；截图以图片工件返回 |
-| `browser` | 仅对声明 `browser` 能力且配置本机适配器的 Agent 投递一条有界 Worker 请求；不上传 Cookie/CDP 凭据 |
+| `browser` | 仅对声明 `browser` 能力且配置本机适配器的 Agent 投递一条有界 Worker 请求；快照可返回最多 64 个 `rcm-ref-v1` 元素引用供后续动作复用；不上传 Cookie/CDP 凭据 |
 
 当前核心命令工具集为 6 个，另有项目工作流 `project` 和按能力启用的 `desktop`、`browser` 工具。工具数量不是硬性限制，只有在确有独立用户价值且能保持有界输入/输出时才扩展；Browser Agent 不会把 Playwright/Patchright/Comoufox 的全部底层 API 一次性暴露。机器数量不会扩大 ChatGPT 的工具元数据。每次机器操作都必须显式传入 `machine_id`。目录策略通过机器注册元数据和现有 `cwd` 字段实现，不为每种能力复制一组工具，避免污染 ChatGPT Web 上下文。
 
@@ -185,6 +185,8 @@ Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 C
 ### 多 Agent 与桌面/浏览器能力
 
 同一台物理终端默认只注册一个 Java Agent 身份：系统服务负责命令/心跳，`-DesktopEnabled` 在用户登录时自动启动同一安装包的 Desktop companion，通过本机 IPC 获得截图、启动、点击、按键和文本输入能力，不新增 machine ID 或 Token。若确实需要隔离运行多个物理 Agent，则为每个实例使用不同的 Agent 名称、一次性注册 Token、状态目录和 machine ID，并用相同的 `REMOTE_CONNECT_MCP_AGENT_HOST_ID` 归组；Browser Worker 的 Profile/Cookie 仍只保留在本机。详细边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
+Browser `snapshot` 返回的 `rcm-ref-v1:*` 只是一段有界定位描述（role/name、test-id、placeholder 或 text 加序号），不是跨页面永久句柄；页面结构变化后应重新获取快照。为恢复多次调用之间的页面，给 Agent 服务环境配置独立的 Worker 变量 `RCM_BROWSER_PROFILE_DIR`，Agent 会在自己的状态目录保存不含查询参数和片段的最近页面路径；登录态仍由浏览器 profile 管理，任何一次性 URL 都必须显式再次导航。
 
 ### 工作区模式
 

@@ -119,8 +119,8 @@ Browser Agent 与 Desktop Agent 分离，Java Agent 负责身份、生命周期�
 - Center 只路由带 `browser` capability 的任务，不代理任意第三方 MCP。Agent 为每次任务生成
   有界临时 JSON 请求文件，通过 `RCM_BROWSER_TASK_REQUEST_FILE` 传给适配器并在任务结束后删除；
  `RCM_BROWSER_TASK_COMMAND` 仅作为旧 Worker 的兼容字段保留。
-  仓库提供 `scripts/browser-worker.mjs` 作为最小参考适配器，通过 `RCM_BROWSER_ENGINE` 动态加载 Playwright、Patchright 或 Comoufox，并把 `navigate`、`snapshot`、`click`、`fill`、`press`、`wait`、`title`、`url`、`screenshot`、`download`、`evaluate` 映射为少量结构化操作。
-  结果清单由 Agent 校验 MIME、路径、大小和 SHA-256 后才上传单个工件；适配器异常或越界均 fail-closed。Worker 已支持 CSS、role、label、placeholder、text 和 test-id 结构化定位，并返回有界脱敏网络/控制台/页面错误摘要；稳定元素引用、持久会话和跨浏览器回归仍需在目标主机补齐。
+  仓库提供 `scripts/browser-worker.mjs` 作为最小参考适配器，通过 `RCM_BROWSER_ENGINE` 动态加载 Playwright、Patchright 或 Comoufox，并把 `navigate`、`snapshot`、`click`、`fill`、`press`、`wait`、`title`、`url`、`screenshot`、`download`、`evaluate` 映射为少量结构化操作。`snapshot` 同时返回最多 64 个有界 `rcm-ref-v1` 元素引用；引用只编码 role/name、test-id、placeholder 或 text 定位及序号，后续任务可以复用引用而不把整棵 DOM 带回 MCP。启用独立 profile 时，Agent 在状态目录保留最近页面的脱敏 origin/path，会话重新打开时先尝试恢复该页面；query、fragment、Cookie 和 CDP 凭据永不写入会话标记。
+  结果清单由 Agent 校验 MIME、路径、大小和 SHA-256 后才上传单个工件；适配器异常或越界均 fail-closed。Worker 已支持 CSS、`rcm-ref-v1`、role、label、placeholder、text 和 test-id 结构化定位，并返回有界脱敏网络/控制台/页面错误摘要；稳定引用依赖页面仍可访问，定位失败时应重新执行 `snapshot`。目标主机仍需安装浏览器运行时并完成持久会话、跨浏览器和真实站点回归。
 
 ## 7. 连接与配置演进
 

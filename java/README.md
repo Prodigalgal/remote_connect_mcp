@@ -62,7 +62,9 @@ worktree 作为 cwd。项目与 worktree 记录由 Liquibase `007-projects-workt
 旧 Go Center 切换到 PostgreSQL 时，先备份并停止旧 Center，再执行 `rcm-center --migrate`，随后执行 `rcm-center --import-go <旧状态目录或 state.json>`。导入会保留机器/Agent 的 SHA-256 身份摘要、任务状态、输出和工件；MCP/Admin Token 仍必须通过环境 Secret 提供，旧升级活动需暂停后在新 Center 重新创建。
 
 Browser Agent 需要在目标主机配置 `REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER`，指向受控的 Playwright/Patchright/Comoufox 本机 Worker。每个任务会在 Agent 状态目录创建一个短生命周期 JSON 请求文件，并通过 `RCM_BROWSER_TASK_REQUEST_FILE` 环境变量传给 Worker；`RCM_BROWSER_TASK_COMMAND` 仍保留用于兼容旧 Worker。Worker 只回传有界 stdout；浏览器 profile、Cookie、CDP 凭据不离开主机，任务结束后请求文件立即删除。
-仓库提供一个不绑定具体浏览器包的参考 Worker：`scripts/browser-worker.mjs`。在目标机的独立目录安装所需运行时（例如 `npm install playwright`），再将适配器设置为 `node <绝对路径>/scripts/browser-worker.mjs`；通过 `RCM_BROWSER_ENGINE=playwright|patchright|comoufox` 和 `RCM_BROWSER_BROWSER=chromium|firefox|webkit` 选择实现。Worker 支持 `navigate`、`snapshot`、`click`、`fill`、`press`、`wait`、`title`、`url`、`screenshot`、`download` 和 `evaluate`，默认无头、单页、超时和输出有界；未安装对应 npm 包时会写入失败清单而不是假报成功。生产环境应为每个 Agent 使用独立的 `RCM_BROWSER_PROFILE_DIR`，不要把 Cookie、CDP 地址或代理密码写入 `command`、日志或 Center 配置。
+仓库提供一个不绑定具体浏览器包的参考 Worker：`scripts/browser-worker.mjs`。在目标机的独立目录安装所需运行时（例如 `npm install playwright`），再将适配器设置为 `node <绝对路径>/scripts/browser-worker.mjs`；通过 `RCM_BROWSER_ENGINE=playwright|patchright|comoufox` 和 `RCM_BROWSER_BROWSER=chromium|firefox|webkit` 选择实现。Worker 支持 `navigate`、`snapshot`、`click`、`fill`、`press`、`wait`、`title`、`url`、`screenshot`、`download` 和 `evaluate`，默认无头、单页、超时和输出有界；`snapshot` 额外返回最多 64 个 `rcm-ref-v1:*` 结构化元素引用，后续动作可用 `{"ref":"rcm-ref-v1:..."}` 复用，不需要把整棵 DOM 再发回模型。引用编码的是 role/name、test-id、placeholder 或 text 定位和有界序号，不是可泄露页面内容的句柄；页面变化后若定位失败应重新执行 `snapshot`。生产环境应为每个 Agent 使用独立的 `RCM_BROWSER_PROFILE_DIR`，不要把 Cookie、CDP 地址或代理密码写入 `command`、日志或 Center 配置。
+
+启用独立的 `RCM_BROWSER_PROFILE_DIR` 后，Agent 会自动为该身份维护一个 `browser-session.json` 会话标记。Worker 只把最近页面的脱敏 origin/path 写入该文件（不保存 query、fragment、Cookie 或 CDP 凭据），下一次任务会先恢复该页面；没有 profile 或标记失效时按新页面处理。跨任务引用依赖页面仍可访问，涉及登录参数或一次性 URL 时请显式再次调用 `navigate`。
 
 需要截图或下载时，Worker 将文件写入 `RCM_BROWSER_ARTIFACT_DIR`，再把以下 JSON 原子写入
 `RCM_BROWSER_RESULT_FILE`；Agent 会校验路径必须位于该目录内、限制 8 MiB、计算 SHA-256

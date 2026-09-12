@@ -83,6 +83,13 @@ final class BrowserTaskRunner implements Runnable {
             builder.environment().put("RCM_BROWSER_TASK_REQUEST_FILE", requestFile.toString());
             builder.environment().put("RCM_BROWSER_RESULT_FILE", resultFile.toString());
             builder.environment().put("RCM_BROWSER_ARTIFACT_DIR", artifactDir.toString());
+            // Keep only a small, per-Agent browser session marker outside the
+            // short-lived artifact directory.  The Worker stores a sanitized
+            // origin/path here so a new task can restore the last page when a
+            // persistent profile is configured, without ever persisting query
+            // strings, fragments, cookies, or CDP credentials.
+            builder.environment().put("RCM_BROWSER_SESSION_FILE",
+                    config.stateDir().toAbsolutePath().normalize().resolve("browser-session.json").toString());
             builder.environment().put("RCM_BROWSER_TASK_TIMEOUT_SECONDS", Integer.toString(task.timeoutSeconds() <= 0 ? 300 : Math.min(task.timeoutSeconds(), 24 * 60 * 60)));
             outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), config.maxOutputBytes(), resourceBudget);
             process = builder.start();
