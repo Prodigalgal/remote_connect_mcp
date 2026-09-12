@@ -24,6 +24,7 @@ export type Task = {
   cwd?: string
   timeoutSeconds: number
   status: string
+  attempt: number
   exitCode?: number
   error?: string
   outputBytes: number
@@ -187,6 +188,7 @@ function mapTask(item: Record<string, unknown>): Task {
     cwd: item.cwd as string | undefined,
     timeoutSeconds: Number(item.timeout_seconds ?? 0),
     status: String(item.status ?? ''),
+    attempt: Number(item.attempt ?? 0),
     exitCode: item.exit_code == null ? undefined : Number(item.exit_code),
     error: item.error as string | undefined,
     outputBytes: Number(item.output_bytes ?? 0),

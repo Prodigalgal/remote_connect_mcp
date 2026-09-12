@@ -391,6 +391,7 @@ function TaskRow({ task, token, onRefresh }: { task: Task; token: string; onRefr
     <div className="task-row">
       <div><strong>{task.id}</strong><span>{task.command || task.kind} · {task.machineId}</span></div>
       <span className={`state ${terminal ? 'muted' : 'accent'}`}><i />{task.status}</span>
+      <span className="mono">第 {task.attempt} 次投递</span>
       <span className="mono">{task.outputBytes} B</span>
       <div className="task-row-actions">
         <button className="secondary" onClick={() => expanded ? setExpanded(false) : void loadOutput(true)} disabled={loadingOutput} aria-expanded={expanded}>

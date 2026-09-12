@@ -204,6 +204,7 @@ final class JdbcTaskStore {
                      WHERE task_id = ? AND status = ?
                     """, TaskStatus.DISPATCHING, timestamp(now), timestamp(lease), task.id(), TaskStatus.QUEUED);
             task.status(TaskStatus.DISPATCHING);
+            task.attempt(task.attempt() + 1);
             task.dispatchedAt(now);
             task.leaseUntil(lease);
             return new PollResponse(task.command(), cancelIds, null);
@@ -454,7 +455,7 @@ final class JdbcTaskStore {
         var artifactBytes = artifactBytesValue instanceof Number number ? number.longValue() : 0L;
         var artifactData = rs.getBytes("artifact_data");
         var state = TaskState.restore(taskId, rs.getString("agent_id"), command, rs.getString("idempotency_key"), instant(rs, "created_at"),
-                rs.getString("status"), numberValue(rs.getObject("exit_code")), rs.getString("error_text"),
+                rs.getString("status"), rs.getInt("attempt"), numberValue(rs.getObject("exit_code")), rs.getString("error_text"),
                 rs.getBoolean("output_truncated"), instant(rs, "dispatched_at"), instant(rs, "started_at"), instant(rs, "finished_at"),
                 instant(rs, "lease_until"), output == null ? new byte[0] : output,
                 artifactBytes, rs.getString("artifact_mime"), rs.getString("artifact_sha256"),

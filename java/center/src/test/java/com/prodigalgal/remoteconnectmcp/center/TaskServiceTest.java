@@ -33,6 +33,7 @@ class TaskServiceTest {
         assertEquals(created.id(), retry.id());
         assertEquals(created.id(), poll.task().id());
         assertEquals(TaskStatus.DISPATCHING, tasks.find(created.id()).orElseThrow().status());
+        assertEquals(1, tasks.find(created.id()).orElseThrow().attempt());
 
         tasks.updateState(registration.machineId(), created.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false));
         tasks.appendOutput(registration.machineId(), created.id(), 0, "hello".getBytes(StandardCharsets.UTF_8));

@@ -13,6 +13,8 @@ final class TaskState {
     private final Instant createdAt;
     private final ByteArrayOutputStream output = new ByteArrayOutputStream();
     private String status = TaskStatus.QUEUED;
+    /** Number of Center dispatch attempts; increments only when a lease is claimed. */
+    private int attempt;
     private Integer exitCode;
     private String error;
     private boolean outputTruncated;
@@ -36,12 +38,13 @@ final class TaskState {
     }
 
     static TaskState restore(String id, String machineId, TaskCommand command, String idempotencyKey,
-                             Instant createdAt, String status, Integer exitCode, String error,
+                             Instant createdAt, String status, int attempt, Integer exitCode, String error,
                              boolean outputTruncated, Instant dispatchedAt, Instant startedAt,
                              Instant finishedAt, Instant leaseUntil, byte[] output,
                              long artifactBytes, String artifactMime, String artifactSha256, byte[] artifactData) {
         var state = new TaskState(id, machineId, command, idempotencyKey, createdAt);
         state.status(status);
+        state.attempt(attempt);
         state.exitCode(exitCode);
         state.error(error);
         state.outputTruncated(outputTruncated);
@@ -68,6 +71,8 @@ final class TaskState {
     ByteArrayOutputStream output() { return output; }
     String status() { return status; }
     void status(String value) { status = value; }
+    int attempt() { return attempt; }
+    void attempt(int value) { attempt = Math.max(0, value); }
     Integer exitCode() { return exitCode; }
     void exitCode(Integer value) { exitCode = value; }
     String error() { return error; }

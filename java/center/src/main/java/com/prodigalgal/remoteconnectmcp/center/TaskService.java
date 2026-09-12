@@ -249,6 +249,7 @@ public final class TaskService {
                 if (candidate.isPresent()) {
                     var selected = candidate.get();
                     selected.status(TaskStatus.DISPATCHING);
+                    selected.attempt(selected.attempt() + 1);
                     selected.dispatchedAt(now);
                     selected.leaseUntil(now.plus(LEASE_DURATION));
                     task = selected.command();

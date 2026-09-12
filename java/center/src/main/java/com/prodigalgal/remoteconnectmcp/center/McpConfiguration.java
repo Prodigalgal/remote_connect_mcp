@@ -480,6 +480,7 @@ public class McpConfiguration {
         value.put("cwd", compact(task.cwd(), 1024));
         value.put("timeout_seconds", task.timeoutSeconds());
         value.put("status", task.status());
+        value.put("attempt", task.attempt());
         value.put("exit_code", task.exitCode());
         value.put("error", compact(task.error(), 2048));
         value.put("output_bytes", task.outputBytes());

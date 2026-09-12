@@ -13,6 +13,7 @@ public record TaskView(
         String cwd,
         int timeoutSeconds,
         String status,
+        int attempt,
         Integer exitCode,
         String error,
         long outputBytes,
@@ -29,7 +30,7 @@ public record TaskView(
     public TaskView(TaskState task) {
         this(task.id(), task.machineId(), task.command().kind().wireValue(), task.command().requiredCapability(),
                 task.command().command(), task.command().cwd(), task.command().timeoutSeconds(), task.status(),
-                task.exitCode(), task.error(), task.outputBytes(), task.outputTruncated(), task.createdAt(),
+                task.attempt(), task.exitCode(), task.error(), task.outputBytes(), task.outputTruncated(), task.createdAt(),
                 task.dispatchedAt(), task.startedAt(), task.finishedAt(), task.leaseUntil(), task.artifactBytes(),
                 task.artifactMime(), task.artifactSha256());
     }

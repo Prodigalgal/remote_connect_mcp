@@ -139,6 +139,7 @@ class PostgresIntegrationTest {
                         request.version(), request.defaultCwd(), request.scopeMode(), request.workspaceRoot(), request.capabilities())));
         assertNotNull(poll.task());
         assertEquals(taskId, poll.task().id());
+        assertEquals(1, store.find(taskId).orElseThrow().attempt(), "first lease claim must be attempt 1");
         store.updateState(agentId, taskId, new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
 
         var firstOutput = "line-1\n".getBytes(StandardCharsets.UTF_8);
@@ -221,6 +222,7 @@ class PostgresIntegrationTest {
         jdbc.update("UPDATE rcm_task SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE task_id = ?", leaseTaskId);
         var reclaimed = store.poll(agentId, new PollRequest(List.of(), 1, List.of("command")));
         assertEquals(leaseTaskId, reclaimed.task().id(), "expired dispatch lease must be reclaimed");
+        assertEquals(2, store.find(leaseTaskId).orElseThrow().attempt(), "reclaimed lease must increment attempt");
         var restartedStore = new JdbcTaskStore(jdbc, transactions);
         assertEquals(TaskStatus.DISPATCHING, restartedStore.find(leaseTaskId).orElseThrow().status());
 
