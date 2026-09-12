@@ -74,9 +74,12 @@ final class DurableCommandRunner implements Runnable {
             }
             var relay = relayOutput(Path.of(record.outputPath()), handle);
             // The original Agent may have been interrupted while its watcher
-            // still had the child completion callback in flight. Refresh the
-            // record before treating a recovered process as an offline failure.
-            record = store.find(task.id()).orElse(record);
+            // still had the child completion callback in flight. Give that
+            // atomic record update a short, bounded window before treating a
+            // recovered process as an offline failure. This is especially
+            // important on Windows, where cmd.exe can release its process
+            // handle just before the onExit callback runs.
+            record = awaitCompletedRecord(record);
             var exitCode = record.completed() && record.exitCode() != null ? record.exitCode() : -1;
             var error = record.completed() ? record.error() : null;
             if (!record.completed()) {
@@ -192,6 +195,19 @@ final class DurableCommandRunner implements Runnable {
                 Thread.sleep(250);
             }
         }
+    }
+
+    private DurableTaskStore.Record awaitCompletedRecord(DurableTaskStore.Record current)
+            throws InterruptedException {
+        if (current == null || current.completed()) return current;
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        var latest = current;
+        while (System.nanoTime() < deadline) {
+            latest = store.find(task.id()).orElse(latest);
+            if (latest.completed()) return latest;
+            Thread.sleep(25);
+        }
+        return store.find(task.id()).orElse(latest);
     }
 
     private void sendState(TaskUpdateRequest update) throws IOException, InterruptedException {
