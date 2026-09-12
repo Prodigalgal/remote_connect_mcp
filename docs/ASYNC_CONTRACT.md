@@ -21,9 +21,10 @@ Agent 的 `/agent/v1/poll` 响应可以携带可选 `config` 对象：
 - `command_start`、`desktop`、`browser` 只负责校验并创建任务，成功后立即返回 `task_id`；默认不等待子进程。
 - 项目/worktree 注册与 `git worktree add/remove` 同样只创建异步任务；创建完成前不能把 worktree 当作任务 cwd，重复请求应使用同一个 `idempotency_key`。
 - `task_wait` 仅允许显式的 0–20 秒短等待，用于减少一次往返；超时返回当前快照，不表示任务失败。
-- PostgreSQL 模式下，Center 会在读取任务行前捕获变更序号，并优先挂起等待
-  `LISTEN rcm_task_change`/`NOTIFY`，不会按固定间隔持续查询。通知丢失、监听器故障或
-  内存模式会回退到有界行检查；任务行始终是唯一事实来源。
+- PostgreSQL 模式下，Center 会在读取任务行前捕获该任务的变更序号，并挂起等待
+  `LISTEN rcm_task_change`/`NOTIFY`；不同任务不会互相唤醒并查询，不会按固定间隔持续查询。通知丢失或监听器故障时，
+  等待在调用方的截止时间返回当前快照；下一次显式 `task_wait` 再读取权威任务行。内存模式
+  使用本地条件变量。任务行始终是唯一事实来源。
 - `task_output` 使用字节 cursor 分页，单页最多 64 KiB；调用方必须保存 `next_cursor`，不能把整段输出塞回 MCP 上下文。
 - `idempotency_key` 在同一 Agent 上绑定命令参数；重试得到原任务视图，参数变化会被拒绝。
 - `task_cancel` 是幂等的：排队任务立即取消，已派发任务先进入 `cancel_requested`，由 Agent 杀掉进程并上报终态。
@@ -32,19 +33,26 @@ Agent 的 `/agent/v1/poll` 响应可以携带可选 `config` 对象：
 
 - MCP 使用官方 `McpAsyncServer`；工具处理返回 Reactor `Mono`，在可关闭的虚拟线程执行器上运行。
 - Agent/Admin Servlet 控制器返回 `CompletableFuture<ResponseEntity<?>>`。JDBC 是阻塞集成，但只运行在 Center 虚拟线程，不占住 Tomcat 容器载体线程。
-- PostgreSQL 写入以单事务完成状态、租约、游标和工件更新；数据库断线不会创建第二个任务。任务创建/取消/状态/输出/工件更新会 best-effort 发布 `pg_notify`：一条通道唤醒其他 Center 副本上的 Agent，另一条通道唤醒 `task_wait`；通知丢失时分别由 HTTPS 轮询和有界行检查补偿。
-- `queued -> dispatching` 使用租约和 `SKIP LOCKED`；租约过期后回到队列，等待下一次心跳派发。
+- PostgreSQL 写入以单事务完成状态、租约、游标和工件更新；数据库断线不会创建第二个任务。任务创建/取消/状态变更会 best-effort 发布 `pg_notify`：一条通道唤醒其他 Center 副本上的 Agent，另一条通道唤醒 `task_wait`。高频输出/工件增量使用带任务摘要的 task-local 通知，跨副本也只唤醒等待同一任务的请求，不把每个 chunk 广播到所有 Admin/Agent；通知丢失时由长轮询截止时间和下一次显式读取补偿，不启动固定查询循环。
+- `queued -> dispatching` 使用租约和 `SKIP LOCKED`；新任务、取消和升级会按机器发送唤醒提示，租约过期后由下一次正常派发请求重新领取，不运行 Center 侧定时扫描。
 
 ## Agent
 
 - 一个任务由独立虚拟线程承载；进程等待、stdout/stderr drain、Center 上传是三个可相互取消的阶段。
 - 普通有超时任务把输出写入有界磁盘 spool；单任务上限与 Agent 级聚合上限同时生效，达到聚合上限时仅截断后续输出、不中断子进程。上传线程按 cursor 幂等提交，并以 1–30 秒指数退避处理 408/425/429/5xx/网络断线。
-- 无超时任务使用 durable PID/日志记录。Agent 重启会按记录重新附着；服务停止只中断 Agent 观察者，不重复启动命令。durable 日志超过 `REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES` 时终止任务并上报 `failed + output_truncated`，保护磁盘。
+- 无超时任务使用 durable PID/日志记录。Agent 重启会按记录重新附着；服务停止只中断 Agent 观察者，不重复启动命令。日志增量通过 `WatchService` 事件和 `ProcessHandle.onExit` 驱动，durable 日志超过 `REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES` 时终止任务并上报 `failed + output_truncated`，保护磁盘。Go 兼容 Agent 在 Linux pidfd/Windows 进程句柄不可用的极旧环境才启用 5 秒低频兼容检查。
 - 所有 HTTP 请求由 `HttpClient.sendAsync` 发起并带超时取消；认证错误不重试，运行时连接错误采用带抖动的退避。
-- Agent 退出时取消普通任务的观察线程；输出 spool、临时截图和一次性下载文件均在终态清理，Windows 句柄关闭存在短暂延迟时使用有界重试。
+- Agent 退出时取消普通任务的观察线程；输出 spool、临时截图和一次性下载文件均在终态清理，Windows 句柄关闭存在短暂延迟时只做一次非阻塞清理，遗留文件交给下一次启动扫尾。
 
 ## 前端
 
-React 控制台只请求分页摘要；Admin Token 仅保存在内存。验证 Token 后使用单飞的 5 秒刷新循环，上一轮未完成时不会堆积下一轮请求，AbortController 在 8 秒后取消失联请求。
+React 控制台只请求分页摘要；Admin Token 仅保存在内存。验证 Token 后挂起一个 Admin 事件长连接，只有收到变更才重新读取分页摘要；传输故障才使用带退避的重连，AbortController 在请求截止时取消失联请求。旧 Go 控制台也使用同一类 `/api/v1/events` 长连接。
+
+## 无稳态轮询门禁
+
+- Agent 空闲时保持一次有界 HTTPS 长轮询；任务、取消、配置和升级事件通过条件变量、WebSocket 唤醒或 PostgreSQL `LISTEN/NOTIFY` 返回，不使用固定间隔请求。
+- Center 的 PostgreSQL 监听使用 `PGConnection.getNotifications(0)` 阻塞在数据库 socket；无参的非阻塞 API 不得用于监听循环。
+- 进程输出/完成由 `fsnotify`、`WatchService`、`ProcessHandle.onExit`、Linux pidfd 或 Windows 进程句柄驱动；不通过固定间隔读取文件或探测 PID。
+- 定时器仅允许用于请求截止时间、网络失败指数退避、关闭/终止宽限期和桌面拖拽动画。旧协议兼容、极旧内核/ACL 不具备事件能力时的低频回退必须保持显式、受界且不成为默认路径。
 
 该契约允许 ChatGPT Web 在一次消息超时后安全重试：重试只读取同一个任务和 cursor，不会把长时间命令重新执行一遍。

@@ -14,14 +14,14 @@ Java 25 Center/Agent 与 React 控制台已经形成可独立验收的迁移候�
 | --- | --- | --- |
 | Java 工程 | `protocol`、`center`、`agent` Gradle 多模块，Java 25 toolchain | 过去的构建记录；当前由 GitHub Actions 重跑 |
 | MCP | Streamable HTTP `/mcp`、Bearer 校验、精简工具面、分页结果 | 过去的 `initialize`/`tools/list` 烟测记录；当前由 GitHub Actions 重跑 |
-| 任务可靠性 | 异步入队、幂等键、租约、取消、输出游标、断线重连、有界 spool、无超时任务恢复；过期租约区分可恢复持久任务与不可安全重放的定时任务；PostgreSQL `LISTEN/NOTIFY` 事件唤醒配合行读取回退 | Java Agent/Center 单元测试与 GitHub Actions 门禁 |
+| 任务可靠性 | 异步入队、幂等键、租约、取消、输出游标、断线重连、有界 spool、无超时任务恢复；过期租约区分可恢复持久任务与不可安全重放的定时任务；PostgreSQL 按任务摘要路由 `LISTEN/NOTIFY` 事件唤醒，高频输出只唤醒等待同一任务的请求（可跨 Center 副本），截止时间返回快照，不运行固定行读取循环 | Java Agent/Center 单元测试与 GitHub Actions 门禁 |
 | 注册与身份 | 一次性 Enrollment Token，注册后换取每 Agent 日常 Token；身份文件原子写入 | Agent/Center 测试通过 |
-| 配置热更新 | Center 下发 generation、轮询间隔和并发槽位；Agent 原子落盘并只接受更新代次 | `AgentRuntimeSettingsTest`、`AgentConfigurationServiceTest` |
+| 配置热更新 | Center 下发 generation、长轮询等待时间、兼容退避间隔和并发槽位；Agent 原子落盘并只接受更新代次 | `AgentRuntimeSettingsTest`、`AgentConfigurationServiceTest` |
 | Desktop | 同一安装包的用户会话 companion；截图/屏幕枚举、启动、点击/拖拽、组合按键、剪贴板、窗口聚焦和文本输入通过受保护 loopback IPC | `DesktopCompanionClientTest` 与协议测试通过 |
 | Browser | Agent 负责生命周期、超时、日志和工件；通过本机适配器命令接入 Worker，以临时 JSON 请求文件传递结构化任务，并支持受目录约束的单工件清单上传 | `BrowserTaskRunnerTest`、`BrowserTaskRunner` |
 | 升级 | Center canary/批次状态机，HTTPS + SHA-256，Agent Helper 原子替换和回滚；发布工作流资产名已与解析器对齐 | `UpgradeServiceTest`；`.github/workflows/java-release.yml` 静态校验 |
 | 控制台 | React/Vite 经典后台布局，机器、项目/worktree、任务、令牌、升级和设置页面；全局搜索、机器在线筛选、任务状态筛选和任务输出 16 KiB 游标分页查看；Admin Token 只在当前标签页内存 | 过去的 `pnpm build` 记录；当前由 GitHub Actions 重跑 |
-| 数据库 | PostgreSQL 适配器与 Liquibase `001`–`008` changelog；内存模式仍用于协议回归；发布工作流带 PostgreSQL 16 服务容器集成、备份和恢复门禁 | Liquibase 资源/迁移单元测试通过；CI `PostgresIntegrationTest` 会覆盖注册、项目/worktree、幂等任务、租约、输出续传和工件往返，随后执行 custom-format dump/restore |
+| 数据库 | PostgreSQL 适配器与 Liquibase `001`–`009` changelog；内存模式仍用于协议回归；发布工作流带 PostgreSQL 16 服务容器集成、备份和恢复门禁 | Liquibase 资源/迁移单元测试通过；CI `PostgresIntegrationTest` 会覆盖注册、项目/worktree、幂等任务、租约、输出续传和工件往返，随后执行 custom-format dump/restore |
 | 发布脚本 | Java JVM 构建、Native Image 门禁脚本、Windows/Linux Agent 安装器、Java Center/Agent JVM/Native 烟测脚本，以及 Windows/Linux WebSocket wake 烟测 | 当前只做静态校验；Native Image、完整原生烟测、Agent RSS 资源报告和仓库卫生扫描交给 GitHub Actions，Windows/Linux 安装器均支持 CI 平铺 ZIP + 旁路库 |
 
 ## 部分实现或仍需补齐
@@ -30,7 +30,7 @@ Java 25 Center/Agent 与 React 控制台已经形成可独立验收的迁移候�
 2. PostgreSQL：CI 已加入真实 PostgreSQL 16 服务容器的迁移/注册/任务/输出/工件往返及 custom-format 备份恢复门禁，并覆盖幂等并发与过期租约恢复；仍需补齐并发抢占、Center 重启场景和长输出压测，生产库恢复演练尚未执行。
 3. Browser Agent：Java Agent 已提供参考 `scripts/browser-worker.mjs`，可按环境加载 Playwright/Patchright/Comoufox，并支持 CSS/role/label/placeholder/text/test-id 结构化定位，返回有界快照、动作结果、截图、下载工件以及脱敏的网络/控制台/页面错误摘要；仍需在目标平台安装浏览器运行时并补齐稳定元素引用、持久会话和跨浏览器回归。
 4. Desktop Agent：基础截图、屏幕枚举、输入、剪贴板和 Windows 窗口聚焦已具备；Linux 窗口管理器差异、多显示器真实会话、UAC/权限场景和跨桌面回归仍需专门验收。
-5. 长连接：已实现可选 WebSocket wake-only 通道、客户端指数重连和 HTTPS 回退；PostgreSQL 模式新增跨 Center 副本的 Agent 唤醒与任务等待 `LISTEN/NOTIFY` 桥接（best-effort，丢失自动由有界行读取补偿）；仍需在真实反向代理/多副本环境完成灰度、序列号关联和故障演练，QUIC 尚未实现。
+5. 长连接：已实现可选 WebSocket wake-only 通道、客户端指数重连和 HTTPS 长轮询；PostgreSQL 模式新增跨 Center 副本的 Agent 唤醒与任务等待 `LISTEN/NOTIFY` 桥接（best-effort，丢失时由请求截止时间和下一次显式读取补偿）；仍需在真实反向代理/多副本环境完成灰度、序列号关联和故障演练，QUIC 尚未实现。
 6. Project Registry/Git worktree：已实现按 Agent 归属的项目注册、项目根/仓库路径边界、异步 `git worktree add/remove`、幂等键和项目/worktree 任务 cwd 解析；Center 不读取仓库内容，Agent 仍执行最终真实路径与权限校验。提交/差异审阅、显式合并、实际目标机 Git/权限回归仍待补齐。
 7. 控制台：基础管理流程、项目/worktree、全局搜索/基础筛选和有界任务输出查看可用，实时推送、审计详情和无障碍/视觉回归门禁尚未达到生产级完整度。
 8. 可观测性：Java Center/Go 基线均提供 Admin 鉴权的有界 `/metrics` 和脱敏日志约定，但还没有在集群接入告警规则、SLO、集中日志和升级失败通知。

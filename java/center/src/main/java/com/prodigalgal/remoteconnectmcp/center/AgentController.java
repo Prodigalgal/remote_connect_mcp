@@ -20,25 +20,37 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
+import java.time.Duration;
 
 @RestController
 @RequestMapping("/agent/v1")
 public final class AgentController {
     private static final int MAX_OUTPUT_REQUEST_BASE64 = 256 * 1024;
     private static final int MAX_ARTIFACT_REQUEST_BASE64 = 12 * 1024 * 1024;
+    private static final long MAX_LONG_POLL_MS = 25_000L;
     private final AgentRegistry registry;
     private final TaskService tasks;
     private final UpgradeService upgrades;
     private final AgentConfigurationService configurations;
     private final CenterAsyncExecutor async;
+    private final AgentWakeRegistry wakes;
 
     public AgentController(AgentRegistry registry, TaskService tasks, UpgradeService upgrades,
-                           AgentConfigurationService configurations, CenterAsyncExecutor async) {
+                           AgentConfigurationService configurations, CenterAsyncExecutor async,
+                           org.springframework.beans.factory.ObjectProvider<AgentWakeRegistry> wakeProvider) {
         this.registry = registry;
         this.tasks = tasks;
         this.upgrades = upgrades;
         this.configurations = configurations;
         this.async = async;
+        this.wakes = wakeProvider == null ? null : wakeProvider.getIfAvailable();
+    }
+
+    /** Compatibility constructor for direct protocol/controller tests. */
+    AgentController(AgentRegistry registry, TaskService tasks, UpgradeService upgrades,
+                    AgentConfigurationService configurations, CenterAsyncExecutor async) {
+        this(registry, tasks, upgrades, configurations, async, null);
     }
 
     @PostMapping("/register")
@@ -53,27 +65,83 @@ public final class AgentController {
     @PostMapping("/poll")
     public CompletableFuture<ResponseEntity<?>> poll(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                      @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
-                                                     @RequestBody(required = false) PollRequest request) {
+                                                     @RequestBody(required = false) PollRequest request,
+                                                     @RequestParam(value = "wait_ms", defaultValue = "0") long waitMs) {
         return execute(() -> {
             var pollRequest = request == null ? new PollRequest(java.util.List.of(), 0, java.util.List.of()) : request;
-            registry.poll(machineId, bearerValue(authorization), pollRequest);
-            var config = configurations.current(machineId);
-            // Fetch cancellation requests without claiming a new task. This
-            // keeps upgrade offers ahead of queued work and guarantees an
-            // Agent can always observe a remote cancel promptly.
-            var cancellations = tasks.poll(machineId, new PollRequest(pollRequest.runningTaskIds(), 0,
-                    pollRequest.availableCapabilities(), pollRequest.metadata()));
-            if (!cancellations.cancelTaskIds().isEmpty()) {
-                return ResponseEntity.ok(new com.prodigalgal.remoteconnectmcp.protocol.PollResponse(
-                        cancellations.task(), cancellations.cancelTaskIds(), cancellations.upgrade(), config));
+            var normalizedWait = normalizeLongPoll(waitMs);
+            var response = pollUntilChange(machineId, bearerValue(authorization), pollRequest, normalizedWait);
+            if (normalizedWait > 0 && wakes != null) {
+                return ResponseEntity.ok().header("X-RCM-Long-Poll", "accepted").body(response);
             }
-            var upgrade = upgrades.offer(machineId, pollRequest);
-            if (upgrade != null) {
-                return ResponseEntity.ok(new PollResponse(null, java.util.List.of(), upgrade, config));
-            }
-            var response = tasks.poll(machineId, pollRequest);
-            return ResponseEntity.ok(new PollResponse(response.task(), response.cancelTaskIds(), response.upgrade(), config));
+            return ResponseEntity.ok(response);
         });
+    }
+
+    private PollResponse pollUntilChange(String machineId, String token, PollRequest request, long waitMs)
+            throws Exception {
+        if (waitMs <= 0 || wakes == null) {
+            return pollOnce(machineId, token, request);
+        }
+        var deadline = System.nanoTime() + Duration.ofMillis(waitMs).toNanos();
+        while (true) {
+            // Capture before the row read. If a task is created between the
+            // read and await, the sequence has changed and await returns
+            // immediately instead of losing the wake-up race.
+            var observed = wakes.version(machineId);
+            try {
+                var response = pollOnce(machineId, token, request);
+                if (hasWork(response)) return response;
+                var remaining = deadline - System.nanoTime();
+                if (remaining <= 0) {
+                    // A missed wake must not make the deadline return the
+                    // snapshot from before the event. One final authoritative
+                    // poll is tied to this request boundary, not a timer loop.
+                    return pollOnce(machineId, token, request);
+                }
+                wakes.awaitChange(machineId, observed, remaining);
+                if (System.nanoTime() >= deadline) {
+                    // Same deadline re-read for a notification lost in the
+                    // database/listener path.
+                    return pollOnce(machineId, token, request);
+                }
+            } finally {
+                // Wait-state references are per request, not a machine cache.
+                // Releasing here lets a removed/offline machine disappear
+                // without a periodic cleanup sweep.
+                wakes.release(machineId);
+            }
+        }
+    }
+
+    private PollResponse pollOnce(String machineId, String token, PollRequest request) {
+        registry.poll(machineId, token, request);
+        var config = configurations.current(machineId);
+        if (config != null && config.generation() <= request.configGeneration()) config = null;
+        // Fetch cancellation requests without claiming a new task. This keeps
+        // upgrade offers ahead of queued work and guarantees a remote cancel
+        // is observable even when the Agent has no free execution slot.
+        var cancellations = tasks.poll(machineId, new PollRequest(request.runningTaskIds(), 0,
+                request.availableCapabilities(), request.metadata(), request.configGeneration()));
+        if (!cancellations.cancelTaskIds().isEmpty()) {
+            return new PollResponse(cancellations.task(), cancellations.cancelTaskIds(), cancellations.upgrade(), config);
+        }
+        var upgrade = upgrades.offer(machineId, request);
+        if (upgrade != null) return new PollResponse(null, java.util.List.of(), upgrade, config);
+        var response = tasks.poll(machineId, request);
+        return new PollResponse(response.task(), response.cancelTaskIds(), response.upgrade(), config);
+    }
+
+    private static boolean hasWork(PollResponse response) {
+        return response != null && (response.task() != null || response.upgrade() != null
+                || !response.cancelTaskIds().isEmpty() || response.config() != null);
+    }
+
+    private static long normalizeLongPoll(long waitMs) {
+        if (waitMs < 0 || waitMs > MAX_LONG_POLL_MS) {
+            throw new IllegalArgumentException("wait_ms must be between 0 and " + MAX_LONG_POLL_MS);
+        }
+        return waitMs;
     }
 
     @PostMapping("/upgrade/status")

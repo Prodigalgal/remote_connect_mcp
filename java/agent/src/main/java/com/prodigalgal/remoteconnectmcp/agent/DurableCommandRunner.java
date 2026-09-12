@@ -6,12 +6,21 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.ClosedWatchServiceException;
+import java.nio.file.FileSystems;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardWatchEventKinds;
+import java.nio.file.WatchKey;
+import java.nio.file.WatchService;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -66,6 +75,9 @@ final class DurableCommandRunner implements Runnable {
             var handle = process == null ? ProcessHandle.of(record.pid()).orElse(null) : process.toHandle();
             if (handle == null) {
                 throw new IOException("durable process is no longer available");
+            }
+            if (process == null && !record.completed()) {
+                store.watchRecoveredCompletion(record, handle);
             }
             store.guard(record, config.maxOutputBytes());
 
@@ -135,7 +147,20 @@ final class DurableCommandRunner implements Runnable {
         var limitExceeded = false;
         var centerTruncated = false;
         long offset = 0;
-        try (var channel = FileChannel.open(outputPath, StandardOpenOption.READ)) {
+        try (var channel = FileChannel.open(outputPath, StandardOpenOption.READ);
+             var watcher = openWatcher(outputPath)) {
+            // ProcessHandle.onExit is the authoritative completion event. Do
+            // not repeatedly query isAlive() at the bottom of the output loop:
+            // a completed process must wake the runner exactly once even when
+            // its final directory event races the callback.
+            var completion = process.onExit();
+            var exited = new AtomicBoolean(completion.isDone());
+            if (watcher != null) {
+                completion.thenRun(() -> {
+                    exited.set(true);
+                    closeQuietly(watcher);
+                });
+            }
             while (true) {
                 var fileSize = channel.size();
                 var boundedSize = Math.min(fileSize, config.maxOutputBytes());
@@ -182,32 +207,106 @@ final class DurableCommandRunner implements Runnable {
                 }
                 if (centerTruncated) {
                     // Keep observing the durable process so its final exit
-                    // state is still reported. The local guard remains active
-                    // and will terminate a process that keeps growing offline.
-                    while (process.isAlive()) Thread.sleep(250);
+                    // state is still reported.  The output guard terminates a
+                    // process that keeps growing offline; this wait is tied to
+                    // the process completion future, not a timer loop.
+                    awaitProcessExit(process, 0);
                     return new RelayResult(true,
                             limitExceeded ? "durable command output exceeded " + config.maxOutputBytes() + " bytes" : null);
                 }
-                if (!process.isAlive() && offset >= Math.min(channel.size(), config.maxOutputBytes())) {
+                if (completion.isDone() && offset >= Math.min(channel.size(), config.maxOutputBytes())) {
                     return new RelayResult(truncated,
                             limitExceeded ? "durable command output exceeded " + config.maxOutputBytes() + " bytes" : null);
                 }
-                Thread.sleep(250);
+                if (completion.isDone()) {
+                    // Completion is already observed and the final drain above
+                    // found no remaining bytes. Returning here avoids a tight
+                    // post-exit retry if the filesystem emitted no extra event.
+                    return new RelayResult(truncated,
+                            limitExceeded ? "durable command output exceeded " + config.maxOutputBytes() + " bytes" : null);
+                }
+                if (watcher == null) {
+                    // A filesystem without WatchService support cannot stream
+                    // incremental output safely.  Wait for process completion
+                    // and perform one final drain instead of busy checking the
+                    // file size.
+                    awaitProcessExit(process, 0);
+                } else {
+                    try {
+                        awaitOutputEvent(watcher, outputPath);
+                    } catch (IOException watcherClosed) {
+                        if (!exited.get() && process.isAlive()) throw watcherClosed;
+                    }
+                    if (exited.get()) continue;
+                }
             }
+        }
+    }
+
+    private static WatchService openWatcher(Path outputPath) {
+        var parent = outputPath.toAbsolutePath().normalize().getParent();
+        if (parent == null) return null;
+        try {
+            var watcher = FileSystems.getDefault().newWatchService();
+            parent.register(watcher, StandardWatchEventKinds.ENTRY_CREATE,
+                    StandardWatchEventKinds.ENTRY_MODIFY, StandardWatchEventKinds.ENTRY_DELETE);
+            return watcher;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static void closeQuietly(WatchService watcher) {
+        if (watcher == null) return;
+        try {
+            watcher.close();
+        } catch (Exception ignored) {
+            // Closing an already closed watcher is harmless.
+        }
+    }
+
+    private static void awaitOutputEvent(WatchService watcher, Path outputPath)
+            throws IOException, InterruptedException {
+        var filename = outputPath.getFileName();
+        while (true) {
+            final WatchKey key;
+            try {
+                key = watcher.take();
+            } catch (ClosedWatchServiceException closed) {
+                throw new IOException("durable output watcher closed", closed);
+            }
+            var relevant = false;
+            for (var event : key.pollEvents()) {
+                if (event.kind() == StandardWatchEventKinds.OVERFLOW) {
+                    relevant = true;
+                    continue;
+                }
+                var context = event.context();
+                if (context instanceof Path path && path.getFileName().equals(filename)) relevant = true;
+            }
+            if (!key.reset()) throw new IOException("durable output watcher became invalid");
+            if (relevant) return;
+        }
+    }
+
+    private static void awaitProcessExit(ProcessHandle process, long timeoutMillis) throws InterruptedException {
+        try {
+            var completion = process.onExit();
+            if (timeoutMillis <= 0) {
+                completion.get();
+            } else {
+                completion.get(timeoutMillis, TimeUnit.MILLISECONDS);
+            }
+        } catch (TimeoutException | ExecutionException ignored) {
+            // A bounded termination wait is best effort; the caller reports
+            // an unfinished process as failed or detaches it for recovery.
         }
     }
 
     private DurableTaskStore.Record awaitCompletedRecord(DurableTaskStore.Record current)
             throws InterruptedException {
         if (current == null || current.completed()) return current;
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-        var latest = current;
-        while (System.nanoTime() < deadline) {
-            latest = store.find(task.id()).orElse(latest);
-            if (latest.completed()) return latest;
-            Thread.sleep(25);
-        }
-        return store.find(task.id()).orElse(latest);
+        return store.awaitCompleted(current, java.time.Duration.ofSeconds(2));
     }
 
     private void sendState(TaskUpdateRequest update) throws IOException, InterruptedException {
@@ -261,17 +360,16 @@ final class DurableCommandRunner implements Runnable {
     }
 
     private static void awaitExit(List<ProcessHandle> processes, long timeoutMillis) {
-        var deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
-        var interrupted = false;
-        while (processes.stream().anyMatch(ProcessHandle::isAlive) && System.nanoTime() < deadline) {
-            try {
-                Thread.sleep(25);
-            } catch (InterruptedException exception) {
-                interrupted = true;
-                break;
-            }
+        var completions = processes.stream().map(ProcessHandle::onExit).toArray(CompletableFuture[]::new);
+        if (completions.length == 0) return;
+        try {
+            CompletableFuture.allOf(completions).get(timeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        } catch (TimeoutException | ExecutionException ignored) {
+            // A bounded termination wait is best effort; forcible termination
+            // follows immediately for any process that remains alive.
         }
-        if (interrupted) Thread.currentThread().interrupt();
     }
 
     private record RelayResult(boolean truncated, String error) {

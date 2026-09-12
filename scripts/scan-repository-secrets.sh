@@ -15,10 +15,19 @@ report_matches() {
   local label="$1"
   local pattern="$2"
   local matches
-  matches="$(git grep -l -I -E "$pattern" -- . \
+  # Use -e so patterns that begin with a dash (for example the PEM header
+  # detector) cannot be parsed as git-grep options. A scanner error must not
+  # be silently mistaken for a clean repository.
+  local status=0
+  matches="$(git grep -l -I -E -e "$pattern" -- . \
     ':!scripts/scan-repository-secrets.sh' \
     ':!*.lock' \
-    ':!java/gradle/wrapper/gradle-wrapper.jar' || true)"
+    ':!java/gradle/wrapper/gradle-wrapper.jar')" || status=$?
+  if (( status > 1 )); then
+    printf 'repository hygiene: %s scanner failed (git grep exit %d)\n' "$label" "$status" >&2
+    failed=1
+    return
+  fi
   if [[ -n "$matches" ]]; then
     printf 'repository hygiene: %s found in:\n%s\n' "$label" "$matches" >&2
     failed=1

@@ -15,3 +15,5 @@ databaseChangeLog:
       file: db/changelog/007-projects-worktrees.yaml
   - include:
       file: db/changelog/008-agent-name-unique.yaml
+  - include:
+      file: db/changelog/009-task-lease-index.yaml

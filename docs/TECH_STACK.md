@@ -17,12 +17,12 @@
 
 ### 当前实施状态（2026-09-11）
 
-- 已建立 `java/` Gradle 多模块实现：`protocol`、`center`、`agent`；协议记录、边界校验、异步 MCP、健康/版本探针和注册/轮询兼容接口均可测试，并已锁定 Liquibase/PostgreSQL 依赖；
+- 已建立 `java/` Gradle 多模块实现：`protocol`、`center`、`agent`；协议记录、边界校验、异步 MCP、健康/版本探针和注册/长轮询兼容接口均可测试，并已锁定 Liquibase/PostgreSQL 依赖；
 - Center 注册表与任务队列已支持内存和 PostgreSQL 两种适配路径：`postgres` 模式通过独立 Liquibase changelog 管理 Agent、任务、输出游标和有界工件；
 - Java Agent 已有可执行自包含 JAR、原子身份文件、一次性注册换取日常 Token、断线指数退避、401 自动重新注册、虚拟线程命令执行、有界磁盘 spool/异步上传与无超时进程恢复、用户会话 Desktop IPC 伴侣和 Browser Worker 桥接；
 - 已建立 `web/` React/Vite 控制台并接入 Admin API 的机器/任务分页读取、取消和真实升级活动，Admin Token 只驻留当前 React 内存；
 - Java Center/Agent 尚未替换现有 Go 运行组件，但 Java v1 已实现注册、心跳、异步任务、工件、项目/worktree 和 Center 控制的升级编排；升级活动在 PostgreSQL 模式通过 Liquibase `005-upgrades`、`006-agent-config` 和 `007-projects-worktrees` 持久化，`008-agent-name-unique` 约束并发注册的同名身份；Agent 侧普通任务输出还受单任务与聚合 spool 双重上限保护；
-- Agent 心跳配置已支持带 generation 的轮询间隔和并发槽位热更新；配置原子写入状态目录，输出上限、Token 和工作区边界仍保持启动时约束；
+- Agent 配置已支持带 generation 的长轮询等待时间、兼容退避间隔和并发槽位热更新；配置原子写入状态目录，输出上限、Token 和工作区边界仍保持启动时约束；
 - JVM 测试、Center/Agent JAR 构建、React 生产构建，以及 Windows amd64 Center/Agent Native Image 和 MCP 烟测曾有历史验证记录；当前不在开发机执行构建或测试，所有门禁由匹配架构的 GitHub Actions 重新执行。Linux amd64/arm64 Native Image、签名和正式发布仍需云端 CI 门禁。
 
 ## 2. 选型总表
@@ -37,7 +37,7 @@
 | 数据迁移 | Liquibase | 版本化 changelog、上下文/前置条件、SQL 预览和回滚审计完整 | 启动时无条件自动改表 |
 | 工件存储 | S3 兼容对象存储；本地文件仅开发 | 图片、日志、升级包可独立生命周期和校验 | 将大工件塞进任务 JSON |
 | Agent 语言 | Java 25 模块化 JDK 应用 | 不带 Spring，原生镜像小、启动快、跨平台边界清晰 | Agent 引入完整 Spring 容器 |
-| Agent 通道 | JDK `HttpClient` + 原始 WebSocket；轮询回退 | 无额外网络栈依赖，HTTPS/TLS 和断线重试可控 | 首版直接绑定 QUIC |
+| Agent 通道 | JDK `HttpClient` 25 秒长轮询 + 原始 WebSocket 唤醒；旧端退避回退 | 无额外网络栈依赖，HTTPS/TLS 和断线重试可控，健康路径不刷固定请求 | 首版直接绑定 QUIC |
 
 | Desktop | Java 核心 + 用户会话伴侣 IPC（AWT/平台适配层） | 服务与 GUI 权限分离，兼容 Windows 用户会话和 Linux 图形后端 | 让 SYSTEM 服务假装拥有用户桌面 |
 | Browser | Java Browser Agent + 本机适配器 SPI | Java Playwright 走官方 API；Patchright/Comoufox 通过受控 Node Worker 接入 | 将 Node Worker 注册成第二台 Agent |
@@ -92,7 +92,10 @@ Transport -> Envelope(version, agent_id, host_id, capability, generation, sequen
           -> Register / Heartbeat / Poll / Task / Output / Artifact / Upgrade
 ```
 
-第一阶段保留 HTTPS 轮询作为基线；当前已加入只传递 wake 提示的原始 WebSocket 旁路，复用 Agent 身份并在断线时自动回退；后续再把同一 Envelope、心跳、序列号和幂等语义扩展到真正的长连接任务流，最后评估 QUIC。QUIC 只能作为可选 Transport SPI，不能改变任务协议，也不能让 Agent 因 QUIC 不可用而离线。
+Java Agent 默认使用 25 秒 HTTPS 长轮询，事件到达即返回，服务端 deadline 结束空闲请求；旧 Go
+Center 或显式禁用时才退避回退。当前已加入只传递 wake 提示的原始 WebSocket 旁路，复用 Agent
+身份并在断线时自动回退；后续再把同一 Envelope、心跳、序列号和幂等语义扩展到真正的长连接任务流，
+最后评估 QUIC。QUIC 只能作为可选 Transport SPI，不能改变任务协议，也不能让 Agent 因 QUIC 不可用而离线。
 
 ### 3.4 可观测性
 
@@ -107,7 +110,7 @@ Agent 不引入 Spring，模块边界保持小而明确：
 ```text
 agent/
   agent-core        # 生命周期、身份、心跳、配置 generation、能力协商
-  agent-transport   # JDK HttpClient、WebSocket、轮询回退、重试/抖动
+  agent-transport   # JDK HttpClient、HTTPS 长轮询、WebSocket、失败退避
   agent-command     # ProcessBuilder、输出 spool、租约续期和恢复
   agent-desktop     # 用户会话截图、应用启动、窗口/输入扩展点
   agent-browser     # Browser Adapter SPI、profile 生命周期、工件上传
@@ -213,7 +216,9 @@ web/
 
 ### 6.3 前后端边界
 
-前端只调用版本化 `/api/v1`，通过 OpenAPI 生成 TypeScript 类型和客户端；任务实时更新优先 WebSocket，失败时降级 SSE，再失败时按游标轮询。认证使用 Secure、HttpOnly、SameSite Cookie 或显式短期会话，不把 Admin Token 放在 localStorage，也不把任何 Center/Agent Token 编译进静态资源。
+前端只调用版本化 `/api/v1`，通过 OpenAPI 生成 TypeScript 类型和客户端；任务实时更新使用 Admin
+事件长轮询（变更序号 + 按需刷新），异常时才有界退避重试。认证使用 Secure、HttpOnly、SameSite
+Cookie 或显式短期会话，不把 Admin Token 放在 localStorage，也不把任何 Center/Agent Token 编译进静态资源。
 
 生产路由建议让控制台和 API 使用同源域名（`/console` 与 `/api`），由反向代理转发到独立 React 静态站和 Java Center；这样默认不需要开放宽泛 CORS。前端可以独立发布和回滚，但 API 版本和兼容窗口由 Center 控制。
 

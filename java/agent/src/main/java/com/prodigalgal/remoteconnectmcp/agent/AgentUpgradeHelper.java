@@ -289,9 +289,13 @@ final class AgentUpgradeHelper {
         if (pid <= 0 || pid == ProcessHandle.current().pid()) return;
         var parent = ProcessHandle.of(pid).orElse(null);
         if (parent == null) return;
-        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
-        while (parent.isAlive() && System.nanoTime() < deadline) Thread.sleep(100);
-        if (parent.isAlive()) throw new IOException("previous Agent process did not stop within 45 seconds");
+        try {
+            parent.onExit().get(Duration.ofSeconds(45).toMillis(), TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException exception) {
+            throw new IOException("previous Agent process did not stop within 45 seconds", exception);
+        } catch (java.util.concurrent.ExecutionException exception) {
+            throw new IOException("could not observe previous Agent process", exception);
+        }
     }
 
     private static void stopService(String service) throws IOException, InterruptedException {

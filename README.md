@@ -152,7 +152,7 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 
 日常接入新 Agent、重装 Agent 或恢复丢失的身份文件时，在 Center 控制台的“新增机器注册令牌”区域填写稳定机器名称，生成 1 小时至 30 天有效的一次性 Token。Token 与机器名称绑定，成功注册一次后立即失效；每次安装、重装或身份恢复都必须重新生成一个 Token。
 
-明文只在创建响应和当前浏览器页面显示一次，Center 仅持久化 SHA-256 摘要。生成后可以分别复制 Token、复制已解压发布包的安装命令，或下载包含本次一次性 Token 的 `.ps1` / `.sh` 一键安装脚本。下载脚本会自动识别 amd64/arm64、下载最新 Release、校验 SHA-256 并安装系统服务；安装成功后应立即删除该脚本。Agent 注册成功会换取日常轮询使用的每机独立身份 Token。旧部署如必须迁移，可临时启用共享环境变量并在迁移后立即关闭；新生产部署不使用共享 Enrollment Token。
+明文只在创建响应和当前浏览器页面显示一次，Center 仅持久化 SHA-256 摘要。生成后可以分别复制 Token、复制已解压发布包的安装命令，或下载包含本次一次性 Token 的 `.ps1` / `.sh` 一键安装脚本。下载脚本会自动识别 amd64/arm64、下载最新 Release、校验 SHA-256 并安装系统服务；安装成功后应立即删除该脚本。Agent 注册成功会换取日常长轮询使用的每机独立身份 Token。旧部署如必须迁移，可临时启用共享环境变量并在迁移后立即关闭；新生产部署不使用共享 Enrollment Token。
 
 ## Agent 配置
 
@@ -171,8 +171,9 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY` | `1` | 同时运行任务数，范围 1–32 |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES` | `67108864` | 单任务 stdout/stderr 捕获上限，范围 1 MiB–1 GiB |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES` | `67108864`（并发提高时默认最多 256 MiB） | 所有普通任务磁盘 spool 的聚合上限；必须不小于单任务上限，范围单任务上限–4 GiB；达到后任务继续运行但后续输出标记为截断 |
-| `REMOTE_CONNECT_MCP_AGENT_POLL_INTERVAL_MS` | `5000` | Java Agent 心跳间隔，范围 250–60000 ms；断线时自动指数退避 |
-| `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT` | `poll` | 设置为 `websocket` 时启用可选的 Agent WebSocket 唤醒提示；任务数据和认证仍走 HTTPS，连接失败自动回退轮询 |
+| `REMOTE_CONNECT_MCP_AGENT_POLL_INTERVAL_MS` | `5000` | 仅用于旧 Center/长轮询关闭时的兼容退避；范围 250–60000 ms，断线时自动指数退避 |
+| `REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS` | `25` | Agent 单次 HTTPS 长轮询等待秒数（0–25）；事件/取消/配置到达即返回，0 仅用于旧 Center 兼容 |
+| `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT` | `poll` | 设置为 `websocket` 时启用额外的 Agent WebSocket 唤醒提示；任务数据和认证仍走 HTTPS，连接失败自动退避 |
 | `REMOTE_CONNECT_MCP_AGENT_BINARY_PATH` | 空 | Center 自升级时当前 Agent 二进制的稳定绝对路径；未配置则拒绝自升级 |
 | `REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME` | 空 | 升级 Helper 停止/启动的 systemd 或 Windows SCM 服务名；无服务名时只做进程级替换 |
 | `REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED` | `false` | 显式启用 Desktop Agent 能力；必须以用户会话运行，系统服务不要开启 |

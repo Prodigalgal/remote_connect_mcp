@@ -156,7 +156,11 @@ final class JdbcTaskStore {
         var availableSlots = request == null || request.availableSlots() == null ? 0 : request.availableSlots();
         var capabilities = request == null || request.availableCapabilities() == null ? List.<String>of() : request.availableCapabilities();
         return transactions.execute(status -> {
-            recoverExpiredLeases();
+            // Lease repair is scoped to the authenticated Agent. A global
+            // table sweep on every long-poll request would turn a large fleet
+            // into repeated full-table scans; tasks are bound to one Agent,
+            // so other machines are repaired when their own session polls.
+            recoverExpiredLeases(machineId);
             renewRunningLeases(machineId, request);
             var cancelIds = jdbc.queryForList("""
                     SELECT task_id FROM rcm_task
@@ -397,22 +401,22 @@ final class JdbcTaskStore {
         }, rs -> rs.next() ? readState(rs) : null);
     }
 
-    private void recoverExpiredLeases() {
+    private void recoverExpiredLeases(String machineId) {
         jdbc.update("""
                 UPDATE rcm_task SET status = ?, lease_until = NULL, updated_at = CURRENT_TIMESTAMP
-                 WHERE status = ? AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
-                """, TaskStatus.QUEUED, TaskStatus.DISPATCHING);
+                 WHERE agent_id = ? AND status = ? AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
+                """, TaskStatus.QUEUED, machineId, TaskStatus.DISPATCHING);
         jdbc.update("""
                 UPDATE rcm_task SET status = ?, lease_until = NULL, updated_at = CURRENT_TIMESTAMP
-                 WHERE status = ? AND timeout_seconds <= 0
+                 WHERE agent_id = ? AND status = ? AND timeout_seconds <= 0
                    AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
-                """, TaskStatus.QUEUED, TaskStatus.RUNNING);
+                """, TaskStatus.QUEUED, machineId, TaskStatus.RUNNING);
         jdbc.update("""
                 UPDATE rcm_task SET status = ?, error_text = COALESCE(error_text, ?),
                        finished_at = CURRENT_TIMESTAMP, lease_until = NULL, updated_at = CURRENT_TIMESTAMP
-                 WHERE status = ? AND timeout_seconds > 0
+                 WHERE agent_id = ? AND status = ? AND timeout_seconds > 0
                    AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
-                """, TaskStatus.FAILED, "agent lease expired before timed command completed", TaskStatus.RUNNING);
+                """, TaskStatus.FAILED, "agent lease expired before timed command completed", machineId, TaskStatus.RUNNING);
     }
 
     private void renewRunningLeases(String machineId, PollRequest request) {

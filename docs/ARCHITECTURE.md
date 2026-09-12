@@ -111,14 +111,14 @@ Browser Agent 与 Desktop Agent 分离，Java Agent 负责身份、生命周期�
 
 ## 7. 连接与配置演进
 
-当前使用主动 HTTPS 轮询，Java 迁移后保持该回退通道；已加入可选的 WebSocket 唤醒提示通道，任务数据和认证仍由 HTTPS 负责。PostgreSQL 模式下 Center 还会用有界的 LISTEN/NOTIFY 在多副本之间转发 Agent 唤醒和任务等待提示；通知是 best-effort，丢失时仍由轮询/行读取修复，不把数据库通知当作任务状态来源。
+Java Agent 默认通过 25 秒 HTTPS 长轮询领取任务；请求在任务、取消、配置或升级事件到达时立即返回，空闲只由服务端 deadline 结束。旧 Go Center 或显式禁用长轮询时才退避重试；可选 WebSocket 仅传递唤醒提示，任务数据和认证仍由 HTTPS 负责。PostgreSQL 模式下 Center 还会用阻塞式 LISTEN/NOTIFY 在多副本之间转发 Agent 唤醒和按任务摘要路由的任务等待提示；高频输出 chunk 只在本副本唤醒任务等待者，避免广播风暴，终态/控制面事件仍跨副本广播。通知是 best-effort，丢失时由长轮询 deadline 和下一次显式读取修复，不把数据库通知当作任务状态来源。
 
-1. WebSocket：已实现为可选 wake-only 通道，适合普通公网反向代理并降低空闲等待延迟；消息丢失时由 HTTPS 轮询补偿；
-2. PostgreSQL LISTEN/NOTIFY：已实现跨 Center 副本的 Agent 唤醒和 `task_wait` 事件桥接，连接异常时自动退避重连；
+1. WebSocket：已实现为可选 wake-only 通道，适合普通公网反向代理并降低事件延迟；消息丢失时由 HTTPS 长轮询补偿；
+2. PostgreSQL LISTEN/NOTIFY：已实现跨 Center 副本的 Agent 唤醒和 `task_wait` 事件桥接，驱动在数据库 socket 上阻塞等待，连接异常时才自动退避重连；
 3. QUIC：在需要更低延迟和更强连接恢复时启用；
-4. Polling：保留为受限网络回退。
+4. Long polling：作为 Java Agent/控制台的默认事件通道；固定间隔 polling 仅保留给旧兼容端或内核事件能力不可用的极旧环境。
 
-Agent 心跳自描述版本、平台、HostID、角色、能力、范围策略和会话状态；当前已支持按单调递增 generation 热更新轮询间隔和并发槽位，并原子持久化。Token、身份、工作根目录和执行账户仍必须显式重注册或重启。
+Agent 心跳自描述版本、平台、HostID、角色、能力、范围策略和会话状态；当前已支持按单调递增 generation 热更新长轮询等待时间、兼容退避间隔和并发槽位，并原子持久化。Token、身份、工作根目录和执行账户仍必须显式重注册或重启。
 
 ## 8. 安全基线
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AdminApiError, cancelTask, controlUpgrade, createProjectWorktree, createTask, createUpgrade, issueEnrollment, listMachines, listProjects, listTasks, listUpgrades, readTaskArtifact, readTaskOutput, registerProject, removeProjectWorktree, type Machine, type Project, type Task, type UpgradeCampaign } from './api'
+import { AdminApiError, cancelTask, controlUpgrade, createProjectWorktree, createTask, createUpgrade, issueEnrollment, listMachines, listProjects, listTasks, listUpgrades, readTaskArtifact, readTaskOutput, registerProject, removeProjectWorktree, waitForAdminChange, type Machine, type Project, type Task, type UpgradeCampaign } from './api'
 
 type Page = 'overview' | 'machines' | 'projects' | 'tasks' | 'enrollment' | 'upgrades' | 'settings'
 
@@ -94,9 +94,34 @@ function App() {
 
   useEffect(() => {
     if (!adminToken.trim()) return
+    const controller = new AbortController()
+    let stopped = false
+    let retryTimer: number | undefined
+    const watch = async () => {
+      let cursor = 0
+      while (!stopped) {
+        try {
+          const change = await waitForAdminChange(adminToken, cursor, 25_000, controller.signal)
+          if (stopped) return
+          cursor = change.cursor
+          if (change.changed) await refresh(adminToken)
+        } catch {
+          if (stopped) return
+          // Retry only after a transport failure; healthy operation is held
+          // by the Center event endpoint rather than a fixed refresh timer.
+          await new Promise<void>((resolve) => {
+            retryTimer = window.setTimeout(resolve, 1500)
+          })
+        }
+      }
+    }
     void refresh(adminToken)
-    const timer = window.setInterval(() => void refresh(adminToken), 5000)
-    return () => window.clearInterval(timer)
+    void watch()
+    return () => {
+      stopped = true
+      controller.abort()
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+    }
   }, [adminToken, refresh])
 
   return (
@@ -450,7 +475,7 @@ function Upgrades({ token, rows, machines, onRefresh, query }: { token: string; 
   }
   return <><PageIntro kicker="OPERATIONS" title="升级编排" action="创建升级活动" onAction={() => document.getElementById('upgrade-composer')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} /><section className="panel task-composer" id="upgrade-composer"><div><span className="section-kicker">CANARY RELEASE</span><h3>发布 Agent 版本</h3><p>Center 按目标机器平台解析 GitHub Release 资产与 SHA-256，先 canary，成功后按批次推进。</p></div><div className="composer-grid"><label>Release 版本<input value={version} onChange={(event) => setVersion(event.target.value)} placeholder="例如 v1.3.1" /></label><label>首批 canary<input type="number" min="1" value={canary} onChange={(event) => setCanary(event.target.value)} /></label><label>后续批次<input type="number" min="1" value={batch} onChange={(event) => setBatch(event.target.value)} /></label></div><div className="composer-actions"><button className="primary" onClick={() => void submit()} disabled={submitting || !token}>{submitting ? '创建中…' : '开始升级'}</button>{message && <span className="form-message">{message}</span>}</div></section><section className="upgrade-list">{!filteredRows?.length ? <div className="panel empty-ready"><div className="empty-icon">↗</div><h3>{token ? (rows?.length ? '没有匹配的升级活动' : '暂无升级活动') : '等待 Center 数据'}</h3><p>{token ? (rows?.length ? '尝试修改顶部搜索条件。' : '填写 Release 版本即可创建第一批 canary。') : '在系统设置输入 Admin Token 后加载升级活动。'}</p></div> : filteredRows.map((campaign) => { const done = campaign.targets.filter((target) => target.status === 'completed').length; const failed = campaign.targets.filter((target) => target.status === 'failed').length; const percent = campaign.targets.length ? Math.round(done * 100 / campaign.targets.length) : 0; return <article className="panel upgrade-card" key={campaign.id}><div className="upgrade-card-head"><div><span className="mono">{campaign.id}</span><h3>{campaign.version}</h3></div><div className="row"><span className={`state ${campaign.status === 'completed' ? 'good' : campaign.status === 'paused' ? 'bad' : 'accent'}`}><i />{campaign.status}</span>{campaign.status === 'paused' && <button className="secondary" onClick={() => void action(campaign.id, 'resume')}>恢复</button>}{campaign.status === 'running' && <button className="secondary" onClick={() => void action(campaign.id, 'cancel')}>取消</button>}</div></div><div className="upgrade-meta"><span>目标 <b>{campaign.targets.length}</b> 台</span><span>完成 <b>{done}</b></span>{failed > 0 && <span>失败 <b>{failed}</b></span>}<span>canary {campaign.canaryCount} · 每批 {campaign.batchSize}</span></div><div className="progress-track"><span style={{ width: `${percent}%` }} /></div><div className="task-list">{campaign.targets.map((target) => <div className="task-row" key={target.machineId}><div><strong>{names[target.machineId] ?? target.machineId}</strong><span>{target.status}{target.error ? ` · ${target.error}` : ''}</span></div><span className="mono">{target.attempts} 次</span></div>)}</div></article> })}</section></>
 }
-function Settings({ token, onTokenChange, onRefresh }: { token: string; onTokenChange: (value: string) => void; onRefresh: () => void }) { return <><PageIntro kicker="SECURITY & POLICY" title="系统设置" action="保存变更" /><section className="panel token-panel"><span className="section-kicker">CENTER SESSION</span><h3>连接控制台 API</h3><p>令牌只保存在当前浏览器标签页内存，刷新页面后自动清除，不写入 localStorage。</p><label>Admin Token<input type="password" value={token} onChange={(event) => onTokenChange(event.target.value)} placeholder="粘贴 Center Admin Token" autoComplete="off" /></label><button className="primary" onClick={onRefresh}>验证并加载</button></section><section className="settings-grid"><div className="panel setting-card"><span className="setting-icon">⌁</span><div><h3>连接策略</h3><p>HTTPS 轮询为基线，WebSocket 灰度，QUIC 保持可选。</p></div><span className="toggle on" /></div><div className="panel setting-card"><span className="setting-icon">◈</span><div><h3>令牌存储</h3><p>仅保存摘要；前端不将 Admin Token 写入 localStorage。</p></div><span className="toggle on" /></div><div className="panel setting-card"><span className="setting-icon">▣</span><div><h3>工具上下文</h3><p>维持精简 MCP 工具面，结果分页且有界。</p></div><span className="toggle on" /></div></section></> }
+function Settings({ token, onTokenChange, onRefresh }: { token: string; onTokenChange: (value: string) => void; onRefresh: () => void }) { return <><PageIntro kicker="SECURITY & POLICY" title="系统设置" action="保存变更" /><section className="panel token-panel"><span className="section-kicker">CENTER SESSION</span><h3>连接控制台 API</h3><p>令牌只保存在当前浏览器标签页内存，刷新页面后自动清除，不写入 localStorage。</p><label>Admin Token<input type="password" value={token} onChange={(event) => onTokenChange(event.target.value)} placeholder="粘贴 Center Admin Token" autoComplete="off" /></label><button className="primary" onClick={onRefresh}>验证并加载</button></section><section className="settings-grid"><div className="panel setting-card"><span className="setting-icon">⌁</span><div><h3>连接策略</h3><p>控制台通过事件长连接获取变更，异常时才重试；Agent 使用长轮询/WebSocket 唤醒。</p></div><span className="toggle on" /></div><div className="panel setting-card"><span className="setting-icon">◈</span><div><h3>令牌存储</h3><p>仅保存摘要；前端不将 Admin Token 写入 localStorage。</p></div><span className="toggle on" /></div><div className="panel setting-card"><span className="setting-icon">▣</span><div><h3>工具上下文</h3><p>维持精简 MCP 工具面，结果分页且有界。</p></div><span className="toggle on" /></div></section></> }
 
 function PageIntro({ kicker, title, action, onAction }: { kicker: string; title: string; action: string; onAction?: () => void }) { return <div className="page-intro"><div><span className="eyebrow">{kicker}</span><p>统一管理多 Agent 终端、任务和版本状态</p></div><button className="primary" onClick={onAction} disabled={!onAction}>{action} <span>＋</span></button></div> }
 

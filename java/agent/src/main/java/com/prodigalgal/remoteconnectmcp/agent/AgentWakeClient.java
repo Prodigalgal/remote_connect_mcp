@@ -85,7 +85,7 @@ final class AgentWakeClient implements AutoCloseable {
                 break;
             } catch (Exception exception) {
                 if (!closed.get()) {
-                    LOG.log(Level.FINE, "Agent WebSocket wake channel unavailable; HTTPS polling remains active", exception);
+                    LOG.log(Level.FINE, "Agent WebSocket wake channel unavailable; HTTPS long-poll remains active", exception);
                 }
                 delay = nextDelay(delay);
             } finally {

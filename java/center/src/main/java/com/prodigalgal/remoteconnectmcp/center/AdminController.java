@@ -37,13 +37,15 @@ public final class AdminController {
     private final CenterAsyncExecutor async;
     private final AgentWakeRegistry wakes;
     private final ProjectService projects;
+    private final TaskChangeRegistry changes;
 
     @org.springframework.beans.factory.annotation.Autowired
     public AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                            EnrollmentTokenService enrollments, UpgradeService upgrades,
                            AgentConfigurationService configurations, CenterAsyncExecutor async,
                            ObjectProvider<AgentWakeRegistry> wakeProvider,
-                           ProjectService projects) {
+                           ProjectService projects,
+                           ObjectProvider<TaskChangeRegistry> changeProvider) {
         this.tokens = tokens;
         this.agents = agents;
         this.tasks = tasks;
@@ -53,13 +55,45 @@ public final class AdminController {
         this.async = async;
         this.wakes = wakeProvider == null ? null : wakeProvider.getIfAvailable();
         this.projects = projects;
+        this.changes = changeProvider == null ? null : changeProvider.getIfAvailable();
     }
 
     /** Compatibility constructor for direct protocol/controller tests. */
     AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                     EnrollmentTokenService enrollments, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
-        this(tokens, agents, tasks, enrollments, upgrades, configurations, async, null, null);
+        this(tokens, agents, tasks, enrollments, upgrades, configurations, async, null, null, null);
+    }
+
+    /**
+     * Long-polling control-plane changes. The response contains only an
+     * opaque in-process sequence; callers re-fetch their bounded projections
+     * after a change and never receive task output or credentials here.
+     */
+    @GetMapping("/events")
+    public CompletableFuture<ResponseEntity<?>> events(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "0") long cursor,
+            @RequestParam(value = "wait_ms", defaultValue = "25000") long waitMs) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (cursor < 0) throw new IllegalArgumentException("cursor must be non-negative");
+            if (waitMs < 0 || waitMs > 25_000L) {
+                throw new IllegalArgumentException("wait_ms must be between 0 and 25000");
+            }
+            if (changes == null) return noStore(Map.of("cursor", 0L, "changed", false));
+            var observed = changes.version();
+            if (cursor != observed || waitMs == 0) {
+                return noStore(Map.of("cursor", observed, "changed", cursor != observed));
+            }
+            changes.awaitChange(observed, Duration.ofMillis(waitMs).toNanos());
+            var next = changes.version();
+            return noStore(Map.of("cursor", next, "changed", next != observed));
+        });
+    }
+
+    private static ResponseEntity<Map<String, Object>> noStore(Map<String, Object> body) {
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(body);
     }
 
     @GetMapping("/machines")
@@ -114,6 +148,7 @@ public final class AdminController {
             // after the transaction commits so the Agent immediately fetches
             // the new generation over the authoritative HTTPS poll path.
             if (wakes != null) wakes.signal(machineId);
+            signalChange();
             return ResponseEntity.ok(updated);
         });
     }
@@ -274,6 +309,7 @@ public final class AdminController {
             var body = request == null ? new IssueEnrollmentRequest("", null) : request;
             var seconds = body.expiresInSeconds() == null ? 24 * 60 * 60L : body.expiresInSeconds();
             var issued = enrollments.issue(body.requestedName(), Duration.ofSeconds(seconds));
+            signalChange();
             // The plaintext token is returned exactly once by this response;
             // database rows only contain the SHA-256 digest.
             return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
@@ -287,12 +323,18 @@ public final class AdminController {
                                                                  @PathVariable String tokenId) {
         return execute(() -> {
             authenticate(authorization);
-            return ResponseEntity.ok(Map.of("token_id", tokenId, "revoked", enrollments.revoke(tokenId) > 0));
+            var revoked = enrollments.revoke(tokenId) > 0;
+            if (revoked) signalChange();
+            return ResponseEntity.ok(Map.of("token_id", tokenId, "revoked", revoked));
         });
     }
 
     private CompletableFuture<ResponseEntity<?>> execute(java.util.concurrent.Callable<ResponseEntity<?>> action) {
         return async.submit(action).exceptionally(failure -> error(unwrap(failure)));
+    }
+
+    private void signalChange() {
+        if (changes != null) changes.signalGlobal();
     }
 
     private void authenticate(String authorization) {

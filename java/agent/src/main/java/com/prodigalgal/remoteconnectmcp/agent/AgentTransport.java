@@ -15,6 +15,11 @@ public interface AgentTransport {
 
     PollResponse poll(String machineId, String token, PollRequest request) throws IOException, InterruptedException;
 
+    /** True after the Center confirms that the latest poll used long-polling. */
+    default boolean longPollHonored() {
+        return false;
+    }
+
     void updateState(String machineId, String token, String taskId, TaskUpdateRequest request) throws IOException, InterruptedException;
 
     OutputResponse appendOutput(String machineId, String token, String taskId, long offset, byte[] data) throws IOException, InterruptedException;

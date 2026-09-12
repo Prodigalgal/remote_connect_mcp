@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import org.springframework.beans.factory.ObjectProvider;
@@ -40,12 +41,12 @@ public final class TaskService {
     public static final int MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
     public static final int MAX_OUTPUT_PAGE = 64 * 1024;
     static final Duration LEASE_DURATION = Duration.ofMinutes(2);
-
     private final AgentRegistry agents;
     private final Map<String, TaskState> tasks = new ConcurrentHashMap<>();
     private final Map<String, String> idempotency = new ConcurrentHashMap<>();
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition changed = lock.newCondition();
+    private final AtomicLong localChangeSequence = new AtomicLong();
     private final JdbcTaskStore jdbcStore;
     private final AgentWakeRegistry wakes;
     private final TaskChangeRegistry taskChanges;
@@ -219,6 +220,10 @@ public final class TaskService {
     public PollResponse poll(String machineId, PollRequest request) {
         if (jdbcStore != null) {
             var response = jdbcStore.poll(machineId, request);
+            // A claim changes the authoritative task state from queued to
+            // dispatching. Wake task_wait callers after the transaction so
+            // they do not wait for an output chunk or the long-poll deadline.
+            if (response.task() != null) signalChanged(response.task().id());
             return response;
         }
         lock.lock();
@@ -310,7 +315,7 @@ public final class TaskService {
         }
         if (jdbcStore != null) {
             var response = jdbcStore.appendOutput(machineId, taskId, offset, data);
-            signalChanged(taskId);
+            signalOutputChanged(taskId);
             return response;
         }
         lock.lock();
@@ -337,7 +342,7 @@ public final class TaskService {
                 task.outputTruncated(true);
             }
             task.outputBytes(task.output().size());
-            signalChanged();
+            signalOutputChanged(taskId);
             return new OutputResponse(task.outputBytes());
         } finally {
             lock.unlock();
@@ -386,7 +391,7 @@ public final class TaskService {
         }
         if (jdbcStore != null) {
             var response = jdbcStore.appendArtifact(machineId, taskId, normalizedMime, digest, data);
-            signalChanged(taskId);
+            signalOutputChanged(taskId);
             return response;
         }
         lock.lock();
@@ -400,7 +405,7 @@ public final class TaskService {
             task.artifactBytes(data.length);
             task.artifactMime(normalizedMime);
             task.artifactSha256(digest);
-            signalChanged();
+            signalOutputChanged(taskId);
             return new ArtifactResponse(data.length, digest);
         } finally {
             lock.unlock();
@@ -437,7 +442,6 @@ public final class TaskService {
         if (jdbcStore != null) {
             var deadline = System.nanoTime() + timeout.toNanos();
             while (true) {
-                var observed = taskChanges == null ? 0L : taskChanges.version();
                 var task = jdbcStore.find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
                 if (task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
                     return new TaskView(task);
@@ -446,13 +450,33 @@ public final class TaskService {
                 if (remaining <= 0) {
                     return new TaskView(task);
                 }
-                // LISTEN/NOTIFY is an acceleration hint. If the registry is
-                // unavailable, keep the bounded 250 ms row-check fallback;
-                // no platform request thread is held by the async adapter.
-                if (taskChanges == null) {
-                    Thread.sleep(Math.min(250, Math.max(1, Duration.ofNanos(remaining).toMillis())));
+                // LISTEN/NOTIFY is the normal wake path.  Do not add a
+                // fixed-interval row poll: if the notification is lost, the
+                // bounded deadline returns the current projection and the
+                // next explicit task_wait can observe it.  The in-memory
+                // condition is retained only for protocol tests and the
+                // no-PostgreSQL development adapter.
+                if (taskChanges != null) {
+                    // Validate before allocating a per-task waiter state,
+                    // then close the find/version race with one second
+                    // authoritative read. This prevents arbitrary task IDs
+                    // from becoming unbounded memory keys and prevents a
+                    // notification between the two reads from being lost.
+                    var observed = taskChanges.version(taskId);
+                    try {
+                        task = jdbcStore.find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
+                        if (task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
+                            return new TaskView(task);
+                        }
+                        remaining = deadline - System.nanoTime();
+                        if (remaining <= 0) return new TaskView(task);
+                        taskChanges.awaitChange(taskId, observed, remaining);
+                    } finally {
+                        taskChanges.release(taskId);
+                    }
                 } else {
-                    taskChanges.awaitChange(observed, remaining);
+                    var observed = localChangeSequence.get();
+                    awaitLocalChange(observed, remaining);
                 }
             }
         }
@@ -485,16 +509,36 @@ public final class TaskService {
             }
             var remaining = deadline - System.nanoTime();
             if (remaining <= 0) return new TaskView(task);
-            if (jdbcStore != null) {
-                Thread.sleep(Math.min(250, Math.max(1, Duration.ofNanos(remaining).toMillis())));
-                continue;
+            if (jdbcStore != null && taskChanges != null) {
+                var observedExternal = taskChanges.version(taskId);
+                try {
+                    task = find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
+                    if (TaskStatus.terminal(task.status())) return new TaskView(task);
+                    remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) return new TaskView(task);
+                    taskChanges.awaitChange(taskId, observedExternal, remaining);
+                } finally {
+                    taskChanges.release(taskId);
+                }
+            } else {
+                var observedLocal = localChangeSequence.get();
+                awaitLocalChange(observedLocal, remaining);
             }
-            lock.lockInterruptibly();
-            try {
-                changed.awaitNanos(Math.min(remaining, Duration.ofMillis(250).toNanos()));
-            } finally {
-                lock.unlock();
+        }
+    }
+
+    private void awaitLocalChange(long observed, long timeoutNanos) throws InterruptedException {
+        if (timeoutNanos <= 0) return;
+        lock.lockInterruptibly();
+        try {
+            var deadline = System.nanoTime() + timeoutNanos;
+            while (localChangeSequence.get() == observed) {
+                var remaining = deadline - System.nanoTime();
+                if (remaining <= 0) return;
+                changed.awaitNanos(remaining);
             }
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -572,12 +616,31 @@ public final class TaskService {
         // IllegalMonitorStateException to the Agent/MCP request.
         lock.lock();
         try {
+            localChangeSequence.incrementAndGet();
             changed.signalAll();
         } finally {
             lock.unlock();
         }
         if (taskChanges != null && taskId != null && !taskId.isBlank()) {
             taskChanges.signal(taskId);
+        }
+    }
+
+    /**
+     * Output/artifact changes wake task-local waiters without advancing the
+     * admin control-plane cursor. This keeps a high-throughput command from
+     * forcing every console replica to refresh its full task projection.
+     */
+    private void signalOutputChanged(String taskId) {
+        lock.lock();
+        try {
+            localChangeSequence.incrementAndGet();
+            changed.signalAll();
+        } finally {
+            lock.unlock();
+        }
+        if (taskChanges != null && taskId != null && !taskId.isBlank()) {
+            taskChanges.signalTaskOnly(taskId);
         }
     }
 

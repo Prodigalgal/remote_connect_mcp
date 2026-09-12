@@ -16,6 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -40,25 +41,34 @@ public final class ProjectService {
     private final TaskService tasks;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final TaskChangeRegistry changes;
     private final Map<String, ProjectState> projects = new ConcurrentHashMap<>();
     private final Map<String, WorktreeState> worktrees = new ConcurrentHashMap<>();
 
     @Autowired
     public ProjectService(AgentRegistry agents, TaskService tasks,
                            ObjectProvider<JdbcTemplate> jdbcProvider,
-                           ObjectProvider<TransactionTemplate> transactionProvider) {
-        this(agents, tasks, jdbcProvider.getIfAvailable(), transactionProvider.getIfAvailable());
+                           ObjectProvider<TransactionTemplate> transactionProvider,
+                           ObjectProvider<TaskChangeRegistry> changeProvider) {
+        this(agents, tasks, jdbcProvider.getIfAvailable(), transactionProvider.getIfAvailable(),
+                changeProvider == null ? null : changeProvider.getIfAvailable());
     }
 
     ProjectService(AgentRegistry agents, TaskService tasks) {
-        this(agents, tasks, (JdbcTemplate) null, (TransactionTemplate) null);
+        this(agents, tasks, (JdbcTemplate) null, (TransactionTemplate) null, null);
     }
 
     ProjectService(AgentRegistry agents, TaskService tasks, JdbcTemplate jdbc, TransactionTemplate transactions) {
+        this(agents, tasks, jdbc, transactions, null);
+    }
+
+    ProjectService(AgentRegistry agents, TaskService tasks, JdbcTemplate jdbc, TransactionTemplate transactions,
+                   TaskChangeRegistry changes) {
         this.agents = agents;
         this.tasks = tasks;
         this.jdbc = jdbc;
         this.transactions = transactions;
+        this.changes = changes;
     }
 
     public ProjectView register(ProjectRegistrationRequest request) {
@@ -88,10 +98,13 @@ public final class ProjectService {
                 var now = Instant.now();
                 var state = new ProjectState(projectId(), machineId, name, root, repository, ref, now, now);
                 projects.put(state.id, state);
-                return view(state);
+                var result = view(state);
+                signalChange();
+                return result;
             }
         }
 
+        var inserted = new AtomicBoolean();
         java.util.function.Supplier<ProjectView> persist = () -> {
             var existing = jdbc.query("""
                     SELECT project_id, agent_id, name, root_path, repository_path, default_ref, created_at, updated_at
@@ -113,9 +126,12 @@ public final class ProjectService {
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, id, machineId, name, root, repository, ref,
                     java.sql.Timestamp.from(now), java.sql.Timestamp.from(now));
+            inserted.set(true);
             return new ProjectView(id, machineId, name, root, repository, ref, now, now, List.of());
         };
-        return transactions == null ? persist.get() : transactions.execute(status -> persist.get());
+        var result = transactions == null ? persist.get() : transactions.execute(status -> persist.get());
+        if (inserted.get()) signalChange();
+        return result;
     }
 
     public ProjectView find(String projectId) {
@@ -182,7 +198,9 @@ public final class ProjectService {
                         Instant.now(), Instant.now(), idempotency);
                 worktrees.put(state.id, state);
                 queueOperation(project, state, false);
-                return refresh(state);
+                var result = refresh(state);
+                signalChange();
+                return result;
             }
         }
 
@@ -209,7 +227,9 @@ public final class ProjectService {
                 """, state.id, state.projectId, state.ref, state.path, state.operation, state.status,
                 null, nullIfBlank(state.idempotencyKey), java.sql.Timestamp.from(state.createdAt), java.sql.Timestamp.from(state.updatedAt));
         queueOperation(project, state, true);
-        return refresh(state);
+        var result = refresh(state);
+        signalChange();
+        return result;
     }
 
     public WorktreeView removeWorktree(String projectId, String worktreeId, String idempotencyKey) {
@@ -233,7 +253,13 @@ public final class ProjectService {
         state.updatedAt = Instant.now();
         persistWorktree(state);
         queueOperation(project, state, jdbc != null);
-        return refresh(state);
+        var result = refresh(state);
+        signalChange();
+        return result;
+    }
+
+    private void signalChange() {
+        if (changes != null) changes.signalGlobal();
     }
 
     /** Resolve a project/worktree target for an admin task before enqueueing. */

@@ -102,11 +102,14 @@ export class AdminApiError extends Error {
 
 const apiBase = (import.meta.env.VITE_RCM_API_BASE ?? '').replace(/\/$/, '')
 
-async function request<T>(path: string, token: string, init?: RequestInit, timeoutMs = 8000): Promise<T> {
+async function request<T>(path: string, token: string, init?: RequestInit, timeoutMs = 8000, externalSignal?: AbortSignal): Promise<T> {
   if (!token.trim()) {
     throw new AdminApiError(0, '请输入 Admin Token')
   }
   const controller = new AbortController()
+  const abortFromOutside = () => controller.abort()
+  externalSignal?.addEventListener('abort', abortFromOutside, { once: true })
+  if (externalSignal?.aborted) controller.abort()
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetch(`${apiBase}${path}`, {
@@ -130,6 +133,22 @@ async function request<T>(path: string, token: string, init?: RequestInit, timeo
     throw error
   } finally {
     window.clearTimeout(timeout)
+    externalSignal?.removeEventListener('abort', abortFromOutside)
+  }
+}
+
+export async function waitForAdminChange(token: string, cursor = 0, waitMs = 25_000, signal?: AbortSignal): Promise<{ cursor: number; changed: boolean }> {
+  const boundedWait = Math.min(25_000, Math.max(0, Math.trunc(waitMs)))
+  const body = await request<Record<string, unknown>>(
+    `/api/v1/admin/events?cursor=${Math.max(0, Math.trunc(cursor))}&wait_ms=${boundedWait}`,
+    token,
+    undefined,
+    boundedWait + 5000,
+    signal,
+  )
+  return {
+    cursor: Number(body.cursor ?? cursor),
+    changed: Boolean(body.changed),
   }
 }
 

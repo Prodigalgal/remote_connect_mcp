@@ -44,10 +44,10 @@ public final class AgentRuntime {
         TaskOutputSpool.cleanupOrphans(config.stateDir(), Duration.ofDays(7));
         var durableStore = new DurableTaskStore(config.stateDir());
         var identity = loadOrRegister();
-        // Metadata is immutable for the lifetime of this process.  Cache it
+        // Metadata is immutable for the lifetime of this process. Cache it
         // instead of rereading the version marker and rebuilding JSON on every
-        // five-second heartbeat; a successful self-upgrade restarts the Agent
-        // and refreshes the marker in the new process.
+        // long-poll request; a successful self-upgrade restarts the Agent and
+        // refreshes the marker in the new process.
         var metadata = config.metadata();
         var settings = new AgentRuntimeSettings(config);
         var backoff = settings.pollInterval();
@@ -63,7 +63,8 @@ public final class AgentRuntime {
                     var availableSlots = upgrading.get() ? 0 : Math.max(0, settings.maxConcurrency() - running.size());
                     var runningTaskIds = running.keySet().stream().sorted().toList();
                     var poll = transport.poll(identity.machineId(), identity.token(),
-                            new PollRequest(runningTaskIds, availableSlots, config.capabilities(), metadata));
+                            new PollRequest(runningTaskIds, availableSlots, config.capabilities(), metadata,
+                                    settings.generation()));
                     if (poll.config() != null && settings.apply(poll.config())) {
                         LOG.info(() -> "applied Center runtime config generation " + settings.generation()
                                 + ": pollIntervalMs=" + settings.pollInterval().toMillis()
@@ -124,7 +125,13 @@ public final class AgentRuntime {
                         // silently ignored a hot-reloaded interval on every
                         // idle cycle.
                         backoff = settings.pollInterval();
-                        wakeSignal.await(backoff);
+                        // A Java Center that advertises long-polling has
+                        // already held the request until a change or the
+                        // server deadline. Do not add another fixed sleep;
+                        // immediately issue the next long-poll request. Old
+                        // Go/HTTP Centers do not send the header and retain
+                        // the legacy backoff behavior.
+                        if (!transport.longPollHonored()) wakeSignal.await(backoff);
                     }
                 } catch (CenterTransportException exception) {
                     if ((exception.statusCode() == 401 || exception.statusCode() == 403) && running.isEmpty()) {

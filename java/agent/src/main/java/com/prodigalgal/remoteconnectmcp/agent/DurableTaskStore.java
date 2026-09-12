@@ -5,18 +5,27 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.ClosedWatchServiceException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardWatchEventKinds;
+import java.nio.file.WatchKey;
+import java.nio.file.WatchService;
 import java.nio.file.attribute.PosixFilePermission;
 import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Small on-host inventory for no-timeout command processes.  The child writes
@@ -28,6 +37,7 @@ final class DurableTaskStore {
     private final Path directory;
     private final java.util.Set<String> watchedTasks = ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> guardedTasks = ConcurrentHashMap.newKeySet();
+    private final java.util.Map<String, CompletableFuture<Record>> completionSignals = new ConcurrentHashMap<>();
 
     DurableTaskStore(Path stateDir) throws IOException {
         this.directory = stateDir.toAbsolutePath().normalize().resolve("durable-tasks");
@@ -66,21 +76,8 @@ final class DurableTaskStore {
             process.destroyForcibly();
             throw exception;
         }
-        watchedTasks.add(record.taskId());
+        watchCompletion(record, process);
         startOutputGuard(record, maxOutputBytes);
-        var durableRecord = record;
-        process.onExit().thenAccept(finished -> {
-            synchronized (DurableTaskStore.this) {
-                if (!watchedTasks.contains(durableRecord.taskId())) return;
-                try {
-                    var code = finished.exitValue();
-                    markCompleted(durableRecord, code, code == 0 ? null : "command exited with code " + code);
-                } catch (Exception ignored) {
-                    // The active runner will report the failure if it is still
-                    // attached; this watcher must never resurrect a removed file.
-                }
-            }
-        });
         return new Started(process, record);
     }
 
@@ -90,32 +87,135 @@ final class DurableTaskStore {
         startOutputGuard(record, maxOutputBytes);
     }
 
+    /**
+     * Attach the same durable completion signal to a process recovered after an
+     * Agent restart.  A recovered process is represented by a ProcessHandle,
+     * not a Process instance, so the normal start-time watcher cannot be reused
+     * implicitly.  Keeping completion event driven here avoids the old
+     * "check the record every N milliseconds" recovery loop.
+     */
+    void watchRecoveredCompletion(Record record, ProcessHandle process) {
+        if (record == null || record.completed() || process == null) return;
+        var signal = completionSignals.computeIfAbsent(record.taskId(), ignored -> new CompletableFuture<>());
+        if (!watchedTasks.add(record.taskId())) return;
+        process.onExit().thenAccept(finished -> {
+            synchronized (DurableTaskStore.this) {
+                if (!watchedTasks.contains(record.taskId())) return;
+                try {
+                    var code = finished.exitValue();
+                    markCompleted(record, code, code == 0 ? null : "command exited with code " + code);
+                } catch (Exception ignored) {
+                    // The active runner will report the failure if the record
+                    // cannot be persisted; this callback must never resurrect
+                    // a removed task file.
+                }
+            }
+            signal.complete(find(record.taskId()).orElse(record));
+        });
+    }
+
+    /** Register one completion future for a process owned by this Agent. */
+    private void watchCompletion(Record record, Process process) {
+        if (record == null || record.completed()) return;
+        var signal = completionSignals.computeIfAbsent(record.taskId(), ignored -> new CompletableFuture<>());
+        if (!watchedTasks.add(record.taskId())) return;
+        if (process == null) return;
+        process.onExit().thenAccept(finished -> {
+            synchronized (DurableTaskStore.this) {
+                if (!watchedTasks.contains(record.taskId())) return;
+                try {
+                    var code = finished.exitValue();
+                    markCompleted(record, code, code == 0 ? null : "command exited with code " + code);
+                } catch (Exception ignored) {
+                    // The active runner will report the failure if it is still
+                    // attached; this watcher must never resurrect a removed file.
+                }
+            }
+            signal.complete(find(record.taskId()).orElse(record));
+        });
+    }
+
     private void startOutputGuard(Record record, long maxOutputBytes) {
         if (record == null || !guardedTasks.add(record.taskId())) return;
         Thread.startVirtualThread(() -> {
+            WatchService watcher = null;
             try {
-                while (isAlive(record)) {
+                var output = Path.of(record.outputPath()).toAbsolutePath().normalize();
+                watcher = openWatcher(output);
+                if (watcher == null) {
+                    // Filesystems without a WatchService still get a final
+                    // size check when the process exits; no fixed timer is
+                    // introduced just for this optional safety guard.
+                    var process = ProcessHandle.of(record.pid()).orElse(null);
+                    if (process != null) process.onExit().thenRun(() -> checkOutputLimit(output, record, maxOutputBytes));
+                    return;
+                }
+                var key = watcher;
+                var process = ProcessHandle.of(record.pid()).orElse(null);
+                if (process == null) return;
+                process.onExit().thenRun(() -> closeQuietly(key));
+                while (true) {
+                    if (!guardedTasks.contains(record.taskId())) return;
+                    WatchKey changed;
                     try {
-                        if (Files.isRegularFile(Path.of(record.outputPath()))
-                                && Files.size(Path.of(record.outputPath())) > maxOutputBytes) {
-                            ProcessHandle.of(record.pid()).ifPresent(DurableTaskStore::terminateTree);
-                            return;
-                        }
-                        Thread.sleep(250);
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        return;
-                    } catch (Exception ignored) {
-                        // The runner/next startup will report missing or corrupt
-                        // durable state; the guard must never keep the Agent from
-                        // shutting down.
+                        changed = key.take();
+                    } catch (ClosedWatchServiceException closed) {
                         return;
                     }
+                    var relevant = false;
+                    for (var event : changed.pollEvents()) {
+                        if (event.kind() == StandardWatchEventKinds.OVERFLOW) continue;
+                        var context = event.context();
+                        if (context instanceof Path path && path.getFileName().equals(output.getFileName())) relevant = true;
+                    }
+                    if (!changed.reset()) return;
+                    if (relevant && checkOutputLimit(output, record, maxOutputBytes)) return;
                 }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } catch (Exception ignored) {
+                // The runner/next startup will report missing or corrupt
+                // durable state; the guard must never keep the Agent from
+                // shutting down.
             } finally {
+                closeQuietly(watcher);
                 guardedTasks.remove(record.taskId());
             }
         });
+    }
+
+    private static boolean checkOutputLimit(Path output, Record record, long maxOutputBytes) {
+        try {
+            if (Files.isRegularFile(output) && Files.size(output) > maxOutputBytes) {
+                ProcessHandle.of(record.pid()).ifPresent(DurableTaskStore::terminateTree);
+                return true;
+            }
+        } catch (Exception ignored) {
+            // The runner/next startup reports missing or corrupt state.
+        }
+        return false;
+    }
+
+    private static WatchService openWatcher(Path output) {
+        var parent = output.getParent();
+        if (parent == null) return null;
+        try {
+            var watcher = FileSystems.getDefault().newWatchService();
+            parent.register(watcher, StandardWatchEventKinds.ENTRY_CREATE,
+                    StandardWatchEventKinds.ENTRY_MODIFY, StandardWatchEventKinds.ENTRY_DELETE);
+            return watcher;
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    private static void closeQuietly(WatchService watcher) {
+        if (watcher == null) return;
+        try {
+            watcher.close();
+        } catch (Exception ignored) {
+            // Closing an already closed watcher is harmless.
+        }
     }
 
     List<Record> load() {
@@ -145,15 +245,31 @@ final class DurableTaskStore {
     }
 
     void markCompleted(Record record, int exitCode, String error) throws IOException {
-        write(Path.of(record.recordPath()), new Record(record.taskId(), record.pid(), record.command(), record.cwd(),
-                record.startedAt(), record.outputPath(), record.recordPath(), true, exitCode, error));
+        var completed = new Record(record.taskId(), record.pid(), record.command(), record.cwd(),
+                record.startedAt(), record.outputPath(), record.recordPath(), true, exitCode, error);
+        write(Path.of(record.recordPath()), completed);
+        completionSignals.computeIfAbsent(record.taskId(), ignored -> new CompletableFuture<>()).complete(completed);
     }
 
     synchronized void remove(Record record) {
         watchedTasks.remove(record.taskId());
         guardedTasks.remove(record.taskId());
+        completionSignals.remove(record.taskId());
         deleteEventually(Path.of(record.outputPath()));
         deleteEventually(Path.of(record.recordPath()));
+    }
+
+    Record awaitCompleted(Record record, Duration timeout) throws InterruptedException {
+        if (record == null || record.completed()) return record;
+        watchCompletion(record, null);
+        var signal = completionSignals.computeIfAbsent(record.taskId(), ignored -> new CompletableFuture<>());
+        try {
+            return signal.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException ignored) {
+            return find(record.taskId()).orElse(record);
+        } catch (java.util.concurrent.ExecutionException exception) {
+            return find(record.taskId()).orElse(record);
+        }
     }
 
     static boolean isAlive(Record record) {
@@ -175,23 +291,13 @@ final class DurableTaskStore {
     }
 
     private static void deleteEventually(Path path) {
-        // Windows may keep an inherited Redirect.to(...) handle alive for a
-        // short interval after the process reports exit.  A bounded retry is
-        // enough to make cleanup deterministic without turning shutdown into
-        // an unbounded wait; a later startup sweep can remove an orphan.
-        for (var attempt = 0; attempt < 40; attempt++) {
-            try {
-                if (!Files.deleteIfExists(path)) return;
-                return;
-            } catch (IOException exception) {
-                if (attempt == 39) return;
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-            }
+        // Windows may keep an inherited Redirect.to(...) handle alive after
+        // the process reports exit.  Try once; the next startup sweep can
+        // remove an orphan without a hidden delete polling loop.
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException ignored) {
+            // Cleanup is best effort and never blocks Agent shutdown.
         }
     }
 

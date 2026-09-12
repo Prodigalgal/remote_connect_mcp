@@ -3,6 +3,7 @@
 package updater
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"time"
@@ -19,29 +20,38 @@ func launchHelper(helper, encodedConfig, key string) error {
 }
 
 func stopService(name string, timeout time.Duration) error {
-	command := exec.Command("systemctl", "stop", name)
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := runSystemctl(timeout, "stop", name)
+	if err != nil {
 		return fmt.Errorf("systemctl stop: %w: %s", err, output)
 	}
-	return waitSystemdState(name, "inactive", timeout)
+	return verifySystemdState(name, "inactive")
 }
 
 func startService(name string, timeout time.Duration) error {
-	command := exec.Command("systemctl", "start", name)
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := runSystemctl(timeout, "start", name)
+	if err != nil {
 		return fmt.Errorf("systemctl start: %w: %s", err, output)
 	}
-	return waitSystemdState(name, "active", timeout)
+	return verifySystemdState(name, "active")
 }
 
-func waitSystemdState(name, expected string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		output, _ := exec.Command("systemctl", "is-active", name).Output()
-		if string(output) == expected+"\n" {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
+func runSystemctl(timeout time.Duration, action, name string) ([]byte, error) {
+	if timeout <= 0 {
+		return nil, fmt.Errorf("systemctl %s deadline must be positive", action)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "systemctl", action, name).CombinedOutput()
+	if ctx.Err() != nil {
+		return output, ctx.Err()
+	}
+	return output, err
+}
+
+func verifySystemdState(name, expected string) error {
+	output, err := exec.Command("systemctl", "is-active", name).Output()
+	if err == nil && string(output) == expected+"\n" {
+		return nil
 	}
 	return fmt.Errorf("service %s did not become %s", name, expected)
 }

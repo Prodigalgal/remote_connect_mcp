@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Prodigalgal/remote_connect_mcp/internal/desktop"
@@ -58,6 +59,10 @@ type Agent struct {
 	identity  identity
 	running   map[string]*runningTask
 	upgrading bool
+	// The response header is an explicit capability signal.  It prevents a
+	// compatibility server that returns immediately from turning the Agent
+	// loop into a hot poller.
+	longPollHonored atomic.Bool
 }
 
 type runningTask struct {
@@ -188,6 +193,15 @@ func (a *Agent) Run(ctx context.Context) error {
 		if err == nil {
 			delay = time.Second
 			a.applyPoll(ctx, response)
+			if !a.longPollHonored.Load() && response.Task == nil && response.Upgrade == nil && len(response.CancelTaskIDs) == 0 {
+				// Older Centers may not implement the long-poll contract. Keep a
+				// bounded compatibility delay instead of spinning on an immediate
+				// empty response; modern Centers advertise the header and take the
+				// event-driven path without this delay.
+				if !waitRetry(ctx, delay) {
+					return nil
+				}
+			}
 			continue
 		}
 		var statusErr *httpStatusError
@@ -270,7 +284,12 @@ func (a *Agent) poll(ctx context.Context) (protocol.PollResponse, error) {
 	a.mu.Unlock()
 	sort.Strings(running)
 	var response protocol.PollResponse
-	err := a.agentJSON(ctx, http.MethodPost, "/agent/v1/poll", protocol.PollRequest{RunningTaskIDs: running, AvailableSlots: available, AvailableCapabilities: append([]string(nil), a.config.Capabilities...)}, &response)
+	// Both the Java Center and the Go compatibility Center understand this
+	// bounded long-poll hint.  Keeping it on the legacy Agent prevents an
+	// immediate-response Java Center from turning an idle Agent into a hot
+	// request loop; older Centers simply ignore the query and retain their
+	// existing server-side hold.
+	err := a.agentJSON(ctx, http.MethodPost, "/agent/v1/poll?wait_ms=25000", protocol.PollRequest{RunningTaskIDs: running, AvailableSlots: available, AvailableCapabilities: append([]string(nil), a.config.Capabilities...)}, &response)
 	return response, err
 }
 
@@ -555,6 +574,7 @@ func (a *Agent) relayTask(ctx context.Context, running *runningTask, runCtx cont
 	remoteOffset := int64(0)
 	outputSyncError := ""
 	for {
+		outputChanged := running.entry.OutputChanged()
 		info := running.entry.Info()
 		data, nextLocal, _, err := running.entry.Output(localOffset, 64*1024)
 		if err == nil && len(data) > 0 {
@@ -582,7 +602,7 @@ func (a *Agent) relayTask(ctx context.Context, running *runningTask, runCtx cont
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(350 * time.Millisecond):
+		case <-outputChanged:
 		}
 	}
 	info := running.entry.Info()
@@ -804,6 +824,9 @@ func (a *Agent) doJSON(ctx context.Context, method, path string, request, respon
 	}
 	if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
 		return &httpStatusError{Status: httpResponse.StatusCode, Body: strings.TrimSpace(string(data))}
+	}
+	if strings.HasPrefix(path, "/agent/v1/poll") {
+		a.longPollHonored.Store(strings.EqualFold(strings.TrimSpace(httpResponse.Header.Get("X-RCM-Long-Poll")), "accepted"))
 	}
 	if response != nil && len(bytes.TrimSpace(data)) > 0 {
 		if err := json.Unmarshal(data, response); err != nil {

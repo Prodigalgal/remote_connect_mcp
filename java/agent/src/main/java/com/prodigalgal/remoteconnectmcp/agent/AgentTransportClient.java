@@ -19,24 +19,39 @@ import java.util.Base64;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Asynchronous v1 HTTPS client used by the Java Agent runtime. */
 public final class AgentTransportClient implements AgentTransport {
     private final HttpClient http;
     private final URI centerUrl;
     private final Duration requestTimeout;
+    private final long longPollSeconds;
+    private final AtomicBoolean longPollHonored = new AtomicBoolean();
 
     public AgentTransportClient(URI centerUrl) {
-        this(centerUrl, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build(), Duration.ofSeconds(30));
+        this(centerUrl, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build(), Duration.ofSeconds(30), 0L);
+    }
+
+    public AgentTransportClient(URI centerUrl, long longPollSeconds) {
+        this(centerUrl, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build(), Duration.ofSeconds(30), longPollSeconds);
     }
 
     AgentTransportClient(URI centerUrl, HttpClient http, Duration requestTimeout) {
+        this(centerUrl, http, requestTimeout, 0L);
+    }
+
+    AgentTransportClient(URI centerUrl, HttpClient http, Duration requestTimeout, long longPollSeconds) {
         this.centerUrl = stripTrailingSlash(centerUrl);
         this.http = http;
         if (requestTimeout == null || requestTimeout.isZero() || requestTimeout.isNegative()) {
             throw new IllegalArgumentException("requestTimeout must be positive");
         }
         this.requestTimeout = requestTimeout;
+        if (longPollSeconds < 0 || longPollSeconds > 25) {
+            throw new IllegalArgumentException("longPollSeconds must be between 0 and 25");
+        }
+        this.longPollSeconds = longPollSeconds;
     }
 
     public RegisterResponse register(AgentConfig config) throws IOException, InterruptedException {
@@ -55,7 +70,9 @@ public final class AgentTransportClient implements AgentTransport {
     }
 
     public PollResponse poll(String machineId, String token, PollRequest poll) throws IOException, InterruptedException {
-        var request = HttpRequest.newBuilder(centerUrl.resolve("/agent/v1/poll"))
+        var endpoint = centerUrl.resolve("/agent/v1/poll");
+        if (longPollSeconds > 0) endpoint = URI.create(endpoint + "?wait_ms=" + (longPollSeconds * 1000L));
+        var request = HttpRequest.newBuilder(endpoint)
                 .timeout(requestTimeout)
                 .header("Authorization", "Bearer " + token)
                 .header("X-Machine-ID", machineId)
@@ -67,7 +84,14 @@ public final class AgentTransportClient implements AgentTransport {
         if (response.statusCode() != 200) {
             throw new CenterTransportException("center poll failed", response.statusCode());
         }
+        longPollHonored.set(response.headers().firstValue("X-RCM-Long-Poll")
+                .map(value -> "accepted".equalsIgnoreCase(value.trim())).orElse(false));
         return JsonCodec.read(response.body(), PollResponse.class);
+    }
+
+    @Override
+    public boolean longPollHonored() {
+        return longPollHonored.get();
     }
 
     @Override

@@ -38,25 +38,35 @@ public final class AgentRegistry {
     private final EnrollmentTokenService enrollments;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final TaskChangeRegistry changes;
     private final SecureRandom random = new SecureRandom();
     private final Map<String, RegisteredAgent> agents = new ConcurrentHashMap<>();
 
     @Autowired
     public AgentRegistry(CenterTokenConfig tokens, ObjectProvider<JdbcTemplate> jdbcProvider,
+                         EnrollmentTokenService enrollments, ObjectProvider<TransactionTemplate> transactionProvider,
+                         ObjectProvider<TaskChangeRegistry> changeProvider) {
+        this(tokens, jdbcProvider.getIfAvailable(), enrollments, transactionProvider.getIfAvailable(),
+                changeProvider == null ? null : changeProvider.getIfAvailable());
+    }
+
+    /** Compatibility constructor for direct protocol tests and older integrations. */
+    public AgentRegistry(CenterTokenConfig tokens, ObjectProvider<JdbcTemplate> jdbcProvider,
                          EnrollmentTokenService enrollments, ObjectProvider<TransactionTemplate> transactionProvider) {
-        this(tokens, jdbcProvider.getIfAvailable(), enrollments, transactionProvider.getIfAvailable());
+        this(tokens, jdbcProvider.getIfAvailable(), enrollments, transactionProvider.getIfAvailable(), null);
     }
 
     private AgentRegistry(CenterTokenConfig tokens, JdbcTemplate jdbc, EnrollmentTokenService enrollments,
-                          TransactionTemplate transactions) {
+                          TransactionTemplate transactions, TaskChangeRegistry changes) {
         this.tokens = tokens;
         this.jdbc = jdbc;
         this.enrollments = enrollments;
         this.transactions = transactions;
+        this.changes = changes;
     }
 
     private AgentRegistry(String enrollmentToken) {
-        this(new CenterTokenConfigForTest(enrollmentToken), (JdbcTemplate) null, new EnrollmentTokenService(), null);
+        this(new CenterTokenConfigForTest(enrollmentToken), (JdbcTemplate) null, new EnrollmentTokenService(), null, null);
     }
 
     public static AgentRegistry forTest(String enrollmentToken) {
@@ -64,7 +74,7 @@ public final class AgentRegistry {
     }
 
     static AgentRegistry forTest(String enrollmentToken, JdbcTemplate jdbc) {
-        return new AgentRegistry(new CenterTokenConfigForTest(enrollmentToken), jdbc, new EnrollmentTokenService(), null);
+        return new AgentRegistry(new CenterTokenConfigForTest(enrollmentToken), jdbc, new EnrollmentTokenService(), null, null);
     }
 
     public RegisterResponse register(RegisterRequest request, String enrollmentToken) {
@@ -87,7 +97,9 @@ public final class AgentRegistry {
                 var machineId = existing.map(Map.Entry::getKey)
                         .orElseGet(() -> "machine_" + UUID.randomUUID().toString().replace("-", ""));
                 agents.put(machineId, new RegisteredAgent(metadata, tokenHash, now));
-                return new RegisterResponse(machineId, token);
+                var result = new RegisterResponse(machineId, token);
+                signalChange();
+                return result;
             }
         } else {
             java.util.function.Supplier<String> persist = () -> {
@@ -118,8 +130,14 @@ public final class AgentRegistry {
                 };
                 machineId = transactions == null ? recover.get() : transactions.execute(status -> recover.get());
             }
-            return new RegisterResponse(machineId, token);
+            var result = new RegisterResponse(machineId, token);
+            signalChange();
+            return result;
         }
+    }
+
+    private void signalChange() {
+        if (changes != null) changes.signalGlobal();
     }
 
     public PollResponse poll(String machineId, String agentToken, PollRequest request) {

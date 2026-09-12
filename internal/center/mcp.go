@@ -278,13 +278,26 @@ func waitForTask(ctx context.Context, store *Store, taskID string, cursor int64,
 		if task.OutputBytes > cursor || terminalStatus(task.Status) || task.Status == protocol.TaskRunning {
 			return task
 		}
-		changed := store.Changed()
+		// Output/state notifications use a task stream so a high-throughput
+		// command does not wake the admin/Agent control-plane stream for every
+		// chunk. The task row is still re-read after each event.
+		changed := store.TaskChangedFor(taskID)
+		if latest, ok := store.GetTask(taskID); ok && (latest.OutputBytes > cursor || terminalStatus(latest.Status) || latest.Status == protocol.TaskRunning) {
+			store.ReleaseTaskChanged(taskID, changed)
+			return latest
+		}
 		select {
 		case <-ctx.Done():
+			store.ReleaseTaskChanged(taskID, changed)
 			return task
 		case <-deadline.C:
+			store.ReleaseTaskChanged(taskID, changed)
+			if latest, ok := store.GetTask(taskID); ok {
+				return latest
+			}
 			return task
 		case <-changed:
+			store.ReleaseTaskChanged(taskID, changed)
 		}
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 type Manager struct {
@@ -38,6 +40,8 @@ type Entry struct {
 	stdin      io.WriteCloser
 	output     lockedOutput
 	done       chan struct{}
+	changeMu   sync.Mutex
+	changed    chan struct{}
 	exitCode   int
 	err        error
 }
@@ -140,7 +144,7 @@ func (m *Manager) Start(ctx context.Context, command, cwd string, env map[string
 	}
 	configureProcess(cmd)
 
-	entry := &Entry{Command: command, Cwd: cwd, StartedAt: time.Now(), cmd: cmd, done: make(chan struct{}), exitCode: -1}
+	entry := &Entry{Command: command, Cwd: cwd, StartedAt: time.Now(), cmd: cmd, done: make(chan struct{}), changed: make(chan struct{}), exitCode: -1}
 	if err := os.MkdirAll(m.dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create process output directory: %w", err)
 	}
@@ -151,6 +155,7 @@ func (m *Manager) Start(ctx context.Context, command, cwd string, env map[string
 	entry.output.file = outputFile
 	entry.output.path = outputFile.Name()
 	entry.output.maxBytes = m.maxOutputBytes
+	entry.output.onChange = entry.signalOutputChanged
 	cmd.Stdout = &entry.output
 	cmd.Stderr = &entry.output
 	entry.stdin, err = cmd.StdinPipe()
@@ -195,6 +200,7 @@ func (m *Manager) Start(ctx context.Context, command, cwd string, env map[string
 		entry.output.mu.Unlock()
 		closeJob(entry.job)
 		close(entry.done)
+		entry.signalOutputChanged()
 	}()
 	return entry, nil
 }
@@ -240,7 +246,7 @@ func (m *Manager) StartDurable(taskID, command, cwd string, env map[string]strin
 	entry := &Entry{
 		ID: id, TaskID: taskID, Command: command, Cwd: cwd, StartedAt: time.Now(),
 		cmd: cmd, pid: cmd.Process.Pid, durable: true, recordPath: filepath.Join(m.dir, "process-"+id+".json"),
-		done: make(chan struct{}), exitCode: -1,
+		done: make(chan struct{}), changed: make(chan struct{}), exitCode: -1,
 		output: lockedOutput{file: outputFile, path: outputPath, maxBytes: m.maxOutputBytes, direct: true},
 	}
 	if err := saveDurableRecord(entry); err != nil {
@@ -249,6 +255,7 @@ func (m *Manager) StartDurable(taskID, command, cwd string, env map[string]strin
 		_ = os.Remove(outputPath)
 		return nil, err
 	}
+	entry.output.onChange = entry.signalOutputChanged
 	m.mu.Lock()
 	m.entries[id] = entry
 	m.mu.Unlock()
@@ -263,6 +270,7 @@ func (m *Manager) StartDurable(taskID, command, cwd string, env map[string]strin
 		entry.output.mu.Unlock()
 		_ = saveDurableCompletion(entry)
 		close(entry.done)
+		entry.signalOutputChanged()
 	}()
 	return entry, nil
 }
@@ -331,9 +339,10 @@ func (m *Manager) loadDurableEntries() {
 		entry := &Entry{
 			ID: record.ID, TaskID: record.TaskID, Command: record.Command, Cwd: record.Cwd, StartedAt: record.StartedAt,
 			pid: record.PID, durable: true, recordPath: filepath.Join(m.dir, item.Name()),
-			done: make(chan struct{}), exitCode: -1,
+			done: make(chan struct{}), changed: make(chan struct{}), exitCode: -1,
 			output: lockedOutput{file: output, path: record.OutputPath, maxBytes: maxOutputBytes, direct: true},
 		}
+		entry.output.onChange = entry.signalOutputChanged
 		if record.IDNum() > m.nextID {
 			m.nextID = record.IDNum()
 		}
@@ -347,6 +356,10 @@ func (m *Manager) loadDurableEntries() {
 			continue
 		}
 		if processAlive(record.PID) {
+			// Recovery has no attached stdout pipe, so keep the same filesystem
+			// event stream as a freshly started durable task. This lets a resumed
+			// Agent relay output incrementally without a periodic file-size probe.
+			go monitorDurableOutput(entry)
 			go monitorRecoveredEntry(entry)
 			continue
 		}
@@ -427,29 +440,37 @@ func writeDurableRecord(recordPath string, record durableRecord) error {
 }
 
 func monitorRecoveredEntry(entry *Entry) {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for range ticker.C {
-		entry.output.mu.Lock()
-		entry.output.refreshSizeLocked()
-		entry.output.mu.Unlock()
-		if !processAlive(entry.pid) {
-			code, errorText, completed := awaitDurableCompletion(entry.recordPath, 2*time.Second)
-			entry.output.mu.Lock()
-			if completed {
-				entry.exitCode = code
-				if errorText != "" {
-					entry.err = errors.New(errorText)
-				}
-			} else if code, alive := processExitCode(entry.pid); !alive && code >= 0 {
-				entry.exitCode = code
-			} else {
-				entry.err = errors.New("durable process exited while Agent was offline")
-			}
-			entry.output.mu.Unlock()
-			close(entry.done)
-			return
+	if processAlive(entry.pid) {
+		if !waitForProcessExit(entry.pid) && processAlive(entry.pid) {
+			// Very old Linux kernels or restrictive Windows ACLs may not expose
+			// a waitable process handle. Keep this compatibility path rare and
+			// slow; supported hosts remain entirely kernel-event driven.
+			waitForProcessExitFallback(entry.pid)
 		}
+	}
+	code, errorText, completed := awaitDurableCompletion(entry.recordPath, 2*time.Second)
+	entry.output.mu.Lock()
+	entry.output.refreshSizeLocked()
+	if completed {
+		entry.exitCode = code
+		if errorText != "" {
+			entry.err = errors.New(errorText)
+		}
+	} else if code, alive := processExitCode(entry.pid); !alive && code >= 0 {
+		entry.exitCode = code
+	} else {
+		entry.err = errors.New("durable process exited while Agent was offline")
+	}
+	entry.output.mu.Unlock()
+	close(entry.done)
+	entry.signalOutputChanged()
+}
+
+func waitForProcessExitFallback(pid int) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for processAlive(pid) {
+		<-ticker.C
 	}
 }
 
@@ -460,32 +481,92 @@ func monitorRecoveredEntry(entry *Entry) {
 // A crashed parent still falls through to the explicit offline error after the
 // bounded timeout, so recovery never blocks indefinitely.
 func awaitDurableCompletion(recordPath string, timeout time.Duration) (int, string, bool) {
-	deadline := time.Now().Add(timeout)
-	for {
-		if code, errorText, ok := readDurableCompletion(recordPath); ok {
-			return code, errorText, true
-		}
-		if !time.Now().Before(deadline) {
-			return -1, "", false
-		}
-		time.Sleep(25 * time.Millisecond)
+	if code, errorText, ok := readDurableCompletion(recordPath); ok {
+		return code, errorText, true
 	}
+	watcher, err := fsnotify.NewWatcher()
+	if err == nil {
+		defer watcher.Close()
+		if err = watcher.Add(filepath.Dir(recordPath)); err == nil {
+			// Close the race between the initial read and watcher registration.
+			if code, errorText, ok := readDurableCompletion(recordPath); ok {
+				return code, errorText, true
+			}
+			timer := time.NewTimer(timeout)
+			defer timer.Stop()
+			for {
+				select {
+				case event, open := <-watcher.Events:
+					if !open {
+						return -1, "", false
+					}
+					if filepath.Clean(event.Name) != filepath.Clean(recordPath) {
+						continue
+					}
+					if code, errorText, ok := readDurableCompletion(recordPath); ok {
+						return code, errorText, true
+					}
+				case <-watcher.Errors:
+					return -1, "", false
+				case <-timer.C:
+					code, errorText, ok := readDurableCompletion(recordPath)
+					return code, errorText, ok
+				}
+			}
+		}
+	}
+	// WatchService is an optional platform feature. A single deadline wait is
+	// preferable to a hidden file-read polling loop when it is unavailable.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	<-timer.C
+	code, errorText, ok := readDurableCompletion(recordPath)
+	return code, errorText, ok
 }
 
 func monitorDurableOutput(entry *Entry) {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil || watcher.Add(filepath.Dir(entry.output.path)) != nil {
+		if watcher != nil {
+			_ = watcher.Close()
+		}
+		<-entry.done
+		entry.output.mu.Lock()
+		entry.output.refreshSizeLocked()
+		entry.output.mu.Unlock()
+		entry.signalOutputChanged()
+		return
+	}
+	defer watcher.Close()
 	for {
 		select {
 		case <-entry.done:
 			entry.output.mu.Lock()
 			entry.output.refreshSizeLocked()
 			entry.output.mu.Unlock()
+			entry.signalOutputChanged()
 			return
-		case <-ticker.C:
+		case event, open := <-watcher.Events:
+			if !open {
+				return
+			}
+			if filepath.Clean(event.Name) != filepath.Clean(entry.output.path) {
+				continue
+			}
+			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) == 0 {
+				continue
+			}
 			entry.output.mu.Lock()
 			entry.output.refreshSizeLocked()
 			entry.output.mu.Unlock()
+			entry.signalOutputChanged()
+		case _, open := <-watcher.Errors:
+			if !open {
+				return
+			}
+			// A watcher error is not a reason to poll. The next output/read or
+			// process completion performs the authoritative size refresh.
+			return
 		}
 	}
 }
@@ -546,6 +627,22 @@ func (e *Entry) Info() Info {
 		}
 	}
 	return info
+}
+
+// OutputChanged returns a one-shot notification channel.  Readers capture it
+// before inspecting output so a concurrent write cannot be missed; the
+// channel is replaced after every signal.
+func (e *Entry) OutputChanged() <-chan struct{} {
+	e.changeMu.Lock()
+	defer e.changeMu.Unlock()
+	return e.changed
+}
+
+func (e *Entry) signalOutputChanged() {
+	e.changeMu.Lock()
+	close(e.changed)
+	e.changed = make(chan struct{})
+	e.changeMu.Unlock()
 }
 
 func (e *Entry) Output(offset, limit int) ([]byte, int, bool, error) {
@@ -664,6 +761,7 @@ type lockedOutput struct {
 	maxBytes  int64
 	truncated bool
 	direct    bool
+	onChange  func()
 }
 
 func (o *lockedOutput) Write(p []byte) (int, error) {
@@ -686,6 +784,9 @@ func (o *lockedOutput) Write(p []byte) (int, error) {
 	}
 	n, err := o.file.Write(write)
 	o.size += n
+	if o.onChange != nil {
+		o.onChange()
+	}
 	if o.truncated && err == nil {
 		// Report the original buffer as consumed so os/exec does not turn an
 		// intentional capture limit into a failed command.

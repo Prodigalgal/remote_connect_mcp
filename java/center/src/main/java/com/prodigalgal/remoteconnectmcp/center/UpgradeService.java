@@ -62,6 +62,8 @@ public final class UpgradeService {
     private final UpgradeConfig config;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final TaskChangeRegistry changes;
+    private final AgentWakeRegistry wakes;
     private final Map<String, Campaign> memory = new ConcurrentHashMap<>();
     private final ReentrantLock memoryLock = new ReentrantLock();
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
@@ -69,13 +71,17 @@ public final class UpgradeService {
 
     @Autowired
     public UpgradeService(AgentRegistry agents, TaskService tasks, UpgradeConfig config,
-                          ObjectProvider<JdbcTemplate> jdbcProvider,
-                          ObjectProvider<TransactionTemplate> transactionProvider) {
+                           ObjectProvider<JdbcTemplate> jdbcProvider,
+                           ObjectProvider<TransactionTemplate> transactionProvider,
+                           ObjectProvider<TaskChangeRegistry> changeProvider,
+                           ObjectProvider<AgentWakeRegistry> wakeProvider) {
         this.agents = agents;
         this.tasks = tasks;
         this.config = config;
         this.jdbc = jdbcProvider.getIfAvailable();
         this.transactions = transactionProvider.getIfAvailable();
+        this.changes = changeProvider == null ? null : changeProvider.getIfAvailable();
+        this.wakes = wakeProvider == null ? null : wakeProvider.getIfAvailable();
         if (jdbc != null && transactions == null) {
             throw new IllegalStateException("TransactionTemplate is required when PostgreSQL persistence is enabled");
         }
@@ -87,6 +93,8 @@ public final class UpgradeService {
         this.config = config;
         this.jdbc = null;
         this.transactions = null;
+        this.changes = null;
+        this.wakes = null;
     }
 
     public UpgradeCampaignView create(CreateUpgradeCampaignRequest request) {
@@ -106,13 +114,21 @@ public final class UpgradeService {
             var finished = COMPLETED.equals(status) ? now : null;
             campaign.targets.add(new Target(machine.id(), status, "", 0, now, finished, null));
         }
-        if (jdbc != null) return createJdbc(campaign);
+        if (jdbc != null) {
+            var result = createJdbc(campaign);
+            signalChange();
+            signalTargets(result.targets());
+            return result;
+        }
         memoryLock.lock();
         try {
             ensureNoActiveMemory();
             reconcile(campaign, machinesById(machines), now);
             memory.put(campaign.id, campaign);
-            return view(campaign);
+            var result = view(campaign);
+            signalChange();
+            signalTargets(result.targets());
+            return result;
         } finally {
             memoryLock.unlock();
         }
@@ -159,7 +175,12 @@ public final class UpgradeService {
     public UpgradeCampaignView control(String campaignId, String action) {
         var id = requiredId(campaignId);
         var normalizedAction = action == null ? "" : action.trim().toLowerCase();
-        if (jdbc != null) return transactions.execute(status -> controlJdbc(id, normalizedAction));
+        if (jdbc != null) {
+            var result = transactions.execute(status -> controlJdbc(id, normalizedAction));
+            signalChange();
+            signalTargets(result.targets());
+            return result;
+        }
         memoryLock.lock();
         try {
             var campaign = requiredMemory(id);
@@ -189,7 +210,10 @@ public final class UpgradeService {
                 throw new IllegalArgumentException("unsupported upgrade action: " + normalizedAction);
             }
             campaign.updatedAt = now;
-            return view(campaign);
+            var result = view(campaign);
+            signalChange();
+            signalTargets(result.targets());
+            return result;
         } finally {
             memoryLock.unlock();
         }
@@ -202,7 +226,12 @@ public final class UpgradeService {
         if (!(DOWNLOADING.equals(status) || INSTALLING.equals(status) || FAILED.equals(status) || COMPLETED.equals(status))) {
             throw new IllegalArgumentException("invalid upgrade status: " + status);
         }
-        if (jdbc != null) return transactions.execute(tx -> updateStatusJdbc(machineId, id, status, request.error()));
+        if (jdbc != null) {
+            var result = transactions.execute(tx -> updateStatusJdbc(machineId, id, status, request.error()));
+            signalChange();
+            signalTargets(result.targets());
+            return result;
+        }
         memoryLock.lock();
         try {
             var campaign = requiredMemory(id);
@@ -210,7 +239,10 @@ public final class UpgradeService {
                     .orElseThrow(() -> new IllegalArgumentException("machine is not part of the upgrade campaign"));
             applyStatus(campaign, target, status, request.error(), Instant.now());
             reconcile(campaign, machinesById(agents.listMachines(0, 200, Instant.now())), Instant.now());
-            return view(campaign);
+            var result = view(campaign);
+            signalChange();
+            signalTargets(result.targets());
+            return result;
         } finally {
             memoryLock.unlock();
         }
@@ -221,7 +253,11 @@ public final class UpgradeService {
         if (!config.enabled() || request == null || request.availableSlots() == null || request.availableSlots() <= 0) return null;
         var machine = agents.findMachine(machineId, Instant.now()).orElse(null);
         if (machine == null || !safeForUpgrade(machine, request)) return null;
-        if (jdbc != null) return transactions.execute(tx -> offerJdbc(machine, request));
+        if (jdbc != null) {
+            var result = transactions.execute(tx -> offerJdbc(machine, request));
+            if (result != null) signalChange();
+            return result;
+        }
         memoryLock.lock();
         try {
             var now = Instant.now();
@@ -230,7 +266,10 @@ public final class UpgradeService {
                 if (!RUNNING.equals(campaign.status)) continue;
                 reconcile(campaign, byId, now);
                 var plan = offerFromCampaign(campaign, machine, now);
-                if (plan != null) return plan;
+                if (plan != null) {
+                    signalChange();
+                    return plan;
+                }
             }
             return null;
         } finally {
@@ -591,6 +630,17 @@ public final class UpgradeService {
     private static String compactError(String value) {
         var result = value == null || value.isBlank() ? "upgrade failed" : value.trim();
         return result.length() <= 4096 ? result : result.substring(0, 4096);
+    }
+
+    private void signalChange() {
+        if (changes != null) changes.signalGlobal();
+    }
+
+    /** Wake only Agents participating in a campaign; no fleet-wide timer is needed. */
+    private void signalTargets(List<UpgradeTargetView> targets) {
+        if (wakes == null || targets == null) return;
+        targets.stream().map(UpgradeTargetView::machineId).filter(Objects::nonNull)
+                .filter(value -> !value.isBlank()).distinct().forEach(wakes::signal);
     }
 
     private static final class Campaign {

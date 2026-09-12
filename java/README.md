@@ -3,7 +3,7 @@
 这是 RCM Java 25 迁移实现，包含：
 
 - `protocol`：跨 Center/Agent/Transport 的协议记录和边界校验；
-- `center`：Spring Boot 4.x Center、异步 MCP、Bearer 鉴权、注册/轮询、任务/输出/工件队列、项目与 Git worktree 编排、Admin API 和 PostgreSQL + Liquibase 适配；
+- `center`：Spring Boot 4.x Center、异步 MCP、Bearer 鉴权、注册/HTTPS 长轮询、任务/输出/工件队列、项目与 Git worktree 编排、Admin API 和 PostgreSQL + Liquibase 适配；
 - `agent`：无 Spring 的 Java Agent，支持虚拟线程命令执行、磁盘 spool 与异步重试、Desktop PNG 截图/应用启动、Browser 本机适配器桥接、断线重连和身份持久化。
 
 根目录 Go Center/Agent 仍作为兼容基线保留，Java 组件可独立进行协议验收。`--check-config` 只校验配置；`--register-once` 注册并把 Center 返回的日常身份写入 `STATE_DIR/identity.json`；`--run`（或无参数，供 Windows 服务/Linux systemd 使用）启动注册、心跳和异步任务循环，支持并发槽位、输出游标、超时、取消、桌面工件、Browser Worker 和 Center 控制的 canary 自升级。命令输出先落入有界本机 spool，再由独立虚拟线程上传；单任务和 Agent 级聚合输出上限同时生效，达到聚合上限时普通任务仍继续执行并仅截断后续输出；Center 暂时不可达时不会终止子进程，但 durable 日志达到上限会由看门器终止并标记失败。
@@ -29,7 +29,9 @@ java -jar .\agent\build\libs\agent-0.1.0-SNAPSHOT.jar --run
 
 `install-java-agent.ps1` / `install-java-agent.sh` 会先用一次性 Enrollment Token 调用
 `--register-once`，确认 `identity.json` 写入成功后再创建服务，并且不把 Enrollment
-Token 写入长期服务环境；日常轮询只使用 `identity.json` 中的每机 Token。不要把该文件
+Token 写入长期服务环境；日常通信只使用 `identity.json` 中的每机 Token。Java Agent 默认使用
+25 秒 HTTP 长轮询，在任务、取消、配置、升级事件或服务端 deadline 时才返回；设置
+`REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS=0` 才恢复旧版固定间隔兼容模式。不要把该文件
 或环境变量提交到 Git。
 
 Windows 开启 `-DesktopEnabled` 时，安装器还会注册一个当前用户登录触发的
@@ -44,7 +46,7 @@ Windows 开启 `-DesktopEnabled` 时，安装器还会注册一个当前用户�
 在本机直接运行会安全退出并提示提交到 Actions；`java/Dockerfile.*.native` 与 `web/Dockerfile` 也要求
 CI 构建参数。Gradle 根配置还会拦截本机的 `build/test/compile/jar/native` 等任务；只读的
 `tasks`、`dependencies` 查询不受影响。不要在目标主机安装或运行 Gradle/GraalVM。
-Agent 默认使用 HTTPS 轮询。设置 `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT=websocket` 后会额外连接 Center 的 `/agent/v1/ws`，只接收有界 `wake` 提示以提前结束退避等待；任务领取、输出、工件和 Token 校验仍走原有 HTTPS 接口。WebSocket 不可用时不会影响 Agent 在线状态，客户端按指数退避重连并继续轮询。Center 端使用 `RCM_CENTER_AGENT_WEBSOCKET_ENABLED=true` 开启该可选端点，默认关闭以便先做 canary。
+Agent 默认使用 HTTPS 长轮询：单次 `/agent/v1/poll?wait_ms=25000` 会在任务、取消、配置或升级事件时立即返回，空闲只由服务端 deadline 结束，不再叠加固定 sleep。设置 `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT=websocket` 后会额外连接 Center 的 `/agent/v1/ws`，只接收有界 `wake` 提示以进一步降低事件延迟；任务领取、输出、工件和 Token 校验仍走 HTTPS。长轮询/WebSocket 均不可用时才按指数退避重试。Center 端使用 `RCM_CENTER_AGENT_WEBSOCKET_ENABLED=true` 开启该可选端点。
 
 Native Agent 烟测可设置 `RCM_SMOKE_RESOURCE_REPORT=/tmp/rcm-agent-resource.json`（Windows PowerShell
 使用 `-ResourceReport`），脚本会在 Agent 在线和命令闭环期间采样工作集峰值；该文件只用于 CI 资源回归，

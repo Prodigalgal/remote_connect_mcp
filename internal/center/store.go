@@ -193,6 +193,9 @@ type Store struct {
 	artifactDir     string
 	state           persistedState
 	changed         chan struct{}
+	taskChanged     chan struct{}
+	machineChanged  map[string]chan struct{}
+	taskEvents      map[string]*taskEvent
 	lastPersistedAt time.Time
 }
 
@@ -217,7 +220,9 @@ func OpenStore(dir string) (*Store, error) {
 		state: persistedState{
 			Machines: map[string]*Machine{}, Tasks: map[string]*Task{}, Upgrades: map[string]*UpgradeCampaign{}, AccessTokens: map[string]*AccessTokenState{}, Enrollments: map[string]*EnrollmentToken{},
 		},
-		changed: make(chan struct{}), lastPersistedAt: time.Now().UTC(),
+		changed: make(chan struct{}), taskChanged: make(chan struct{}),
+		machineChanged: map[string]chan struct{}{}, taskEvents: map[string]*taskEvent{},
+		lastPersistedAt: time.Now().UTC(),
 	}
 	data, err := os.ReadFile(s.statePath)
 	if err == nil {
@@ -794,7 +799,7 @@ func (s *Store) CreateTask(req protocol.CreateTaskRequest) (Task, error) {
 		delete(s.state.Tasks, task.ID)
 		return Task{}, err
 	}
-	s.notifyLocked()
+	s.notifyTaskStateLocked(task.ID, task.MachineID)
 	return cloneTask(task), nil
 }
 
@@ -889,7 +894,7 @@ func (s *Store) CancelTask(id string) (Task, error) {
 	if err := s.saveLocked(); err != nil {
 		return Task{}, err
 	}
-	s.notifyLocked()
+	s.notifyTaskStateLocked(task.ID, task.MachineID)
 	return cloneTask(task), nil
 }
 
@@ -964,6 +969,9 @@ func (s *Store) CreateUpgradeCampaign(req CreateUpgradeCampaignRequest) (Upgrade
 		return UpgradeCampaign{}, err
 	}
 	s.notifyLocked()
+	for _, target := range targets {
+		s.notifyMachineLocked(target.MachineID)
+	}
 	return cloneUpgradeCampaign(campaign), nil
 }
 
@@ -1023,6 +1031,9 @@ func (s *Store) ControlUpgradeCampaign(id, action string) (UpgradeCampaign, erro
 		return UpgradeCampaign{}, err
 	}
 	s.notifyLocked()
+	for _, target := range campaign.Targets {
+		s.notifyMachineLocked(target.MachineID)
+	}
 	return cloneUpgradeCampaign(campaign), nil
 }
 
@@ -1071,6 +1082,10 @@ func (s *Store) UpdateUpgradeStatus(machineID string, req protocol.UpgradeStatus
 		return UpgradeCampaign{}, err
 	}
 	s.notifyLocked()
+	s.notifyMachineLocked(machineID)
+	for _, target := range campaign.Targets {
+		s.notifyMachineLocked(target.MachineID)
+	}
 	return cloneUpgradeCampaign(campaign), nil
 }
 
@@ -1090,6 +1105,7 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 	machine.UpdatedAt = now
 	response := protocol.PollResponse{}
 	taskStatusChanged := false
+	statusChangedIDs := make([]string, 0, len(req.RunningTaskIDs))
 	for _, taskID := range req.RunningTaskIDs {
 		task := s.state.Tasks[taskID]
 		if task == nil || task.MachineID != machineID || terminalStatus(task.Status) {
@@ -1098,6 +1114,7 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 		if task.Status == protocol.TaskDispatching {
 			task.Status = protocol.TaskRunning
 			taskStatusChanged = true
+			statusChangedIDs = append(statusChangedIDs, task.ID)
 		}
 		if task.Status == protocol.TaskRunning {
 			lease := now.Add(taskLeaseDuration)
@@ -1148,6 +1165,15 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 		if err := s.saveLocked(); err != nil {
 			return protocol.PollResponse{}, err
 		}
+	}
+	// Dispatch/running transitions are low-frequency task state events. Wake
+	// only the affected task and machine waiters after the authoritative write;
+	// output chunks use notifyTaskLocked separately and never fan out here.
+	for _, taskID := range statusChangedIDs {
+		s.notifyTaskStateLocked(taskID, machineID)
+	}
+	if response.Task != nil {
+		s.notifyTaskStateLocked(response.Task.ID, machineID)
 	}
 	return response, nil
 }
@@ -1389,7 +1415,7 @@ func (s *Store) UpdateTask(machineID, taskID string, req protocol.TaskUpdateRequ
 	if err := s.saveLocked(); err != nil {
 		return Task{}, err
 	}
-	s.notifyLocked()
+	s.notifyTaskStateLocked(task.ID, task.MachineID)
 	return cloneTask(task), nil
 }
 
@@ -1422,7 +1448,7 @@ func (s *Store) AppendOutput(machineID, taskID string, offset int64, data []byte
 	if err := s.saveLocked(); err != nil {
 		return task.OutputBytes, err
 	}
-	s.notifyLocked()
+	s.notifyTaskLocked(task.ID)
 	return task.OutputBytes, nil
 }
 
@@ -1467,7 +1493,7 @@ func (s *Store) SaveArtifact(machineID, taskID, mimeType string, data []byte) (T
 		s.mu.Unlock()
 		return Task{}, err
 	}
-	s.notifyLocked()
+	s.notifyTaskLocked(task.ID)
 	result := cloneTask(task)
 	s.mu.Unlock()
 	return result, nil
@@ -1596,6 +1622,81 @@ func (s *Store) Changed() <-chan struct{} {
 	return s.changed
 }
 
+// TaskChanged is kept as a compatibility stream for callers that do not have a
+// task id. New waiters should use TaskChangedFor so an output chunk wakes only
+// waiters for that task. Both channels are one-shot broadcasts replaced under
+// the same lock; callers must capture the channel before their next
+// authoritative read.
+func (s *Store) TaskChanged() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.taskChanged
+}
+
+// TaskChangedFor returns a one-shot notification for one task. The channel is
+// created lazily and is removed when a later event sees no waiter, so task IDs
+// from a long-retired history do not become an unbounded in-memory index.
+func (s *Store) TaskChangedFor(taskID string) chan struct{} {
+	normalized := strings.TrimSpace(taskID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if normalized == "" {
+		return s.taskChanged
+	}
+	if s.taskEvents == nil {
+		s.taskEvents = map[string]*taskEvent{}
+	}
+	if state, ok := s.taskEvents[normalized]; ok {
+		state.references++
+		return state.channel
+	}
+	channel := make(chan struct{})
+	s.taskEvents[normalized] = &taskEvent{channel: channel, references: 1}
+	return channel
+}
+
+// ReleaseTaskChanged releases the short-lived reference acquired by
+// TaskChangedFor. This lets a waiter that timed out without any task event
+// leave no task-id entry behind.
+func (s *Store) ReleaseTaskChanged(taskID string, channel chan struct{}) {
+	normalized := strings.TrimSpace(taskID)
+	if normalized == "" || channel == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.taskEvents[normalized]
+	if !ok || state.channel != channel {
+		return
+	}
+	state.references--
+	if state.references <= 0 {
+		delete(s.taskEvents, normalized)
+	}
+}
+
+// MachineChanged returns the event channel for one authenticated Agent. It is
+// intentionally lazy: a task event for machine A must not wake a long-polling
+// Agent connected as machine B, and an event before the first read is still
+// observed by the authoritative Poll call.
+func (s *Store) MachineChanged(machineID string) <-chan struct{} {
+	normalized := strings.TrimSpace(machineID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if normalized == "" {
+		return s.changed
+	}
+	if s.machineChanged == nil {
+		s.machineChanged = map[string]chan struct{}{}
+	}
+	if channel, ok := s.machineChanged[normalized]; ok {
+		return channel
+	}
+	channel := make(chan struct{})
+	s.machineChanged[normalized] = channel
+	return channel
+}
+
 func (s *Store) outputPath(taskID string) string {
 	return filepath.Join(s.outputDir, taskID+".log")
 }
@@ -1607,6 +1708,46 @@ func (s *Store) artifactPath(taskID string) string {
 func (s *Store) notifyLocked() {
 	close(s.changed)
 	s.changed = make(chan struct{})
+}
+
+// notifyTaskLocked broadcasts a task event to compatibility waiters and the
+// task-specific channel. Callers hold s.mu.
+func (s *Store) notifyTaskLocked(taskID string) {
+	close(s.taskChanged)
+	s.taskChanged = make(chan struct{})
+	s.notifyTaskEventLocked(taskID)
+}
+
+func (s *Store) notifyTaskEventLocked(taskID string) {
+	normalized := strings.TrimSpace(taskID)
+	if state, ok := s.taskEvents[normalized]; ok {
+		close(state.channel)
+		delete(s.taskEvents, normalized)
+	}
+}
+
+func (s *Store) notifyMachineLocked(machineID string) {
+	normalized := strings.TrimSpace(machineID)
+	if normalized == "" || s.machineChanged == nil {
+		return
+	}
+	if channel, ok := s.machineChanged[normalized]; ok {
+		close(channel)
+		s.machineChanged[normalized] = make(chan struct{})
+	}
+}
+
+// notifyTaskStateLocked wakes the admin/control stream, the task stream and
+// the authenticated Agent that owns the task. Callers hold s.mu.
+func (s *Store) notifyTaskStateLocked(taskID, machineID string) {
+	s.notifyLocked()
+	s.notifyTaskLocked(taskID)
+	s.notifyMachineLocked(machineID)
+}
+
+type taskEvent struct {
+	channel    chan struct{}
+	references int
 }
 
 func (s *Store) saveLocked() error {

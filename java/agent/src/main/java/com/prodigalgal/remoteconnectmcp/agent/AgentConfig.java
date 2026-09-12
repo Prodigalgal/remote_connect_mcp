@@ -96,6 +96,11 @@ public record AgentConfig(
         return metadata;
     }
 
+    /** Long-poll hold time in seconds; zero explicitly restores legacy polling. */
+    public long longPollSeconds() {
+        return parseLongEnv("REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS", 25, 0, 25);
+    }
+
     public RegisterRequest registerRequest() {
         var metadata = metadata();
         return new RegisterRequest(metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(), metadata.defaultCwd(), metadata.scopeMode(), metadata.workspaceRoot(), metadata.capabilities());

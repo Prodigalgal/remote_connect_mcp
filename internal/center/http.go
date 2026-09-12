@@ -219,6 +219,19 @@ func (s *HTTPServer) serveAgentPoll(w http.ResponseWriter, r *http.Request, mach
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
+	waitMs := 20_000
+	if raw := strings.TrimSpace(r.URL.Query().Get("wait_ms")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 || parsed > 25_000 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "wait_ms must be between 0 and 25000"})
+			return
+		}
+		waitMs = parsed
+	}
+	// The Go compatibility Center has always held this endpoint until a
+	// change or its deadline.  Advertise that contract so a Java Agent does
+	// not append a second fixed sleep after an otherwise healthy response.
+	w.Header().Set("X-RCM-Long-Poll", "accepted")
 	var req protocol.PollRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -229,24 +242,44 @@ func (s *HTTPServer) serveAgentPoll(w http.ResponseWriter, r *http.Request, mach
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	deadline := time.NewTimer(20 * time.Second)
+	deadline := time.NewTimer(time.Duration(waitMs) * time.Millisecond)
 	defer deadline.Stop()
 	for {
+		// Capture the machine-scoped channel before the authoritative poll. A
+		// task can be created between the read and wait; capturing first closes
+		// that race without broadcasting the event to every Agent.
+		var changed <-chan struct{}
+		if waitMs > 0 {
+			changed = s.store.MachineChanged(machineID)
+		}
 		result, err := s.store.Poll(machineID, req, metadata)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		if result.Task != nil || len(result.CancelTaskIDs) > 0 {
+		if result.Task != nil || result.Upgrade != nil || len(result.CancelTaskIDs) > 0 {
 			writeJSON(w, http.StatusOK, result)
 			return
 		}
-		changed := s.store.Changed()
+		if waitMs == 0 {
+			// An explicit zero is a snapshot request. Do not race a ready
+			// notification and accidentally turn it into a held request.
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
 		select {
 		case <-r.Context().Done():
 			return
 		case <-deadline.C:
-			writeJSON(w, http.StatusOK, result)
+			// A lost wake must not return a stale snapshot. Perform one final
+			// authoritative poll at the request deadline; this is an explicit
+			// boundary read, not a periodic retry loop.
+			finalResult, finalErr := s.store.Poll(machineID, req, metadata)
+			if finalErr != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": finalErr.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, finalResult)
 			return
 		case <-changed:
 		}
@@ -349,6 +382,30 @@ func (s *HTTPServer) serveAgentTaskArtifact(w http.ResponseWriter, r *http.Reque
 
 func (s *HTTPServer) serveAdminAPI(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/")
+	if path == "events" && r.Method == http.MethodGet {
+		waitMs := 25000
+		if raw := strings.TrimSpace(r.URL.Query().Get("wait_ms")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 || parsed > 25000 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "wait_ms must be between 0 and 25000"})
+				return
+			}
+			waitMs = parsed
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		changed := s.store.Changed()
+		timer := time.NewTimer(time.Duration(waitMs) * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-changed:
+			writeJSON(w, http.StatusOK, map[string]any{"changed": true})
+		case <-timer.C:
+			writeJSON(w, http.StatusOK, map[string]any{"changed": false})
+		}
+		return
+	}
 	if path == "machines" && r.Method == http.MethodGet {
 		writeJSON(w, http.StatusOK, map[string]any{"machines": s.store.ListMachines(time.Now().UTC())})
 		return
