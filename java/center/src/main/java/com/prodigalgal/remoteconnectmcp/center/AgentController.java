@@ -14,6 +14,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -36,6 +37,7 @@ public final class AgentController {
     private final CenterAsyncExecutor async;
     private final AgentWakeRegistry wakes;
 
+    @Autowired
     public AgentController(AgentRegistry registry, TaskService tasks, UpgradeService upgrades,
                            AgentConfigurationService configurations, CenterAsyncExecutor async,
                            org.springframework.beans.factory.ObjectProvider<AgentWakeRegistry> wakeProvider) {

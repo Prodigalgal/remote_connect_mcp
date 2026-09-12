@@ -102,8 +102,12 @@ final class DurableTaskStore {
             synchronized (DurableTaskStore.this) {
                 if (!watchedTasks.contains(record.taskId())) return;
                 try {
-                    var code = finished.exitValue();
-                    markCompleted(record, code, code == 0 ? null : "command exited with code " + code);
+                    // ProcessHandle exposes liveness and completion, but not
+                    // the exit status of a process that was started by an
+                    // earlier Agent instance. Preserve that uncertainty as a
+                    // deterministic failed completion instead of guessing
+                    // success (or calling a non-existent exitValue API).
+                    markCompleted(record, -1, "durable process exited while Agent was offline");
                 } catch (Exception ignored) {
                     // The active runner will report the failure if the record
                     // cannot be persisted; this callback must never resurrect
