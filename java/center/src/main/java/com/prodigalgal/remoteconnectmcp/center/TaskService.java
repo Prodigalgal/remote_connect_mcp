@@ -550,7 +550,18 @@ public final class TaskService {
     }
 
     private void signalChanged() {
-        changed.signalAll();
+        // Condition.signalAll() is only legal while holding its associated
+        // lock.  The in-memory adapter already calls this method while the
+        // lock is held, but the PostgreSQL adapter invokes it after its own
+        // transaction has committed.  ReentrantLock makes this helper safe in
+        // both paths and prevents JDBC task updates from leaking
+        // IllegalMonitorStateException to the Agent/MCP request.
+        lock.lock();
+        try {
+            changed.signalAll();
+        } finally {
+            lock.unlock();
+        }
     }
 
     private void signalWake(String machineId) {
