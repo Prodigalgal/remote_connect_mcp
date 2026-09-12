@@ -512,6 +512,92 @@ func TestPollRefreshesRunningTaskLease(t *testing.T) {
 	}
 }
 
+func TestPollReclaimsExpiredDispatchLeaseAndIncrementsAttempt(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := store.Register(protocol.RegisterRequest{Name: "dispatch-reclaim", OS: "linux", Arch: "amd64", DefaultCWD: "/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(protocol.CreateTaskRequest{MachineID: registered.MachineID, Command: "printf reclaim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Poll(registered.MachineID, protocol.PollRequest{AvailableSlots: 1})
+	if err != nil || first.Task == nil || first.Task.ID != task.ID {
+		t.Fatalf("initial poll = %+v err=%v", first, err)
+	}
+	store.mu.Lock()
+	expired := time.Now().UTC().Add(-time.Second)
+	store.state.Tasks[task.ID].LeaseUntil = &expired
+	store.mu.Unlock()
+	reclaimed, err := store.Poll(registered.MachineID, protocol.PollRequest{AvailableSlots: 1})
+	if err != nil || reclaimed.Task == nil || reclaimed.Task.ID != task.ID {
+		t.Fatalf("reclaim poll = %+v err=%v", reclaimed, err)
+	}
+	current, _ := store.GetTask(task.ID)
+	if current.Status != protocol.TaskDispatching || current.Attempt != 2 {
+		t.Fatalf("reclaimed task = %+v, want dispatching attempt 2", current)
+	}
+}
+
+func TestPollRecoversDurableLeaseAndFailsExpiredTimedLease(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := store.Register(protocol.RegisterRequest{Name: "running-reclaim", OS: "linux", Arch: "amd64", DefaultCWD: "/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable, err := store.CreateTask(protocol.CreateTaskRequest{MachineID: registered.MachineID, Command: "sleep 10", TimeoutSeconds: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Poll(registered.MachineID, protocol.PollRequest{AvailableSlots: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateTask(registered.MachineID, durable.ID, protocol.TaskUpdateRequest{Status: protocol.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	expired := time.Now().UTC().Add(-time.Second)
+	store.state.Tasks[durable.ID].LeaseUntil = &expired
+	store.mu.Unlock()
+	reconnected, err := store.Poll(registered.MachineID, protocol.PollRequest{RunningTaskIDs: []string{durable.ID}, AvailableSlots: 1})
+	if err != nil || reconnected.Task != nil {
+		t.Fatalf("durable reconnect poll = %+v err=%v, want no duplicate dispatch", reconnected, err)
+	}
+	current, _ := store.GetTask(durable.ID)
+	if current.Status != protocol.TaskRunning || current.LeaseUntil == nil || !current.LeaseUntil.After(time.Now().UTC()) {
+		t.Fatalf("durable task was not renewed = %+v", current)
+	}
+
+	timed, err := store.CreateTask(protocol.CreateTaskRequest{MachineID: registered.MachineID, Command: "sleep 10", TimeoutSeconds: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Poll(registered.MachineID, protocol.PollRequest{AvailableSlots: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateTask(registered.MachineID, timed.ID, protocol.TaskUpdateRequest{Status: protocol.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	expired = time.Now().UTC().Add(-time.Second)
+	store.state.Tasks[timed.ID].LeaseUntil = &expired
+	store.mu.Unlock()
+	if _, err := store.Poll(registered.MachineID, protocol.PollRequest{RunningTaskIDs: []string{durable.ID}, AvailableSlots: 0}); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = store.GetTask(timed.ID)
+	if current.Status != protocol.TaskFailed || current.Error != "agent lease expired before timed command completed" || current.FinishedAt == nil {
+		t.Fatalf("timed task recovery = %+v", current)
+	}
+}
+
 func TestCancelQueuedTaskIsTerminal(t *testing.T) {
 	store, err := OpenStore(t.TempDir())
 	if err != nil {

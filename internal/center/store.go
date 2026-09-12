@@ -1109,13 +1109,20 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 	response := protocol.PollResponse{}
 	taskStatusChanged := false
 	statusChangedIDs := make([]string, 0, len(req.RunningTaskIDs))
+	if s.recoverExpiredLeasesLocked(machineID, now, &statusChangedIDs) {
+		taskStatusChanged = true
+	}
 	for _, taskID := range req.RunningTaskIDs {
 		task := s.state.Tasks[taskID]
 		if task == nil || task.MachineID != machineID || terminalStatus(task.Status) {
 			continue
 		}
-		if task.Status == protocol.TaskDispatching {
+		if task.Status == protocol.TaskDispatching || task.Status == protocol.TaskQueued && task.TimeoutSeconds <= 0 {
 			task.Status = protocol.TaskRunning
+			if task.StartedAt == nil {
+				started := now
+				task.StartedAt = &started
+			}
 			taskStatusChanged = true
 			statusChangedIDs = append(statusChangedIDs, task.ID)
 		}
@@ -1142,7 +1149,7 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 			if task.RequiredCapability != "" && !hasCapability(req.AvailableCapabilities, task.RequiredCapability) {
 				continue
 			}
-			if task.Status == protocol.TaskQueued || task.Status == protocol.TaskDispatching && task.LeaseUntil != nil && now.After(*task.LeaseUntil) {
+			if task.Status == protocol.TaskQueued || task.Status == protocol.TaskDispatching && task.LeaseUntil != nil && !now.Before(*task.LeaseUntil) {
 				candidates = append(candidates, task)
 			}
 		}
@@ -1180,6 +1187,52 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 		s.notifyTaskStateLocked(response.Task.ID, machineID)
 	}
 	return response, nil
+}
+
+// recoverExpiredLeasesLocked repairs tasks owned by this Agent just before a
+// poll evaluates running-task hints and queued work.  Recovery is scoped to
+// the authenticated machine: a fleet-wide sweep on every poll would turn a
+// large deployment into repeated table/file scans.  Durable (no-timeout)
+// tasks may be reattached by the same Agent after a reconnect; timed commands
+// cannot be safely replayed once their lease expires, so they become an
+// explicit failure instead of silently running twice.
+func (s *Store) recoverExpiredLeasesLocked(machineID string, now time.Time, changedIDs *[]string) bool {
+	changed := false
+	for _, task := range s.state.Tasks {
+		if task == nil || task.MachineID != machineID || task.LeaseUntil == nil || now.Before(*task.LeaseUntil) {
+			continue
+		}
+		taskChanged := false
+		switch task.Status {
+		case protocol.TaskDispatching:
+			task.Status = protocol.TaskQueued
+			task.LeaseUntil = nil
+			taskChanged = true
+		case protocol.TaskRunning:
+			task.LeaseUntil = nil
+			if task.TimeoutSeconds <= 0 {
+				// The durable Agent process may still be alive.  Its next poll
+				// carries the task ID and renews the lease without dispatching a
+				// second process.
+				task.Status = protocol.TaskQueued
+			} else {
+				// A timed process is attached to the old Agent and cannot be
+				// safely replayed after its lease expires.
+				task.Status = protocol.TaskFailed
+				task.Error = "agent lease expired before timed command completed"
+				finished := now
+				task.FinishedAt = &finished
+			}
+			taskChanged = true
+		}
+		if taskChanged {
+			changed = true
+		}
+		if taskChanged && changedIDs != nil {
+			*changedIDs = append(*changedIDs, task.ID)
+		}
+	}
+	return changed
 }
 
 func (s *Store) upgradeSafeForRunningLocked(machineID string, runningTaskIDs []string) bool {
