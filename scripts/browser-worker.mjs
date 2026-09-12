@@ -14,7 +14,6 @@ const MAX_EVENT_ENTRIES = 64;
 const MAX_EVENT_TEXT_BYTES = 1024;
 const MAX_EVENT_URL_BYTES = 2048;
 const MAX_SNAPSHOT_ELEMENTS = 64;
-const MAX_ELEMENT_TEXT_BYTES = 256;
 const MAX_REFERENCE_LENGTH = 2048;
 
 const requestFile = requiredEnv("RCM_BROWSER_TASK_REQUEST_FILE");
@@ -268,11 +267,11 @@ async function elementReferences(page) {
     raw = await page.locator("button,a,input,textarea,select,[role]").evaluateAll((nodes) => nodes.slice(0, 128).map((element) => {
       const tag = String(element.tagName || "").toLowerCase();
       const attribute = (name) => String(element.getAttribute?.(name) || "").trim();
-      const text = String(element.innerText || element.textContent || "").replace(/[\\r\\n]+/g, " ").trim().slice(0, 256);
+      const text = String(element.innerText || element.textContent || "").replace(/[\r\n]+/g, " ").trim().slice(0, 256);
       const placeholder = attribute("placeholder");
       const testId = attribute("data-testid") || attribute("data-test-id");
       const type = attribute("type").toLowerCase();
-      let role = attribute("role").split(/\\s+/)[0] || "";
+      let role = attribute("role").split(/\s+/)[0] || "";
       if (!role && tag === "button") role = "button";
       if (!role && tag === "a") role = "link";
       if (!role && tag === "textarea") role = "textbox";
@@ -283,9 +282,12 @@ async function elementReferences(page) {
           : type === "radio" ? "radio"
           : "textbox";
       }
+      // Only advertise a role reference when we have an actual accessible
+      // name.  A placeholder or HTML name attribute is a separate fallback:
+      // Playwright does not necessarily expose either as a role name, and a
+      // misleading role reference would be worse than a fresh snapshot.
       const name = (attribute("aria-label") || attribute("title")
-        || ((tag === "button" || tag === "a") ? text : "")
-        || placeholder || attribute("name")).slice(0, 256);
+        || ((tag === "button" || tag === "a") ? text : "")).slice(0, 256);
       return { tag, role, name, text, test_id: testId.slice(0, 256), placeholder: placeholder.slice(0, 256) };
     }));
   } catch {

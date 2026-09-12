@@ -13,6 +13,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -26,8 +27,8 @@ class BrowserTaskRunnerTest {
     @Test
     void adapterReceivesBoundedRequestFileAndStreamsOutput(@TempDir Path stateDir) {
         var adapter = System.getProperty("os.name", "").toLowerCase().contains("win")
-                ? "echo {\"status\":\"completed\",\"output\":\"manifest-output\",\"artifact\":{\"path\":\"artifact.txt\",\"mime_type\":\"text/plain\"}} > \"%RCM_BROWSER_RESULT_FILE%\" & echo artifact > \"%RCM_BROWSER_ARTIFACT_DIR%\\artifact.txt\" & type \"%RCM_BROWSER_TASK_REQUEST_FILE%\""
-                : "printf '%s' '{\"status\":\"completed\",\"output\":\"manifest-output\",\"artifact\":{\"path\":\"artifact.txt\",\"mime_type\":\"text/plain\"}}' > \"$RCM_BROWSER_RESULT_FILE\"; printf artifact > \"$RCM_BROWSER_ARTIFACT_DIR/artifact.txt\"; cat \"$RCM_BROWSER_TASK_REQUEST_FILE\"";
+                ? "echo {\"status\":\"completed\",\"output\":\"manifest-output\",\"artifact\":{\"path\":\"artifact.txt\",\"mime_type\":\"text/plain\"}} > \"%RCM_BROWSER_RESULT_FILE%\" & echo %RCM_BROWSER_SESSION_FILE% > \"%RCM_BROWSER_SESSION_FILE%\" & echo artifact > \"%RCM_BROWSER_ARTIFACT_DIR%\\artifact.txt\" & type \"%RCM_BROWSER_TASK_REQUEST_FILE%\""
+                : "printf '%s' '{\"status\":\"completed\",\"output\":\"manifest-output\",\"artifact\":{\"path\":\"artifact.txt\",\"mime_type\":\"text/plain\"}}' > \"$RCM_BROWSER_RESULT_FILE\"; printf '%s' \"$RCM_BROWSER_SESSION_FILE\" > \"$RCM_BROWSER_SESSION_FILE\"; printf artifact > \"$RCM_BROWSER_ARTIFACT_DIR/artifact.txt\"; cat \"$RCM_BROWSER_TASK_REQUEST_FILE\"";
         var config = new AgentConfig(URI.create("http://127.0.0.1:18183"), "", "browser-agent", "browser-host",
                 stateDir.toString(), ScopeMode.UNRESTRICTED, null, List.of("browser"), false, stateDir,
                 Duration.ofMillis(250), 1, 4L * 1024 * 1024, 8L * 1024 * 1024, adapter);
@@ -44,6 +45,7 @@ class BrowserTaskRunnerTest {
         assertTrue(transport.output.toString().contains("manifest-output"), "manifest=" + transport.output);
         assertTrue(transport.artifactMime.equals("text/plain"), "mime=" + transport.artifactMime);
         assertTrue(transport.artifact.toString().contains("artifact"), "artifact=" + transport.artifact);
+        assertTrue(Files.isRegularFile(stateDir.resolve("browser-session.json")), "session marker was not passed to adapter");
     }
 
     private static final class RecordingTransport implements AgentTransport {
