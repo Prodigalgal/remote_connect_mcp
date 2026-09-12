@@ -27,6 +27,9 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/scan-repository-secrets.sh
+      - name: Enforce event-driven wait paths
+        shell: bash
+        run: bash scripts/check-event-driven.sh
 
   jvm-and-console:
     strategy:

@@ -54,5 +54,6 @@ React 控制台只请求分页摘要；Admin Token 仅保存在内存。验证 T
 - Center 的 PostgreSQL 监听使用 `PGConnection.getNotifications(0)` 阻塞在数据库 socket；无参的非阻塞 API 不得用于监听循环。
 - 进程输出/完成由 `fsnotify`、`WatchService`、`ProcessHandle.onExit`、Linux pidfd 或 Windows 进程句柄驱动；不通过固定间隔读取文件或探测 PID。
 - 定时器仅允许用于请求截止时间、网络失败指数退避、关闭/终止宽限期和桌面拖拽动画。旧协议兼容、极旧内核/ACL 不具备事件能力时的低频回退必须保持显式、受界且不成为默认路径。
+- `scripts/check-event-driven.sh` 在 Go/Java/React 生产路径上执行静态回归门禁：禁止固定间隔调度器和 pgjdbc 非阻塞通知 API；唯一允许的 `5s` ticker 是旧 Linux 内核/Windows ACL 无法取得进程等待句柄时的显式兼容回退。任何新增例外都必须先更新契约和门禁说明。
 
 该契约允许 ChatGPT Web 在一次消息超时后安全重试：重试只读取同一个任务和 cursor，不会把长时间命令重新执行一遍。
