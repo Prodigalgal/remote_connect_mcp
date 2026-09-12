@@ -48,6 +48,13 @@ subprojects {
         tasks.withType<Test>().configureEach {
             useJUnitPlatform()
             systemProperty("file.encoding", "UTF-8")
+            // Keep CI failures actionable: the PostgreSQL contract tests need
+            // the vendor exception message (SQLSTATE/constraint details), not
+            // only Gradle's one-line test summary. This does not change test
+            // behavior or production logging.
+            testLogging {
+                exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            }
         }
     }
 }
