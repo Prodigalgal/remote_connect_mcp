@@ -134,13 +134,14 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 | `RCM_CENTER_RELEASE_BASE_URL`（兼容 `REMOTE_CONNECT_MCP_CENTER_RELEASE_BASE_URL`） | GitHub Releases 下载基址 | 自动解析发布资产和 `.sha256` 的基址；私有镜像源通过部署 Secret/env 覆盖 |
 | `RCM_CENTER_RELEASE_TAG_PREFIX`（兼容 `REMOTE_CONNECT_MCP_CENTER_RELEASE_TAG_PREFIX`） | `java-` | 发布 URL 的 Tag 前缀；本仓库 Java 发布使用 `java-v1.2.3`，控制台版本仍填写 `v1.2.3`；使用普通 `v*` Tag 时设为空 |
 | `RCM_CENTER_PERSISTENCE_MODE` | `memory` | Java Center 使用 `postgres` 才启用 PostgreSQL 任务/机器/工件存储 |
+| `RCM_CENTER_REQUIRE_DURABLE_STORAGE` | `false` | 设为 `true` 时，除 PostgreSQL 外的模式不会通过 `/api/v1/readyz`；生产必须开启 |
 | `RCM_CENTER_LIQUIBASE_ENABLED` | `true` | Java Center 是否在当前进程执行 Liquibase；生产 Pod 设为 `false`，由独立 migration Job 执行 |
 | `RCM_CENTER_DATABASE_URL` | 空 | PostgreSQL JDBC URL（postgres 模式必填） |
 | `RCM_CENTER_DATABASE_USERNAME` | 空 | PostgreSQL 用户名（postgres 模式必填） |
 | `RCM_CENTER_DATABASE_PASSWORD` | 空 | PostgreSQL 密码（仅通过 Secret/env 注入） |
 | `RCM_CENTER_ALLOW_SHARED_ENROLLMENT` | `false` | 仅应急兼容旧部署；生产默认关闭，新增 Agent 通过 Admin API 生成一次性 Token |
 
-Java Center 使用 PostgreSQL 事务存储和单副本 `Recreate` Deployment，不再依赖旧 Go Center 的 RWO 状态 PVC；Pod 只挂载受限的临时 `/tmp`。任务创建、状态变化和升级变化会立即持久化；高频 Agent 心跳在内存中实时更新，并按数据库事务节流，避免心跳写入阻塞 MCP 查询。
+Java Center 生产使用 PostgreSQL 事务存储和单副本 `Recreate` Deployment，不再依赖旧 Go Center 的 RWO 状态 PVC；Pod 只挂载受限的临时 `/tmp`。任务创建、状态变化和升级变化会立即持久化；内存只保存可丢失的唤醒/等待状态和必要的短期快照，任何缓存失效都从 PostgreSQL 重建。`RCM_CENTER_REQUIRE_DURABLE_STORAGE=true` 会让误用 memory 模式的实例保持未就绪，避免无意接收生产流量。
 
 旧 Go Center 切换到 Java/PostgreSQL 时，先备份并停止旧 Center，运行 Liquibase 迁移后使用 `rcm-center --import-go <旧状态目录或 state.json>` 导入机器、Agent 摘要、任务、输出和工件。导入不读取 MCP/Admin Token 明文；旧升级活动需暂停并在新 Center 重新创建。
 

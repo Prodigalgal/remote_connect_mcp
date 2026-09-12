@@ -72,6 +72,19 @@ queued -> dispatching -> running -> completed
 - Center 重启、Agent 断线、单次 HTTP 超时都不会自动创建第二个逻辑任务。
 - `DISPATCHING` 租约过期会回到队列；无超时持久任务只有在同一 Agent 带着恢复任务 ID 重连时才续租，定时任务租约过期则标记失败，避免不确定的重复执行。
 
+### 3.1 存储与内存边界
+
+Java Center 在一个进程内只选择一个持久化适配器。生产配置固定为
+`RCM_CENTER_PERSISTENCE_MODE=postgres`，PostgreSQL 是机器、任务、租约、Attempt、Token
+摘要、配置、项目/worktree、升级活动、输出游标和工件元数据的唯一权威来源；Liquibase
+由独立 migration Job 管理 schema。Go 的 JSON 文件存储只用于一次性迁移前基线，Java
+memory adapter 只用于协议测试/开发，不能在生产与 PostgreSQL 并行或双写。
+
+进程内存仅保留可丢失的加速状态：HTTP/WebSocket 唤醒会话、任务等待条件，以及必要的
+短期只读快照。所有读热点缓存都必须有界、可按事件失效，缓存丢失时直接回源 PostgreSQL；
+不会把租约、Attempt、Token、输出或工件作为“只在内存中”的事实。当前使用 PostgreSQL
+共享缓冲区、Hikari 连接池和阻塞式 `LISTEN/NOTIFY`，不额外引入 Redis/Kafka 第二状态层。
+
 ## 4. 范围与项目策略
 
 RCM 保留两种顶层策略：

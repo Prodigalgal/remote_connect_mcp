@@ -24,11 +24,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Center-side project catalog and Git worktree coordinator.
- *
- * The Center stores only paths and operation metadata. Git itself always runs
- * as a normal command on the target Agent, so the Agent remains authoritative
- * for symlink resolution, account permissions and the actual repository state.
+ * Center-side project catalog and Git worktree coordinator. The process uses
+ * exactly one persistence adapter: the in-memory map is a protocol-test
+ * adapter, while PostgreSQL is authoritative in production. The Center stores
+ * only paths and operation metadata. Git itself always runs as a normal
+ * command on the target Agent, so the Agent remains authoritative for symlink
+ * resolution, account permissions and the actual repository state.
  */
 @Service
 public final class ProjectService {

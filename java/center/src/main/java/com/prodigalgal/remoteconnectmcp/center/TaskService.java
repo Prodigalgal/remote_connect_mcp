@@ -32,9 +32,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * Durable-task semantics for the migration slice. The state adapter is still
- * in memory; the public contract and lease/idempotency rules are intentionally
- * the same shape as the PostgreSQL implementation that follows.
+ * Durable-task facade with one selected storage adapter per Center process.
+ * Memory mode is only for protocol tests and local development; when a JDBC
+ * adapter is present PostgreSQL is the sole source of truth for task state,
+ * leases, attempts, output cursors and artifacts. The two adapters are never
+ * dual-written.
  */
 @Service
 public final class TaskService {

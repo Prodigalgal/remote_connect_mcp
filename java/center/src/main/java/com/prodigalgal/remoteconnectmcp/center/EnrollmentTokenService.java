@@ -16,7 +16,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** Issues and atomically consumes one-time Agent enrollment credentials. */
+/**
+ * Issues and atomically consumes one-time Agent enrollment credentials. Memory
+ * storage is test-only; PostgreSQL is the sole production authority and is
+ * selected for the whole Center process.
+ */
 @Service
 public final class EnrollmentTokenService {
     public static final long MIN_EXPIRY_SECONDS = 60 * 60;

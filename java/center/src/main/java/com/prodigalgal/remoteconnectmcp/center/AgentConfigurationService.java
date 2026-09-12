@@ -12,9 +12,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Stores and versions non-secret Agent runtime settings.  The memory adapter
+ * Stores and versions non-secret Agent runtime settings. The memory adapter
  * keeps protocol tests independent of PostgreSQL; production uses the
- * Liquibase-added columns on rcm_agent and updates them under a row lock.
+ * Liquibase-added columns on rcm_agent and updates them under a row lock. A
+ * process selects one adapter and never mirrors settings into both stores.
  */
 @Service
 final class AgentConfigurationService {

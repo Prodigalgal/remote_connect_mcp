@@ -37,6 +37,8 @@ spec:
           env:
             - name: RCM_CENTER_PERSISTENCE_MODE
               value: postgres
+            - name: RCM_CENTER_REQUIRE_DURABLE_STORAGE
+              value: "true"
             - name: RCM_CENTER_LIQUIBASE_ENABLED
               value: "false"
             - name: RCM_CENTER_VERSION

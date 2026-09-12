@@ -33,9 +33,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Center-owned, canary-first Agent release orchestration. The memory adapter
- * keeps protocol tests self-contained; PostgreSQL mode uses the same state
- * machine and stores campaign/target rows transactionally.
+ * Center-owned, canary-first Agent release orchestration. The process selects
+ * one adapter: memory keeps protocol tests self-contained, while PostgreSQL
+ * stores campaign/target rows transactionally in production. There is no
+ * dual-write path.
  */
 @Service
 public final class UpgradeService {

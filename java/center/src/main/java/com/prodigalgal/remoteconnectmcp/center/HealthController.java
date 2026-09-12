@@ -18,15 +18,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class HealthController {
     private final String version;
     private final String persistenceMode;
+    private final boolean requireDurableStorage;
     private final JdbcTemplate jdbc;
     private final CenterAsyncExecutor async;
 
     public HealthController(@Value("${rcm.version:dev}") String version,
                             @Value("${rcm.persistence.mode:memory}") String persistenceMode,
+                            @Value("${rcm.persistence.require-durable:false}") boolean requireDurableStorage,
                             ObjectProvider<JdbcTemplate> jdbcProvider,
                             CenterAsyncExecutor async) {
         this.version = version;
         this.persistenceMode = persistenceMode;
+        this.requireDurableStorage = requireDurableStorage;
         this.jdbc = jdbcProvider.getIfAvailable();
         this.async = async;
     }
@@ -44,6 +47,10 @@ public class HealthController {
     }
 
     private ResponseEntity<Map<String, Object>> readySync() {
+        if (requireDurableStorage && !"postgres".equalsIgnoreCase(persistenceMode)) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("status", "not_ready", "reason", "durable PostgreSQL persistence is required"));
+        }
         if ("postgres".equalsIgnoreCase(persistenceMode)) {
             if (jdbc == null) {
                 return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)

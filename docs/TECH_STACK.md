@@ -18,7 +18,7 @@
 ### 当前实施状态（2026-09-11）
 
 - 已建立 `java/` Gradle 多模块实现：`protocol`、`center`、`agent`；协议记录、边界校验、异步 MCP、健康/版本探针和注册/长轮询兼容接口均可测试，并已锁定 Liquibase/PostgreSQL 依赖；
-- Center 注册表与任务队列已支持内存和 PostgreSQL 两种适配路径：`postgres` 模式通过独立 Liquibase changelog 管理 Agent、任务、输出游标和有界工件；
+- Center 注册表与任务队列已支持内存和 PostgreSQL 两种适配路径：`postgres` 模式通过独立 Liquibase changelog 管理 Agent、任务、输出游标和有界工件；一个进程只选择其中一种，生产只允许 PostgreSQL，内存适配器仅用于协议回归和开发。
 - Java Agent 已有可执行自包含 JAR、原子身份文件、一次性注册换取日常 Token、断线指数退避、401 自动重新注册、虚拟线程命令执行、有界磁盘 spool/异步上传与无超时进程恢复、用户会话 Desktop IPC 伴侣和 Browser Worker 桥接；
 - 已建立 `web/` React/Vite 控制台并接入 Admin API 的机器/任务分页读取、取消和真实升级活动，Admin Token 只驻留当前 React 内存；
 - Java Center/Agent 尚未替换现有 Go 运行组件，但 Java v1 已实现注册、心跳、异步任务、工件、项目/worktree 和 Center 控制的升级编排；升级活动在 PostgreSQL 模式通过 Liquibase `005-upgrades`、`006-agent-config` 和 `007-projects-worktrees` 持久化，`008-agent-name-unique` 约束并发注册的同名身份；Agent 侧普通任务输出还受单任务与聚合 spool 双重上限保护；
@@ -72,6 +72,9 @@ MCP 层使用官方 Java SDK 的 Streamable HTTP 传输，固定挂载 `/mcp`。
 
 ### 3.2 持久化和一致性
 
+- **单一权威存储**：生产 Center 只使用 PostgreSQL + Liquibase。Go 的 JSON/PVC Store 是迁移前兼容基线，Java 的 memory adapter 是测试/开发替身；它们不会与 PostgreSQL 同时启用，也不会双写。
+- **内存只做加速，不做事实来源**：连接唤醒表、任务等待条件和短生命周期请求状态可以留在进程内存；进程重启后从 PostgreSQL 重建。不得把任务租约、Attempt、Token 摘要、输出游标、工件或升级状态只放在缓存中。
+- **不新增 Redis/Kafka 作为第二状态层**：当前规模优先使用 PostgreSQL 行锁、共享缓冲区、Hikari 连接池和 `LISTEN/NOTIFY`；确有读热点时采用有界、可失效的本地 L1，并以数据库版本/事件失效，缓存丢失不影响正确性。
 - 任务创建、幂等键、租约领取、Attempt、状态机和输出游标全部由 PostgreSQL 事务保证；
 - 使用 `SELECT ... FOR UPDATE SKIP LOCKED` 或等价 CAS 语句实现多 Agent 领取，Center 副本增加前不引入额外消息队列；
 - `LISTEN/NOTIFY` 只作为唤醒提示，不能替代数据库状态，断线后仍能靠版本/游标补偿；

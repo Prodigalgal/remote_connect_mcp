@@ -15,6 +15,9 @@ Before a production sync:
    tokens and PostgreSQL connection values. Do not store an Enrollment Token
    in the Center Secret; issue one per machine through the Admin API and use it
    only during that Agent registration.
+   The base also enables `RCM_CENTER_REQUIRE_DURABLE_STORAGE=true`; keep this
+   guard in the private overlay so an accidental memory-mode deployment stays
+   unready instead of serving traffic without durable state.
 4. Render and inspect the result before applying:
 
    ```sh

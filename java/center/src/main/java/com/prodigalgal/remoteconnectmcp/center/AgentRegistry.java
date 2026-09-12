@@ -29,8 +29,9 @@ import org.springframework.stereotype.Service;
 /**
  * Registry facade. Authentication and protocol validation stay independent of
  * the storage adapter. Memory mode is retained for protocol tests; when
- * PostgreSQL mode is enabled, registration and heartbeats are written to the
- * Liquibase-managed agent table.
+ * PostgreSQL mode is enabled, registration, identity and heartbeat state are
+ * written to the Liquibase-managed agent table. A Center process selects one
+ * adapter and never dual-writes memory and PostgreSQL.
  */
 @Service
 public final class AgentRegistry {

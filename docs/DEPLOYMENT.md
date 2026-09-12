@@ -59,6 +59,7 @@ Linux 完整 tar 包的根目录包含 `install-java-agent.sh` 和匹配版本�
 
 ```text
 RCM_CENTER_PERSISTENCE_MODE=postgres
+RCM_CENTER_REQUIRE_DURABLE_STORAGE=true
 RCM_CENTER_LIQUIBASE_ENABLED=false
 RCM_CENTER_DATABASE_URL=jdbc:postgresql://<host>:5432/remote_connect_mcp
 RCM_CENTER_DATABASE_USERNAME=<user>
@@ -116,6 +117,11 @@ rcm-center --migrate
 ```
 
 该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`；仓库不使用 Flyway。
+
+Java Center 的 memory 模式只用于协议回归/开发。生产必须同时设置
+`RCM_CENTER_PERSISTENCE_MODE=postgres` 和
+`RCM_CENTER_REQUIRE_DURABLE_STORAGE=true`；后者会让 `/api/v1/readyz` 在模式错误时返回
+503，即使进程本身仍能响应 `/api/v1/healthz`，从而阻止错误实例被 Service 接收流量。
 
 从旧 Go 文件存储切换时，先停止旧 Center 并完整备份其状态目录，再在已完成 Liquibase 的空 PostgreSQL 库上执行：
 

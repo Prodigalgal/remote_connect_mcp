@@ -112,6 +112,23 @@ if [[ -d "$base" ]]; then
     fail 'java-center base must reference the external remote-connect-mcp-java-secrets Secret'
   secret_ref_count="$(grep -R -n -I -E -- '^[[:space:]]*secretKeyRef:' "$base" | wc -l | tr -d ' ')"
   ((secret_ref_count >= 5)) || fail "java-center base has too few Secret references: $secret_ref_count"
+  grep -R -q -I -E -- 'name:[[:space:]]*RCM_CENTER_REQUIRE_DURABLE_STORAGE[[:space:]]*$' "$base" || \
+    fail 'java-center base must define the durable-storage readiness guard'
+fi
+
+durable_guard_block="$(
+  {
+    grep -R -n -I -A1 -- 'name:[[:space:]]*RCM_CENTER_REQUIRE_DURABLE_STORAGE[[:space:]]*$' "$overlay" || true
+    if [[ -d "$base" ]]; then
+      grep -R -n -I -A1 -- 'name:[[:space:]]*RCM_CENTER_REQUIRE_DURABLE_STORAGE[[:space:]]*$' "$base" || true
+    fi
+  }
+)"
+if [[ -z "$durable_guard_block" ]]; then
+  fail 'overlay/base must define RCM_CENTER_REQUIRE_DURABLE_STORAGE'
+fi
+if ! printf '%s\n' "$durable_guard_block" | grep -q -E -- 'value:[[:space:]]*"?true"?[[:space:]]*$'; then
+  fail 'RCM_CENTER_REQUIRE_DURABLE_STORAGE must be true in the overlay/base'
 fi
 
 # A Center version must be explicit and must not retain the public template
