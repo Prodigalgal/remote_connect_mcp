@@ -47,7 +47,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: center
-          image: ghcr.io/prodigalgal/remote-connect-mcp-center-java:v0.1.0
+          image: ghcr.io/prodigalgal/remote-connect-mcp-center-java:v0.1.1
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -60,7 +60,7 @@ spec:
             - name: RCM_CENTER_LIQUIBASE_ENABLED
               value: "false"
             - name: RCM_CENTER_VERSION
-              value: v0.1.0
+              value: v0.1.1
             - name: RCM_CENTER_AGENT_UPGRADES_ENABLED
               value: "true"
             - name: RCM_CENTER_RELEASE_BASE_URL

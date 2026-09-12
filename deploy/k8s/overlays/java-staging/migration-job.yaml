@@ -46,7 +46,7 @@ spec:
               memory: 64Mi
       containers:
         - name: liquibase
-          image: ghcr.io/prodigalgal/remote-connect-mcp-center-java:v0.1.0
+          image: ghcr.io/prodigalgal/remote-connect-mcp-center-java:v0.1.1
           imagePullPolicy: IfNotPresent
           command: ["/opt/rcm-center/rcm-center", "--migrate"]
           env:
