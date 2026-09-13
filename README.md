@@ -41,7 +41,14 @@ Center / MCP Gateway / Task Store / Web Console
 | Web 控制台 | `https://remote-connect-mcp-console.example.invalid/console/` |
 | Agent 注册与任务通道 | `https://remote-connect-mcp-agent.example.invalid` |
 
-Center 有公网 K8S 入口，因此不使用 Cloudflare Tunnel。Cloudflare 仅作为权威 DNS，三个记录均为 DNS-only，直接指向同一个 Envoy Gateway 和 Center Service，不经过 Cloudflare 代理、CDN 或 WAF。
+域名采用“先利旧、再新增”的兼容策略：
+
+| 类型 | 命名约定 | 用途 |
+| --- | --- | --- |
+| 生产主入口（利旧） | `remote-connect-mcp-gateway.*`、`remote-connect-mcp-agent.*`、`remote-connect-mcp-console.*` | 继续承载 MCP、Agent 通道和控制台；Java Center 切换时不要求 ChatGPT 或 Agent 修改 URL |
+| 可选 Java 版本入口（新增） | `remote-connect-mcp-java-*.*` | 只有需要独立灰度、蓝绿或版本并行时才创建；域名显式包含 `java`，由私有部署 overlay 注入 |
+
+Center 有公网 K8S 入口，因此不使用 Cloudflare Tunnel。Cloudflare 仅作为权威 DNS，生产主入口直接指向 Envoy Gateway 和 Java Center Service，不经过 Cloudflare 代理、CDN 或 WAF。Agent 只主动连接 Center，不监听入站端口，因此 Agent 宿主机不需要 DNS 记录、Tunnel 或入站防火墙规则。公开仓库只保留 `example.invalid` 模板；真实域名和 DNS 记录由私有 GitOps/Cloudflare 配置维护。
 
 ## 为什么命令不会再卡住
 

@@ -13,7 +13,10 @@ spec:
       namespace: gateway-system
       sectionName: https
   hostnames:
-    - remote-connect-mcp-mcp.example.invalid
+    # Keep the established gateway alias for MCP clients.  Production overlays
+    # may reuse the existing remote-connect-mcp-* records without creating a
+    # second DNS name just because the implementation is Java.
+    - remote-connect-mcp-gateway.example.invalid
     - remote-connect-mcp-agent.example.invalid
   rules:
     - matches:
