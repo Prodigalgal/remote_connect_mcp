@@ -135,17 +135,29 @@ final class AgentUpgradeHelper {
             throw new IOException("Agent archive extraction failed", exception);
         }
         var executableName = target.getFileName().toString();
-        if (names.stream().noneMatch(value -> value.equalsIgnoreCase(executableName))) {
+        var executableEntries = names.stream()
+                .filter(value -> isExecutableBundleFile(value, executableName))
+                .toList();
+        if (executableEntries.isEmpty()) {
             deleteTree(extraction);
-            throw new IOException("Agent archive does not contain " + executableName);
+            throw new IOException("Agent archive does not contain " + executableName + " or its canonical rcm-agent name");
+        }
+        if (executableEntries.size() > 1) {
+            deleteTree(extraction);
+            throw new IOException("Agent archive contains multiple Agent executables");
         }
         names.sort(String.CASE_INSENSITIVE_ORDER);
         var manifest = stateDir.resolve("upgrade-files-" + safeComponent(config.campaignId()) + ".txt");
         var targetDir = target.getParent();
         var manifestLines = new java.util.ArrayList<String>();
         for (var name : names) {
-            var current = targetDir.resolve(name).normalize();
-            manifestLines.add((Files.exists(current) ? "1" : "0") + "\t" + name);
+            var installedName = installedFileName(name, executableName);
+            var current = targetDir.resolve(installedName).normalize();
+            // Persist the installed filename, not the archive filename.  This
+            // matters when a Java Native Image archive uses canonical
+            // `rcm-agent` but the existing service still points at the legacy
+            // `remote-connect-mcp-agent` basename.
+            manifestLines.add((Files.exists(current) ? "1" : "0") + "\t" + installedName);
         }
         try {
             Files.write(manifest, manifestLines, StandardCharsets.US_ASCII, StandardOpenOption.CREATE,
@@ -156,7 +168,8 @@ final class AgentUpgradeHelper {
         }
         try {
             for (var name : names) {
-                var current = targetDir.resolve(name).normalize();
+                var installedName = installedFileName(name, executableName);
+                var current = targetDir.resolve(installedName).normalize();
                 var backup = current.resolveSibling(current.getFileName() + ".previous");
                 Files.deleteIfExists(backup);
                 if (Files.exists(current)) {
@@ -269,9 +282,30 @@ final class AgentUpgradeHelper {
     }
 
     private static boolean isAgentBundleFile(String name, String executableName) {
-        if (name.equalsIgnoreCase(executableName)) return true;
+        if (isExecutableBundleFile(name, executableName)) return true;
         var lower = name.toLowerCase(Locale.ROOT);
         return lower.endsWith(".dll") || lower.endsWith(".so") || lower.matches(".*\\.so\\.[0-9]+(?:\\.[0-9]+)*");
+    }
+
+    private static boolean isExecutableBundleFile(String name, String targetName) {
+        if (name.equalsIgnoreCase(targetName)) return true;
+        return isLegacyTargetName(targetName) && name.equalsIgnoreCase(canonicalExecutableName());
+    }
+
+    private static String installedFileName(String archiveName, String targetName) {
+        if (isLegacyTargetName(targetName) && archiveName.equalsIgnoreCase(canonicalExecutableName())) {
+            return targetName;
+        }
+        return archiveName;
+    }
+
+    private static boolean isLegacyTargetName(String targetName) {
+        var lower = targetName.toLowerCase(Locale.ROOT);
+        return lower.equals("remote-connect-mcp-agent") || lower.equals("remote-connect-mcp-agent.exe");
+    }
+
+    private static String canonicalExecutableName() {
+        return isWindows() ? "rcm-agent.exe" : "rcm-agent";
     }
 
     private static void deleteTree(Path root) {

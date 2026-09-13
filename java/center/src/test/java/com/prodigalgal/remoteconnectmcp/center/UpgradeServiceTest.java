@@ -74,6 +74,25 @@ class UpgradeServiceTest {
     }
 
     @Test
+    void ignoresLateAgentStatusAfterCampaignCancellation() {
+        var registry = AgentRegistry.forTest("enroll");
+        var registration = registry.register(registration("one", "v1.0.0"), "enroll");
+        var tasks = new TaskService(registry);
+        var upgrades = new UpgradeService(registry, tasks, new UpgradeConfig(true, ""));
+        var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                List.of(registration.machineId()), Map.of("linux/amd64",
+                        new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
+        upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command")));
+        assertEquals(UpgradeService.CANCELED, upgrades.control(campaign.id(), "cancel").status());
+
+        var late = upgrades.updateStatus(registration.machineId(),
+                new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null));
+
+        assertEquals(UpgradeService.CANCELED, late.status());
+        assertEquals(UpgradeService.OFFERED, late.targets().getFirst().status());
+    }
+
+    @Test
     void rejectsNonHttpsOrBadDigestArtifactsBeforeCreatingCampaign() {
         var registry = AgentRegistry.forTest("enroll");
         var registration = registry.register(registration("one", "v1.0.0"), "enroll");

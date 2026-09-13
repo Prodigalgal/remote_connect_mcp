@@ -54,7 +54,14 @@ public final class UpgradeService {
     private static final Pattern SHA256 = Pattern.compile("(?i)[0-9a-f]{64}");
     private static final Pattern SAFE_COMPONENT = Pattern.compile("[A-Za-z0-9._-]{1,180}");
     private static final Duration ONLINE_WINDOW = Duration.ofSeconds(45);
-    private static final Duration OFFER_LEASE = Duration.ofSeconds(30);
+    // A Native Image helper has to stop the current service, swap the bundle,
+    // and start the replacement before the next heartbeat.  Thirty seconds is
+    // short enough for a normal poll to re-offer the same campaign while the
+    // first helper is still restarting, which can launch two helpers and race
+    // the service manager.  Keep the lease bounded, but long enough to cover a
+    // slow disk/network restart; a failed target can still be resumed from the
+    // console after the lease expires.
+    private static final Duration OFFER_LEASE = Duration.ofMinutes(5);
     private static final Duration STATUS_LEASE = Duration.ofMinutes(15);
     private static final Duration DOWNLOAD_TIMEOUT = Duration.ofSeconds(30);
 
@@ -236,6 +243,7 @@ public final class UpgradeService {
         memoryLock.lock();
         try {
             var campaign = requiredMemory(id);
+            if (CANCELED.equals(campaign.status)) return view(campaign);
             var target = campaign.targets.stream().filter(value -> value.machineId.equals(machineId)).findFirst()
                     .orElseThrow(() -> new IllegalArgumentException("machine is not part of the upgrade campaign"));
             applyStatus(campaign, target, status, request.error(), Instant.now());
@@ -381,6 +389,12 @@ public final class UpgradeService {
 
     private UpgradeCampaignView updateStatusJdbc(String machineId, String id, String status, String error) {
         var campaign = requiredJdbc(id);
+        // A late status report from an Agent that was already offered an
+        // upgrade must not mutate a campaign the operator canceled while the
+        // helper was restarting.  Return the authoritative terminal snapshot;
+        // the conditional SQL below also protects against a stale transaction
+        // that loaded the campaign before the cancel committed.
+        if (CANCELED.equals(campaign.status)) return view(campaign);
         var target = target(campaign, machineId);
         if (target == null) throw new IllegalArgumentException("machine is not part of the upgrade campaign");
         applyStatus(campaign, target, status, error, Instant.now());
@@ -404,15 +418,29 @@ public final class UpgradeService {
 
     private void updateTargetJdbc(String campaignId, Target target) {
         jdbc.update("""
-                UPDATE rcm_upgrade_target SET status = ?, error_text = ?, attempts = ?, updated_at = ?, finished_at = ?, lease_until = ?
+                 UPDATE rcm_upgrade_target SET status = ?, error_text = ?, attempts = ?, updated_at = ?, finished_at = ?, lease_until = ?
                  WHERE campaign_id = ? AND agent_id = ?
+                   AND EXISTS (
+                       SELECT 1 FROM rcm_upgrade_campaign c
+                        WHERE c.campaign_id = ? AND c.status <> ?
+                   )
                 """, target.status, target.error, target.attempts, timestamp(target.updatedAt), timestamp(target.finishedAt),
-                timestamp(target.leaseUntil), campaignId, target.machineId);
+                timestamp(target.leaseUntil), campaignId, target.machineId, campaignId, CANCELED);
     }
 
     private void updateCampaignJdbc(Campaign campaign) {
-        jdbc.update("UPDATE rcm_upgrade_campaign SET status = ?, active_limit = ?, updated_at = ?, finished_at = ? WHERE campaign_id = ?",
-                campaign.status, campaign.activeLimit, timestamp(campaign.updatedAt), timestamp(campaign.finishedAt), campaign.id);
+        // Do not let a stale poll/status transaction revive a terminal
+        // campaign after an operator action.  The incoming terminal state is
+        // still allowed to win (for example, the transaction that completes a
+        // campaign), while running/paused snapshots cannot overwrite either
+        // completed or canceled rows.
+        jdbc.update("""
+                UPDATE rcm_upgrade_campaign
+                   SET status = ?, active_limit = ?, updated_at = ?, finished_at = ?
+                 WHERE campaign_id = ?
+                   AND (status NOT IN (?, ?) OR ? IN (?, ?))
+                """, campaign.status, campaign.activeLimit, timestamp(campaign.updatedAt), timestamp(campaign.finishedAt), campaign.id,
+                COMPLETED, CANCELED, campaign.status, COMPLETED, CANCELED);
     }
 
     private Campaign loadActiveJdbc() {

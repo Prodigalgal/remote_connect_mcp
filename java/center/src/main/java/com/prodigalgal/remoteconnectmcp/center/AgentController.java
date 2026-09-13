@@ -1,5 +1,7 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
+import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
+import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
@@ -29,6 +31,7 @@ import java.time.Duration;
 public final class AgentController {
     private static final int MAX_OUTPUT_REQUEST_BASE64 = 256 * 1024;
     private static final int MAX_ARTIFACT_REQUEST_BASE64 = 12 * 1024 * 1024;
+    private static final int MAX_AGENT_METADATA_HEADER = 16 * 1024;
     private static final long MAX_LONG_POLL_MS = 25_000L;
     private final AgentRegistry registry;
     private final TaskService tasks;
@@ -66,11 +69,12 @@ public final class AgentController {
 
     @PostMapping("/poll")
     public CompletableFuture<ResponseEntity<?>> poll(@RequestHeader(value = "Authorization", required = false) String authorization,
-                                                     @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
-                                                     @RequestBody(required = false) PollRequest request,
-                                                     @RequestParam(value = "wait_ms", defaultValue = "0") long waitMs) {
+                                                      @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
+                                                      @RequestHeader(value = "X-Agent-Metadata", required = false) String metadataHeader,
+                                                      @RequestBody(required = false) PollRequest request,
+                                                      @RequestParam(value = "wait_ms", defaultValue = "0") long waitMs) {
         return execute(() -> {
-            var pollRequest = request == null ? new PollRequest(java.util.List.of(), 0, java.util.List.of()) : request;
+            var pollRequest = withHeaderMetadata(request, metadataHeader);
             var normalizedWait = normalizeLongPoll(waitMs);
             var response = pollUntilChange(machineId, bearerValue(authorization), pollRequest, normalizedWait);
             if (normalizedWait > 0 && wakes != null) {
@@ -78,6 +82,31 @@ public final class AgentController {
             }
             return ResponseEntity.ok(response);
         });
+    }
+
+    /**
+     * The Go Agent sends its heartbeat metadata in an optional base64url
+     * header so it can talk to older Centers whose JSON decoder only knows the
+     * original PollRequest fields.  Decode it at the protocol boundary and
+     * carry it through the normal JDBC heartbeat path.  Java Agents may send
+     * the metadata in the JSON body; that body remains authoritative when it
+     * is present.
+     */
+    static PollRequest withHeaderMetadata(PollRequest request, String metadataHeader) {
+        var base = request == null ? new PollRequest(java.util.List.of(), 0, java.util.List.of()) : request;
+        if (base.metadata() != null || metadataHeader == null || metadataHeader.isBlank()) return base;
+        var encoded = metadataHeader.trim();
+        if (encoded.length() > MAX_AGENT_METADATA_HEADER) {
+            throw new IllegalArgumentException("X-Agent-Metadata header is too large");
+        }
+        try {
+            var metadata = JsonCodec.read(Base64.getUrlDecoder().decode(encoded), AgentMetadata.class);
+            ProtocolValidation.validateMetadata(metadata);
+            return new PollRequest(base.runningTaskIds(), base.availableSlots(), base.availableCapabilities(),
+                    metadata, base.configGeneration());
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("invalid X-Agent-Metadata header", exception);
+        }
     }
 
     private PollResponse pollUntilChange(String machineId, String token, PollRequest request, long waitMs)
