@@ -17,9 +17,10 @@ public class RemoteConnectCenterApplication {
             // server; DatabaseConfiguration runs Liquibase during context
             // creation and closing the context exits the one-shot job.
             var migrationArgs = Arrays.copyOfRange(args, 1, args.length);
-            var bootArgs = new String[migrationArgs.length + 1];
+            var bootArgs = new String[migrationArgs.length + 2];
             bootArgs[0] = "--spring.main.web-application-type=none";
-            System.arraycopy(migrationArgs, 0, bootArgs, 1, migrationArgs.length);
+            bootArgs[1] = "--spring.profiles.active=migrate";
+            System.arraycopy(migrationArgs, 0, bootArgs, 2, migrationArgs.length);
             try (var context = SpringApplication.run(RemoteConnectCenterApplication.class, bootArgs)) {
                 // Liquibase has completed successfully when the context opens.
             }
