@@ -16,7 +16,7 @@ Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统
 
 完整的目标架构、Desktop/Browser Agent、项目注册、worktree、长连接和热更新边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
-Java/React 迁移已经进入协议与可靠性实现阶段：`java/` 提供 Java 25 多模块 Center/Agent、异步 MCP、事务任务/输出/工件适配、桌面和 Browser Worker 入口，`web/` 提供独立 React/Vite 控制台并可用 Admin Token 读取 Center API。Java Center 的持久化路线固定为 PostgreSQL + Liquibase，不使用 Flyway；当前 Go Center/Agent 仍是生产基线，Java 只有在 Native Image、数据库、路由和兼容门禁全部通过后才切换。
+Java/React 迁移已完成 Center/Console 的 v0.1.15 生产切换，并正在分批替换存量 Agent：`java/` 提供 Java 25 多模块 Center/Agent、异步 MCP、事务任务/输出/工件适配、桌面和 Browser Worker 入口，`web/` 提供独立 React/Vite 控制台并可用 Admin Token 读取 Center API。Java Center 的持久化路线固定为 PostgreSQL + Liquibase，不使用 Flyway；Go Center 已缩容为 0，Go Agent 仅作为尚未上线节点的兼容/回滚基线保留。
 
 ```text
 ChatGPT Web

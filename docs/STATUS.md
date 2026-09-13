@@ -33,7 +33,7 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.15 生产发布。生�
 5. 长连接：已实现可选 WebSocket wake-only 通道、客户端指数重连和 HTTPS 长轮询；PostgreSQL 模式新增跨 Center 副本的 Agent 唤醒与任务等待 `LISTEN/NOTIFY` 桥接（best-effort，丢失时由请求截止时间和下一次显式读取补偿）；仍需在真实反向代理/多副本环境完成灰度、序列号关联和故障演练，QUIC 尚未实现。
 6. Project Registry/Git worktree：已实现按 Agent 归属的项目注册、项目根/仓库路径边界、异步 `git worktree add/remove`、幂等键和项目/worktree 任务 cwd 解析；Center 不读取仓库内容，Agent 仍执行最终真实路径与权限校验。提交/差异审阅、显式合并、实际目标机 Git/权限回归仍待补齐。
 7. 控制台：基础管理流程、项目/worktree、全局搜索/基础筛选和有界任务输出查看可用，实时推送、审计详情和无障碍/视觉回归门禁尚未达到生产级完整度。
-8. 可观测性：Java Center/Go 基线均提供 Admin 鉴权的有界 `/metrics` 和脱敏日志约定，但还没有在集群接入告警规则、SLO、集中日志和升级失败通知。
+8. 可观测性：Java Center/Go 基线均提供 Admin 鉴权的有界 `/metrics` 和脱敏日志约定；生产已通过私有 GitOps 接入 Prometheus ServiceMonitor 与 Center/数据库/Agent/升级告警。集中日志、SLO 面板和升级失败通知仍待补齐。
 
 ## 当前生产阻塞（已用只读探针确认）
 
