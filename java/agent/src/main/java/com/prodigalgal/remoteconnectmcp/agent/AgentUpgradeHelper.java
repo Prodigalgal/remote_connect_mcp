@@ -380,8 +380,14 @@ final class AgentUpgradeHelper {
         var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
         while (true) {
             var process = new ProcessBuilder("systemctl", "is-active", service).redirectErrorStream(true).start();
-            var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
-            if (process.waitFor(5, TimeUnit.SECONDS) && expected.equals(output)) return;
+            var finished = process.waitFor(5, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                process.waitFor(5, TimeUnit.SECONDS);
+            } else {
+                var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+                if (expected.equals(output)) return;
+            }
             if (System.nanoTime() >= deadline) throw new IOException("service " + service + " did not become " + expected);
             Thread.sleep(250L);
         }
@@ -391,8 +397,14 @@ final class AgentUpgradeHelper {
         var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
         while (true) {
             var process = new ProcessBuilder("sc.exe", "query", service).redirectErrorStream(true).start();
-            var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            if (process.waitFor(5, TimeUnit.SECONDS) && (output.contains("STOPPED") || output.contains("1060"))) return;
+            var finished = process.waitFor(5, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                process.waitFor(5, TimeUnit.SECONDS);
+            } else {
+                var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                if (output.contains("STOPPED") || output.contains("1060")) return;
+            }
             if (System.nanoTime() >= deadline) throw new IOException("service " + service + " did not become stopped");
             Thread.sleep(250L);
         }
