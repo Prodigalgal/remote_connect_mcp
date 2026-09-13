@@ -147,6 +147,20 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: remote_connect_mcp
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d remote_connect_mcp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -207,6 +221,19 @@ jobs:
           bash scripts/verify-native-bundle.sh "${agent_archive}"
           tar -C "out" -czf "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" "${TARGET_ARCH}"
           sha256sum "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" > "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz.sha256"
+      - name: Native Liquibase migration smoke
+        shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          RCM_CENTER_PERSISTENCE_MODE: postgres
+          RCM_CENTER_REQUIRE_DURABLE_STORAGE: "false"
+          RCM_CENTER_LIQUIBASE_ENABLED: "true"
+          RCM_CENTER_DATABASE_URL: jdbc:postgresql://127.0.0.1:5432/remote_connect_mcp
+          RCM_CENTER_DATABASE_USERNAME: postgres
+          RCM_CENTER_DATABASE_PASSWORD: postgres
+        run: |
+          set -euo pipefail
+          timeout 120s "out/${TARGET_ARCH}/center/rcm-center" --migrate
       - name: Generate Linux Native SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
