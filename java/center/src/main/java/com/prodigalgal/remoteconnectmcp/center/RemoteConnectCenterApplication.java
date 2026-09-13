@@ -1,29 +1,18 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import liquibase.integration.spring.SpringLiquibase;
 import org.springframework.boot.SpringApplication;
+import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import java.util.Arrays;
 import java.nio.file.Path;
 
 @SpringBootApplication
 public class RemoteConnectCenterApplication {
     public static void main(String[] args) {
         if (args.length > 0 && "--migrate".equals(args[0])) {
-            // Native Image only emits an AOT initializer for the configured
-            // application main class.  Starting a second, ad-hoc
-            // SpringApplicationBuilder here makes the native executable look
-            // for a LiquibaseMigrationApplication initializer that does not
-            // exist. Reuse this AOT-compiled application and disable the web
-            // server; DatabaseConfiguration runs Liquibase during context
-            // creation and closing the context exits the one-shot job.
-            var migrationArgs = Arrays.copyOfRange(args, 1, args.length);
-            var bootArgs = new String[migrationArgs.length + 2];
-            bootArgs[0] = "--spring.main.web-application-type=none";
-            bootArgs[1] = "--spring.profiles.active=migrate";
-            System.arraycopy(migrationArgs, 0, bootArgs, 2, migrationArgs.length);
-            try (var context = SpringApplication.run(RemoteConnectCenterApplication.class, bootArgs)) {
-                // Liquibase has completed successfully when the context opens.
-            }
+            System.exit(runMigration());
             return;
         }
         if (args.length == 2 && "--import-go".equals(args[0])) {
@@ -31,5 +20,66 @@ public class RemoteConnectCenterApplication {
             return;
         }
         SpringApplication.run(RemoteConnectCenterApplication.class, args);
+    }
+
+    /**
+     * Run the schema migration without creating a Spring application context.
+     * The normal Center context includes Servlet/WebSocket infrastructure which
+     * is not valid in a one-shot Native Image process.  Keeping this path
+     * explicit also makes the Kubernetes migration Job independent of the HTTP
+     * server lifecycle.
+     */
+    private static int runMigration() {
+        var mode = setting("RCM_CENTER_PERSISTENCE_MODE", "").trim();
+        if (!"postgres".equalsIgnoreCase(mode)) {
+            System.err.println("Liquibase migration requires RCM_CENTER_PERSISTENCE_MODE=postgres");
+            return 2;
+        }
+        try {
+            var config = new HikariConfig();
+            config.setJdbcUrl(requiredSetting("RCM_CENTER_DATABASE_URL"));
+            config.setUsername(requiredSetting("RCM_CENTER_DATABASE_USERNAME"));
+            config.setPassword(setting("RCM_CENTER_DATABASE_PASSWORD", ""));
+            config.setPoolName("rcm-migration");
+            config.setMaximumPoolSize(2);
+            config.setMinimumIdle(0);
+            config.setConnectionTimeout(5000);
+            config.setInitializationFailTimeout(10000);
+            try (var dataSource = new HikariDataSource(config)) {
+                var liquibase = new SpringLiquibase();
+                liquibase.setDataSource(dataSource);
+                liquibase.setResourceLoader(new DefaultResourceLoader(RemoteConnectCenterApplication.class.getClassLoader()));
+                liquibase.setChangeLog("classpath:db/changelog/db.changelog-master.yaml");
+                liquibase.setContexts("postgres");
+                liquibase.setShouldRun(Boolean.parseBoolean(setting("RCM_CENTER_LIQUIBASE_ENABLED", "true")));
+                liquibase.afterPropertiesSet();
+                return 0;
+            }
+        } catch (Exception exception) {
+            var message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            System.err.println("Liquibase migration failed: " + redact(message));
+            return 1;
+        }
+    }
+
+    private static String requiredSetting(String key) {
+        var value = setting(key, "").trim();
+        if (value.isEmpty()) {
+            throw new IllegalStateException(key + " is required");
+        }
+        return value;
+    }
+
+    private static String setting(String key, String defaultValue) {
+        var property = System.getProperty(key);
+        if (property != null && !property.isBlank()) {
+            return property;
+        }
+        var environment = System.getenv(key);
+        return environment == null ? defaultValue : environment;
+    }
+
+    private static String redact(String message) {
+        return message.replaceAll("(?i)(password|passwd|token|secret)=([^,;\\s]+)", "$1=<redacted>");
     }
 }
