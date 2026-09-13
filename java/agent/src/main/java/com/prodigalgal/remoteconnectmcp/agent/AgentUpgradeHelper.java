@@ -349,7 +349,13 @@ final class AgentUpgradeHelper {
     private static void startRuntime(Config config) throws IOException, InterruptedException {
         var service = config.serviceName();
         if (service != null && !service.isBlank()) {
-            runServiceCommand(isWindows() ? List.of("sc.exe", "start", service) : List.of("systemctl", "--wait", "start", service), true);
+            if (isWindows()) {
+                runServiceCommand(List.of("sc.exe", "start", service), true);
+                waitWindowsServiceRunning(service);
+            } else {
+                runServiceCommand(List.of("systemctl", "start", service), true);
+                waitUnixServiceState(service, "active");
+            }
             return;
         }
         // A manually launched `--run` Agent has no service manager to restart
@@ -406,6 +412,23 @@ final class AgentUpgradeHelper {
                 if (output.contains("STOPPED") || output.contains("1060")) return;
             }
             if (System.nanoTime() >= deadline) throw new IOException("service " + service + " did not become stopped");
+            Thread.sleep(250L);
+        }
+    }
+
+    private static void waitWindowsServiceRunning(String service) throws IOException, InterruptedException {
+        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
+        while (true) {
+            var process = new ProcessBuilder("sc.exe", "query", service).redirectErrorStream(true).start();
+            var finished = process.waitFor(5, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                process.waitFor(5, TimeUnit.SECONDS);
+            } else {
+                var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                if (output.contains("RUNNING")) return;
+            }
+            if (System.nanoTime() >= deadline) throw new IOException("service " + service + " did not become running");
             Thread.sleep(250L);
         }
     }

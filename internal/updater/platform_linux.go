@@ -33,7 +33,7 @@ func startService(name string, timeout time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("systemctl start: %w: %s", err, output)
 	}
-	return verifySystemdState(name, "active")
+	return waitSystemdState(name, "active", timeout)
 }
 
 func runSystemctl(timeout time.Duration, action, name string) ([]byte, error) {
@@ -42,15 +42,12 @@ func runSystemctl(timeout time.Duration, action, name string) ([]byte, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	args := []string{}
-	// systemd supports --wait for start/restart, but not for stop.  Stop is
-	// followed by waitSystemdState below because long-polling Agents can remain
-	// in `deactivating` after the stop job is queued.
-	if action == "start" || action == "restart" {
-		args = append(args, "--wait")
-	}
-	args = append(args, action, name)
-	output, err := exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
+	// Neither stop nor start should be coupled to the lifetime of the Agent
+	// process.  Stop is followed by an explicit inactive-state wait, and start
+	// by an active-state wait.  In particular, `systemctl --wait start` can
+	// keep a transient upgrade helper alive until its timeout and then cancel
+	// the newly started service.
+	output, err := exec.CommandContext(ctx, "systemctl", action, name).CombinedOutput()
 	if ctx.Err() != nil {
 		return output, ctx.Err()
 	}
