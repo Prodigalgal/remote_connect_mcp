@@ -68,6 +68,31 @@ export type UpgradeCampaign = {
   finishedAt?: string
 }
 
+export type ReleaseAsset = {
+  os: string
+  arch: string
+  fileName: string
+  available: boolean
+  checksumAvailable: boolean
+}
+
+export type Release = {
+  version: string
+  tag: string
+  name: string
+  publishedAt?: string
+  prerelease: boolean
+  assets: ReleaseAsset[]
+}
+
+export type ReleaseCatalog = {
+  items: Release[]
+  refreshedAt?: string
+  stale: boolean
+  available: boolean
+  warning?: string
+}
+
 export type Worktree = {
   id: string
   projectId: string
@@ -288,6 +313,41 @@ function mapUpgrade(item: Record<string, unknown>): UpgradeCampaign {
 export async function listUpgrades(token: string): Promise<UpgradeCampaign[]> {
   const response = await request<{ items: Array<Record<string, unknown>> }>('/api/v1/admin/upgrades?offset=0&limit=100', token)
   return (response.items ?? []).map(mapUpgrade)
+}
+
+function mapReleaseAsset(item: Record<string, unknown>): ReleaseAsset {
+  return {
+    os: String(item.os ?? ''),
+    arch: String(item.arch ?? ''),
+    fileName: String(item.file_name ?? ''),
+    available: Boolean(item.available),
+    checksumAvailable: Boolean(item.checksum_available),
+  }
+}
+
+function mapRelease(item: Record<string, unknown>): Release {
+  return {
+    version: String(item.version ?? ''),
+    tag: String(item.tag ?? ''),
+    name: String(item.name ?? ''),
+    publishedAt: item.published_at as string | undefined,
+    prerelease: Boolean(item.prerelease),
+    assets: Array.isArray(item.assets) ? item.assets.map((value) => mapReleaseAsset(value as Record<string, unknown>)) : [],
+  }
+}
+
+export async function listReleases(token: string, includePrerelease = true): Promise<ReleaseCatalog> {
+  const response = await request<Record<string, unknown>>(
+    `/api/v1/admin/releases?limit=50&include_prerelease=${includePrerelease ? 'true' : 'false'}`,
+    token,
+  )
+  return {
+    items: Array.isArray(response.items) ? response.items.map((item) => mapRelease(item as Record<string, unknown>)) : [],
+    refreshedAt: response.refreshed_at as string | undefined,
+    stale: Boolean(response.stale),
+    available: Boolean(response.available),
+    warning: response.warning as string | undefined,
+  }
 }
 
 function mapWorktree(item: Record<string, unknown>): Worktree {

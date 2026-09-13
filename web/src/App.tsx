@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AdminApiError, cancelTask, controlUpgrade, createProjectWorktree, createTask, createUpgrade, issueEnrollment, listMachines, listProjects, listTasks, listUpgrades, readTaskArtifact, readTaskOutput, registerProject, removeProjectWorktree, waitForAdminChange, type Machine, type Project, type Task, type UpgradeCampaign } from './api'
+import { AdminApiError, cancelTask, controlUpgrade, createProjectWorktree, createTask, createUpgrade, issueEnrollment, listMachines, listProjects, listReleases, listTasks, listUpgrades, readTaskArtifact, readTaskOutput, registerProject, removeProjectWorktree, waitForAdminChange, type Machine, type Project, type ReleaseCatalog, type Task, type UpgradeCampaign } from './api'
 
 type Page = 'overview' | 'machines' | 'projects' | 'tasks' | 'enrollment' | 'upgrades' | 'settings'
 
@@ -40,6 +40,7 @@ function App() {
   const [liveProjects, setLiveProjects] = useState<Project[] | null>(null)
   const [liveTasks, setLiveTasks] = useState<Task[] | null>(null)
   const [liveUpgrades, setLiveUpgrades] = useState<UpgradeCampaign[] | null>(null)
+  const [liveReleases, setLiveReleases] = useState<ReleaseCatalog | null>(null)
   const [apiMessage, setApiMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const refreshInFlight = useRef<{ token: string; promise: Promise<void> } | null>(null)
@@ -54,6 +55,7 @@ function App() {
         setLiveProjects(null)
         setLiveTasks(null)
         setLiveUpgrades(null)
+        setLiveReleases(null)
         setApiMessage('演示数据：在“系统设置”输入 Admin Token 后加载 Center 实时数据')
         return
       }
@@ -63,16 +65,18 @@ function App() {
         // Project APIs were added in the Java Center migration. Keep the
         // console usable against the older Go compatibility Center while the
         // migration is in progress.
-        const [machines, projects, tasks, upgrades] = await Promise.all([
+        const [machines, projects, tasks, upgrades, releases] = await Promise.all([
           listMachines(normalizedToken),
           listProjects(normalizedToken).catch(() => []),
           listTasks(normalizedToken),
           listUpgrades(normalizedToken),
+          listReleases(normalizedToken).catch((): ReleaseCatalog => ({ items: [], stale: true, available: false, warning: '版本目录暂不可用' })),
         ])
         setLiveMachines(machines)
         setLiveProjects(projects)
         setLiveTasks(tasks)
         setLiveUpgrades(upgrades)
+        setLiveReleases(releases)
         setApiMessage(`已连接 Center · ${new Date().toLocaleTimeString()}`)
       } catch (error) {
         const message = error instanceof AdminApiError ? error.message : 'Center 暂时不可达'
@@ -81,6 +85,7 @@ function App() {
         setLiveProjects(null)
         setLiveTasks(null)
         setLiveUpgrades(null)
+        setLiveReleases(null)
       } finally {
         setLoading(false)
       }
@@ -176,7 +181,7 @@ function App() {
           {page === 'projects' && <Projects rows={liveProjects} machines={liveMachines ?? []} token={adminToken} onRefresh={() => void refresh()} query={search} />}
           {page === 'tasks' && <Tasks rows={liveTasks} machines={liveMachines ?? []} projects={liveProjects ?? []} adminToken={adminToken} onRefresh={() => void refresh()} query={search} />}
           {page === 'enrollment' && <Enrollment adminToken={adminToken} />}
-          {page === 'upgrades' && <Upgrades token={adminToken} rows={liveUpgrades} machines={liveMachines ?? []} onRefresh={() => void refresh()} query={search} />}
+          {page === 'upgrades' && <Upgrades token={adminToken} rows={liveUpgrades} releases={liveReleases} machines={liveMachines ?? []} onRefresh={() => void refresh()} query={search} />}
           {page === 'settings' && <Settings token={adminToken} onTokenChange={setAdminToken} onRefresh={() => void refresh()} />}
         </div>
       </main>
@@ -447,12 +452,19 @@ function Enrollment({ adminToken }: { adminToken: string }) {
   }
   return <><PageIntro kicker="SECURITY" title="注册令牌" action="生成一次性令牌" /><section className="split-grid"><div className="panel form-panel"><span className="section-kicker">ONE-TIME ENROLLMENT</span><h3>为新 Agent 生成令牌</h3><p>令牌与目标 Agent 名称绑定，注册成功一次后立即失效。</p><label>Agent 名称<input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 desktop-lab-02" /></label><label>有效期<select value={lifetime} onChange={(event) => setLifetime(event.target.value)}><option value="3600">1 小时</option><option value="21600">6 小时</option><option value="86400">1 天</option><option value="604800">7 天</option><option value="2592000">30 天</option></select></label><button className="primary full" onClick={() => void generate()} disabled={!adminToken || !name.trim()}>生成令牌</button>{issued && <div className="issued-token"><code>{issued.token}</code><div><button className="secondary" onClick={() => void copy()}>复制</button><button className="secondary" onClick={download}>下载 env</button></div></div>}{message && <p className="form-message">{message}</p>}</div><div className="panel info-panel"><span className="section-kicker">POLICY</span><h3>身份边界</h3><div className="policy-item"><span>⌁</span><div><strong>独立 Agent 身份</strong><p>同一 host_id 下的 command、desktop、browser 不共享 Token。</p></div></div><div className="policy-item"><span>◈</span><div><strong>一次性注册</strong><p>注册成功立即失效，日常通信换用独立 Agent Token。</p></div></div></div></section></>
 }
-function Upgrades({ token, rows, machines, onRefresh, query }: { token: string; rows: UpgradeCampaign[] | null; machines: Machine[]; onRefresh: () => void; query: string }) {
+function Upgrades({ token, rows, releases, machines, onRefresh, query }: { token: string; rows: UpgradeCampaign[] | null; releases: ReleaseCatalog | null; machines: Machine[]; onRefresh: () => void; query: string }) {
   const [version, setVersion] = useState('')
   const [canary, setCanary] = useState('1')
   const [batch, setBatch] = useState('3')
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState('')
+  useEffect(() => {
+    if (version || !releases?.items.length) return
+    const preferred = releases.items.find((release) => !release.prerelease && release.assets.some((asset) => asset.available && asset.checksumAvailable))
+      ?? releases.items.find((release) => release.assets.some((asset) => asset.available && asset.checksumAvailable))
+      ?? releases.items[0]
+    if (preferred) setVersion(preferred.version)
+  }, [releases, version])
   const names = Object.fromEntries(machines.map((machine) => [machine.id, machine.name]))
   const needle = query.trim().toLocaleLowerCase()
   const filteredRows = rows?.filter((campaign) => {
@@ -461,7 +473,7 @@ function Upgrades({ token, rows, machines, onRefresh, query }: { token: string; 
     return [campaign.id, campaign.version, campaign.status, ...targetText].some((value) => String(value).toLocaleLowerCase().includes(needle))
   }) ?? null
   const submit = async () => {
-    if (!version.trim()) { setMessage('请填写 Release 版本，例如 v1.3.1'); return }
+    if (!version.trim()) { setMessage('请选择一个已发布 Release 版本'); return }
     setSubmitting(true); setMessage('')
     try {
       await createUpgrade(token, { version: version.trim(), canary_count: Number(canary) || 1, batch_size: Number(batch) || 3 })
@@ -474,7 +486,7 @@ function Upgrades({ token, rows, machines, onRefresh, query }: { token: string; 
     try { await controlUpgrade(token, id, value); onRefresh() }
     catch (error) { setMessage(error instanceof Error ? error.message : '升级活动操作失败') }
   }
-  return <><PageIntro kicker="OPERATIONS" title="升级编排" action="创建升级活动" onAction={() => document.getElementById('upgrade-composer')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} /><section className="panel task-composer" id="upgrade-composer"><div><span className="section-kicker">CANARY RELEASE</span><h3>发布 Agent 版本</h3><p>Center 按目标机器平台解析 GitHub Release 资产与 SHA-256，先 canary，成功后按批次推进。</p></div><div className="composer-grid"><label>Release 版本<input value={version} onChange={(event) => setVersion(event.target.value)} placeholder="例如 v1.3.1" /></label><label>首批 canary<input type="number" min="1" value={canary} onChange={(event) => setCanary(event.target.value)} /></label><label>后续批次<input type="number" min="1" value={batch} onChange={(event) => setBatch(event.target.value)} /></label></div><div className="composer-actions"><button className="primary" onClick={() => void submit()} disabled={submitting || !token}>{submitting ? '创建中…' : '开始升级'}</button>{message && <span className="form-message">{message}</span>}</div></section><section className="upgrade-list">{!filteredRows?.length ? <div className="panel empty-ready"><div className="empty-icon">↗</div><h3>{token ? (rows?.length ? '没有匹配的升级活动' : '暂无升级活动') : '等待 Center 数据'}</h3><p>{token ? (rows?.length ? '尝试修改顶部搜索条件。' : '填写 Release 版本即可创建第一批 canary。') : '在系统设置输入 Admin Token 后加载升级活动。'}</p></div> : filteredRows.map((campaign) => { const done = campaign.targets.filter((target) => target.status === 'completed').length; const failed = campaign.targets.filter((target) => target.status === 'failed').length; const percent = campaign.targets.length ? Math.round(done * 100 / campaign.targets.length) : 0; return <article className="panel upgrade-card" key={campaign.id}><div className="upgrade-card-head"><div><span className="mono">{campaign.id}</span><h3>{campaign.version}</h3></div><div className="row"><span className={`state ${campaign.status === 'completed' ? 'good' : campaign.status === 'paused' ? 'bad' : 'accent'}`}><i />{campaign.status}</span>{campaign.status === 'paused' && <button className="secondary" onClick={() => void action(campaign.id, 'resume')}>恢复</button>}{campaign.status === 'running' && <button className="secondary" onClick={() => void action(campaign.id, 'cancel')}>取消</button>}</div></div><div className="upgrade-meta"><span>目标 <b>{campaign.targets.length}</b> 台</span><span>完成 <b>{done}</b></span>{failed > 0 && <span>失败 <b>{failed}</b></span>}<span>canary {campaign.canaryCount} · 每批 {campaign.batchSize}</span></div><div className="progress-track"><span style={{ width: `${percent}%` }} /></div><div className="task-list">{campaign.targets.map((target) => <div className="task-row" key={target.machineId}><div><strong>{names[target.machineId] ?? target.machineId}</strong><span>{target.status}{target.error ? ` · ${target.error}` : ''}</span></div><span className="mono">{target.attempts} 次</span></div>)}</div></article> })}</section></>
+  return <><PageIntro kicker="OPERATIONS" title="升级编排" action="创建升级活动" onAction={() => document.getElementById('upgrade-composer')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} /><section className="panel task-composer" id="upgrade-composer"><div><span className="section-kicker">CANARY RELEASE</span><h3>选择并发布 Agent 版本</h3><p>GitHub Actions 发布的新版本会出现在目录中。Center 按目标机器平台重新校验资产与 SHA-256，先 canary，成功后按批次推进。</p></div><div className="release-catalog-row"><label>目标 Release<select value={version} onChange={(event) => setVersion(event.target.value)} disabled={!releases?.items.length}><option value="">{releases?.items.length ? '请选择版本' : '等待版本目录'}</option>{releases?.items.map((release) => { const ready = release.assets.filter((asset) => asset.available && asset.checksumAvailable).length; return <option key={release.version} value={release.version}>{release.version}{release.prerelease ? ' · 预发布' : ''} · {ready}/{release.assets.length} 平台资产</option> })}</select></label><button className="secondary release-refresh" onClick={onRefresh} disabled={!token}>刷新目录</button></div><div className="release-catalog-meta">{releases?.refreshedAt && <span>目录刷新：{new Date(releases.refreshedAt).toLocaleString()}</span>}{releases?.stale && <span className="warning">{releases.warning || '目录为缓存数据'}</span>}{releases && !releases.items.length && <span>暂无可选 Java Release；也可以在下方手动填写已知版本。</span>}</div><details className="manual-release"><summary>高级：手动填写版本</summary><input value={version} onChange={(event) => setVersion(event.target.value)} placeholder="例如 v0.1.15" /></details><div className="composer-grid"><label>首批 canary<input type="number" min="1" value={canary} onChange={(event) => setCanary(event.target.value)} /></label><label>后续批次<input type="number" min="1" value={batch} onChange={(event) => setBatch(event.target.value)} /></label></div><div className="composer-actions"><button className="primary" onClick={() => void submit()} disabled={submitting || !token || !version.trim()}>{submitting ? '创建中…' : '开始升级'}</button>{message && <span className="form-message">{message}</span>}</div></section><section className="upgrade-list">{!filteredRows?.length ? <div className="panel empty-ready"><div className="empty-icon">↗</div><h3>{token ? (rows?.length ? '没有匹配的升级活动' : '暂无升级活动') : '等待 Center 数据'}</h3><p>{token ? (rows?.length ? '尝试修改顶部搜索条件。' : '选择 Release 版本即可创建第一批 canary。') : '在系统设置输入 Admin Token 后加载升级活动。'}</p></div> : filteredRows.map((campaign) => { const done = campaign.targets.filter((target) => target.status === 'completed').length; const failed = campaign.targets.filter((target) => target.status === 'failed').length; const percent = campaign.targets.length ? Math.round(done * 100 / campaign.targets.length) : 0; return <article className="panel upgrade-card" key={campaign.id}><div className="upgrade-card-head"><div><span className="mono">{campaign.id}</span><h3>{campaign.version}</h3></div><div className="row"><span className={`state ${campaign.status === 'completed' ? 'good' : campaign.status === 'paused' ? 'bad' : 'accent'}`}><i />{campaign.status}</span>{campaign.status === 'paused' && <button className="secondary" onClick={() => void action(campaign.id, 'resume')}>恢复</button>}{campaign.status === 'running' && <button className="secondary" onClick={() => void action(campaign.id, 'cancel')}>取消</button>}</div></div><div className="upgrade-meta"><span>目标 <b>{campaign.targets.length}</b> 台</span><span>完成 <b>{done}</b></span>{failed > 0 && <span>失败 <b>{failed}</b></span>}<span>canary {campaign.canaryCount} · 每批 {campaign.batchSize}</span></div><div className="progress-track"><span style={{ width: `${percent}%` }} /></div><div className="task-list">{campaign.targets.map((target) => <div className="task-row" key={target.machineId}><div><strong>{names[target.machineId] ?? target.machineId}</strong><span>{target.status}{target.error ? ` · ${target.error}` : ''}</span></div><span className="mono">{target.attempts} 次</span></div>)}</div></article> })}</section></>
 }
 function Settings({ token, onTokenChange, onRefresh }: { token: string; onTokenChange: (value: string) => void; onRefresh: () => void }) { return <><PageIntro kicker="SECURITY & POLICY" title="系统设置" action="保存变更" /><section className="panel token-panel"><span className="section-kicker">CENTER SESSION</span><h3>连接控制台 API</h3><p>令牌只保存在当前浏览器标签页内存，刷新页面后自动清除，不写入 localStorage。</p><label>Admin Token<input type="password" value={token} onChange={(event) => onTokenChange(event.target.value)} placeholder="粘贴 Center Admin Token" autoComplete="off" /></label><button className="primary" onClick={onRefresh}>验证并加载</button></section><section className="settings-grid"><div className="panel setting-card"><span className="setting-icon">⌁</span><div><h3>连接策略</h3><p>控制台通过事件长连接获取变更，异常时才重试；Agent 使用长轮询/WebSocket 唤醒。</p></div><span className="toggle on" /></div><div className="panel setting-card"><span className="setting-icon">◈</span><div><h3>令牌存储</h3><p>仅保存摘要；前端不将 Admin Token 写入 localStorage。</p></div><span className="toggle on" /></div><div className="panel setting-card"><span className="setting-icon">▣</span><div><h3>工具上下文</h3><p>维持精简 MCP 工具面，结果分页且有界。</p></div><span className="toggle on" /></div></section></> }
 

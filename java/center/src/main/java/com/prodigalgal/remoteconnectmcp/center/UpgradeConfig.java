@@ -8,6 +8,7 @@ public final class UpgradeConfig {
     private final boolean enabled;
     private final String releaseBaseUrl;
     private final String releaseTagPrefix;
+    private final String releasesApiUrl;
 
     public UpgradeConfig() {
         enabled = Boolean.parseBoolean(firstEnv("RCM_CENTER_AGENT_UPGRADES_ENABLED",
@@ -18,23 +19,28 @@ public final class UpgradeConfig {
         releaseTagPrefix = firstEnv("RCM_CENTER_RELEASE_TAG_PREFIX",
                 "REMOTE_CONNECT_MCP_CENTER_RELEASE_TAG_PREFIX", "java-");
         validateTagPrefix(releaseTagPrefix);
-        if (!releaseBaseUrl.isBlank()) {
-            var uri = java.net.URI.create(releaseBaseUrl);
-            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null) {
-                throw new IllegalArgumentException("RCM_CENTER_RELEASE_BASE_URL must be an HTTPS URL");
-            }
-        }
+        validateHttps(releaseBaseUrl, "RCM_CENTER_RELEASE_BASE_URL");
+        releasesApiUrl = trimTrailingSlash(firstEnv("RCM_CENTER_RELEASES_API_URL",
+                "REMOTE_CONNECT_MCP_CENTER_RELEASES_API_URL", defaultReleasesApi(releaseBaseUrl)));
+        validateHttps(releasesApiUrl, "RCM_CENTER_RELEASES_API_URL");
     }
 
     UpgradeConfig(boolean enabled, String releaseBaseUrl) {
-        this(enabled, releaseBaseUrl, "");
+        this(enabled, releaseBaseUrl, "", defaultReleasesApi(releaseBaseUrl));
     }
 
     UpgradeConfig(boolean enabled, String releaseBaseUrl, String releaseTagPrefix) {
+        this(enabled, releaseBaseUrl, releaseTagPrefix, defaultReleasesApi(releaseBaseUrl));
+    }
+
+    UpgradeConfig(boolean enabled, String releaseBaseUrl, String releaseTagPrefix, String releasesApiUrl) {
         this.enabled = enabled;
         this.releaseBaseUrl = trimTrailingSlash(releaseBaseUrl == null ? "" : releaseBaseUrl.trim());
         this.releaseTagPrefix = releaseTagPrefix == null ? "" : releaseTagPrefix.trim();
+        this.releasesApiUrl = trimTrailingSlash(releasesApiUrl == null ? "" : releasesApiUrl.trim());
         validateTagPrefix(this.releaseTagPrefix);
+        validateHttps(this.releaseBaseUrl, "RCM_CENTER_RELEASE_BASE_URL");
+        validateHttps(this.releasesApiUrl, "RCM_CENTER_RELEASES_API_URL");
     }
 
     public boolean enabled() {
@@ -54,6 +60,11 @@ public final class UpgradeConfig {
         return releaseTagPrefix;
     }
 
+    /** GitHub Releases API endpoint used by the admin version catalog. */
+    public String releasesApiUrl() {
+        return releasesApiUrl;
+    }
+
     private static String env(String key, String fallback) {
         var value = System.getenv(key);
         return value == null || value.isBlank() ? fallback : value.trim();
@@ -71,6 +82,33 @@ public final class UpgradeConfig {
     private static void validateTagPrefix(String value) {
         if (value == null || !value.matches("[A-Za-z0-9._-]{0,32}")) {
             throw new IllegalArgumentException("RCM_CENTER_RELEASE_TAG_PREFIX contains unsupported characters");
+        }
+    }
+
+    private static void validateHttps(String value, String setting) {
+        if (value == null || value.isBlank()) return;
+        var uri = java.net.URI.create(value);
+        if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                || uri.getUserInfo() != null || uri.getFragment() != null) {
+            throw new IllegalArgumentException(setting + " must be an HTTPS URL without credentials or fragments");
+        }
+    }
+
+    private static String defaultReleasesApi(String baseUrl) {
+        if (baseUrl == null || baseUrl.isBlank()) return "";
+        try {
+            var uri = java.net.URI.create(baseUrl.trim());
+            if (!"github.com".equalsIgnoreCase(uri.getHost())) return "";
+            var path = uri.getPath() == null ? "" : uri.getPath().replaceAll("/+$", "");
+            var marker = "/releases/download";
+            var index = path.indexOf(marker);
+            if (index <= 0) return "";
+            var repository = path.substring(0, index);
+            var parts = repository.split("/");
+            if (parts.length != 3 || parts[1].isBlank() || parts[2].isBlank()) return "";
+            return "https://api.github.com/repos/" + parts[1] + "/" + parts[2] + "/releases";
+        } catch (IllegalArgumentException ignored) {
+            return "";
         }
     }
 }

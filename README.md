@@ -101,12 +101,12 @@ ChatGPT 连接器使用固定 `/mcp` URL 和固定 Bearer Token。当前核心�
 
 Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式切换前仍必须在 CI 目标平台完成 Native Image、签名、服务安装和回滚验收，不会把未验证的 JVM JAR 当作生产二进制：
 
-1. 发布页提供 Linux amd64/arm64 与 Windows amd64 的 Agent 运行包（可执行文件与 Native Image 运行库平铺 ZIP），并为每个资产提供 `.sha256`；旧裸 ELF/EXE 仅作为兼容回退；Windows ARM64 暂使用 JVM/Go 兼容包，不把未经验证的交叉编译物标为 Native Image；
-2. 管理员在控制台填写 `v*` 发布标签，设置金丝雀数量和后续批次大小；
+1. GitHub Actions 在每次 `main` 推送后构建 Linux amd64/arm64 与 Windows amd64 的 Native Image，并发布一个不可变的 `java-v0.0.0-main.<run>` 预发布版本；正式 `java-vX.Y.Z` 标签发布同样经过完整门禁。每个 Agent 资产都提供 `.sha256`；旧裸 ELF/EXE 仅作为兼容回退；Windows ARM64 暂使用 JVM/Go 兼容包，不把未经验证的交叉编译物标为 Native Image；
+2. Center 在控制台加载或用户点击刷新时读取 GitHub Release 目录，管理员直接选择目标版本，设置金丝雀数量和后续批次大小；
 3. Center 按目标机器的 OS/架构解析 Release 资产和 `.sha256`（也支持 Admin API 直接提交已校验的 HTTPS 资产），再向金丝雀 Agent 下发 HTTPS 下载地址和 SHA-256；
 4. Agent 在没有附着（有超时）命令时接收升级；无超时可恢复任务可以继续运行，校验下载包后启动独立升级 Helper；
 5. Helper 停止服务、原子替换二进制（Windows 同时替换 ZIP 内 DLL）、重新启动并要求服务管理器返回成功；启动失败会恢复 `.previous` 版本；
-6. Center 根据 Agent 心跳中的实际版本确认成功，再自动放行下一批；未确认的下发每 30 秒自动重试，任意机器明确失败都会暂停整个活动，管理员确认后可重试或取消。
+6. Center 根据 Agent 心跳中的实际版本确认成功，再自动放行下一批；失败目标在租约过期后重新排队，任意机器明确失败都会暂停整个活动，管理员确认后可重试或取消。
 
 升级活动及逐机状态在 Java Center 内存模式下用于协议回归，在 PostgreSQL 模式下由 Liquibase 管理的 `rcm_upgrade_campaign`/`rcm_upgrade_target` 表持久化。Center Pod 重启后会继续未完成批次。升级只改变 Agent 二进制，不改变机器身份、每机凭据、服务配置或 ChatGPT MCP 工具；React 页面调用真实 `/api/v1/admin/upgrades` API。
 
@@ -123,6 +123,7 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 - 取消排队或运行中的任务；
 - 手动刷新机器、任务和当前输出；长输出按 cursor 分页读取，不阻塞页面。
 - 查看升级活动、canary/批次进度，并暂停、恢复或取消发布；升级资产必须通过 HTTPS 和 SHA-256 校验。
+- 查看 GitHub Release 版本目录（稳定版/预发布、发布时间和三平台 Agent 资产覆盖），从下拉框选择升级目标；目录短缓存，GitHub 暂时不可达时显示最近一次成功结果。
 
 管理 Token 只保存在 React 当前标签页内存，刷新或关闭页面后消失，不写入 `localStorage`、`sessionStorage` 或静态构建产物。
 
@@ -140,6 +141,7 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 | `RCM_CENTER_AGENT_UPGRADES_ENABLED` | `true` | 是否允许 Center 下发 Agent 升级计划；紧急情况下设为 `false` 只停止新升级，不影响现有任务 |
 | `RCM_CENTER_RELEASE_BASE_URL`（兼容 `REMOTE_CONNECT_MCP_CENTER_RELEASE_BASE_URL`） | GitHub Releases 下载基址 | 自动解析发布资产和 `.sha256` 的基址；私有镜像源通过部署 Secret/env 覆盖 |
 | `RCM_CENTER_RELEASE_TAG_PREFIX`（兼容 `REMOTE_CONNECT_MCP_CENTER_RELEASE_TAG_PREFIX`） | `java-` | 发布 URL 的 Tag 前缀；本仓库 Java 发布使用 `java-v1.2.3`，控制台版本仍填写 `v1.2.3`；使用普通 `v*` Tag 时设为空 |
+| `RCM_CENTER_RELEASES_API_URL`（兼容 `REMOTE_CONNECT_MCP_CENTER_RELEASES_API_URL`） | `https://api.github.com/repos/Prodigalgal/remote_connect_mcp/releases` | 控制台版本目录的 GitHub Releases API；只读取公开元数据，不保存 GitHub 凭据 |
 | `RCM_CENTER_PERSISTENCE_MODE` | `memory` | Java Center 使用 `postgres` 才启用 PostgreSQL 任务/机器/工件存储 |
 | `RCM_CENTER_REQUIRE_DURABLE_STORAGE` | `false` | 设为 `true` 时，除 PostgreSQL 外的模式不会通过 `/api/v1/readyz`；生产必须开启 |
 | `RCM_CENTER_LIQUIBASE_ENABLED` | `true` | Java Center 是否在当前进程执行 Liquibase；生产 Pod 设为 `false`，由独立 migration Job 执行 |

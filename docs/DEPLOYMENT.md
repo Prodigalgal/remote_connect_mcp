@@ -4,7 +4,7 @@ Java Center/Agent 的目标发布物是 Java 25 Native Image；JVM JAR 只作为
 
 ## 构建
 
-提交源码后推送分支或 `java-vX.Y.Z` 标签即可触发工作流：
+提交源码后推送 `main` 或 `java-vX.Y.Z` 标签即可触发工作流：
 
 ```text
 git push origin <branch>
@@ -13,9 +13,11 @@ git push origin java-vX.Y.Z
 ```
 
 `.github/workflows/java-react.yml` 负责 PR/main 的 JVM、React、PostgreSQL、Liquibase 和 Native
-门禁；`.github/workflows/java-release.yml` 负责版本标签的匹配架构 Native Image、烟测、校验、SBOM
-和 Release。开发机不需要安装或运行 Gradle、JDK、GraalVM、Go、Node 或 pnpm。烟测脚本只接受
-已经从 Actions 下载的 JAR/Native Image，不会自行触发构建。
+门禁；`.github/workflows/java-release.yml` 在 `main` 推送时额外构建并发布不可变的
+`java-v0.0.0-main.<run>` 预发布版本，在 `java-vX.Y.Z` 标签时发布稳定版本。两种 Release 都经过
+匹配架构 Native Image、烟测、校验、SBOM 和签名；预发布不会移动 GHCR 的 `latest` 标签。开发机
+不需要安装或运行 Gradle、JDK、GraalVM、Go、Node 或 pnpm。烟测脚本只接受已经从 Actions 下载的
+JAR/Native Image，不会自行触发构建。
 
 两个工作流都会先执行 `scripts/scan-repository-secrets.sh`。检查只输出命中文件名，不会把令牌或
 私钥内容写入日志；真实域名、内网地址和部署 Secret 必须留在集群外的私有配置层。
@@ -37,14 +39,15 @@ GraalVM 运行时 DLL 会分别与 `rcm-center.exe`、`rcm-agent.exe` 放入各�
 
 Windows 安装器 `scripts/install-java-agent.ps1` 的 `-BinaryPath` 可直接接收平铺 Agent ZIP（推荐），也兼容与 DLL 同目录的原始 `rcm-agent.exe`；它会在复制完整 bundle 前停止旧服务，避免只替换 exe 造成运行时 DLL 不匹配。
 
-正式发布使用 `.github/workflows/java-release.yml`：推送 `java-vX.Y.Z` Tag 后，CI 先执行
+正式发布使用 `.github/workflows/java-release.yml`：推送 `main` 或 `java-vX.Y.Z` Tag 后，CI 先执行
 JVM/React 门禁，再在匹配架构的 GitHub-hosted runner（`ubuntu-24.04` 与
 `ubuntu-24.04-arm`）上构建并执行 Linux amd64/arm64 Native Image 烟测，随后在 Windows
 amd64 runner 上构建 Windows Native Image。Release 同时
 上传安装压缩包和按 `remote-connect-mcp-agent-vX.Y.Z-<os>-<arch>` 命名的 Agent
 升级资产及 `.sha256`，供 Center 自动升级解析；Linux/Windows 资产都是包含 Agent 可执行文件与
 Native Image 运行库的同名平铺 ZIP（旧版本 Linux/Windows 裸可执行文件仍可回退）。Windows 主安装包另外包含 `center/` 与 `agent/` 两个
-隔离 bundle。手动运行工作流只构建，不创建 Release。
+隔离 bundle。main 推送会创建预发布 Release，供 Center 版本目录选择；稳定 Tag 会创建正式 Release；
+手动运行工作流只构建，不创建 Release。
 
 Linux 完整 tar 包的根目录包含 `install-java-agent.sh` 和匹配版本的
 `remote-connect-mcp-agent.service`；从 tar 根目录运行
@@ -70,6 +73,12 @@ Java 发布工作流使用 `java-vX.Y.Z` 作为 Git Tag，但升级活动中填�
 `vX.Y.Z`。因此生产 Center 默认使用 `RCM_CENTER_RELEASE_TAG_PREFIX=java-`，它只影响
 Release URL 的 Tag 路径，不会改变 Agent 原始资产名。若改用普通 `vX.Y.Z` Tag，显式将
 该变量设为空字符串。
+
+Center 的 `GET /api/v1/admin/releases?include_prerelease=true` 在控制台进入时或显式刷新时读取
+GitHub Releases API，成功结果缓存两分钟并以 `stale=true` 标记过期快照；没有后台固定轮询。目录只
+接受 `java-v<semver>` 标签，忽略草稿，并仅返回预期的 Linux amd64/arm64、Windows amd64 Agent
+ZIP 与 checksum 是否存在。创建升级活动时，Center 仍会再次按版本/平台下载并校验 `.sha256`，不会
+信任前端提交的任意下载地址。
 
 发布工作流的 JVM/React 门禁同时启动临时 PostgreSQL 16 服务容器，执行
 `PostgresIntegrationTest`：真实运行 Liquibase、注册/心跳、幂等任务、租约领取、输出游标

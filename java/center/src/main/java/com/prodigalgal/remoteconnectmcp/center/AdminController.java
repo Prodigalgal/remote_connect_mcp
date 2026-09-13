@@ -38,6 +38,7 @@ public final class AdminController {
     private final AgentWakeRegistry wakes;
     private final ProjectService projects;
     private final TaskChangeRegistry changes;
+    private final ReleaseCatalogService releases;
 
     @org.springframework.beans.factory.annotation.Autowired
     public AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
@@ -45,7 +46,8 @@ public final class AdminController {
                            AgentConfigurationService configurations, CenterAsyncExecutor async,
                            ObjectProvider<AgentWakeRegistry> wakeProvider,
                            ProjectService projects,
-                           ObjectProvider<TaskChangeRegistry> changeProvider) {
+                           ObjectProvider<TaskChangeRegistry> changeProvider,
+                           ObjectProvider<ReleaseCatalogService> releaseProvider) {
         this.tokens = tokens;
         this.agents = agents;
         this.tasks = tasks;
@@ -56,13 +58,14 @@ public final class AdminController {
         this.wakes = wakeProvider == null ? null : wakeProvider.getIfAvailable();
         this.projects = projects;
         this.changes = changeProvider == null ? null : changeProvider.getIfAvailable();
+        this.releases = releaseProvider == null ? null : releaseProvider.getIfAvailable();
     }
 
     /** Compatibility constructor for direct protocol/controller tests. */
     AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                     EnrollmentTokenService enrollments, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
-        this(tokens, agents, tasks, enrollments, upgrades, configurations, async, null, null, null);
+        this(tokens, agents, tasks, enrollments, upgrades, configurations, async, null, null, null, null);
     }
 
     /**
@@ -279,6 +282,24 @@ public final class AdminController {
         return execute(() -> {
             authenticate(authorization);
             return ResponseEntity.ok(Map.of("items", upgrades.list(offset, limit), "offset", offset, "limit", limit));
+        });
+    }
+
+    /**
+     * List published Java Agent releases for the console selector.  Only
+     * bounded metadata is returned; artifact URLs and checksums are resolved
+     * again by UpgradeService when a campaign is created.
+     */
+    @GetMapping("/releases")
+    public CompletableFuture<ResponseEntity<?>> releases(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "20") int limit,
+            @RequestParam(defaultValue = "true") boolean includePrerelease) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (releases == null) throw new IllegalStateException("release catalog is unavailable");
+            return ResponseEntity.ok().header("Cache-Control", "no-store")
+                    .body(releases.list(limit, includePrerelease));
         });
     }
 

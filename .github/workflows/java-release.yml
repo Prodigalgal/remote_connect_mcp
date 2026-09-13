@@ -2,6 +2,7 @@ name: Java Native Release
 
 on:
   push:
+    branches: [main]
     tags: ["java-v*"]
   workflow_dispatch:
     inputs:
@@ -19,7 +20,9 @@ permissions:
 
 concurrency:
   group: java-release-${{ github.ref }}
-  cancel-in-progress: false
+  # Main-branch previews are immutable but disposable; cancel an older
+  # preview when a newer commit arrives.  A java-vX.Y.Z tag is never canceled.
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
 
 jobs:
   prepare:
@@ -28,6 +31,8 @@ jobs:
       version: ${{ steps.coordinates.outputs.version }}
       tag: ${{ steps.coordinates.outputs.tag }}
       publish: ${{ steps.coordinates.outputs.publish }}
+      prerelease: ${{ steps.coordinates.outputs.prerelease }}
+      verify_tag: ${{ steps.coordinates.outputs.verify_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Repository hygiene
@@ -41,13 +46,27 @@ jobs:
         shell: bash
         env:
           REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          EVENT_NAME: ${{ github.event_name }}
           INPUT_VERSION: ${{ inputs.version }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
           if [[ "${REF_NAME}" == java-v* ]]; then
             version="${REF_NAME#java-}"
             tag="${REF_NAME}"
             publish=true
+            prerelease=false
+            verify_tag=true
+          elif [[ "${EVENT_NAME}" == "push" && "${REF_TYPE}" == "branch" && "${REF_NAME}" == "main" ]]; then
+            # Every accepted main push becomes a selectable, immutable
+            # preview.  Stable production releases still use java-vX.Y.Z
+            # tags; previews never move the GHCR latest tag.
+            version="v0.0.0-main.${RUN_NUMBER}"
+            tag="java-${version}"
+            publish=true
+            prerelease=true
+            verify_tag=false
           elif [[ -n "${INPUT_VERSION}" ]]; then
             version="${INPUT_VERSION#java-}"
             [[ "${version}" == v* ]] || { echo "version must start with v (for example v0.2.0)" >&2; exit 1; }
@@ -55,13 +74,17 @@ jobs:
             # Manual dispatch is a build-only run. It must not create or
             # overwrite a GitHub Release from an unverified branch.
             publish=false
+            prerelease=false
+            verify_tag=false
           else
-            echo 'This workflow must run on a java-v* tag or workflow_dispatch with version=vX.Y.Z' >&2
+            echo 'This workflow must run on main, a java-v* tag, or workflow_dispatch with version=vX.Y.Z' >&2
             exit 1
           fi
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
           echo "publish=${publish}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+          echo "verify_tag=${verify_tag}" >> "${GITHUB_OUTPUT}"
 
   jvm-and-console:
     needs: prepare
@@ -389,6 +412,7 @@ jobs:
         env:
           IMAGE_OWNER: prodigalgal
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
           set -euo pipefail
           mkdir -p image-root/amd64/center image-root/amd64/agent image-root/arm64/center image-root/arm64/agent
@@ -409,12 +433,18 @@ jobs:
               --tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-${kind}-java:${RELEASE_VERSION}" \
               "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-${kind}-java:${RELEASE_VERSION}-amd64" \
               "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-${kind}-java:${RELEASE_VERSION}-arm64"
-            docker buildx imagetools create \
-              --tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-${kind}-java:latest" \
-              "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-${kind}-java:${RELEASE_VERSION}-amd64" \
-              "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-${kind}-java:${RELEASE_VERSION}-arm64"
+            if [[ "${IS_PRERELEASE}" != "true" ]]; then
+              docker buildx imagetools create \
+                --tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-${kind}-java:latest" \
+                "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-${kind}-java:${RELEASE_VERSION}-amd64" \
+                "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-${kind}-java:${RELEASE_VERSION}-arm64"
+            fi
           done
-          docker buildx build --platform linux/amd64,linux/arm64 --build-arg RCM_CI_BUILD=true --file web/Dockerfile --tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-console:${RELEASE_VERSION}" --tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-console:latest" --provenance=true --sbom=true --push web
+          console_tags=(--tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-console:${RELEASE_VERSION}")
+          if [[ "${IS_PRERELEASE}" != "true" ]]; then
+            console_tags+=(--tag "ghcr.io/${IMAGE_OWNER}/remote-connect-mcp-console:latest")
+          fi
+          docker buildx build --platform linux/amd64,linux/arm64 --build-arg RCM_CI_BUILD=true --file web/Dockerfile "${console_tags[@]}" --provenance=true --sbom=true --push web
 
   release:
     # Do not publish the GitHub Release until the multi-arch images have also
@@ -441,8 +471,14 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          VERIFY_TAG: ${{ needs.prepare.outputs.verify_tag }}
         run: |
           set -euo pipefail
           mapfile -d '' assets < <(find release -maxdepth 1 -type f \( -name '*.zip' -o -name '*.zip.sha256' -o -name '*.tar.gz' -o -name '*.tar.gz.sha256' -o -name '*.spdx.json' -o -name '*.sigstore.json' \) -print0 | sort -z)
           ((${#assets[@]} > 0))
-          gh release create "${{ needs.prepare.outputs.tag }}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --generate-notes --verify-tag
+          args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --generate-notes)
+          if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then args+=(--prerelease); fi
+          if [[ "${VERIFY_TAG}" == "true" ]]; then args+=(--verify-tag); fi
+          gh release create "${args[@]}"
