@@ -24,5 +24,9 @@ public final class RemoteConnectCenterRuntimeHints implements RuntimeHintsRegist
         // methods so Native Image returns a real JSON-RPC error instead of a
         // secondary MissingReflectionRegistrationError/HTTP 500.
         hints.reflection().registerType(Throwable.class, MemberCategory.INVOKE_PUBLIC_METHODS);
+        // Jackson also serializes each stack frame in that error payload.
+        // Keep StackTraceElement accessors reachable for Native Image so an
+        // error response cannot fail while rendering its diagnostic frames.
+        hints.reflection().registerType(StackTraceElement.class, MemberCategory.INVOKE_PUBLIC_METHODS);
     }
 }
