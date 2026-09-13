@@ -19,5 +19,10 @@ public final class RemoteConnectCenterRuntimeHints implements RuntimeHintsRegist
         hints.reflection().registerType(ReleaseCatalogService.CatalogView.class, recordMembers);
         hints.reflection().registerType(ReleaseCatalogService.ReleaseView.class, recordMembers);
         hints.reflection().registerType(ReleaseCatalogService.ReleaseAssetView.class, recordMembers);
+        // MCP's JSON error mapper inspects Throwable#getCause when a client
+        // sends a malformed session/request.  Register the base Throwable
+        // methods so Native Image returns a real JSON-RPC error instead of a
+        // secondary MissingReflectionRegistrationError/HTTP 500.
+        hints.reflection().registerType(Throwable.class, MemberCategory.INVOKE_PUBLIC_METHODS);
     }
 }
