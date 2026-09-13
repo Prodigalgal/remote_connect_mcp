@@ -56,9 +56,8 @@ public final class DatabaseRuntimeInitializer
     private static <T> void register(BeanDefinitionRegistry registry, String name, Class<T> type,
                                      Supplier<T> supplier, String destroyMethod) {
         if (registry.containsBeanDefinition(name)) return;
-        var definition = BeanDefinitionBuilder.rootBeanDefinition(type)
-                .setInstanceSupplier(supplier)
-                .getBeanDefinition();
+        var definition = BeanDefinitionBuilder.rootBeanDefinition(type).getBeanDefinition();
+        definition.setInstanceSupplier(supplier);
         if (destroyMethod != null) definition.setDestroyMethodName(destroyMethod);
         registry.registerBeanDefinition(name, definition);
     }
