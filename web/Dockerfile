@@ -3,7 +3,7 @@ ARG RCM_CI_BUILD=false
 WORKDIR /src
 RUN test "$RCM_CI_BUILD" = "true" || (echo "React production Docker builds are GitHub Actions-only" >&2 && exit 2)
 ENV GITHUB_ACTIONS=${RCM_CI_BUILD}
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@10.15.0 --activate
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY . .

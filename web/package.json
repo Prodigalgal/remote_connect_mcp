@@ -2,6 +2,7 @@
   "name": "remote-connect-mcp-console",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.15.0",
   "scripts": {
     "dev": "vite",
     "build": "node ./ci-build.mjs",
