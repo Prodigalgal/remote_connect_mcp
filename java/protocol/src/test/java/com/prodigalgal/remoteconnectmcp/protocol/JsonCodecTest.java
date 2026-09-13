@@ -25,6 +25,15 @@ class JsonCodecTest {
         assertEquals(0, request.availableSlots());
         assertEquals(List.of(), request.runningTaskIds());
         assertEquals(List.of(), request.availableCapabilities());
+        assertEquals(0L, request.configGeneration());
+    }
+
+    @Test
+    void acceptsExplicitNullConfigGenerationFromLegacyAgents() {
+        var request = JsonCodec.read("{\"config_generation\":null}"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8), PollRequest.class);
+
+        assertEquals(0L, request.configGeneration());
     }
 
     @Test

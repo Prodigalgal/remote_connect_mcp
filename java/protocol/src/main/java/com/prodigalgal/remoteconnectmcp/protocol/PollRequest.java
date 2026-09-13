@@ -8,7 +8,7 @@ public record PollRequest(
         @JsonProperty("available_slots") Integer availableSlots,
         @JsonProperty("available_capabilities") List<String> availableCapabilities,
         AgentMetadata metadata,
-        @JsonProperty("config_generation") long configGeneration) {
+        @JsonProperty("config_generation") Long configGeneration) {
 
     /** Compatibility constructor for older Center/Agent callers. */
     public PollRequest(List<String> runningTaskIds, Integer availableSlots, List<String> availableCapabilities) {
@@ -25,6 +25,7 @@ public record PollRequest(
         runningTaskIds = runningTaskIds == null ? List.of() : List.copyOf(runningTaskIds);
         availableSlots = availableSlots == null ? 0 : availableSlots;
         availableCapabilities = availableCapabilities == null ? List.of() : List.copyOf(availableCapabilities);
+        configGeneration = configGeneration == null ? 0L : configGeneration;
         if (configGeneration < 0) throw new IllegalArgumentException("configGeneration must be non-negative");
     }
 }
