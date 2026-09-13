@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,49 +13,86 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 type Manager struct {
-	mu      sync.RWMutex
-	nextID  uint64
-	entries map[string]*Entry
-	dir     string
+	mu             sync.RWMutex
+	nextID         uint64
+	entries        map[string]*Entry
+	dir            string
+	maxOutputBytes int64
 }
 
 type Entry struct {
-	ID        string
-	Command   string
-	Cwd       string
-	StartedAt time.Time
-	cmd       *exec.Cmd
-	job       platformJob
-	stdinMu   sync.Mutex
-	stdin     io.WriteCloser
-	output    lockedOutput
-	done      chan struct{}
-	exitCode  int
-	err       error
+	ID         string
+	TaskID     string
+	Command    string
+	Cwd        string
+	StartedAt  time.Time
+	cmd        *exec.Cmd
+	pid        int
+	job        platformJob
+	durable    bool
+	recordPath string
+	stdinMu    sync.Mutex
+	stdin      io.WriteCloser
+	output     lockedOutput
+	done       chan struct{}
+	changeMu   sync.Mutex
+	changed    chan struct{}
+	exitCode   int
+	err        error
+}
+
+type durableRecord struct {
+	ID             string    `json:"id"`
+	TaskID         string    `json:"task_id"`
+	Command        string    `json:"command"`
+	Cwd            string    `json:"cwd"`
+	StartedAt      time.Time `json:"started_at"`
+	PID            int       `json:"pid"`
+	OutputPath     string    `json:"output_path"`
+	MaxOutputBytes int64     `json:"max_output_bytes,omitempty"`
+	ExitCode       *int      `json:"exit_code,omitempty"`
+	Error          string    `json:"error,omitempty"`
 }
 
 type Info struct {
-	ID        string    `json:"id"`
-	Command   string    `json:"command"`
-	Cwd       string    `json:"cwd"`
-	StartedAt time.Time `json:"started_at"`
-	Running   bool      `json:"running"`
-	ExitCode  *int      `json:"exit_code,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	Bytes     int       `json:"bytes"`
+	ID              string    `json:"id"`
+	Command         string    `json:"command"`
+	Cwd             string    `json:"cwd"`
+	StartedAt       time.Time `json:"started_at"`
+	Running         bool      `json:"running"`
+	Durable         bool      `json:"durable,omitempty"`
+	ExitCode        *int      `json:"exit_code,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	Bytes           int       `json:"bytes"`
+	OutputTruncated bool      `json:"output_truncated,omitempty"`
 }
 
 func NewManager(stateDirs ...string) *Manager {
+	return newManager(0, stateDirs...)
+}
+
+// NewManagerWithLimit creates a process manager that stops retaining output
+// after maxOutputBytes.  The child process continues to run; only captured
+// output is bounded, preventing a noisy command from exhausting Agent disk.
+func NewManagerWithLimit(stateDir string, maxOutputBytes int64) *Manager {
+	return newManager(maxOutputBytes, stateDir)
+}
+
+func newManager(maxOutputBytes int64, stateDirs ...string) *Manager {
 	base := os.TempDir()
 	if len(stateDirs) > 0 && stateDirs[0] != "" {
 		base = stateDirs[0]
 	}
 	dir := filepath.Join(base, "process")
 	_ = cleanupOldOutputs(dir, 24*time.Hour)
-	return &Manager{entries: make(map[string]*Entry), dir: dir}
+	manager := &Manager{entries: make(map[string]*Entry), dir: dir, maxOutputBytes: maxOutputBytes}
+	manager.loadDurableEntries()
+	return manager
 }
 
 func cleanupOldOutputs(dir string, maxAge time.Duration) error {
@@ -66,10 +104,29 @@ func cleanupOldOutputs(dir string, maxAge time.Duration) error {
 		return err
 	}
 	cutoff := time.Now().Add(-maxAge)
+	protected := make(map[string]struct{})
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if readErr != nil {
+			continue
+		}
+		var record durableRecord
+		if json.Unmarshal(data, &record) == nil && record.OutputPath != "" {
+			if outputPath, absErr := filepath.Abs(record.OutputPath); absErr == nil {
+				protected[filepath.Clean(outputPath)] = struct{}{}
+			}
+		}
+	}
 	for _, entry := range entries {
 		info, err := entry.Info()
-		if err == nil && !entry.IsDir() && info.ModTime().Before(cutoff) {
-			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		logPath := filepath.Join(dir, entry.Name())
+		absoluteLogPath, _ := filepath.Abs(logPath)
+		_, isProtected := protected[filepath.Clean(absoluteLogPath)]
+		if err == nil && !entry.IsDir() && filepath.Ext(entry.Name()) == ".log" && !isProtected && info.ModTime().Before(cutoff) {
+			_ = os.Remove(logPath)
 		}
 	}
 	return nil
@@ -87,7 +144,7 @@ func (m *Manager) Start(ctx context.Context, command, cwd string, env map[string
 	}
 	configureProcess(cmd)
 
-	entry := &Entry{Command: command, Cwd: cwd, StartedAt: time.Now(), cmd: cmd, done: make(chan struct{}), exitCode: -1}
+	entry := &Entry{Command: command, Cwd: cwd, StartedAt: time.Now(), cmd: cmd, done: make(chan struct{}), changed: make(chan struct{}), exitCode: -1}
 	if err := os.MkdirAll(m.dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create process output directory: %w", err)
 	}
@@ -97,6 +154,8 @@ func (m *Manager) Start(ctx context.Context, command, cwd string, env map[string
 	}
 	entry.output.file = outputFile
 	entry.output.path = outputFile.Name()
+	entry.output.maxBytes = m.maxOutputBytes
+	entry.output.onChange = entry.signalOutputChanged
 	cmd.Stdout = &entry.output
 	cmd.Stderr = &entry.output
 	entry.stdin, err = cmd.StdinPipe()
@@ -108,6 +167,7 @@ func (m *Manager) Start(ctx context.Context, command, cwd string, env map[string
 		entry.output.remove()
 		return nil, err
 	}
+	entry.pid = cmd.Process.Pid
 	job, err := attachJob(cmd)
 	if err != nil {
 		_ = cmd.Process.Kill()
@@ -140,8 +200,387 @@ func (m *Manager) Start(ctx context.Context, command, cwd string, env map[string
 		entry.output.mu.Unlock()
 		closeJob(entry.job)
 		close(entry.done)
+		entry.signalOutputChanged()
 	}()
 	return entry, nil
+}
+
+// StartDurable launches a non-interactive task whose process and output file
+// are deliberately independent of the Agent process lifetime.  The task can
+// therefore be discovered and monitored after an Agent restart.  Commands
+// that need stdin remain on Start and keep the original attached semantics.
+func (m *Manager) StartDurable(taskID, command, cwd string, env map[string]string) (*Entry, error) {
+	if command == "" {
+		return nil, errors.New("command is required")
+	}
+	if taskID == "" {
+		return nil, errors.New("task id is required")
+	}
+	if err := os.MkdirAll(m.dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create process output directory: %w", err)
+	}
+	m.mu.Lock()
+	m.nextID++
+	id := strconv.FormatUint(m.nextID, 10)
+	m.mu.Unlock()
+
+	outputPath := filepath.Join(m.dir, "process-"+id+".log")
+	outputFile, err := os.OpenFile(outputPath, os.O_CREATE|os.O_TRUNC|os.O_RDWR|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("create durable process output: %w", err)
+	}
+	cmd := shellCommand(command)
+	cmd.Dir = cwd
+	cmd.Env = append([]string{}, os.Environ()...)
+	for key, value := range env {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	configureDurableProcess(cmd)
+	cmd.Stdout = outputFile
+	cmd.Stderr = outputFile
+	if err := cmd.Start(); err != nil {
+		_ = outputFile.Close()
+		_ = os.Remove(outputPath)
+		return nil, err
+	}
+	entry := &Entry{
+		ID: id, TaskID: taskID, Command: command, Cwd: cwd, StartedAt: time.Now(),
+		cmd: cmd, pid: cmd.Process.Pid, durable: true, recordPath: filepath.Join(m.dir, "process-"+id+".json"),
+		done: make(chan struct{}), changed: make(chan struct{}), exitCode: -1,
+		output: lockedOutput{file: outputFile, path: outputPath, maxBytes: m.maxOutputBytes, direct: true},
+	}
+	if err := saveDurableRecord(entry); err != nil {
+		_ = killPID(entry.pid)
+		_ = outputFile.Close()
+		_ = os.Remove(outputPath)
+		return nil, err
+	}
+	entry.output.onChange = entry.signalOutputChanged
+	m.mu.Lock()
+	m.entries[id] = entry
+	m.mu.Unlock()
+	go monitorDurableOutput(entry)
+	go func() {
+		err := cmd.Wait()
+		entry.output.mu.Lock()
+		entry.err = err
+		if cmd.ProcessState != nil {
+			entry.exitCode = cmd.ProcessState.ExitCode()
+		}
+		entry.output.mu.Unlock()
+		_ = saveDurableCompletion(entry)
+		close(entry.done)
+		entry.signalOutputChanged()
+	}()
+	return entry, nil
+}
+
+// DurableTask returns a durable process previously started for taskID.  It is
+// used by Agent startup to reconnect task output/status reporting.
+func (m *Manager) DurableTask(taskID string) (*Entry, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, entry := range m.entries {
+		if entry.durable && entry.TaskID == taskID {
+			return entry, true
+		}
+	}
+	return nil, false
+}
+
+// ForgetTask removes a completed durable process from the local recovery
+// inventory. It is safe to call only after the Center accepted the final task
+// state; before that point the record is the recovery guarantee.
+func (m *Manager) ForgetTask(taskID string) {
+	m.mu.Lock()
+	var found *Entry
+	for id, entry := range m.entries {
+		if entry.durable && entry.TaskID == taskID {
+			found = entry
+			delete(m.entries, id)
+			break
+		}
+	}
+	m.mu.Unlock()
+	if found == nil {
+		return
+	}
+	found.output.remove()
+	if found.recordPath != "" {
+		_ = os.Remove(found.recordPath)
+	}
+}
+
+func (m *Manager) loadDurableEntries() {
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return
+	}
+	for _, item := range entries {
+		if item.IsDir() || filepath.Ext(item.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(m.dir, item.Name()))
+		if err != nil {
+			continue
+		}
+		var record durableRecord
+		if err := json.Unmarshal(data, &record); err != nil || record.ID == "" || record.TaskID == "" || record.PID <= 0 || record.OutputPath == "" {
+			continue
+		}
+		output, err := os.OpenFile(record.OutputPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+		if err != nil {
+			continue
+		}
+		maxOutputBytes := record.MaxOutputBytes
+		if m.maxOutputBytes > 0 && (maxOutputBytes <= 0 || maxOutputBytes > m.maxOutputBytes) {
+			maxOutputBytes = m.maxOutputBytes
+		}
+		entry := &Entry{
+			ID: record.ID, TaskID: record.TaskID, Command: record.Command, Cwd: record.Cwd, StartedAt: record.StartedAt,
+			pid: record.PID, durable: true, recordPath: filepath.Join(m.dir, item.Name()),
+			done: make(chan struct{}), changed: make(chan struct{}), exitCode: -1,
+			output: lockedOutput{file: output, path: record.OutputPath, maxBytes: maxOutputBytes, direct: true},
+		}
+		entry.output.onChange = entry.signalOutputChanged
+		if record.IDNum() > m.nextID {
+			m.nextID = record.IDNum()
+		}
+		m.entries[entry.ID] = entry
+		if record.ExitCode != nil {
+			entry.exitCode = *record.ExitCode
+			if record.Error != "" {
+				entry.err = errors.New(record.Error)
+			}
+			close(entry.done)
+			continue
+		}
+		if processAlive(record.PID) {
+			// Recovery has no attached stdout pipe, so keep the same filesystem
+			// event stream as a freshly started durable task. This lets a resumed
+			// Agent relay output incrementally without a periodic file-size probe.
+			go monitorDurableOutput(entry)
+			go monitorRecoveredEntry(entry)
+			continue
+		}
+		entry.err = errors.New("durable process exited while Agent was offline")
+		close(entry.done)
+	}
+}
+
+func (r durableRecord) IDNum() uint64 {
+	value, err := strconv.ParseUint(r.ID, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func saveDurableRecord(entry *Entry) error {
+	record := durableRecord{
+		ID: entry.ID, TaskID: entry.TaskID, Command: entry.Command, Cwd: entry.Cwd,
+		StartedAt: entry.StartedAt, PID: entry.pid, OutputPath: entry.output.path, MaxOutputBytes: entry.output.maxBytes,
+	}
+	return writeDurableRecord(entry.recordPath, record)
+}
+
+func saveDurableCompletion(entry *Entry) error {
+	entry.output.mu.Lock()
+	defer entry.output.mu.Unlock()
+	code := entry.exitCode
+	record := durableRecord{
+		ID: entry.ID, TaskID: entry.TaskID, Command: entry.Command, Cwd: entry.Cwd,
+		StartedAt: entry.StartedAt, PID: entry.pid, OutputPath: entry.output.path, MaxOutputBytes: entry.output.maxBytes,
+		ExitCode: &code,
+	}
+	if entry.err != nil {
+		record.Error = entry.err.Error()
+	}
+	return writeDurableRecord(entry.recordPath, record)
+}
+
+func writeDurableRecord(recordPath string, record durableRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(recordPath), "process-record-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempName, recordPath); err == nil {
+		return nil
+	} else {
+		// Windows does not replace an existing destination with Rename.  The
+		// normal path remains atomic on Unix; this fallback keeps completion
+		// records updateable when a prior Agent instance left the record behind.
+		_ = os.Remove(recordPath)
+		if replaceErr := os.Rename(tempName, recordPath); replaceErr != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func monitorRecoveredEntry(entry *Entry) {
+	if processAlive(entry.pid) {
+		if !waitForProcessExit(entry.pid) && processAlive(entry.pid) {
+			// Very old Linux kernels or restrictive Windows ACLs may not expose
+			// a waitable process handle. Keep this compatibility path rare and
+			// slow; supported hosts remain entirely kernel-event driven.
+			waitForProcessExitFallback(entry.pid)
+		}
+	}
+	code, errorText, completed := awaitDurableCompletion(entry.recordPath, 2*time.Second)
+	entry.output.mu.Lock()
+	entry.output.refreshSizeLocked()
+	if completed {
+		entry.exitCode = code
+		if errorText != "" {
+			entry.err = errors.New(errorText)
+		}
+	} else if code, alive := processExitCode(entry.pid); !alive && code >= 0 {
+		entry.exitCode = code
+	} else {
+		entry.err = errors.New("durable process exited while Agent was offline")
+	}
+	entry.output.mu.Unlock()
+	close(entry.done)
+	entry.signalOutputChanged()
+}
+
+func waitForProcessExitFallback(pid int) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for processAlive(pid) {
+		<-ticker.C
+	}
+}
+
+// awaitDurableCompletion gives the original Agent (when it is still shutting
+// down) a short window to persist the child's real exit code.  Without this
+// grace period, a restarted Agent can observe the process as a zombie before
+// cmd.Wait writes the completion record and incorrectly report a failure.
+// A crashed parent still falls through to the explicit offline error after the
+// bounded timeout, so recovery never blocks indefinitely.
+func awaitDurableCompletion(recordPath string, timeout time.Duration) (int, string, bool) {
+	if code, errorText, ok := readDurableCompletion(recordPath); ok {
+		return code, errorText, true
+	}
+	watcher, err := fsnotify.NewWatcher()
+	if err == nil {
+		defer watcher.Close()
+		if err = watcher.Add(filepath.Dir(recordPath)); err == nil {
+			// Close the race between the initial read and watcher registration.
+			if code, errorText, ok := readDurableCompletion(recordPath); ok {
+				return code, errorText, true
+			}
+			timer := time.NewTimer(timeout)
+			defer timer.Stop()
+			for {
+				select {
+				case event, open := <-watcher.Events:
+					if !open {
+						return -1, "", false
+					}
+					if filepath.Clean(event.Name) != filepath.Clean(recordPath) {
+						continue
+					}
+					if code, errorText, ok := readDurableCompletion(recordPath); ok {
+						return code, errorText, true
+					}
+				case <-watcher.Errors:
+					return -1, "", false
+				case <-timer.C:
+					code, errorText, ok := readDurableCompletion(recordPath)
+					return code, errorText, ok
+				}
+			}
+		}
+	}
+	// WatchService is an optional platform feature. A single deadline wait is
+	// preferable to a hidden file-read polling loop when it is unavailable.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	<-timer.C
+	code, errorText, ok := readDurableCompletion(recordPath)
+	return code, errorText, ok
+}
+
+func monitorDurableOutput(entry *Entry) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil || watcher.Add(filepath.Dir(entry.output.path)) != nil {
+		if watcher != nil {
+			_ = watcher.Close()
+		}
+		<-entry.done
+		entry.output.mu.Lock()
+		entry.output.refreshSizeLocked()
+		entry.output.mu.Unlock()
+		entry.signalOutputChanged()
+		return
+	}
+	defer watcher.Close()
+	for {
+		select {
+		case <-entry.done:
+			entry.output.mu.Lock()
+			entry.output.refreshSizeLocked()
+			entry.output.mu.Unlock()
+			entry.signalOutputChanged()
+			return
+		case event, open := <-watcher.Events:
+			if !open {
+				return
+			}
+			if filepath.Clean(event.Name) != filepath.Clean(entry.output.path) {
+				continue
+			}
+			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) == 0 {
+				continue
+			}
+			entry.output.mu.Lock()
+			entry.output.refreshSizeLocked()
+			entry.output.mu.Unlock()
+			entry.signalOutputChanged()
+		case _, open := <-watcher.Errors:
+			if !open {
+				return
+			}
+			// A watcher error is not a reason to poll. The next output/read or
+			// process completion performs the authoritative size refresh.
+			return
+		}
+	}
+}
+
+func readDurableCompletion(recordPath string) (int, string, bool) {
+	data, err := os.ReadFile(recordPath)
+	if err != nil {
+		return -1, "", false
+	}
+	var record durableRecord
+	if err := json.Unmarshal(data, &record); err != nil || record.ExitCode == nil {
+		return -1, "", false
+	}
+	return *record.ExitCode, record.Error, true
 }
 
 func (m *Manager) Get(id string) (*Entry, error) {
@@ -172,13 +611,14 @@ func (m *Manager) List() []Info {
 func (e *Entry) Info() Info {
 	e.output.mu.Lock()
 	defer e.output.mu.Unlock()
+	e.output.refreshSizeLocked()
 	running := true
 	select {
 	case <-e.done:
 		running = false
 	default:
 	}
-	info := Info{ID: e.ID, Command: e.Command, Cwd: e.Cwd, StartedAt: e.StartedAt, Running: running, Bytes: e.output.size}
+	info := Info{ID: e.ID, Command: e.Command, Cwd: e.Cwd, StartedAt: e.StartedAt, Running: running, Durable: e.durable, Bytes: e.output.size, OutputTruncated: e.output.truncated}
 	if !running {
 		code := e.exitCode
 		info.ExitCode = &code
@@ -189,9 +629,29 @@ func (e *Entry) Info() Info {
 	return info
 }
 
+// OutputChanged returns a one-shot notification channel.  Readers capture it
+// before inspecting output so a concurrent write cannot be missed; the
+// channel is replaced after every signal.
+func (e *Entry) OutputChanged() <-chan struct{} {
+	e.changeMu.Lock()
+	defer e.changeMu.Unlock()
+	return e.changed
+}
+
+func (e *Entry) signalOutputChanged() {
+	e.changeMu.Lock()
+	close(e.changed)
+	e.changed = make(chan struct{})
+	e.changeMu.Unlock()
+}
+
 func (e *Entry) Output(offset, limit int) ([]byte, int, bool, error) {
 	e.output.mu.Lock()
 	defer e.output.mu.Unlock()
+	e.output.refreshSizeLocked()
+	if e.output.file == nil {
+		return nil, 0, false, os.ErrClosed
+	}
 	if offset < 0 || offset > e.output.size {
 		return nil, e.output.size, false, errors.New("invalid offset")
 	}
@@ -240,6 +700,9 @@ func (e *Entry) Kill() error {
 		return nil
 	default:
 	}
+	if e.cmd == nil {
+		return killPID(e.pid)
+	}
 	return killProcessTree(e.cmd, e.job)
 }
 
@@ -251,7 +714,9 @@ func (m *Manager) KillAll() {
 	}
 	m.mu.RUnlock()
 	for _, entry := range entries {
-		_ = entry.Kill()
+		if !entry.durable {
+			_ = entry.Kill()
+		}
 	}
 }
 
@@ -264,6 +729,12 @@ func (m *Manager) Close() {
 	}
 	m.mu.RUnlock()
 	for _, entry := range entries {
+		if entry.durable {
+			// Durable children intentionally outlive this Agent instance. Close
+			// only the Agent's descriptor and retain record/output for recovery.
+			entry.output.closeKeep()
+			continue
+		}
 		finished := false
 		select {
 		case <-entry.done:
@@ -283,10 +754,14 @@ func (m *Manager) Close() {
 }
 
 type lockedOutput struct {
-	mu   sync.Mutex
-	file *os.File
-	path string
-	size int
+	mu        sync.Mutex
+	file      *os.File
+	path      string
+	size      int
+	maxBytes  int64
+	truncated bool
+	direct    bool
+	onChange  func()
 }
 
 func (o *lockedOutput) Write(p []byte) (int, error) {
@@ -295,9 +770,55 @@ func (o *lockedOutput) Write(p []byte) (int, error) {
 	if o.file == nil {
 		return 0, os.ErrClosed
 	}
-	n, err := o.file.Write(p)
+	if o.maxBytes > 0 && int64(o.size) >= o.maxBytes {
+		o.truncated = true
+		return len(p), nil
+	}
+	write := p
+	if o.maxBytes > 0 {
+		remaining := o.maxBytes - int64(o.size)
+		if int64(len(write)) > remaining {
+			write = write[:remaining]
+			o.truncated = true
+		}
+	}
+	n, err := o.file.Write(write)
 	o.size += n
+	if o.onChange != nil {
+		o.onChange()
+	}
+	if o.truncated && err == nil {
+		// Report the original buffer as consumed so os/exec does not turn an
+		// intentional capture limit into a failed command.
+		return len(p), nil
+	}
 	return n, err
+}
+
+func (o *lockedOutput) refreshSizeLocked() {
+	if !o.direct || o.file == nil {
+		return
+	}
+	if info, err := o.file.Stat(); err == nil {
+		if o.maxBytes > 0 && info.Size() > o.maxBytes {
+			if err := o.file.Truncate(o.maxBytes); err == nil {
+				o.truncated = true
+			}
+			info, _ = o.file.Stat()
+		}
+		if info != nil {
+			o.size = int(info.Size())
+		}
+	}
+}
+
+func (o *lockedOutput) closeKeep() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.file != nil {
+		_ = o.file.Close()
+		o.file = nil
+	}
 }
 
 func (o *lockedOutput) remove() {

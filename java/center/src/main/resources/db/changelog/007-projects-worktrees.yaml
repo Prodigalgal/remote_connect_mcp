@@ -1,0 +1,154 @@
+databaseChangeLog:
+  - changeSet:
+      id: 007-projects-worktrees
+      author: remote-connect-mcp
+      labels: projects
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - createTable:
+            tableName: rcm_project
+            columns:
+              - column:
+                  name: project_id
+                  type: varchar(180)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: agent_id
+                  type: varchar(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: name
+                  type: varchar(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: root_path
+                  type: text
+                  constraints:
+                    nullable: false
+              - column:
+                  name: repository_path
+                  type: text
+                  constraints:
+                    nullable: false
+              - column:
+                  name: default_ref
+                  type: varchar(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: rcm_project
+            baseColumnNames: agent_id
+            constraintName: fk_rcm_project_agent
+            referencedTableName: rcm_agent
+            referencedColumnNames: agent_id
+            onDelete: CASCADE
+        - addUniqueConstraint:
+            tableName: rcm_project
+            columnNames: agent_id, name
+            constraintName: uq_rcm_project_agent_name
+        - createIndex:
+            indexName: idx_rcm_project_agent
+            tableName: rcm_project
+            columns:
+              - column:
+                  name: agent_id
+              - column:
+                  name: name
+        - createTable:
+            tableName: rcm_project_worktree
+            columns:
+              - column:
+                  name: worktree_id
+                  type: varchar(180)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: project_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: ref
+                  type: varchar(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: path
+                  type: text
+                  constraints:
+                    nullable: false
+              - column:
+                  name: operation
+                  type: varchar(16)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: task_id
+                  type: varchar(128)
+              - column:
+                  name: idempotency_key
+                  type: varchar(256)
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: rcm_project_worktree
+            baseColumnNames: project_id
+            constraintName: fk_rcm_worktree_project
+            referencedTableName: rcm_project
+            referencedColumnNames: project_id
+            onDelete: CASCADE
+        - addUniqueConstraint:
+            tableName: rcm_project_worktree
+            columnNames: project_id, idempotency_key
+            constraintName: uq_rcm_worktree_idempotency
+        - createIndex:
+            indexName: idx_rcm_worktree_project_status
+            tableName: rcm_project_worktree
+            columns:
+              - column:
+                  name: project_id
+              - column:
+                  name: status
+              - column:
+                  name: created_at
+        - sql:
+            sql: CREATE UNIQUE INDEX uq_rcm_worktree_project_ref_active ON rcm_project_worktree (project_id, ref) WHERE status <> 'removed'
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS uq_rcm_worktree_project_ref_active
+        - dropTable:
+            tableName: rcm_project_worktree
+        - dropTable:
+            tableName: rcm_project

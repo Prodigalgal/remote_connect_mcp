@@ -1,9 +1,22 @@
 #!/usr/bin/env sh
 set -eu
 
+if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+  echo "Local compilation is disabled. Use the GitHub Actions Java/React and release workflows." >&2
+  exit 2
+fi
+
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
-command -v go >/dev/null 2>&1 || { echo "Go was not found." >&2; exit 1; }
+
+"$ROOT/scripts/build-java.sh"
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "Go compatibility baseline skipped because Go is not installed."
+  exit 0
+fi
+
+echo "== Go compatibility baseline =="
 
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || go env GOVERSION)
 go test -mod=mod ./...

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Prodigalgal/remote_connect_mcp/internal/agent"
 	"github.com/Prodigalgal/remote_connect_mcp/internal/updater"
+	"github.com/Prodigalgal/remote_connect_mcp/internal/workspace"
 )
 
 var version = "dev"
@@ -49,21 +50,26 @@ func runAgent(ctx context.Context, config config) error {
 	}
 	defer closeLog()
 	client, err := agent.New(agent.Config{
-		CenterURL: config.centerURL, EnrollmentToken: config.enrollmentToken, Name: config.name,
-		DefaultCWD: config.defaultCWD, StateDir: config.stateDir, MaxConcurrency: config.maxConcurrency,
+		CenterURL: config.centerURL, EnrollmentToken: config.enrollmentToken, Name: config.name, HostID: config.hostID,
+		DefaultCWD: config.defaultCWD, ScopeMode: config.scopeMode, WorkspaceRoot: config.workspaceRoot,
+		Capabilities: config.capabilities, DesktopEnabled: config.desktopEnabled,
+		StateDir: config.stateDir, MaxConcurrency: config.maxConcurrency, MaxOutputBytes: config.maxOutputBytes,
 		Version: version, Logger: logger,
 	})
 	if err != nil {
 		return err
 	}
 	defer client.Close()
-	logger.Info("agent started", "name", config.name, "center", config.centerURL, "os", runtime.GOOS, "arch", runtime.GOARCH, "version", version)
+	logger.Info("agent started", "name", config.name, "host_id", config.hostID, "center", config.centerURL, "os", runtime.GOOS, "arch", runtime.GOARCH, "version", version, "scope_mode", config.scopeMode, "workspace_root", config.workspaceRoot, "desktop_enabled", config.desktopEnabled)
 	return client.Run(ctx)
 }
 
 type config struct {
-	centerURL, enrollmentToken, name, defaultCWD, stateDir, logFile string
-	maxConcurrency                                                  int
+	centerURL, enrollmentToken, name, hostID, defaultCWD, scopeMode, workspaceRoot, stateDir, logFile string
+	capabilities                                                                                      []string
+	maxConcurrency                                                                                    int
+	maxOutputBytes                                                                                    int64
+	desktopEnabled                                                                                    bool
 }
 
 func loadConfig() (config, error) {
@@ -81,14 +87,26 @@ func loadConfig() (config, error) {
 	if err != nil {
 		return config{}, errors.New("invalid REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY")
 	}
+	maxOutputBytes, err := strconv.ParseInt(env("REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES", "67108864"), 10, 64)
+	if err != nil || maxOutputBytes < 1024*1024 || maxOutputBytes > 1024*1024*1024 {
+		return config{}, errors.New("REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES must be between 1048576 and 1073741824")
+	}
+	desktopEnabled, err := strconv.ParseBool(env("REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED", "false"))
+	if err != nil {
+		return config{}, errors.New("invalid REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED")
+	}
 	result := config{
 		centerURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_AGENT_CENTER_URL")), "/"),
 		enrollmentToken: strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN")),
 		name:            env("REMOTE_CONNECT_MCP_AGENT_NAME", hostname),
+		hostID:          env("REMOTE_CONNECT_MCP_AGENT_HOST_ID", hostname),
 		defaultCWD:      env("REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD", cwd),
+		scopeMode:       env("REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE", workspace.ModeUnrestricted),
+		workspaceRoot:   strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT")),
+		capabilities:    parseCapabilities(os.Getenv("REMOTE_CONNECT_MCP_AGENT_CAPABILITIES")),
 		stateDir:        stateDir,
 		logFile:         strings.TrimSpace(os.Getenv("REMOTE_CONNECT_MCP_AGENT_LOG_FILE")),
-		maxConcurrency:  maxConcurrency,
+		maxConcurrency:  maxConcurrency, maxOutputBytes: maxOutputBytes, desktopEnabled: desktopEnabled,
 	}
 	if result.centerURL == "" || result.enrollmentToken == "" {
 		return config{}, errors.New("REMOTE_CONNECT_MCP_AGENT_CENTER_URL and REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN are required")
@@ -129,4 +147,12 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func parseCapabilities(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == '\n' || r == '\r' || r == ';' })
+	return workspace.NormalizeCapabilities(parts)
 }

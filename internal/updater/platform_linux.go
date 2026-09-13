@@ -3,8 +3,10 @@
 package updater
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -19,29 +21,62 @@ func launchHelper(helper, encodedConfig, key string) error {
 }
 
 func stopService(name string, timeout time.Duration) error {
-	command := exec.Command("systemctl", "stop", name)
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := runSystemctl(timeout, "stop", name)
+	if err != nil {
 		return fmt.Errorf("systemctl stop: %w: %s", err, output)
 	}
 	return waitSystemdState(name, "inactive", timeout)
 }
 
 func startService(name string, timeout time.Duration) error {
-	command := exec.Command("systemctl", "start", name)
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := runSystemctl(timeout, "start", name)
+	if err != nil {
 		return fmt.Errorf("systemctl start: %w: %s", err, output)
 	}
 	return waitSystemdState(name, "active", timeout)
 }
 
-func waitSystemdState(name, expected string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		output, _ := exec.Command("systemctl", "is-active", name).Output()
-		if string(output) == expected+"\n" {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
+func runSystemctl(timeout time.Duration, action, name string) ([]byte, error) {
+	if timeout <= 0 {
+		return nil, fmt.Errorf("systemctl %s deadline must be positive", action)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	// Neither stop nor start should be coupled to the lifetime of the Agent
+	// process.  Stop is followed by an explicit inactive-state wait, and start
+	// by an active-state wait.  In particular, `systemctl --wait start` can
+	// keep a transient upgrade helper alive until its timeout and then cancel
+	// the newly started service.
+	output, err := exec.CommandContext(ctx, "systemctl", action, name).CombinedOutput()
+	if ctx.Err() != nil {
+		return output, ctx.Err()
+	}
+	return output, err
+}
+
+func verifySystemdState(name, expected string) error {
+	output, _ := exec.Command("systemctl", "is-active", name).Output()
+	// is-active deliberately exits non-zero for inactive/failed states.  The
+	// state text is authoritative here; requiring err == nil makes the normal
+	// inactive result impossible to accept after a successful stop.
+	if strings.TrimSpace(string(output)) == expected {
+		return nil
 	}
 	return fmt.Errorf("service %s did not become %s", name, expected)
+}
+
+func waitSystemdState(name, expected string, timeout time.Duration) error {
+	if timeout <= 0 {
+		return fmt.Errorf("service state deadline must be positive")
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if verifySystemdState(name, expected) == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("service %s did not become %s", name, expected)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }

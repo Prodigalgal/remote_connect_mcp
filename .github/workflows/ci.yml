@@ -10,6 +10,15 @@ permissions:
   contents: read
 
 jobs:
+  event-driven-gate:
+    name: Event-driven wait path gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Reject fixed-interval production waits
+        shell: bash
+        run: bash scripts/check-event-driven.sh
+
   test:
     strategy:
       fail-fast: false

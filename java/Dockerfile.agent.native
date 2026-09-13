@@ -1,0 +1,25 @@
+# Pin the multi-architecture builder manifest.  Update intentionally when
+# moving the GraalVM line and record the new digest in the release notes.
+ARG BUILDER_IMAGE=ghcr.io/graalvm/native-image-community:25@sha256:0d936f32bb8acb5bc60c41b33e05f064d7a6aaf36b726538296c54949bd4a3c0
+FROM ${BUILDER_IMAGE} AS build
+ARG RCM_CI_BUILD=false
+WORKDIR /src
+RUN test "$RCM_CI_BUILD" = "true" || (echo "Native Image Docker builds are GitHub Actions-only" >&2 && exit 2)
+ENV GITHUB_ACTIONS=${RCM_CI_BUILD}
+COPY . .
+RUN chmod +x ./gradlew && ./gradlew :agent:nativeCompile --no-daemon --no-parallel
+
+# See the Center Dockerfile: release jobs use this scratch target to export
+# only the Agent executable and its adjacent Native Image libraries.
+FROM scratch AS artifact
+COPY --from=build /src/agent/build/native/nativeCompile/ /
+
+FROM debian:13-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 65532 --no-create-home rcm
+COPY --from=build /src/agent/build/native/nativeCompile/ /opt/rcm-agent/
+RUN chmod 0755 /opt/rcm-agent/rcm-agent
+USER 65532:65532
+ENTRYPOINT ["/opt/rcm-agent/rcm-agent", "--run"]

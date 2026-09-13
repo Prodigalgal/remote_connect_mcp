@@ -1,0 +1,25 @@
+databaseChangeLog:
+  - changeSet:
+      id: 009-task-lease-index
+      author: remote-connect-mcp
+      labels: task-lease
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - createIndex:
+            indexName: idx_rcm_task_lease_repair
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: agent_id
+              - column:
+                  name: status
+              - column:
+                  name: lease_until
+      rollback:
+        - dropIndex:
+            indexName: idx_rcm_task_lease_repair
+            tableName: rcm_task

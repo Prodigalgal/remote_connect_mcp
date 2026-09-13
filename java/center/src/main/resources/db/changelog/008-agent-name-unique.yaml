@@ -1,0 +1,22 @@
+databaseChangeLog:
+  - changeSet:
+      id: 008-agent-name-unique
+      author: remote-connect-mcp
+      labels: agent-identity
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+        - sqlCheck:
+            expectedResult: "0"
+            sql: SELECT COUNT(*) FROM (SELECT machine_name FROM rcm_agent GROUP BY machine_name HAVING COUNT(*) > 1) duplicates
+      changes:
+        - addUniqueConstraint:
+            tableName: rcm_agent
+            columnNames: machine_name
+            constraintName: uq_rcm_agent_machine_name
+      rollback:
+        - dropUniqueConstraint:
+            tableName: rcm_agent
+            constraintName: uq_rcm_agent_machine_name

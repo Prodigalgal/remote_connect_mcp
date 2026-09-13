@@ -1,0 +1,27 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-task-state-fields
+      author: remote-connect-mcp
+      labels: task-state
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: exit_code
+                  type: integer
+              - column:
+                  name: dispatched_at
+                  type: timestamptz
+      rollback:
+        - dropColumn:
+            tableName: rcm_task
+            columnName: dispatched_at
+        - dropColumn:
+            tableName: rcm_task
+            columnName: exit_code

@@ -1,0 +1,40 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-task-output
+      author: remote-connect-mcp
+      labels: task-output
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - createTable:
+            tableName: rcm_task_output
+            columns:
+              - column:
+                  name: task_id
+                  type: varchar(128)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: output_data
+                  type: bytea
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: rcm_task_output
+            baseColumnNames: task_id
+            constraintName: fk_rcm_task_output_task
+            referencedTableName: rcm_task
+            referencedColumnNames: task_id
+            onDelete: CASCADE
+      rollback:
+        - dropTable:
+            tableName: rcm_task_output

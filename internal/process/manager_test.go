@@ -104,3 +104,73 @@ func TestManagerOutputAndKill(t *testing.T) {
 		t.Fatalf("process output was not removed: %v", err)
 	}
 }
+
+func TestManagerOutputLimitMarksTruncation(t *testing.T) {
+	manager := NewManagerWithLimit(t.TempDir(), 4)
+	t.Cleanup(manager.Close)
+	command := fmt.Sprintf("\"%s\" -test.run=TestHelperProcess --", os.Args[0])
+	if runtime.GOOS == "windows" {
+		if _, err := exec.LookPath("pwsh.exe"); err == nil {
+			command = fmt.Sprintf("& '%s' '-test.run=TestHelperProcess' '--'", strings.ReplaceAll(os.Args[0], "'", "''"))
+		}
+	}
+	entry, err := manager.Start(context.Background(), command, t.TempDir(), map[string]string{
+		"REMOTE_CONNECT_MCP_PROCESS_HELPER": "1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Wait()
+	info := entry.Info()
+	if !info.OutputTruncated || info.Bytes != 4 {
+		t.Fatalf("limited process info = %+v", info)
+	}
+	data, _, _, err := entry.Output(0, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("limited output length = %d", len(data))
+	}
+}
+
+func TestDurableProcessCanBeDiscoveredByNewManager(t *testing.T) {
+	dir := t.TempDir()
+	command := fmt.Sprintf("\"%s\" -test.run=TestHelperProcess --", os.Args[0])
+	if runtime.GOOS == "windows" {
+		if _, err := exec.LookPath("pwsh.exe"); err == nil {
+			command = fmt.Sprintf("& '%s' '-test.run=TestHelperProcess' '--'", strings.ReplaceAll(os.Args[0], "'", "''"))
+		}
+	}
+	manager := NewManagerWithLimit(dir, 1024)
+	entry, err := manager.StartDurable("task-durable", command, t.TempDir(), map[string]string{
+		"REMOTE_CONNECT_MCP_PROCESS_HELPER": "1",
+		"REMOTE_CONNECT_MCP_PROCESS_SLEEP":  "1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID == "" {
+		t.Fatal("durable process has no id")
+	}
+	manager.Close()
+
+	reopened := NewManagerWithLimit(dir, 1024)
+	defer reopened.Close()
+	recovered, ok := reopened.DurableTask("task-durable")
+	if !ok {
+		t.Fatal("durable task was not discovered")
+	}
+	recovered.Wait()
+	info := recovered.Info()
+	if info.Running {
+		t.Fatalf("recovered process still running: %+v", info)
+	}
+	data, _, _, err := recovered.Output(0, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "helper-output") {
+		t.Fatalf("recovered output = %q", data)
+	}
+}

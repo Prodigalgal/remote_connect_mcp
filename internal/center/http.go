@@ -61,6 +61,9 @@ func NewHTTPHandler(store *Store, config HTTPConfig) (http.Handler, error) {
 	adminHandler := auth.BearerValidator(func(token string) bool {
 		return store.AuthenticateAccessToken(AccessTokenAdmin, token, time.Now().UTC())
 	}, http.HandlerFunc(server.serveAdminAPI))
+	metricsHandler := auth.BearerValidator(func(token string) bool {
+		return store.AuthenticateAccessToken(AccessTokenAdmin, token, time.Now().UTC())
+	}, http.HandlerFunc(server.serveMetrics))
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": config.Version})
@@ -70,6 +73,7 @@ func NewHTTPHandler(store *Store, config HTTPConfig) (http.Handler, error) {
 	})
 	mux.Handle("/mcp", mcpHandler)
 	mux.Handle("/api/v1/", adminHandler)
+	mux.Handle("/metrics", metricsHandler)
 	mux.HandleFunc("/agent/v1/register", server.serveRegister)
 	mux.HandleFunc("/agent/v1/", server.serveAgentAPI)
 	mux.HandleFunc("/agent-artifacts/", server.serveAgentArtifact)
@@ -90,6 +94,16 @@ func NewHTTPHandler(store *Store, config HTTPConfig) (http.Handler, error) {
 	return requestAudit(config.Logger, mux), nil
 }
 
+func (s *HTTPServer) serveMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, s.store.MetricsText(time.Now().UTC()))
+}
+
 func (s *HTTPServer) serveRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, http.MethodPost)
@@ -100,6 +114,15 @@ func (s *HTTPServer) serveRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// Registration metadata is carried in an optional header to keep the JSON
+	// body compatible with older Centers. Enrollment authentication still
+	// applies before any resulting machine credential is issued.
+	metadata, err := decodeAgentMetadata(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	mergeRegistrationMetadata(&req, metadata)
 	token := bearerValue(r)
 	result, matched, err := s.store.RegisterWithScopedEnrollmentToken(req, token, time.Now().UTC())
 	if matched {
@@ -120,6 +143,24 @@ func (s *HTTPServer) serveRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, result)
+}
+
+func mergeRegistrationMetadata(request *protocol.RegisterRequest, metadata protocol.AgentMetadata) {
+	if request == nil {
+		return
+	}
+	if value := strings.TrimSpace(metadata.HostID); value != "" {
+		request.HostID = value
+	}
+	if value := strings.TrimSpace(metadata.ScopeMode); value != "" {
+		request.ScopeMode = value
+	}
+	if value := strings.TrimSpace(metadata.WorkspaceRoot); value != "" {
+		request.WorkspaceRoot = value
+	}
+	if capabilities := metadata.Capabilities; len(capabilities) > 0 {
+		request.Capabilities = append([]string(nil), capabilities...)
+	}
 }
 
 func (s *HTTPServer) serveAgentAPI(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +187,9 @@ func (s *HTTPServer) serveAgentAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		case "output":
 			s.serveAgentTaskOutput(w, r, machineID, parts[1])
+			return
+		case "artifact":
+			s.serveAgentTaskArtifact(w, r, machineID, parts[1])
 			return
 		}
 	}
@@ -175,6 +219,19 @@ func (s *HTTPServer) serveAgentPoll(w http.ResponseWriter, r *http.Request, mach
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
+	waitMs := 20_000
+	if raw := strings.TrimSpace(r.URL.Query().Get("wait_ms")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 || parsed > 25_000 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "wait_ms must be between 0 and 25000"})
+			return
+		}
+		waitMs = parsed
+	}
+	// The Go compatibility Center has always held this endpoint until a
+	// change or its deadline.  Advertise that contract so a Java Agent does
+	// not append a second fixed sleep after an otherwise healthy response.
+	w.Header().Set("X-RCM-Long-Poll", "accepted")
 	var req protocol.PollRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -185,24 +242,44 @@ func (s *HTTPServer) serveAgentPoll(w http.ResponseWriter, r *http.Request, mach
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	deadline := time.NewTimer(20 * time.Second)
+	deadline := time.NewTimer(time.Duration(waitMs) * time.Millisecond)
 	defer deadline.Stop()
 	for {
+		// Capture the machine-scoped channel before the authoritative poll. A
+		// task can be created between the read and wait; capturing first closes
+		// that race without broadcasting the event to every Agent.
+		var changed <-chan struct{}
+		if waitMs > 0 {
+			changed = s.store.MachineChanged(machineID)
+		}
 		result, err := s.store.Poll(machineID, req, metadata)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		if result.Task != nil || len(result.CancelTaskIDs) > 0 {
+		if result.Task != nil || result.Upgrade != nil || len(result.CancelTaskIDs) > 0 {
 			writeJSON(w, http.StatusOK, result)
 			return
 		}
-		changed := s.store.Changed()
+		if waitMs == 0 {
+			// An explicit zero is a snapshot request. Do not race a ready
+			// notification and accidentally turn it into a held request.
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
 		select {
 		case <-r.Context().Done():
 			return
 		case <-deadline.C:
-			writeJSON(w, http.StatusOK, result)
+			// A lost wake must not return a stale snapshot. Perform one final
+			// authoritative poll at the request deadline; this is an explicit
+			// boundary read, not a periodic retry loop.
+			finalResult, finalErr := s.store.Poll(machineID, req, metadata)
+			if finalErr != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": finalErr.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, finalResult)
 			return
 		case <-changed:
 		}
@@ -238,6 +315,9 @@ func (s *HTTPServer) serveAgentTaskState(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Task-Output-Truncated")), "1") {
+		req.OutputTruncated = true
+	}
 	task, err := s.store.UpdateTask(machineID, taskID, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -269,8 +349,63 @@ func (s *HTTPServer) serveAgentTaskOutput(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, protocol.OutputResponse{NextOffset: next})
 }
 
+func (s *HTTPServer) serveAgentTaskArtifact(w http.ResponseWriter, r *http.Request, machineID, taskID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var req protocol.ArtifactUploadRequest
+	if err := decodeJSONLimit(r, &req, 12*1024*1024); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.MIMEType) != "image/png" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "only image/png artifacts are supported"})
+		return
+	}
+	if len(req.Data) > 12*1024*1024 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "artifact payload is too large"})
+		return
+	}
+	data, err := base64.StdEncoding.DecodeString(req.Data)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid base64 artifact"})
+		return
+	}
+	task, err := s.store.SaveArtifact(machineID, taskID, req.MIMEType, data)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"task_id": task.ID, "bytes": task.ArtifactBytes, "sha256": task.ArtifactSHA256})
+}
+
 func (s *HTTPServer) serveAdminAPI(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/")
+	if path == "events" && r.Method == http.MethodGet {
+		waitMs := 25000
+		if raw := strings.TrimSpace(r.URL.Query().Get("wait_ms")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 || parsed > 25000 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "wait_ms must be between 0 and 25000"})
+				return
+			}
+			waitMs = parsed
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		changed := s.store.Changed()
+		timer := time.NewTimer(time.Duration(waitMs) * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-changed:
+			writeJSON(w, http.StatusOK, map[string]any{"changed": true})
+		case <-timer.C:
+			writeJSON(w, http.StatusOK, map[string]any{"changed": false})
+		}
+		return
+	}
 	if path == "machines" && r.Method == http.MethodGet {
 		writeJSON(w, http.StatusOK, map[string]any{"machines": s.store.ListMachines(time.Now().UTC())})
 		return
@@ -429,6 +564,20 @@ func (s *HTTPServer) serveAdminAPI(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"text": string(data), "cursor": offset, "next_cursor": next, "more": more})
+			return
+		}
+		if len(parts) == 3 && parts[2] == "artifact" && r.Method == http.MethodGet {
+			data, mimeType, hash, err := s.store.ReadArtifact(taskID)
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", mimeType)
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Artifact-SHA256", hash)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
 			return
 		}
 	}
@@ -607,8 +756,15 @@ func fetchReleaseSHA(ctx context.Context, url string) (string, error) {
 }
 
 func decodeJSON(r *http.Request, target any) error {
+	return decodeJSONLimit(r, target, 2*1024*1024)
+}
+
+func decodeJSONLimit(r *http.Request, target any, limit int64) error {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 2*1024*1024))
+	if limit < 1 {
+		limit = 2 * 1024 * 1024
+	}
+	decoder := json.NewDecoder(io.LimitReader(r.Body, limit))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("invalid JSON: %w", err)
@@ -665,12 +821,32 @@ func requestAudit(logger *slog.Logger, next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if !safeRequestID(requestID) {
+			requestID, _ = randomID("req")
+		}
+		if requestID != "" {
+			w.Header().Set("X-Request-ID", requestID)
+		}
 		recorder := &auditResponseWriter{ResponseWriter: w}
 		next.ServeHTTP(recorder, r)
 		status := recorder.status
 		if status == 0 {
 			status = http.StatusOK
 		}
-		logger.InfoContext(context.Background(), "http request", "method", r.Method, "path", r.URL.Path, "status", status, "duration_ms", time.Since(start).Milliseconds())
+		logger.InfoContext(context.Background(), "http request", "request_id", requestID, "method", r.Method, "path", r.URL.Path, "status", status, "duration_ms", time.Since(start).Milliseconds())
 	})
+}
+
+func safeRequestID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("._:-", character) {
+			continue
+		}
+		return false
+	}
+	return true
 }

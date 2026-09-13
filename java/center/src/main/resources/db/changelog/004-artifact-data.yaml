@@ -1,0 +1,23 @@
+databaseChangeLog:
+  - changeSet:
+      id: 004-artifact-data
+      author: remote-connect-mcp
+      labels: artifact
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_task_artifact
+            columns:
+              - column:
+                  name: artifact_data
+                  type: bytea
+                  constraints:
+                    nullable: true
+      rollback:
+        - dropColumn:
+            tableName: rcm_task_artifact
+            columnName: artifact_data

@@ -6,9 +6,20 @@ param(
 	[string]$CenterUrl = "https://agent.example.invalid",
     [string]$EnrollmentToken = $env:REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN,
     [string]$AgentName = $env:COMPUTERNAME,
+    [string]$HostId = "",
     [string]$DefaultCwd = "C:\",
+    [ValidateSet("unrestricted", "workspace")]
+    [string]$ScopeMode = "unrestricted",
+    [string]$WorkspaceRoot = "",
+    [string]$Capabilities = "command,durable_tasks",
+    [string]$Version = "dev",
+    [string]$BrowserAdapter = "",
+    [switch]$DesktopEnabled,
     [ValidateRange(1, 32)]
     [int]$MaxConcurrency = 1,
+    [ValidateRange(1048576, 1073741824)]
+    [long]$MaxOutputBytes = 67108864,
+    [long]$MaxAggregateOutputBytes = 0,
     [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
     [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent"
 )
@@ -50,11 +61,39 @@ if ([string]::IsNullOrWhiteSpace($EnrollmentToken)) {
 if ($EnrollmentToken.Contains("`r") -or $EnrollmentToken.Contains("`n")) {
     throw "EnrollmentToken must be one line."
 }
+if ($Capabilities.Contains("`r") -or $Capabilities.Contains("`n")) {
+    throw "Capabilities must be one line."
+}
+if ($Version.Contains("`r") -or $Version.Contains("`n") -or [string]::IsNullOrWhiteSpace($Version)) {
+    throw "Version must be a non-empty one-line value."
+}
+if ($BrowserAdapter.Contains("`r") -or $BrowserAdapter.Contains("`n")) {
+    throw "BrowserAdapter must be one line."
+}
 if ([string]::IsNullOrWhiteSpace($AgentName)) {
     throw "AgentName is required."
 }
+if ($HostId.Contains("`r") -or $HostId.Contains("`n")) {
+    throw "HostId must be one line."
+}
 if (-not (Test-Path -LiteralPath $DefaultCwd -PathType Container)) {
     throw "DefaultCwd does not exist: $DefaultCwd"
+}
+if ($ScopeMode -eq "workspace") {
+    if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
+        $WorkspaceRoot = $DefaultCwd
+    }
+    if (-not (Test-Path -LiteralPath $WorkspaceRoot -PathType Container)) {
+        throw "WorkspaceRoot does not exist: $WorkspaceRoot"
+    }
+}
+
+if ($MaxAggregateOutputBytes -eq 0) {
+    $product = [decimal]$MaxOutputBytes * [decimal]$MaxConcurrency
+    $MaxAggregateOutputBytes = [long][Math]::Max([decimal]$MaxOutputBytes, [Math]::Min([decimal]268435456, $product))
+}
+if ($MaxAggregateOutputBytes -lt $MaxOutputBytes -or $MaxAggregateOutputBytes -lt 1048576 -or $MaxAggregateOutputBytes -gt 4294967296) {
+    throw "MaxAggregateOutputBytes must be between MaxOutputBytes and 4 GiB."
 }
 
 $source = (Resolve-Path -LiteralPath $BinaryPath).Path
@@ -81,10 +120,21 @@ $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_CENTER_URL=$($CenterUrl.TrimEnd('/'))",
     "REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN=$($EnrollmentToken.Trim())",
     "REMOTE_CONNECT_MCP_AGENT_NAME=$($AgentName.Trim())",
+    "REMOTE_CONNECT_MCP_AGENT_HOST_ID=$($HostId.Trim())",
     "REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD=$DefaultCwd",
+    "REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE=$ScopeMode",
+    "REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT=$WorkspaceRoot",
+    "REMOTE_CONNECT_MCP_AGENT_CAPABILITIES=$Capabilities",
+    "REMOTE_CONNECT_MCP_AGENT_VERSION=$($Version.Trim())",
+    "REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER=$($BrowserAdapter.Trim())",
+    "REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=$($DesktopEnabled.IsPresent.ToString().ToLowerInvariant())",
     "REMOTE_CONNECT_MCP_AGENT_STATE_DIR=$StateDir",
     "REMOTE_CONNECT_MCP_AGENT_LOG_FILE=$(Join-Path $StateDir 'agent.log')",
-    "REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY=$MaxConcurrency"
+    "REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY=$MaxConcurrency",
+    "REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES=$MaxOutputBytes",
+    "REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES=$MaxAggregateOutputBytes",
+    "REMOTE_CONNECT_MCP_AGENT_BINARY_PATH=$destination",
+    "REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME=$serviceName"
 )
 New-ItemProperty -Path $serviceRegistry -Name Environment -PropertyType MultiString -Value $environment -Force | Out-Null
 
@@ -101,6 +151,10 @@ $installed = Get-Service -Name $serviceName
     Status = $installed.Status
     StartType = $installed.StartType
     AgentName = $AgentName
+    ScopeMode = $ScopeMode
+    WorkspaceRoot = $WorkspaceRoot
+    MaxOutputBytes = $MaxOutputBytes
+    MaxAggregateOutputBytes = $MaxAggregateOutputBytes
     Binary = $destination
     StateDir = $StateDir
     LogFile = Join-Path $StateDir "agent.log"
