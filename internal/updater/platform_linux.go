@@ -58,8 +58,11 @@ func runSystemctl(timeout time.Duration, action, name string) ([]byte, error) {
 }
 
 func verifySystemdState(name, expected string) error {
-	output, err := exec.Command("systemctl", "is-active", name).Output()
-	if err == nil && strings.TrimSpace(string(output)) == expected {
+	output, _ := exec.Command("systemctl", "is-active", name).Output()
+	// is-active deliberately exits non-zero for inactive/failed states.  The
+	// state text is authoritative here; requiring err == nil makes the normal
+	// inactive result impossible to accept after a successful stop.
+	if strings.TrimSpace(string(output)) == expected {
 		return nil
 	}
 	return fmt.Errorf("service %s did not become %s", name, expected)
