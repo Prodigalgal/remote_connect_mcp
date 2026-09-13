@@ -4,6 +4,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
+import com.prodigalgal.remoteconnectmcp.protocol.ProtocolValidation;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputRequest;
