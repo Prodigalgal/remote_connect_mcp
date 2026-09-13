@@ -335,10 +335,15 @@ final class AgentUpgradeHelper {
     private static void stopService(String service) throws IOException, InterruptedException {
         if (service == null || service.isBlank()) return;
         // A long-polling Agent can keep the unit in `deactivating` after the
-        // systemctl command itself returns.  Waiting for the stop job avoids
-        // replacing the native bundle while the old process still owns files
-        // or the listening connection.
-        runServiceCommand(isWindows() ? List.of("sc.exe", "stop", service) : List.of("systemctl", "--wait", "stop", service), false);
+        // systemctl command itself returns.  systemd has no --wait option for
+        // stop, so wait for ActiveState=inactive before replacing the bundle.
+        if (isWindows()) {
+            runServiceCommand(List.of("sc.exe", "stop", service), false);
+            waitWindowsServiceStopped(service);
+        } else {
+            runServiceCommand(List.of("systemctl", "stop", service), false);
+            waitUnixServiceState(service, "inactive");
+        }
     }
 
     private static void startRuntime(Config config) throws IOException, InterruptedException {
@@ -369,6 +374,28 @@ final class AgentUpgradeHelper {
             throw new IOException("service command timed out");
         }
         if (mustSucceed && process.exitValue() != 0) throw new IOException("service command failed with code " + process.exitValue());
+    }
+
+    private static void waitUnixServiceState(String service, String expected) throws IOException, InterruptedException {
+        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
+        while (true) {
+            var process = new ProcessBuilder("systemctl", "is-active", service).redirectErrorStream(true).start();
+            var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            if (process.waitFor(5, TimeUnit.SECONDS) && expected.equals(output)) return;
+            if (System.nanoTime() >= deadline) throw new IOException("service " + service + " did not become " + expected);
+            Thread.sleep(250L);
+        }
+    }
+
+    private static void waitWindowsServiceStopped(String service) throws IOException, InterruptedException {
+        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
+        while (true) {
+            var process = new ProcessBuilder("sc.exe", "query", service).redirectErrorStream(true).start();
+            var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            if (process.waitFor(5, TimeUnit.SECONDS) && (output.contains("STOPPED") || output.contains("1060"))) return;
+            if (System.nanoTime() >= deadline) throw new IOException("service " + service + " did not become stopped");
+            Thread.sleep(250L);
+        }
     }
 
     private static void writeResult(Path stateDir, Result result) throws IOException {

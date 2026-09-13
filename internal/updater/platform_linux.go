@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -24,7 +25,7 @@ func stopService(name string, timeout time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("systemctl stop: %w: %s", err, output)
 	}
-	return verifySystemdState(name, "inactive")
+	return waitSystemdState(name, "inactive", timeout)
 }
 
 func startService(name string, timeout time.Duration) error {
@@ -41,13 +42,15 @@ func runSystemctl(timeout time.Duration, action, name string) ([]byte, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	// `systemctl stop` normally returns when the stop job is queued, while a
-	// service with a long-polling HTTP request can still be in `deactivating`.
-	// The helper must not inspect or replace the executable until systemd has
-	// finished the job; otherwise the immediate is-active check races the unit
-	// teardown and can leave the machine offline.  --wait is supported by the
-	// systemd versions used by the Linux release targets.
-	output, err := exec.CommandContext(ctx, "systemctl", "--wait", action, name).CombinedOutput()
+	args := []string{}
+	// systemd supports --wait for start/restart, but not for stop.  Stop is
+	// followed by waitSystemdState below because long-polling Agents can remain
+	// in `deactivating` after the stop job is queued.
+	if action == "start" || action == "restart" {
+		args = append(args, "--wait")
+	}
+	args = append(args, action, name)
+	output, err := exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
 	if ctx.Err() != nil {
 		return output, ctx.Err()
 	}
@@ -56,8 +59,24 @@ func runSystemctl(timeout time.Duration, action, name string) ([]byte, error) {
 
 func verifySystemdState(name, expected string) error {
 	output, err := exec.Command("systemctl", "is-active", name).Output()
-	if err == nil && string(output) == expected+"\n" {
+	if err == nil && strings.TrimSpace(string(output)) == expected {
 		return nil
 	}
 	return fmt.Errorf("service %s did not become %s", name, expected)
+}
+
+func waitSystemdState(name, expected string, timeout time.Duration) error {
+	if timeout <= 0 {
+		return fmt.Errorf("service state deadline must be positive")
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if verifySystemdState(name, expected) == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("service %s did not become %s", name, expected)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
