@@ -6,28 +6,28 @@
 
 ## 结论
 
-Java 25 Center/Agent 与 React 控制台已经完成 v0.1.14 生产发布。生产数据库已完成 Liquibase 初始化、旧 Go 状态导入与清理验证；Java Center/Console 已通过 Argo CD 以不可变 digest 滚动部署，旧 Go Center、Deployment 和 PVC 仍保留作回滚点。公网健康、ready、Console Admin API、MCP `initialize`/`tools/list` 和旧 Agent 兼容性均已验收。当前剩余工作集中在真实 Browser/Desktop 场景、QUIC、多副本长连接故障演练、可观测性和正式 Agent 批次升级。
+Java 25 Center/Agent 与 React 控制台已经完成 v0.1.15 生产发布。生产数据库已完成 Liquibase 初始化、旧 Go 状态导入与清理验证；Java Center/Console 已通过 Argo CD 以不可变 digest 滚动部署，旧 Go Center、Deployment 和 PVC 仍保留作回滚点。公网健康、ready、Console Admin API、MCP `initialize`/`tools/list` 和旧 Agent 兼容性均已验收。当前剩余工作集中在真实 Browser/Desktop 场景、QUIC、多副本长连接故障演练、可观测性和正式 Agent 批次升级。
 
 ## 已完成实现与历史证据
 
 | 领域 | 当前实现 | 证据 |
 | --- | --- | --- |
-| Java 工程 | `protocol`、`center`、`agent` Gradle 多模块，Java 25 toolchain | GitHub Actions `34739909725`：JVM、Liquibase、备份恢复、React、Linux amd64/arm64、Windows amd64 全部成功 |
-| MCP | Streamable HTTP `/mcp`、Bearer 校验、精简工具面、分页结果 | v0.1.14 公网验收：`initialize`/`tools/list` HTTP 200，工具数 9；旧用户路由与 Java 候选路由均通过 |
+| Java 工程 | `protocol`、`center`、`agent` Gradle 多模块，Java 25 toolchain | GitHub Actions `34745635544`：JVM、Liquibase、备份恢复、React、Linux amd64/arm64、Windows amd64 全部成功 |
+| MCP | Streamable HTTP `/mcp`、Bearer 校验、精简工具面、分页结果 | v0.1.15 公网验收：`initialize`/`tools/list` HTTP 200，工具数 9；旧用户路由与 Java 候选路由均通过 |
 | 任务可靠性 | 异步入队、幂等键、租约、取消、输出游标、断线重连、有界 spool、无超时任务恢复；过期租约区分可恢复持久任务与不可安全重放的定时任务，Go/Java 都按 Agent 范围在下一次 poll 修复，JDBC 修复后的任务 ID 在事务提交后精准唤醒 `task_wait`；Go/Java 两条兼容实现每次真正领取租约都会递增并暴露 `attempt`，便于识别断线后的重新投递；PostgreSQL 按任务摘要路由 `LISTEN/NOTIFY` 事件唤醒，高频输出只唤醒等待同一任务的请求（可跨 Center 副本），截止时间返回快照，不运行固定行读取循环 | Java Agent/Center 单元测试与 GitHub Actions 门禁 |
 | 注册与身份 | 一次性 Enrollment Token，注册后换取每 Agent 日常 Token；身份文件原子写入 | Agent/Center 测试通过 |
 | 配置热更新 | Center 下发 generation、长轮询等待时间、兼容退避间隔和并发槽位；Agent 原子落盘并只接受更新代次 | `AgentRuntimeSettingsTest`、`AgentConfigurationServiceTest` |
 | Desktop | 同一安装包的用户会话 companion；截图/屏幕枚举、启动、点击/拖拽、组合按键、剪贴板、窗口聚焦和文本输入通过受保护 loopback IPC | `DesktopCompanionClientTest` 与协议测试通过 |
 | Browser | Agent 负责生命周期、超时、日志和工件；通过本机适配器命令接入 Worker，以临时 JSON 请求文件传递结构化任务，并支持受目录约束的单工件清单上传 | `BrowserTaskRunnerTest`、`BrowserTaskRunner` |
 | 升级 | Center canary/批次状态机，HTTPS + SHA-256，Agent Helper 原子替换和回滚；发布工作流资产名已与解析器对齐 | `UpgradeServiceTest`；`.github/workflows/java-release.yml` 静态校验 |
-| 控制台 | React/Vite 经典后台布局，机器、项目/worktree、任务、令牌、升级和设置页面；全局搜索、机器在线筛选、任务状态筛选和任务输出 16 KiB 游标分页查看；Admin Token 只在当前标签页内存 | v0.1.14 GitHub Actions React 构建成功；两个 Console 路由首页与 `/api/v1/admin/machines` 均 HTTP 200 |
+| 控制台 | React/Vite 经典后台布局，机器、项目/worktree、任务、令牌、升级和设置页面；全局搜索、机器在线筛选、任务状态筛选和任务输出 16 KiB 游标分页查看；Admin Token 只在当前标签页内存 | v0.1.15 GitHub Actions React 构建成功；两个 Console 路由首页与 `/api/v1/admin/machines` 均 HTTP 200 |
 | 数据库 | PostgreSQL 适配器与 Liquibase `001`–`009` changelog；内存模式仍用于协议回归；发布工作流带 PostgreSQL 16 服务容器集成、备份和恢复门禁 | Liquibase 资源/迁移单元测试通过；CI `PostgresIntegrationTest` 会覆盖注册、项目/worktree、幂等任务、租约、输出续传和工件往返，随后执行 custom-format dump/restore |
 | 发布脚本 | Java JVM 构建、Native Image 门禁脚本、Windows/Linux Agent 安装器、Java Center/Agent JVM/Native 烟测脚本，以及 Windows/Linux WebSocket wake 烟测 | 当前只做静态校验；Native Image、完整原生烟测、Agent RSS 资源报告和仓库卫生扫描交给 GitHub Actions，Windows/Linux 安装器均支持 CI 平铺 ZIP + 旁路库 |
 
 ## 部分实现或仍需补齐
 
-1. Native Image：v0.1.14 正式 tag Release 已完成；Linux amd64/arm64、Windows amd64 原生构建、原生迁移烟测、SPDX SBOM、Sigstore keyless 签名、OIDC Artifact Attestation 和 Agent 资源门禁均由 GitHub Actions 完成。Windows/Linux 发布物为包含旁路运行库的平铺 ZIP，旧裸可执行文件保留回退；Windows ARM64 暂保留 JVM/Go 兼容路径。开发机不执行编译。
-2. PostgreSQL：生产库已使用独立 `remote_connect_mcp_prod` schema/database 完成 Liquibase 与旧 Go 状态导入，当前保留 9 台 Agent、1403 个任务/输出、0 个工件；v0.1.14 生产迁移 Job 成功。仍需补齐高并发抢占、Center 重启场景、长输出压测和正式恢复演练。
+1. Native Image：v0.1.15 正式 tag Release 已完成；Linux amd64/arm64、Windows amd64 原生构建、原生迁移烟测、SPDX SBOM、Sigstore keyless 签名、OIDC Artifact Attestation 和 Agent 资源门禁均由 GitHub Actions 完成。Windows/Linux 发布物为包含旁路运行库的平铺 ZIP，旧裸可执行文件保留回退；Windows ARM64 暂保留 JVM/Go 兼容路径。开发机不执行编译。
+2. PostgreSQL：生产库已使用独立 `remote_connect_mcp_prod` schema/database 完成 Liquibase 与旧 Go 状态导入，当前保留 9 台 Agent、1403 个任务/输出、0 个工件；v0.1.15 生产迁移 Job 成功。仍需补齐高并发抢占、Center 重启场景、长输出压测和正式恢复演练。
 3. Browser Agent：Java Agent 已提供参考 `scripts/browser-worker.mjs`，可按环境加载 Playwright/Patchright/Comoufox，并支持 CSS/`rcm-ref-v1`/role/label/placeholder/text/test-id 结构化定位；快照最多返回 64 个有界引用，Agent 在独立浏览器 profile 启用时保存脱敏的最近 origin/path 并在下一任务尝试恢复；结果仍包含有界快照、动作结果、截图、下载工件以及脱敏的网络/控制台/页面错误摘要。目标平台仍需安装浏览器运行时并完成稳定引用失效恢复、持久会话和跨浏览器回归。
 4. Desktop Agent：基础截图、屏幕枚举、输入、剪贴板和 Windows 窗口聚焦已具备；Linux 窗口管理器差异、多显示器真实会话、UAC/权限场景和跨桌面回归仍需专门验收。
 5. 长连接：已实现可选 WebSocket wake-only 通道、客户端指数重连和 HTTPS 长轮询；PostgreSQL 模式新增跨 Center 副本的 Agent 唤醒与任务等待 `LISTEN/NOTIFY` 桥接（best-effort，丢失时由请求截止时间和下一次显式读取补偿）；仍需在真实反向代理/多副本环境完成灰度、序列号关联和故障演练，QUIC 尚未实现。
@@ -37,10 +37,10 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.14 生产发布。生�
 
 ## 当前生产阻塞（已用只读探针确认）
 
-- 集群上下文为 `kubernetes-admin@sg-osaka-dualstack`；Java v0.1.14 Center、Console、PostgreSQL 和迁移 Job 均已运行，旧 Go Center/Deployment/PVC 仍保留作回滚。
+- 集群上下文为 `kubernetes-admin@sg-osaka-dualstack`；Java v0.1.15 Center、Console、PostgreSQL 和迁移 Job 均已运行，旧 Go Center Deployment 已缩容为 0，Service/PVC 仍保留作回滚。
 - 生产 Java HTTPRoute 已切换，旧用户路由也已指向 Java Service；真实域名与 Token 只保存在私有 GitOps/Secret，不写入公开仓库。
 - Argo CD 生产 Application 的同步操作已成功；集群控制面偶发 `http2: client connection lost`，可能导致 status 短暂显示旧 revision，需继续观察而不是误判为业务故障。
-- 尚未把所有存量 Agent 通过升级编排迁移到 v0.1.14；当前仅完成新 Agent 注册/命令闭环与旧 Agent 兼容轮询验证，正式 canary/批次发布仍需在低峰执行。
+- 尚未把所有存量 Agent 通过升级编排迁移到 v0.1.15；当前 9 台登记 Agent 中仅 1 台 v0.1.15 在线并已通过真实命令闭环，另外 8 台仍登记为 v1.3.2/v1.3.3 且心跳过期，其中可 SSH 到达的旧服务仍在运行但没有向 Center 更新心跳。正式批次迁移必须先让目标 Agent 在线，再按 canary/批次执行。
 
 ## 资源占用说明
 
@@ -59,7 +59,7 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.14 生产发布。生�
 
 ## 下一步生产顺序
 
-1. 在低峰通过控制台创建 v0.1.14 Agent canary 升级活动，验证断线恢复、回滚和资源预算，再按批次迁移存量 Agent。
+1. 在低峰通过控制台创建 v0.1.15 Agent canary/批次升级活动，验证断线恢复、回滚和资源预算，再迁移剩余存量 Agent。
 2. 在真实多副本/反向代理环境完成 WebSocket wake、LISTEN/NOTIFY、长任务和 Center 重启故障演练；QUIC 仍按需求评估。
 3. 为 Browser/Playwright、Desktop companion、多显示器/UAC 场景补齐目标平台回归和脱敏工件验证。
 4. 接入集中日志、告警、SLO、升级失败通知和审计留痕；完成 PostgreSQL 恢复演练后再评估移除旧 Go 回滚资源。
