@@ -6,9 +6,13 @@ import liquibase.integration.spring.SpringLiquibase;
 import org.springframework.boot.SpringApplication;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.ImportRuntimeHints;
+import org.springframework.aot.hint.RuntimeHints;
+import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import java.nio.file.Path;
 
 @SpringBootApplication
+@ImportRuntimeHints(RemoteConnectCenterRuntimeHints.class)
 public class RemoteConnectCenterApplication {
     public static void main(String[] args) {
         if (args.length > 0 && "--migrate".equals(args[0])) {
@@ -81,5 +85,13 @@ public class RemoteConnectCenterApplication {
 
     private static String redact(String message) {
         return message.replaceAll("(?i)(password|passwd|token|secret)=([^,;\\s]+)", "$1=<redacted>");
+    }
+}
+
+/** Keeps the Liquibase changelog available to the direct Native migration path. */
+final class RemoteConnectCenterRuntimeHints implements RuntimeHintsRegistrar {
+    @Override
+    public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
+        hints.resources().registerPattern("db/changelog/.*");
     }
 }
