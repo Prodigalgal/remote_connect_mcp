@@ -41,7 +41,13 @@ func runSystemctl(timeout time.Duration, action, name string) ([]byte, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "systemctl", action, name).CombinedOutput()
+	// `systemctl stop` normally returns when the stop job is queued, while a
+	// service with a long-polling HTTP request can still be in `deactivating`.
+	// The helper must not inspect or replace the executable until systemd has
+	// finished the job; otherwise the immediate is-active check races the unit
+	// teardown and can leave the machine offline.  --wait is supported by the
+	// systemd versions used by the Linux release targets.
+	output, err := exec.CommandContext(ctx, "systemctl", "--wait", action, name).CombinedOutput()
 	if ctx.Err() != nil {
 		return output, ctx.Err()
 	}

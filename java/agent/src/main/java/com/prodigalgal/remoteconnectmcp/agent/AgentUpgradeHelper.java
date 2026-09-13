@@ -334,13 +334,17 @@ final class AgentUpgradeHelper {
 
     private static void stopService(String service) throws IOException, InterruptedException {
         if (service == null || service.isBlank()) return;
-        runServiceCommand(isWindows() ? List.of("sc.exe", "stop", service) : List.of("systemctl", "stop", service), false);
+        // A long-polling Agent can keep the unit in `deactivating` after the
+        // systemctl command itself returns.  Waiting for the stop job avoids
+        // replacing the native bundle while the old process still owns files
+        // or the listening connection.
+        runServiceCommand(isWindows() ? List.of("sc.exe", "stop", service) : List.of("systemctl", "--wait", "stop", service), false);
     }
 
     private static void startRuntime(Config config) throws IOException, InterruptedException {
         var service = config.serviceName();
         if (service != null && !service.isBlank()) {
-            runServiceCommand(isWindows() ? List.of("sc.exe", "start", service) : List.of("systemctl", "start", service), true);
+            runServiceCommand(isWindows() ? List.of("sc.exe", "start", service) : List.of("systemctl", "--wait", "start", service), true);
             return;
         }
         // A manually launched `--run` Agent has no service manager to restart
