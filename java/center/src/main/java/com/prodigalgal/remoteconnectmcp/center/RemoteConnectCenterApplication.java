@@ -21,7 +21,9 @@ public class RemoteConnectCenterApplication {
             System.exit(GoStateImportApplication.run(Path.of(args[1])));
             return;
         }
-        SpringApplication.run(RemoteConnectCenterApplication.class, args);
+        var application = new SpringApplication(RemoteConnectCenterApplication.class);
+        application.addInitializers(new DatabaseRuntimeInitializer());
+        application.run(args);
     }
 
     /**

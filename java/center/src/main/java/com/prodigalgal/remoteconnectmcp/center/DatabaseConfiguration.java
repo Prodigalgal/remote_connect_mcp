@@ -4,26 +4,26 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import javax.sql.DataSource;
 import liquibase.integration.spring.SpringLiquibase;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * PostgreSQL is opt-in during the migration. The default memory mode keeps the
- * scaffold and protocol tests runnable without a local database.
+ * Runtime PostgreSQL bean factories.
+ *
+ * <p>The Center selects its persistence mode from environment variables at
+ * runtime. Keeping these factories free of Spring conditional annotations is
+ * intentional: Native AOT evaluates {@code @ConditionalOnProperty} while the
+ * image is built, before the deployment environment is available. The
+ * {@link DatabaseRuntimeInitializer} registers these beans only when the
+ * running process selected PostgreSQL.</p>
  */
-@Configuration
-@ConditionalOnProperty(name = "rcm.persistence.mode", havingValue = "postgres")
-public class DatabaseConfiguration {
-    @Bean(destroyMethod = "close")
-    public HikariDataSource dataSource(
-            @Value("${RCM_CENTER_DATABASE_URL:}") String url,
-            @Value("${RCM_CENTER_DATABASE_USERNAME:}") String username,
-            @Value("${RCM_CENTER_DATABASE_PASSWORD:}") String password) {
+public final class DatabaseConfiguration {
+    private DatabaseConfiguration() {
+    }
+
+    public static HikariDataSource dataSource(String url, String username, String password) {
         if (url.isBlank() || username.isBlank()) {
             throw new IllegalStateException("RCM_CENTER_DATABASE_URL and RCM_CENTER_DATABASE_USERNAME are required in postgres mode");
         }
@@ -39,29 +39,25 @@ public class DatabaseConfiguration {
         return new HikariDataSource(config);
     }
 
-    @Bean
-    public JdbcTemplate jdbcTemplate(DataSource dataSource) {
+    public static JdbcTemplate jdbcTemplate(DataSource dataSource) {
         return new JdbcTemplate(dataSource);
     }
 
-    @Bean
-    public JdbcTransactionManager transactionManager(DataSource dataSource) {
+    public static JdbcTransactionManager transactionManager(DataSource dataSource) {
         return new JdbcTransactionManager(dataSource);
     }
 
-    @Bean
-    public TransactionTemplate transactionTemplate(JdbcTransactionManager transactionManager) {
+    public static TransactionTemplate transactionTemplate(JdbcTransactionManager transactionManager) {
         return new TransactionTemplate(transactionManager);
     }
 
-    @Bean
-    public SpringLiquibase liquibase(DataSource dataSource,
-                                     @Value("${RCM_CENTER_LIQUIBASE_ENABLED:true}") boolean enabled) {
+    public static SpringLiquibase liquibase(DataSource dataSource, boolean enabled) {
         var liquibase = new SpringLiquibase();
         liquibase.setDataSource(dataSource);
         liquibase.setChangeLog("classpath:db/changelog/db.changelog-master.yaml");
         liquibase.setContexts("postgres");
         liquibase.setShouldRun(enabled);
+        liquibase.setResourceLoader(new DefaultResourceLoader(DatabaseConfiguration.class.getClassLoader()));
         return liquibase;
     }
 }
