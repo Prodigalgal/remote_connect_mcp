@@ -193,7 +193,11 @@ class AgentRuntimeTest {
 
     private static String durableSleepCommand() {
         if (System.getProperty("os.name", "").toLowerCase().contains("win")) {
-            return "ping -n 8 127.0.0.1 > NUL & echo recovered";
+            // Leave a generous, deterministic attach window on busy Windows
+            // runners.  The first runner is intentionally interrupted before
+            // the process exits; a short ping made the test race with the
+            // offline-completion fallback and report a false failure.
+            return "ping -n 20 127.0.0.1 > NUL & echo recovered";
         }
         return "sleep 5; echo recovered";
     }
