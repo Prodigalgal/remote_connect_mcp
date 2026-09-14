@@ -76,8 +76,8 @@ class ProjectServiceTest {
         var project = projects.register(new ProjectRegistrationRequest(registration.machineId(), "demo", "/srv/demo", null, "main"));
 
         var status = projects.gitOperation(project.id(), "status", new ProjectGitOperationRequest("", "", "", "", ""));
-        assertTrue(status.command().command().contains("git -C '/srv/demo' status"));
-        assertEquals(ScopeMode.PROJECT, status.command().contract().scopeMode());
+        assertTrue(status.command().contains("git -C '/srv/demo' status"));
+        assertEquals(ScopeMode.PROJECT.wireValue(), status.scopeMode());
         assertThrows(IllegalArgumentException.class, () -> projects.gitOperation(project.id(), "commit",
                 new ProjectGitOperationRequest("", "", "message", "", "")));
 
@@ -87,7 +87,7 @@ class ProjectServiceTest {
         assertEquals(first.id(), retry.id(), "commit retries must be idempotent");
         var abort = projects.gitOperation(project.id(), "merge_abort",
                 new ProjectGitOperationRequest("", "", "", "", "abort-1"));
-        assertTrue(abort.command().command().contains("git -C '/srv/demo' merge --abort"));
+        assertTrue(abort.command().contains("git -C '/srv/demo' merge --abort"));
         assertThrows(IllegalArgumentException.class, () -> projects.gitOperation(project.id(), "merge",
                 new ProjectGitOperationRequest("", "feature/../main", "", "", "merge-1")));
     }

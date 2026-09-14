@@ -12,8 +12,17 @@ public final class SensitiveValueRedactor {
             "(?i)(\\b(?:authorization|cookie|token|password|passwd|secret|api[_-]?key|private[_-]?key|credential)\\b\\s*(?:[:=]|=>)\\s*[\\\"']?)(?!Bearer\\b)([^\\\"'\\s,;}]+)");
     private static final Pattern BEARER = Pattern.compile(
             "(?i)(\\bBearer\\s+)([A-Za-z0-9._~+/=-]+)");
+    /*
+     * Keep the label deliberately broad.  PEM labels are extensible (for
+     * example, OPENSSH PRIVATE KEY and RSA PRIVATE KEY), and a restrictive
+     * token-by-token expression can leave the body in diagnostics when a new
+     * label is introduced.  The line boundaries prevent this from spanning
+     * into an unrelated header while the lazy body stops at the first end
+     * marker.
+     */
     private static final Pattern PEM = Pattern.compile(
-            "-----BEGIN [A-Z0-9][A-Z0-9 ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z0-9][A-Z0-9 ]*PRIVATE KEY-----");
+            "-----BEGIN[^\\r\\n]*PRIVATE KEY-----[\\s\\S]*?-----END[^\\r\\n]*PRIVATE KEY-----",
+            Pattern.CASE_INSENSITIVE);
 
     private SensitiveValueRedactor() {
     }
