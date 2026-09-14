@@ -36,6 +36,10 @@ class AgentUpgradeHelperTest {
             assertEquals("new-agent", Files.readString(target));
             assertEquals("new-java", Files.readString(targetDir.resolve("java.dll")));
             assertFalse(Files.exists(targetDir.resolve(canonicalName)), "canonical name must not replace the service target");
+            if (!isWindows()) {
+                assertTrue(Files.isExecutable(target), "legacy service target must remain executable after archive replacement");
+                assertTrue(Files.isExecutable(targetDir.resolve("java.dll")), "runtime library permissions must match the installed bundle");
+            }
 
             invoke("rollback", config);
             assertEquals("old-agent", Files.readString(target));

@@ -176,6 +176,12 @@ final class AgentUpgradeHelper {
                     move(current, backup);
                 }
                 move(extraction.resolve(name), current);
+                // Zip entries do not reliably carry POSIX mode bits.  The
+                // extracted Native Image executable otherwise lands as 0600
+                // under the Agent's restrictive umask and systemd reports
+                // 203/EXEC after the service restart.  Match the installer
+                // bundle permissions for every swapped runtime file.
+                setBundlePermissions(current);
             }
             writeVersion(config);
             Files.deleteIfExists(staged);
@@ -452,6 +458,14 @@ final class AgentUpgradeHelper {
         } catch (AtomicMoveNotSupportedException exception) {
             Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
+    }
+
+    private static void setBundlePermissions(Path path) throws IOException {
+        if (isWindows()) return;
+        Files.setPosixFilePermissions(path, java.util.EnumSet.of(
+                java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE));
     }
 
     private static void validate(Config config) throws IOException {
