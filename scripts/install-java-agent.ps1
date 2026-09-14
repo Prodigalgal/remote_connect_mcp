@@ -14,9 +14,15 @@ param(
     [string]$Capabilities = "command,durable_tasks",
     [string]$Version = "dev",
     [string]$BrowserAdapter = "",
+    [string]$DesktopBinaryPath = "",
+    [string]$BrowserBinaryPath = "",
     [switch]$DesktopEnabled,
     [ValidateRange(1, 32)]
     [int]$MaxConcurrency = 1,
+    [ValidateRange(1, 8)]
+    [int]$MaxBrowserWorkers = 1,
+    [ValidateRange(1, 64)]
+    [int]$DesktopMaxLaunchedProcesses = 16,
     [ValidateRange(1048576, 1073741824)]
     [long]$MaxOutputBytes = 67108864,
     [long]$MaxAggregateOutputBytes = 0,
@@ -28,6 +34,57 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $serviceName = "RemoteConnectMCPAgent"
 $companionTaskName = "RemoteConnectMCPDesktopCompanion"
+
+function Install-NativeCompanionBundle {
+    param(
+        [Parameter(Mandatory = $true)][string]$InputPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
+        [Parameter(Mandatory = $true)][string]$DestinationDirectory
+    )
+
+    $resolved = (Resolve-Path -LiteralPath $InputPath -ErrorAction Stop).Path
+    $staging = $null
+    try {
+        if ([IO.Path]::GetExtension($resolved) -ieq '.zip') {
+            $staging = Join-Path ([IO.Path]::GetTempPath()) ("rcm-companion-install-" + [Guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $staging -Force | Out-Null
+            Expand-Archive -LiteralPath $resolved -DestinationPath $staging -Force
+            $candidates = @(Get-ChildItem -LiteralPath $staging -Filter $ExpectedExecutable -File -Recurse)
+            if ($candidates.Count -ne 1) {
+                throw "Companion ZIP must contain exactly one $ExpectedExecutable at a bundle root."
+            }
+            $source = $candidates[0]
+            $sourceRoot = $source.Directory.FullName
+            $sourceFiles = @($source) + @(Get-ChildItem -LiteralPath $sourceRoot -Filter '*.dll' -File -ErrorAction SilentlyContinue)
+        } else {
+            $source = Get-Item -LiteralPath $resolved -ErrorAction Stop
+            if ($source.Name -ine $ExpectedExecutable) {
+                throw "Companion binary must be named $ExpectedExecutable."
+            }
+            $sourceRoot = $source.Directory.FullName
+            $sourceFiles = @($source) + @(Get-ChildItem -LiteralPath $sourceRoot -Filter '*.dll' -File -ErrorAction SilentlyContinue)
+        }
+        $sourceFiles = @($sourceFiles | Sort-Object Name -Unique)
+        if (-not ($sourceFiles | Where-Object { $_.Name -ieq $ExpectedExecutable })) {
+            throw "The selected companion bundle does not contain $ExpectedExecutable."
+        }
+        New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
+        foreach ($old in @(Get-ChildItem -LiteralPath $DestinationDirectory -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -ieq '.exe' -or $_.Extension -ieq '.dll' })) {
+            if (-not ($sourceFiles | Where-Object { $_.Name -ieq $old.Name })) {
+                Remove-Item -LiteralPath $old.FullName -Force
+            }
+        }
+        foreach ($file in $sourceFiles) {
+            Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $DestinationDirectory $file.Name) -Force
+        }
+        return (Join-Path $DestinationDirectory $ExpectedExecutable)
+    } finally {
+        if ($staging -and (Test-Path -LiteralPath $staging)) {
+            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -67,6 +124,9 @@ if ($MaxAggregateOutputBytes -eq 0) {
 }
 if ($MaxAggregateOutputBytes -lt $MaxOutputBytes -or $MaxAggregateOutputBytes -gt 4294967296) {
     throw "MaxAggregateOutputBytes must be between MaxOutputBytes and 4 GiB."
+}
+if ($MaxBrowserWorkers -gt $MaxConcurrency) {
+        throw "MaxBrowserWorkers cannot exceed MaxConcurrency."
 }
 
 $destination = Join-Path $InstallRoot "rcm-agent.exe"
@@ -115,6 +175,14 @@ try {
         Stop-Service -Name $serviceName -Force
         $existingService.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
+    # The interactive companion may still hold its Native Image DLLs while a
+    # service upgrade is replacing the sibling bundles. Stop/unregister the
+    # old logon task; it is recreated below when DesktopEnabled is requested.
+    $existingCompanionTask = Get-ScheduledTask -TaskName $companionTaskName -ErrorAction SilentlyContinue
+    if ($existingCompanionTask) {
+        Stop-ScheduledTask -TaskName $companionTaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $companionTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
 
     New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
@@ -131,6 +199,24 @@ try {
     if ($staging -and (Test-Path -LiteralPath $staging)) {
         Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+
+$desktopDestination = $null
+$browserDestination = $null
+if ($DesktopEnabled -or -not [string]::IsNullOrWhiteSpace($DesktopBinaryPath)) {
+    if ([string]::IsNullOrWhiteSpace($DesktopBinaryPath)) {
+        $existingDesktop = Join-Path $InstallRoot 'desktop\rcm-desktop-companion.exe'
+        if (Test-Path -LiteralPath $existingDesktop -PathType Leaf) {
+            $desktopDestination = $existingDesktop
+        } else {
+            throw 'DesktopEnabled requires DesktopBinaryPath pointing to the rcm-desktop-companion ZIP or EXE.'
+        }
+    } else {
+        $desktopDestination = Install-NativeCompanionBundle -InputPath $DesktopBinaryPath -ExpectedExecutable 'rcm-desktop-companion.exe' -DestinationDirectory (Join-Path $InstallRoot 'desktop')
+    }
+}
+if (-not [string]::IsNullOrWhiteSpace($BrowserBinaryPath)) {
+    $browserDestination = Install-NativeCompanionBundle -InputPath $BrowserBinaryPath -ExpectedExecutable 'rcm-browser-agent.exe' -DestinationDirectory (Join-Path $InstallRoot 'browser')
 }
 
 $identity = Join-Path $StateDir 'identity.json'
@@ -152,6 +238,8 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
         REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED = $DesktopEnabled.IsPresent.ToString().ToLowerInvariant()
         REMOTE_CONNECT_MCP_AGENT_STATE_DIR = $StateDir
         REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY = $MaxConcurrency.ToString()
+        REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS = $MaxBrowserWorkers.ToString()
+        REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES = $DesktopMaxLaunchedProcesses.ToString()
         REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES = $MaxOutputBytes.ToString()
         REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES = $MaxAggregateOutputBytes.ToString()
     }
@@ -198,11 +286,15 @@ $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=$($DesktopEnabled.IsPresent.ToString().ToLowerInvariant())",
     "REMOTE_CONNECT_MCP_AGENT_STATE_DIR=$StateDir",
     "REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY=$MaxConcurrency",
+    "REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS=$MaxBrowserWorkers",
+    "REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES=$DesktopMaxLaunchedProcesses",
     "REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES=$MaxOutputBytes",
     "REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES=$MaxAggregateOutputBytes",
     "REMOTE_CONNECT_MCP_AGENT_BINARY_PATH=$destination",
     "REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME=$serviceName"
 )
+if ($desktopDestination) { $environment += "REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY=$desktopDestination" }
+if ($browserDestination) { $environment += "REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=$browserDestination" }
 New-ItemProperty -Path $serviceRegistry -Name Environment -PropertyType MultiString -Value $environment -Force | Out-Null
 & sc.exe description $serviceName "Java Native Image Agent for the Remote Connect MCP control plane" | Out-Null
 & sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/15000/restart/30000 | Out-Null
@@ -210,16 +302,17 @@ New-ItemProperty -Path $serviceRegistry -Name Environment -PropertyType MultiStr
 & icacls.exe $StateDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
 if ($DesktopEnabled) {
     # The SCM service remains the single Center identity. A per-logon task
-    # only hosts the same binary in the interactive session so AWT/User32 can
-    # see the desktop; it communicates through the protected state/desktop
-    # loopback endpoint and never registers another Agent.
+    # hosts the independent companion binary in the interactive session so
+    # AWT/User32 can see the desktop; it communicates through the protected
+    # state/desktop loopback endpoint and never registers another Agent.
     $desktopDir = Join-Path $StateDir 'desktop'
     & icacls.exe $desktopDir /grant:r "$env:USERNAME:(OI)(CI)M" | Out-Null
     # Scheduled tasks do not inherit the SCM service's registry Environment
     # block. Pass the resolved state directory explicitly so a custom
     # ProgramData path still points at the same protected IPC endpoint.
     $escapedStateDir = $StateDir.Replace('"', '\\"')
-    $action = New-ScheduledTaskAction -Execute $destination -Argument ('--desktop-companion "{0}"' -f $escapedStateDir)
+    if (-not $desktopDestination) { throw 'Desktop companion binary is not installed.' }
+    $action = New-ScheduledTaskAction -Execute $desktopDestination -Argument ('--desktop-companion "{0}"' -f $escapedStateDir)
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType InteractiveToken -RunLevel Limited
     Register-ScheduledTask -TaskName $companionTaskName -Action $action -Trigger $trigger -Principal $principal -Description "Interactive desktop companion for Remote Connect MCP" -Force | Out-Null
@@ -237,5 +330,9 @@ Start-Service -Name $serviceName
     Binary = $destination
     StateDir = $StateDir
     MaxConcurrency = $MaxConcurrency
+    MaxBrowserWorkers = $MaxBrowserWorkers
+    DesktopMaxLaunchedProcesses = $DesktopMaxLaunchedProcesses
+    DesktopBinary = $desktopDestination
+    BrowserBinary = $browserDestination
     MaxAggregateOutputBytes = $MaxAggregateOutputBytes
 }

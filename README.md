@@ -5,7 +5,7 @@
 
 Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统。ChatGPT 只连接一个 MCP Gateway；每台目标机器运行一个主动连接 Center 的 Agent。Center 同时提供机器注册、持久化异步任务、断线续传、Web 控制台和 Agent 集群升级编排。
 
-目标架构和演进边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，异步调用契约见 [`docs/ASYNC_CONTRACT.md`](docs/ASYNC_CONTRACT.md)，详细语言、运行时、原生构建和前端选型见 [`docs/TECH_STACK.md`](docs/TECH_STACK.md)，Java/React 发布门禁见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)，当前实现/生产阻塞见 [`docs/STATUS.md`](docs/STATUS.md)。Java 25 Center/Agent 与 React 控制台已建立可独立验收的实现；现有 Go Center/Agent 在全部生产门禁通过前仍作为兼容基线，不会被未验证的 Java 构建替换。一个物理终端可以运行多个独立 Agent（例如无人值守命令 Agent、用户会话 Desktop Agent、浏览器 Agent），它们使用不同的 machine ID、Token 和能力，但通过相同的 `host_id` 在 Center 中归组。
+目标架构和演进边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，异步调用契约见 [`docs/ASYNC_CONTRACT.md`](docs/ASYNC_CONTRACT.md)，详细语言、运行时、原生构建和前端选型见 [`docs/TECH_STACK.md`](docs/TECH_STACK.md)，Java/React 发布门禁见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)，当前实现/生产阻塞见 [`docs/STATUS.md`](docs/STATUS.md)。Java 25 Center/Agent 与 React 控制台已建立可独立验收的实现；现有 Go Center/Agent 在全部生产门禁通过前仍作为兼容基线，不会被未验证的 Java 构建替换。一个物理终端默认只有一个向 Center 注册的 `command-agent` 身份；桌面能力由同安装包启动的用户会话 `desktop-companion` 提供，浏览器能力由有界的本机 Browser Worker 提供，不增加额外 machine ID 或 Token。确需隔离时才为同一终端显式注册多个 Agent。
 
 项目不代理其他 MCP，也不对命令内容做白名单过滤。Agent 支持两种目录策略：默认的 `unrestricted` 模式保持整机运维能力；`workspace` 模式会在 Center 和 Agent 两侧校验任务工作目录，只允许指定工作区及其子目录。
 
@@ -16,7 +16,7 @@ Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统
 
 完整的目标架构、Desktop/Browser Agent、项目注册、worktree、长连接和热更新边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
-Java/React 迁移已完成 Center/Console 的 v0.1.15 生产切换，并正在分批替换存量 Agent：`java/` 提供 Java 25 多模块 Center/Agent、异步 MCP、事务任务/输出/工件适配、桌面和 Browser Worker 入口，`web/` 提供独立 React/Vite 控制台并可用 Admin Token 读取 Center API。Java Center 的持久化路线固定为 PostgreSQL + Liquibase，不使用 Flyway；Go Center 已缩容为 0，Go Agent 仅作为尚未上线节点的兼容/回滚基线保留。
+Java/React 迁移已完成 Center/Console 的 v0.1.15 生产切换，并正在分批替换存量 Agent：`java/` 提供 Java 25 多模块 Center、command-agent、desktop-companion 和 browser-agent 三个 Native 构建目标，异步 MCP、事务任务/输出/工件适配和本机能力桥接；`web/` 提供独立 React/Vite 控制台并可用 Admin Token 读取 Center API。Java Center 的持久化路线固定为 PostgreSQL + Liquibase，不使用 Flyway；Go Center 已缩容为 0，Go Agent 仅作为尚未上线节点的兼容/回滚基线保留。
 
 ```text
 ChatGPT Web
@@ -29,7 +29,7 @@ remote-connect-mcp-gateway.example.invalid/mcp
 Center / MCP Gateway / Task Store / Web Console
     ^
     | Agent 主动长轮询；无入站端口
-    +--------- Host A: command Agent / desktop Agent / browser Agent
+    +--------- Host A: command-agent + optional desktop-companion + browser-agent
     +--------- Host B: command Agent
 ```
 
@@ -179,6 +179,7 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_VERSION` | `dev` | 初始上报版本；升级 Helper 成功后写入私有 `STATE_DIR/agent-version`，重启后自动上报新版本 |
 | `REMOTE_CONNECT_MCP_AGENT_STATE_DIR` | Linux `/var/lib/remote-connect-mcp-agent` | Agent 身份和本机任务输出目录 |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY` | `1` | 同时运行任务数，范围 1–32 |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` | `1`（默认不超过 2，且不超过总并发） | Browser Worker 独立上限，范围 1–8；达到上限时 Agent 暂不向 Center 声明 `browser` 能力 |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES` | `67108864` | 单任务 stdout/stderr 捕获上限，范围 1 MiB–1 GiB |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES` | `67108864`（并发提高时默认最多 256 MiB） | 所有普通任务磁盘 spool 的聚合上限；必须不小于单任务上限，范围单任务上限–4 GiB；达到后任务继续运行但后续输出标记为截断 |
 | `REMOTE_CONNECT_MCP_AGENT_POLL_INTERVAL_MS` | `5000` | 仅用于旧 Center/长轮询关闭时的兼容退避；范围 250–60000 ms，断线时自动指数退避 |
@@ -186,14 +187,16 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT` | `poll` | 设置为 `websocket` 时启用额外的 Agent WebSocket 唤醒提示；任务数据和认证仍走 HTTPS，连接失败自动退避 |
 | `REMOTE_CONNECT_MCP_AGENT_BINARY_PATH` | 空 | Center 自升级时当前 Agent 二进制的稳定绝对路径；未配置则拒绝自升级 |
 | `REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME` | 空 | 升级 Helper 停止/启动的 systemd 或 Windows SCM 服务名；无服务名时只做进程级替换 |
-| `REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED` | `false` | 显式启用 Desktop Agent 能力；必须以用户会话运行，系统服务不要开启 |
+| `REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED` | `false` | 显式启用桌面伴侣；必须以用户会话运行，系统服务本身不链接 AWT |
 | `REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER` | 空 | Browser Agent 本机 Playwright/Patchright/Comoufox Worker 命令；设置后才可执行 browser 任务，任务 JSON 通过临时请求文件传入，截图/下载通过受目录约束的结果清单回传；仓库参考 Worker 为 `scripts/browser-worker.mjs` |
+| `REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY` | 同目录 `rcm-browser-agent` | 可选的独立 Browser Agent Native 二进制；未配置时自动查找 command-agent 同目录的 `rcm-browser-agent`，找不到则兼容地直接执行适配器命令 |
+| `REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES` | `16` | 没有用户会话 companion 时，命令 Agent 的桌面启动回退上限（1–64）；伴侣进程有独立上限 |
 
 Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 Center，原始值以 `0600` 权限保存在 Agent 状态目录。注册时会同时上报 `host_id`、`scope_mode` 和 `workspace_root`，控制台的机器详情可据此区分同一终端上的多个物理 Agent。若身份被吊销或丢失，请在 Center 重新生成一次性 Token，更新目标 Agent 的配置并重启；正常的 Center 重启和新建 Enrollment Token 不会影响已注册 Agent。
 
 ### 多 Agent 与桌面/浏览器能力
 
-同一台物理终端默认只注册一个 Java Agent 身份：系统服务负责命令/心跳，`-DesktopEnabled` 在用户登录时自动启动同一安装包的 Desktop companion，通过本机 IPC 获得截图、启动、点击、按键和文本输入能力，不新增 machine ID 或 Token。若确实需要隔离运行多个物理 Agent，则为每个实例使用不同的 Agent 名称、一次性注册 Token、状态目录和 machine ID，并用相同的 `REMOTE_CONNECT_MCP_AGENT_HOST_ID` 归组；Browser Worker 的 Profile/Cookie 仍只保留在本机。详细边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+同一台物理终端默认只注册一个 Java `command-agent` 身份：系统服务负责命令/心跳，`-DesktopEnabled` 在用户登录时启动独立的 `rcm-desktop-companion` 进程，通过本机 IPC 获得截图、启动、点击、按键和文本输入能力，不新增 machine ID 或 Token。伴侣使用单实例锁、最多 4 个并发 IPC 请求和最多 16 个活动启动进程；命令 Agent 使用状态目录锁，防止服务重启重叠产生第二个子进程池；Browser Worker 默认最多 1 个（可显式提高但不超过 8）。若确实需要隔离运行多个物理 Agent，则为每个实例使用不同的 Agent 名称、一次性注册 Token、状态目录和 machine ID，并用相同的 `REMOTE_CONNECT_MCP_AGENT_HOST_ID` 归组；Browser Worker 的 Profile/Cookie 仍只保留在本机。详细边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
 Browser `snapshot` 返回的 `rcm-ref-v1:*` 只是一段有界定位描述（role/name、test-id、placeholder 或 text 加序号），不是跨页面永久句柄；页面结构变化后应重新获取快照。为恢复多次调用之间的页面，给 Agent 服务环境配置独立的 Worker 变量 `RCM_BROWSER_PROFILE_DIR`，Agent 会在自己的状态目录保存不含查询参数和片段的最近页面路径；登录态仍由浏览器 profile 管理，任何一次性 URL 都必须显式再次导航。
 
@@ -229,7 +232,7 @@ Center 管理端可以通过 `GET/PUT /api/v1/admin/machines/{machineId}/config`
 
 工作区策略限制的是任务启动目录，不是操作系统级沙箱。命令仍以 Agent 服务账户运行，Shell 可以自行读取或写入其他路径。若需要强隔离，请再配合独立低权限账户、ACL、systemd `ReadWritePaths`、Windows 受限服务账户或容器/沙箱；不要把 `workspace` 模式当作 root 级安全边界。
 
-Linux systemd 模板和 Java 安装脚本位于 [`deploy/systemd`](deploy/systemd)、[`scripts/install-java-agent.sh`](scripts/install-java-agent.sh) 与 [`scripts/install-java-agent.ps1`](scripts/install-java-agent.ps1)。安装器先完成一次注册，再创建不含 Enrollment Token 的长期服务配置。模板使用 `KillMode=process`，让无超时可恢复任务在 Agent 服务升级/重启时继续运行；有超时的附着任务由 Agent 自己清理。systemd 只设置文件描述符/任务数上限并开启 CPU、内存、IO 记账，不设置可能误杀浏览器或桌面任务的硬内存上限；Agent 自身仍通过并发槽位和有界 spool 控制资源。Agent 不监听端口，不需要域名、Cloudflare Tunnel 或入站防火墙规则。
+Linux systemd 模板和 Java 安装脚本位于 [`deploy/systemd`](deploy/systemd)、[`scripts/install-java-agent.sh`](scripts/install-java-agent.sh) 与 [`scripts/install-java-agent.ps1`](scripts/install-java-agent.ps1)。安装器先完成一次注册，再创建不含 Enrollment Token 的长期服务配置。模板使用 `KillMode=process`，让无超时可恢复任务在 Agent 服务升级/重启时继续运行；有超时的附着任务由 Agent 自己清理。systemd 设置文件描述符、任务数、CPU 和内存高低水位；Agent 自身还通过并发槽位、有界 spool、Browser/桌面子进程上限控制资源。Agent 不监听端口，不需要域名、Cloudflare Tunnel 或入站防火墙规则。
 
 ### Windows 服务
 
@@ -243,7 +246,10 @@ JVM/Go 兼容包，但安装参数和服务管理方式相同。请在管理员 
   -AgentName '<Headscale given_name>' `
   -DefaultCwd 'D:\Work\Project\demo' `
   -ScopeMode workspace `
-  -WorkspaceRoot 'D:\Work\Project\demo'
+  -WorkspaceRoot 'D:\Work\Project\demo' `
+  -DesktopEnabled `
+  -DesktopBinaryPath ./remote-connect-mcp-desktop-vX.Y.Z-windows-amd64.zip `
+  -BrowserBinaryPath ./remote-connect-mcp-browser-vX.Y.Z-windows-amd64.zip
 ```
 
 服务名为 `RemoteConnectMCPAgent`，默认自动启动，异常退出按 5/15/30 秒重启。状态、进程和日志：
@@ -254,7 +260,7 @@ Get-CimInstance Win32_Service -Filter "Name='RemoteConnectMCPAgent'"
 Get-Content "$env:ProgramData\RemoteConnectMCPAgent\agent.log" -Tail 100
 ```
 
-`-BinaryPath` 可以指向 Release 的平铺 Agent ZIP（推荐，内含 `rcm-agent.exe` 及同一构建生成的全部 DLL），也可以指向与 DLL 同目录的原始 `rcm-agent.exe`。安装器会先停止旧服务，复制完整运行时并清理旧 DLL，再完成注册和启动；不会把校验文件或 README 放进服务目录。安装器把 Center 配置写入服务专属注册表环境，状态和日志目录 ACL 仅允许 SYSTEM 与本机管理员访问。卸载时默认保留机器身份；需要同时清除身份时增加 `-PurgeState`：
+`-BinaryPath` 可以指向 Release 的平铺 command-agent ZIP（推荐，内含 `rcm-agent.exe` 及同一构建生成的全部 DLL），`-DesktopBinaryPath` / `-BrowserBinaryPath` 分别安装两个独立的 Native companion ZIP；它们被放在隔离子目录，避免同名运行库覆盖。安装器会先停止旧服务和桌面计划任务，复制完整运行时并清理旧 DLL，再完成注册和启动；不会把校验文件或 README 放进服务目录。安装器把 Center 配置写入服务专属注册表环境，状态和日志目录 ACL 仅允许 SYSTEM 与本机管理员访问。卸载时默认保留机器身份；需要同时清除身份时增加 `-PurgeState`：
 
 ```powershell
 ./scripts/install-java-agent.ps1 -Uninstall

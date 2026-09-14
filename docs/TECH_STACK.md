@@ -7,7 +7,7 @@
 目标是保持一个稳定的 `/mcp` 入口，同时把 Center、控制台和 Agent 解耦演进：
 
 - Center 负责 MCP Gateway、机器/Agent 注册、任务队列、租约、审计、升级和控制台 API；
-- 一个物理终端可以运行多个独立物理 Agent。命令 Agent、Desktop Agent、Browser Agent 有独立身份和状态目录，只用 `host_id` 归组；
+- 一个物理终端默认只向 Center 注册一个 command-agent 身份；desktop-companion 和 browser-agent 是同身份的本机子组件，不注册第二个 machine ID；确需隔离时才运行多个独立 command-agent；
 - Center 和 Agent 都用 Java 25 编写，生产发布优先使用平台原生二进制；
 - 控制台是独立 React 应用，静态构建后由独立 Web 容器/CDN 部署；
 - 浏览器能力由 Java Agent 统一编排，Playwright/Patchright/Comoufox 只作为本机适配器，不把浏览器 Cookie、CDP 凭据或完整页面树上传到 Center；
@@ -17,13 +17,13 @@
 
 ### 当前实施状态（2026-09-11）
 
-- 已建立 `java/` Gradle 多模块实现：`protocol`、`center`、`agent`；协议记录、边界校验、异步 MCP、健康/版本探针和注册/长轮询兼容接口均可测试，并已锁定 Liquibase/PostgreSQL 依赖；
+- 已建立 `java/` Gradle 多模块实现：`protocol`、`center`、`agent`、`desktop`、`browser`；后三个 Agent 目标分别产出 command-agent、desktop-companion、browser-agent Native Image；协议记录、边界校验、异步 MCP、健康/版本探针和注册/长轮询兼容接口均可测试，并已锁定 Liquibase/PostgreSQL 依赖；
 - Center 注册表与任务队列已支持内存和 PostgreSQL 两种适配路径：`postgres` 模式通过独立 Liquibase changelog 管理 Agent、任务、输出游标和有界工件；一个进程只选择其中一种，生产只允许 PostgreSQL，内存适配器仅用于协议回归和开发。
-- Java Agent 已有可执行自包含 JAR、原子身份文件、一次性注册换取日常 Token、断线指数退避、401 自动重新注册、虚拟线程命令执行、有界磁盘 spool/异步上传与无超时进程恢复、用户会话 Desktop IPC 伴侣和 Browser Worker 桥接；
+- Java command-agent 已有可执行自包含 JAR、原子身份文件、一次性注册换取日常 Token、断线指数退避、401 自动重新注册、虚拟线程命令执行、有界磁盘 spool/异步上传与无超时进程恢复、用户会话 Desktop IPC 客户端和 Browser Agent 监管；desktop/browser 目标分别隔离 AWT 和浏览器适配器生命周期；
 - 已建立 `web/` React/Vite 控制台并接入 Admin API 的机器/任务分页读取、取消和真实升级活动，Admin Token 只驻留当前 React 内存；
 - Java Center/Agent v0.1.15 已替换生产 Center，并已完成首批云上 Agent 迁移；Go Center 已缩容为 0，Go Agent 仅作为兼容/回滚基线保留。Java 已实现注册、心跳、异步任务、工件、项目/worktree 和 Center 控制的升级编排；升级活动在 PostgreSQL 模式通过 Liquibase `005-upgrades`、`006-agent-config` 和 `007-projects-worktrees` 持久化，`008-agent-name-unique` 约束并发注册的同名身份；Agent 侧普通任务输出还受单任务与聚合 spool 双重上限保护；
 - Agent 配置已支持带 generation 的长轮询等待时间、兼容退避间隔和并发槽位热更新；配置原子写入状态目录，输出上限、Token 和工作区边界仍保持启动时约束；
-- JVM 测试、Center/Agent JAR 构建、React 生产构建，以及 Windows amd64 Center/Agent Native Image 和 MCP 烟测曾有历史验证记录；当前不在开发机执行构建或测试，所有门禁由匹配架构的 GitHub Actions 重新执行。Linux amd64/arm64 Native Image、签名和正式发布仍需云端 CI 门禁。
+- JVM 测试、Center/Agent JAR 构建、React 生产构建，以及 Linux amd64/arm64、Windows amd64 的 Center/Agent/desktop/browser Native Image 和 MCP 烟测已由 GitHub Actions `34795775084` 重新验证；当前不在开发机执行构建或测试。正式 tag 的签名、Release 资产和目标机安装/升级回归仍由发布门禁负责。
 
 ## 2. 选型总表
 
@@ -39,8 +39,8 @@
 | Agent 语言 | Java 25 模块化 JDK 应用 | 不带 Spring，原生镜像小、启动快、跨平台边界清晰 | Agent 引入完整 Spring 容器 |
 | Agent 通道 | JDK `HttpClient` 25 秒长轮询 + 原始 WebSocket 唤醒；旧端退避回退 | 无额外网络栈依赖，HTTPS/TLS 和断线重试可控，健康路径不刷固定请求 | 首版直接绑定 QUIC |
 
-| Desktop | Java 核心 + 用户会话伴侣 IPC（AWT/平台适配层） | 服务与 GUI 权限分离，兼容 Windows 用户会话和 Linux 图形后端 | 让 SYSTEM 服务假装拥有用户桌面 |
-| Browser | Java Browser Agent + 本机适配器 SPI | Java Playwright 走官方 API；Patchright/Comoufox 通过受控 Node Worker 接入 | 将 Node Worker 注册成第二台 Agent |
+| Desktop | 独立 Java `desktop` Native 目标 + 用户会话伴侣 IPC（AWT/平台适配层） | 服务与 GUI 权限分离，command-agent 不加载 AWT | 让 SYSTEM 服务假装拥有用户桌面 |
+| Browser | 独立 Java `browser` Native 目标 + 本机适配器 SPI | command-agent 仅负责 Center 和上限，browser-agent 单任务监管 Playwright/Patchright/Comoufox | 将 Node Worker 注册成第二台 Agent |
 | Java 原生构建 | GraalVM Native Image 25.x（或 Liberica NIK 25.x，版本锁定） | 生成无需 JVM 的平台可执行文件，降低启动和常驻内存 | 运行时依赖用户预装 JDK |
 | Java 构建 | Gradle Wrapper + Kotlin DSL + version catalog | Center/Agent 共用依赖约束，原生构建和多模块任务统一 | 手工安装 Maven/Gradle |
 | 前端 | React 19 + TypeScript + Vite | 控制台是鉴权后的 SPA，独立静态部署，开发和生产构建边界清晰 | Create React App、为控制台引入 SSR |
@@ -116,7 +116,7 @@ agent/
   agent-transport   # JDK HttpClient、HTTPS 长轮询、WebSocket、失败退避
   agent-command     # ProcessBuilder、输出 spool、租约续期和恢复
   agent-desktop     # 用户会话截图、应用启动、窗口/输入扩展点
-  agent-browser     # Browser Adapter SPI、profile 生命周期、工件上传
+  agent-browser     # Browser Agent supervisor、profile 生命周期、工件上传
   agent-updater     # 下载、SHA-256/签名、原子替换、回滚
   agent-platform    # systemd、Windows SCM wrapper、ACL 和路径实现
 ```
@@ -125,13 +125,13 @@ Agent 以 Java record/不可变配置表示协议对象，使用显式 JSON Sche
 
 ### 4.2 一个终端多个 Agent
 
-同一 `host_id` 可以按需运行：
+同一 `host_id` 可以按需启用：
 
 - `command`：系统服务，可在未登录时执行无人值守任务；
-- `desktop`：同一安装包的用户会话 companion，拥有当前桌面和用户态应用权限；
-- `browser`：浏览器会话进程或受控适配器。
+- `desktop`：独立 `rcm-desktop-companion` 用户会话进程，拥有当前桌面和用户态应用权限；
+- `browser`：独立 `rcm-browser-agent` 单任务进程，再拉起受控适配器。
 
-默认 command/desktop 共用一个 Center Agent 身份，companion 只通过本机 ACL/令牌 IPC
+默认 command/desktop/browser 共用一个 Center Agent 身份，companion/Browser Agent 只通过本机 ACL/临时环境和任务文件
 工作；确需隔离时才为多个实例使用不同的 `agent_id`、一次性 Token、状态目录和
 capability。Center 只通过 `host_id` 归组，不把 host 组当作权限主体。
 
@@ -154,20 +154,24 @@ Browser Agent 只向 Center 暴露结构化动作，不暴露 Playwright 全部 
 2. `patchright-node`：Java Agent 启动并监管本机 Node/TypeScript Worker，Worker 只在本机通过命名管道/Unix socket/受 ACL 保护的 loopback 通信；
 3. `comoufox-node`：沿用同一 Worker 协议，浏览器 profile、Cookie、扩展、代理和 CDP 端口永不上传 Center。
 
-Worker 不是第二个物理 Agent，不注册第二台机器；Java Agent 负责生命周期、并发、超时、日志摘要、截图/下载工件和能力上报。结果清单由 Agent 校验 MIME、路径、大小和 SHA-256 后才上传单个工件，适配器异常或越界均 fail-closed。Browser MCP 工具优先返回 accessibility snapshot、元素引用、URL/title、网络/控制台摘要，设置字数、节点数、截图和下载大小上限。
+Worker 不是第二个物理 Agent，不注册第二台机器；command-agent 负责 Center 生命周期、并发和结果上传，browser-agent 负责单个适配器进程的启动、stdout 透传和退出回收。结果清单由 command-agent 校验 MIME、路径、大小和 SHA-256 后才上传单个工件，适配器异常或越界均 fail-closed。Browser MCP 工具优先返回 accessibility snapshot、元素引用、URL/title、网络/控制台摘要，设置字数、节点数、截图和下载大小上限。
 
 ## 5. Java 原生二进制与发布
 
 ### 5.1 构建方式
 
-使用 GraalVM Native Image 25.x 或 Liberica NIK 25.x，版本写入 Java 构建约束文件和构建容器 digest。Center 和 Agent 都保留 JVM jar 作为诊断和兼容后备，但正式发布物为平台二进制：
+使用 GraalVM Native Image 25.x 或 Liberica NIK 25.x，版本写入 Java 构建约束文件和构建容器 digest。Center、command-agent、desktop-companion 和 browser-agent 都保留 JVM jar 作为诊断和兼容后备，但正式发布物为平台二进制：
 
 ```text
- rcm-center-linux-amd64.zip    # ELF + Native Image .so 运行库
- rcm-center-linux-arm64.zip    # ELF + Native Image .so 运行库
- rcm-agent-linux-amd64.zip    # ELF + Native Image .so 运行库
- rcm-agent-linux-arm64.zip    # ELF + Native Image .so 运行库
- rcm-agent-windows-amd64.zip       # rcm-agent.exe + Native Image DLLs
+ remote-connect-mcp-center-vX.Y.Z-linux-amd64.zip    # Center ELF + Native Image .so 运行库
+ remote-connect-mcp-center-vX.Y.Z-linux-arm64.zip    # Center ELF + Native Image .so 运行库
+ remote-connect-mcp-agent-vX.Y.Z-linux-amd64.zip    # command-agent ELF + Native Image .so 运行库
+ remote-connect-mcp-agent-vX.Y.Z-linux-arm64.zip    # command-agent ELF + Native Image .so 运行库
+ remote-connect-mcp-agent-vX.Y.Z-windows-amd64.zip  # command-agent rcm-agent.exe + Native Image DLLs
+ remote-connect-mcp-desktop-vX.Y.Z-linux-amd64.zip / remote-connect-mcp-desktop-vX.Y.Z-linux-arm64.zip
+ remote-connect-mcp-desktop-vX.Y.Z-windows-amd64.zip      # desktop-companion + Native Image runtime
+ remote-connect-mcp-browser-vX.Y.Z-linux-amd64.zip / remote-connect-mcp-browser-vX.Y.Z-linux-arm64.zip
+ remote-connect-mcp-browser-vX.Y.Z-windows-amd64.zip      # browser-agent + Native Image runtime
 ```
 
 每个发布资产附带 SHA-256、SBOM、构建元数据和签名。Linux/Windows Agent 必须把可执行文件与同一构建生成的 `.so`/DLL 一起打包，不能把裸可执行文件当作完整运行包；旧裸资产仅用于兼容回退。Native Image 是针对具体 OS/CPU 架构的构建产物，不能把一个 Linux 二进制当作跨平台包；CI 使用匹配架构 runner/容器分别编译和冒烟测试，不做未经验证的交叉编译。
@@ -188,7 +192,7 @@ Image 并单独完成服务安装、升级和回滚验收。
 ### 5.3 服务安装
 
 - Linux：systemd 直接运行 Agent/Center 二进制，状态目录和 Token 文件使用 `0600`；
-- Windows：命令 Agent 由 SCM/轻量服务 wrapper 承担服务控制语义，Agent 本体仍是 Java Native Image；Desktop Agent 由用户会话启动任务运行同一个本体但使用不同身份目录；
+- Windows：命令 Agent 由 SCM/轻量服务 wrapper 承担服务控制语义，Agent 本体仍是 Java Native Image；Desktop companion 由用户会话启动独立的 `rcm-desktop-companion` Native Image，并与 command-agent 共用同一状态目录下的受保护 IPC 端点和单一 Center 身份；
 - 安装脚本只负责下载、校验、写入配置和注册服务，不把令牌打印到普通日志；
 - Center 的 Agent 升级按平台、架构和 capability 分批，不改变 `machine_id`、`agent_id` 或 ChatGPT MCP 连接器。
 
@@ -235,9 +239,9 @@ Cookie 或显式短期会话，不把 Admin Token 放在 localStorage，也不�
 
 ### 阶段 B：Agent 和能力
 
-1. Java command Agent 先替换 Linux amd64/arm64，再替换 Windows amd64；
-2. Desktop Agent 以用户会话身份接入，完成截图、启动、断线恢复和工件校验；
-3. Browser Agent 先落地 Playwright Java，随后加入 Node Worker 的 Patchright/Comoufox 适配；
+1. Java `command-agent` 先替换 Linux amd64/arm64，再替换 Windows amd64；
+2. 独立 `desktop-companion` 以用户会话身份接入，完成截图、启动、断线恢复和工件校验；
+3. 独立 `browser-agent` 先监管 Playwright Worker，随后加入 Patchright/Comoufox 适配；
 4. 在旧 Go Agent 与 Java Center、Java Agent 与旧 Center 之间各保留至少一个版本的兼容窗口。
 
 ### 阶段 C：控制台和传输

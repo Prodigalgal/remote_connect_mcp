@@ -26,12 +26,19 @@ final class DesktopTaskRunner implements Runnable {
     private final AgentIdentity identity;
     private final TaskCommand task;
     private final AgentTransport transport;
+    private final DesktopProcessBudget directLaunchBudget;
 
     DesktopTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task, AgentTransport transport) {
+        this(config, identity, task, transport, new DesktopProcessBudget());
+    }
+
+    DesktopTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
+                      AgentTransport transport, DesktopProcessBudget directLaunchBudget) {
         this.config = config;
         this.identity = identity;
         this.task = task;
         this.transport = transport;
+        this.directLaunchBudget = directLaunchBudget;
     }
 
     @Override
@@ -86,7 +93,7 @@ final class DesktopTaskRunner implements Runnable {
     private void launch(TaskCommand.DesktopAction action) throws IOException, InterruptedException {
         var builder = new ProcessBuilder(command(action)).directory(resolveCwd(action.cwd()).toFile());
         cleanSensitiveEnvironment(builder.environment());
-        var process = builder.start();
+        var process = directLaunchBudget.start(builder);
         var summary = "launched process " + process.pid();
         sendOutput(summary + System.lineSeparator());
         sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));

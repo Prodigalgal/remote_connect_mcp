@@ -58,12 +58,12 @@ jobs:
       - name: Java tests and JVM packages (Unix)
         if: matrix.os != 'windows-latest'
         working-directory: java
-        run: bash ./gradlew test :center:bootJar :agent:jar --no-daemon
+        run: bash ./gradlew test :center:bootJar :agent:jar :desktop:jar :browser:jar --no-daemon
       - name: Java tests and JVM packages (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: java
         shell: pwsh
-        run: .\gradlew.bat test :center:bootJar :agent:jar --no-daemon
+        run: .\gradlew.bat test :center:bootJar :agent:jar :desktop:jar :browser:jar --no-daemon
       - name: Install React dependencies
         working-directory: web
         run: pnpm install --frozen-lockfile
@@ -98,7 +98,7 @@ jobs:
         # Native Image is memory intensive; compile one image at a time on the
         # hosted runner instead of letting Gradle launch Center and Agent in
         # parallel. This keeps the CI gate deterministic on 16 GiB runners.
-        run: bash ./gradlew :center:nativeCompile :agent:nativeCompile --no-daemon --no-parallel
+        run: bash ./gradlew :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
@@ -112,6 +112,18 @@ jobs:
           RCM_SMOKE_RESOURCE_REPORT="$RUNNER_TEMP/rcm-agent-resource.json" \
             bash scripts/smoke-java-agent.sh "$CENTER_BINARY" "$AGENT_BINARY" 18181
           bash scripts/smoke-java-websocket.sh "$CENTER_BINARY" 18182
+          test -x java/desktop/build/native/nativeCompile/rcm-desktop-companion
+          set +e
+          java/desktop/build/native/nativeCompile/rcm-desktop-companion --invalid-arguments >/dev/null 2>&1
+          desktop_code=$?
+          set -e
+          test "$desktop_code" -eq 2
+          test -x java/browser/build/native/nativeCompile/rcm-browser-agent
+          set +e
+          java/browser/build/native/nativeCompile/rcm-browser-agent --invalid-arguments >/dev/null 2>&1
+          browser_code=$?
+          set -e
+          test "$browser_code" -eq 2
       - name: Enforce Native Agent RSS budget
         env:
           RCM_AGENT_MAX_RSS_MIB: '256'

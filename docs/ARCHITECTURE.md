@@ -18,13 +18,16 @@ ChatGPT / 其他 MCP 客户端
         |
         +---- 主动 HTTPS / WebSocket / QUIC ----+
 
-      物理终端 Host H1
-        +-- command Agent（Java Native Image，系统服务，可无人值守）
-        +-- desktop Agent（Java Native Image，用户会话，桌面能力）
-        +-- browser Agent（Java 编排 + 专用适配器）
+        物理终端 Host H1
+          +-- command-agent（Java Native Image，系统服务，可无人值守）
+          +-- desktop-companion（独立 Java Native Image，用户会话，可选）
+          +-- browser-agent（独立 Java Native Image，按任务启动）
+                +-- browser worker（本机 Playwright/Patchright/Comoufox 适配器，可选）
 ```
 
-一个物理终端可以有多个物理 Agent。每个 Agent 都有独立 `machine_id`、Token、状态目录、进程和能力；`host_id` 只用于在 Center 中归组，不授予权限，也不能替代认证。
+一个物理终端默认只有一个向 Center 注册的 `command-agent` 身份。桌面伴侣和浏览器 Worker 是该身份的本机子组件，不注册第二个
+`machine_id`，也不持有 Center Token；`host_id` 仍只用于归组，不授予权限，也不能替代认证。需要强隔离时才为同一终端显式启动多个
+command-agent 实例，并为每个实例使用独立状态目录、一次性注册 Token 和 machine ID。
 
 ## 2. Center、Agent 与能力
 
@@ -102,11 +105,12 @@ Project Registry 已作为可选的开发工作流落地：项目由管理员按
 
 Desktop 能力默认由同一安装包的用户会话伴侣提供，而不是让 SYSTEM 服务伪装成 GUI：
 
-- Center 仍只登记一个 Agent 身份；服务进程负责心跳、任务队列和权限校验，用户会话进程以 `--desktop-companion` 启动；
+- Center 仍只登记一个 Agent 身份；服务进程负责心跳、任务队列和权限校验，用户会话由独立的 `rcm-desktop-companion` 可执行文件启动；
 - 伴侣只绑定 `127.0.0.1`，通过 `STATE_DIR/desktop/desktop-companion.json` 的本机令牌和 ACL 保护的 IPC 接收任务，不向 Center 注册第二台机器；
 - 当前支持有界截图/屏幕枚举、应用启动、点击/拖拽、组合按键、文本输入、剪贴板和窗口聚焦；截图以 `image/png` 工件回传，不回显 Base64 文本；
-- 未登录或伴侣不可达时，输入操作明确失败、截图/启动按兼容回退处理，命令 Agent 继续保持无人值守可用；
-- 同一终端仍可按不同 `STATE_DIR` 运行多个独立物理 Agent，互不共享 Center Token 或能力。
+- 伴侣使用状态目录中的 `desktop-companion.lock` 保证单实例；默认最多 4 个并发 IPC 请求、16 个仍存活的启动进程，达到上限时返回可重试错误；进程退出通过 `ProcessHandle.onExit()` 释放槽位，不留下无限增长的注册表；
+- 未登录或伴侣不可达时，输入操作明确失败、截图/启动按兼容回退处理；回退启动受 Agent 侧上限约束，命令 Agent 继续保持无人值守可用；
+- command-agent 使用 `agent.lock` 防止服务重启重叠产生第二个任务执行器；停止时附着任务按既有取消语义回收，durable 任务保留其可恢复日志。
 
 ## 6. Browser Agent
 
@@ -121,6 +125,7 @@ Browser Agent 与 Desktop Agent 分离，Java Agent 负责身份、生命周期�
  `RCM_BROWSER_TASK_COMMAND` 仅作为旧 Worker 的兼容字段保留。
   仓库提供 `scripts/browser-worker.mjs` 作为最小参考适配器，通过 `RCM_BROWSER_ENGINE` 动态加载 Playwright、Patchright 或 Comoufox，并把 `navigate`、`snapshot`、`click`、`fill`、`press`、`wait`、`title`、`url`、`screenshot`、`download`、`evaluate` 映射为少量结构化操作。`snapshot` 同时返回最多 64 个有界 `rcm-ref-v1` 元素引用；引用只编码 role/name、test-id、placeholder 或 text 定位及序号，后续任务可以复用引用而不把整棵 DOM 带回 MCP。启用独立 profile 时，Agent 在状态目录保留最近页面的脱敏 origin/path，会话重新打开时先尝试恢复该页面；query、fragment、Cookie 和 CDP 凭据永不写入会话标记。
   结果清单由 Agent 校验 MIME、路径、大小和 SHA-256 后才上传单个工件；适配器异常或越界均 fail-closed。Worker 已支持 CSS、`rcm-ref-v1`、role、label、placeholder、text 和 test-id 结构化定位，并返回有界脱敏网络/控制台/页面错误摘要；稳定引用依赖页面仍可访问，定位失败时应重新执行 `snapshot`。目标主机仍需安装浏览器运行时并完成持久会话、跨浏览器和真实站点回归。
+- Agent 默认只允许 1 个 Browser Worker（总并发为 1 时自然为 1），可通过 `REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` 提高到最多 8，且始终不超过总并发。每个 browser 任务由独立的 `rcm-browser-agent` Native 进程编排本机适配器；该进程无 Center Token、只存活一个任务，任务有默认 300 秒超时、最长 24 小时硬上限，超时/取消/Agent 关闭会终止整个子进程树并删除临时请求、结果和工件目录；达到 Browser cap 时 Agent 从下一次 poll 的 `available_capabilities` 中移除 `browser`，不会在本机堆积等待进程。
 
 ## 7. 连接与配置演进
 

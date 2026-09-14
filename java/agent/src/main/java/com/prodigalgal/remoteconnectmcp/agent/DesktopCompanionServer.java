@@ -37,6 +37,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Semaphore;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.imageio.ImageIO;
@@ -46,10 +49,14 @@ import javax.imageio.ImageIO;
  * every request with a local token, and never talks to Center or registers a
  * second Agent identity.
  */
-final class DesktopCompanionServer {
+public final class DesktopCompanionServer {
     private static final Logger LOG = Logger.getLogger(DesktopCompanionServer.class.getName());
     private static final int MAX_REQUEST_BYTES = 128 * 1024;
     private static final int MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024;
+    private static final int DEFAULT_MAX_CONNECTIONS = 4;
+    private static final int MAX_ALLOWED_CONNECTIONS = 16;
+    private static final int DEFAULT_MAX_LAUNCHED_PROCESSES = 16;
+    private static final int MAX_ALLOWED_LAUNCHED_PROCESSES = 64;
     private static final String TOKEN_FILE = "desktop-companion.token";
     private static final String COMPANION_DIR = "desktop";
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -57,25 +64,46 @@ final class DesktopCompanionServer {
     private final Path stateDir;
     private final String token;
     private final int requestedPort;
+    private final int maxConnections;
+    private final int maxLaunchedProcesses;
+    private final Semaphore connectionSlots;
+    private final Semaphore launchSlots;
+    private final ConcurrentMap<Long, ProcessHandle> launchedProcesses = new ConcurrentHashMap<>();
 
     DesktopCompanionServer(Path stateDir, String token, int requestedPort) {
+        this(stateDir, token, requestedPort, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_LAUNCHED_PROCESSES);
+    }
+
+    DesktopCompanionServer(Path stateDir, String token, int requestedPort,
+                           int maxConnections, int maxLaunchedProcesses) {
         this.stateDir = stateDir.toAbsolutePath().normalize();
         this.token = token;
         this.requestedPort = requestedPort;
+        this.maxConnections = bounded(maxConnections, 1, MAX_ALLOWED_CONNECTIONS, "desktop companion max connections");
+        this.maxLaunchedProcesses = bounded(maxLaunchedProcesses, 1, MAX_ALLOWED_LAUNCHED_PROCESSES,
+                "desktop companion max launched processes");
+        this.connectionSlots = new Semaphore(this.maxConnections);
+        this.launchSlots = new Semaphore(this.maxLaunchedProcesses);
     }
 
-    static void run(Path stateDir) throws IOException {
+    public static void run(Path stateDir) throws IOException {
         var token = System.getenv("REMOTE_CONNECT_MCP_AGENT_DESKTOP_COMPANION_TOKEN");
         if (token == null || token.isBlank()) token = loadOrCreateToken(stateDir);
         var port = parsePort(System.getenv("REMOTE_CONNECT_MCP_AGENT_DESKTOP_COMPANION_PORT"));
-        new DesktopCompanionServer(stateDir, token.trim(), port).serve();
+        var maxConnections = parseBounded(System.getenv("REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_CONNECTIONS"),
+                DEFAULT_MAX_CONNECTIONS, 1, MAX_ALLOWED_CONNECTIONS, "REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_CONNECTIONS");
+        var maxLaunchedProcesses = parseBounded(System.getenv("REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES"),
+                DEFAULT_MAX_LAUNCHED_PROCESSES, 1, MAX_ALLOWED_LAUNCHED_PROCESSES,
+                "REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES");
+        new DesktopCompanionServer(stateDir, token.trim(), port, maxConnections, maxLaunchedProcesses).serve();
     }
 
     private void serve() throws IOException {
         Files.createDirectories(stateDir);
         var companionDir = stateDir.resolve(COMPANION_DIR);
         Files.createDirectories(companionDir);
-        try (var server = new ServerSocket(requestedPort, 32, InetAddress.getLoopbackAddress());
+        try (var lock = AgentLock.acquire(companionDir, "desktop-companion.lock");
+             var server = new ServerSocket(requestedPort, 32, InetAddress.getLoopbackAddress());
              var workers = Executors.newVirtualThreadPerTaskExecutor()) {
             var endpoint = companionDir.resolve("desktop-companion.json");
             writeEndpoint(endpoint, server.getLocalPort(), token);
@@ -85,10 +113,43 @@ final class DesktopCompanionServer {
             LOG.info(() -> "desktop companion listening on loopback port " + server.getLocalPort());
             while (!Thread.currentThread().isInterrupted()) {
                 var client = server.accept();
-                workers.execute(() -> handle(client));
+                if (!tryDispatch(client, workers)) {
+                    rejectBusy(client);
+                }
             }
         } finally {
             Files.deleteIfExists(companionDir.resolve("desktop-companion.json"));
+        }
+    }
+
+    private boolean tryDispatch(Socket client, ExecutorService workers) {
+        // A virtual-thread-per-task executor is cheap, but accepting without a
+        // permit would still allow an unbounded queue of sockets.  Acquire
+        // before submitting so the number of active desktop calls is fixed.
+        if (!connectionSlots.tryAcquire()) return false;
+        try {
+            workers.execute(() -> {
+                try {
+                    handle(client);
+                } finally {
+                    connectionSlots.release();
+                }
+            });
+            return true;
+        } catch (RuntimeException exception) {
+            connectionSlots.release();
+            try { client.close(); } catch (IOException ignored) { }
+            return true;
+        }
+    }
+
+    private static void rejectBusy(Socket client) {
+        try (client;
+             var writer = new BufferedWriter(new OutputStreamWriter(client.getOutputStream(), StandardCharsets.UTF_8))) {
+            write(writer, new DesktopCompanionClient.Response(false, null, null, null,
+                    "desktop companion is busy; retry after an active request completes"));
+        } catch (Exception ignored) {
+            // The caller may have already disconnected; no retry loop here.
         }
     }
 
@@ -167,6 +228,9 @@ final class DesktopCompanionServer {
     }
 
     private DesktopCompanionClient.Response launch(DesktopCompanionClient.Request request) throws IOException {
+        if (!launchSlots.tryAcquire()) {
+            throw new IOException("desktop launch limit reached (" + maxLaunchedProcesses + ")");
+        }
         var command = new ArrayList<String>();
         command.add(request.executable());
         command.addAll(request.args() == null ? List.of() : request.args());
@@ -177,8 +241,19 @@ final class DesktopCompanionServer {
             builder.directory(cwd.toFile());
         }
         builder.environment().keySet().removeIf(DesktopCompanionServer::sensitiveEnvironment);
-        var process = builder.start();
-        return new DesktopCompanionClient.Response(true, "launched process " + process.pid(), null, null, null);
+        try {
+            var process = builder.start();
+            var handle = process.toHandle();
+            launchedProcesses.put(handle.pid(), handle);
+            handle.onExit().thenRun(() -> {
+                if (launchedProcesses.remove(handle.pid(), handle)) launchSlots.release();
+            });
+            return new DesktopCompanionClient.Response(true, "launched process " + process.pid(), null, null, null);
+        } catch (Exception exception) {
+            launchSlots.release();
+            if (exception instanceof IOException io) throw io;
+            throw new IOException("could not launch desktop process", exception);
+        }
     }
 
     private DesktopCompanionClient.Response click(DesktopCompanionClient.Request request) throws AWTException {
@@ -447,5 +522,19 @@ final class DesktopCompanionServer {
         } catch (NumberFormatException exception) {
             throw new IllegalArgumentException("desktop companion port is invalid", exception);
         }
+    }
+
+    private static int parseBounded(String value, int fallback, int minimum, int maximum, String name) {
+        if (value == null || value.isBlank()) return fallback;
+        try {
+            return bounded(Integer.parseInt(value.trim()), minimum, maximum, name);
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException(name + " must be an integer", exception);
+        }
+    }
+
+    private static int bounded(int value, int minimum, int maximum, String name) {
+        if (value < minimum || value > maximum) throw new IllegalArgumentException(name + " is outside the allowed range");
+        return value;
     }
 }

@@ -18,7 +18,7 @@ echo '== Java tests =='
 "$GRADLE" test --no-daemon
 
 echo '== JVM artifacts =='
-"$GRADLE" :center:bootJar :agent:jar --no-daemon
+"$GRADLE" :center:bootJar :agent:jar :desktop:jar :browser:jar --no-daemon
 
 echo '== React production build =='
 pnpm --dir "$ROOT/web" install --frozen-lockfile

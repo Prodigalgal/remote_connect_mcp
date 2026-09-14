@@ -18,15 +18,20 @@ KillMode=process
 TimeoutStopSec=20
 UMask=0077
 NoNewPrivileges=true
-# Account resource use without imposing a hard memory cap.  Browser/Desktop
-# adapters may need short bursts, while these limits still make runaway task
-# fan-out visible to systemd and keep file/task descriptors bounded.
+# Keep the 1C/1G-class host usable even when a browser adapter misbehaves.
+# Browser/Desktop adapters may need short bursts; the high/maximum pair leaves
+# headroom while still making runaway task fan-out fail closed at systemd.
 CPUAccounting=true
 MemoryAccounting=true
 IOAccounting=true
 TasksAccounting=true
 LimitNOFILE=8192
 TasksMax=256
+# Desktop companion runs in the interactive user session and is deliberately
+# outside this service cgroup; its own connection/launch caps apply there.
+CPUQuota=100%
+MemoryHigh=512M
+MemoryMax=768M
 StandardOutput=journal
 StandardError=journal
 

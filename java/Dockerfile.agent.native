@@ -9,8 +9,9 @@ ENV GITHUB_ACTIONS=${RCM_CI_BUILD}
 COPY . .
 RUN chmod +x ./gradlew && ./gradlew :agent:nativeCompile --no-daemon --no-parallel
 
-# See the Center Dockerfile: release jobs use this scratch target to export
-# only the Agent executable and its adjacent Native Image libraries.
+# Release jobs use this scratch target to export only the command-agent
+# executable and its adjacent Native Image libraries. Desktop and Browser
+# supervisors are built by their own Dockerfiles and never enter this image.
 FROM scratch AS artifact
 COPY --from=build /src/agent/build/native/nativeCompile/ /
 

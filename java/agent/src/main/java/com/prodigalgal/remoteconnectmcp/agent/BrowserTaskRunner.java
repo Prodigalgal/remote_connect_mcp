@@ -76,8 +76,15 @@ final class BrowserTaskRunner implements Runnable {
             resultFile = Files.createTempFile(config.stateDir(), "browser-result-", ".json");
             Files.deleteIfExists(resultFile);
             artifactDir = Files.createTempDirectory(config.stateDir(), "browser-artifacts-");
-            var builder = new ProcessBuilder(shell(adapter)).directory(cwd.toFile()).redirectErrorStream(true);
+            var browserBinary = resolveBrowserAgent();
+            var browserCommand = browserBinary == null
+                    ? shell(adapter)
+                    : List.of(browserBinary.toString(), "--run-worker");
+            var builder = new ProcessBuilder(browserCommand).directory(cwd.toFile()).redirectErrorStream(true);
             cleanSensitiveEnvironment(builder.environment());
+            // The standalone browser-agent consumes this local adapter command
+            // and never receives the Center identity/token.
+            builder.environment().put("REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER", adapter);
             builder.environment().put("RCM_BROWSER_TASK_ID", task.id());
             builder.environment().put("RCM_BROWSER_TASK_COMMAND", task.command() == null ? "" : task.command());
             builder.environment().put("RCM_BROWSER_TASK_REQUEST_FILE", requestFile.toString());
@@ -267,6 +274,33 @@ final class BrowserTaskRunner implements Runnable {
             return List.of("cmd.exe", "/d", "/s", "/c", command);
         }
         return List.of("/bin/sh", "-lc", command);
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private static Path resolveBrowserAgent() throws IOException {
+        var current = ProcessHandle.current().info().command()
+                .map(value -> Path.of(value).toAbsolutePath().normalize()).orElse(null);
+        var configured = System.getenv("REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY");
+        if (configured != null && !configured.isBlank()) {
+            var path = Path.of(configured.trim()).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(path) || (!isWindows() && !Files.isExecutable(path))) {
+                throw new IOException("browser-agent binary is missing or not executable: " + path);
+            }
+            if (current != null && path.equals(current)) {
+                throw new IOException("REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY points to the command Agent itself");
+            }
+            return path;
+        }
+        if (current == null || current.getParent() == null) return null;
+        var executable = current.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".exe")
+                ? "rcm-browser-agent.exe" : "rcm-browser-agent";
+        var sibling = current.resolveSibling(executable);
+        if (Files.isRegularFile(sibling)) return sibling;
+        var isolated = current.resolveSibling("browser").resolve(executable).normalize();
+        return Files.isRegularFile(isolated) ? isolated : null;
     }
 
     private static void awaitOutputs(Future<?>... futures) throws IOException, InterruptedException {
