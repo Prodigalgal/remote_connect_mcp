@@ -161,6 +161,9 @@ class PostgresIntegrationTest {
         var artifact = "artifact-data".getBytes(StandardCharsets.UTF_8);
         var digest = sha256(artifact);
         assertEquals(artifact.length, store.appendArtifact(agentId, taskId, "text/plain", digest, artifact).bytes());
+        assertEquals("filesystem", jdbc.queryForObject("SELECT storage_backend FROM rcm_task_artifact WHERE task_id = ?", String.class, taskId));
+        assertNull(jdbc.queryForObject("SELECT artifact_data FROM rcm_task_artifact WHERE task_id = ?", byte[].class, taskId),
+                "new artifacts must not be written into PostgreSQL bytea");
         assertTrue(store.readArtifact(taskId).isPresent());
         store.updateState(agentId, taskId, new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
         assertEquals(TaskStatus.COMPLETED, store.find(taskId).orElseThrow().status());
