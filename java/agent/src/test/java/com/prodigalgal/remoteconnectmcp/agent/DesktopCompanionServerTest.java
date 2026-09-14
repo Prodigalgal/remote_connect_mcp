@@ -1,14 +1,19 @@
 package com.prodigalgal.remoteconnectmcp.agent;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.time.Instant;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -24,5 +29,33 @@ class DesktopCompanionServerTest {
         assertEquals(stateDir.toString(), policy.get("workspace_root"));
         assertTrue(new String(Files.readAllBytes(policyFile), StandardCharsets.UTF_8)
                 .indexOf("token") < 0);
+    }
+
+    @Test
+    void unrestrictedMachineAcceptsNarrowerPerTaskContract(@TempDir Path stateDir) throws Exception {
+        var scope = stateDir.resolve("project");
+        Files.createDirectories(scope);
+        var request = request(scope, scope, "path");
+
+        assertDoesNotThrow(() -> DesktopCompanionServer.validateScope(
+                new DesktopCompanionServer.Policy(ScopeMode.UNRESTRICTED, null), request));
+    }
+
+    @Test
+    void boundedMachineStillRejectsContractOutsideMachineRoot(@TempDir Path stateDir) throws Exception {
+        var machineRoot = stateDir.resolve("workspace");
+        var outside = stateDir.resolve("outside");
+        Files.createDirectories(machineRoot);
+        Files.createDirectories(outside);
+        var request = request(outside, outside, "path");
+
+        assertThrows(IOException.class, () -> DesktopCompanionServer.validateScope(
+                new DesktopCompanionServer.Policy(ScopeMode.WORKSPACE, machineRoot.toString()), request));
+    }
+
+    private static DesktopCompanionClient.Request request(Path cwd, Path scopeRoot, String scopeMode) {
+        return new DesktopCompanionClient.Request("companion-token", "screenshot", null, List.of(),
+                cwd.toString(), null, null, null, null, null, null, null, null, null,
+                scopeMode, scopeRoot.toString(), Instant.now().plusSeconds(60));
     }
 }

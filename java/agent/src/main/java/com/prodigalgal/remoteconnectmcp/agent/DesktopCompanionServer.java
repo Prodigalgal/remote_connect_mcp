@@ -522,7 +522,21 @@ public final class DesktopCompanionServer {
 
     /** Re-check the Center contract before executing any user-session action. */
     private void validateScope(DesktopCompanionClient.Request request) throws IOException {
-        var machineMode = policy.scopeMode() == null ? ScopeMode.WORKSPACE : policy.scopeMode();
+        validateScope(policy, request);
+    }
+
+    /**
+     * Validate a task contract against the machine policy.  An unrestricted
+     * command Agent may still receive a narrower per-task contract; the
+     * companion must enforce that contract even though its machine policy has
+     * no fixed workspace root.  The previous implementation treated that
+     * valid combination as if the machine root were missing and rejected all
+     * companion input actions on unrestricted Agents.
+     */
+    static void validateScope(Policy policy, DesktopCompanionClient.Request request) throws IOException {
+        if (request == null) throw new IOException("desktop request is missing");
+        var effectivePolicy = policy == null ? new Policy(ScopeMode.WORKSPACE, null) : policy;
+        var machineMode = effectivePolicy.scopeMode() == null ? ScopeMode.WORKSPACE : effectivePolicy.scopeMode();
         var requestedMode = request.scopeMode() == null || request.scopeMode().isBlank()
                 ? machineMode : ScopeMode.fromWireValue(request.scopeMode());
         if (machineMode.bounded() && !requestedMode.bounded()) {
@@ -531,15 +545,26 @@ public final class DesktopCompanionServer {
         if (request.contractExpiresAt() != null && !Instant.now().isBefore(request.contractExpiresAt())) {
             throw new IOException("desktop execution contract has expired");
         }
-        if (!requestedMode.bounded() && !machineMode.bounded()) return;
-        var machineRoot = policy.workspaceRoot();
-        if (machineRoot == null || machineRoot.isBlank()) {
-            throw new IOException("desktop workspace policy has no root");
+        if (!requestedMode.bounded()) {
+            if (request.scopeRoot() != null && !request.scopeRoot().isBlank()) {
+                throw new IOException("unrestricted desktop request cannot carry scope_root");
+            }
+            return;
         }
-        var machineReal = resolveThroughExistingParents(Path.of(machineRoot));
+        Path machineReal = null;
+        if (machineMode.bounded()) {
+            var machineRoot = effectivePolicy.workspaceRoot();
+            if (machineRoot == null || machineRoot.isBlank()) {
+                throw new IOException("desktop workspace policy has no root");
+            }
+            machineReal = resolveThroughExistingParents(Path.of(machineRoot));
+        }
         var contractRoot = request.scopeRoot() == null || request.scopeRoot().isBlank()
                 ? machineReal : resolveThroughExistingParents(Path.of(request.scopeRoot()));
-        if (!within(machineReal, contractRoot)) {
+        if (contractRoot == null) {
+            throw new IOException("bounded desktop request requires scope_root");
+        }
+        if (machineReal != null && !within(machineReal, contractRoot)) {
             throw new IOException("desktop contract root is outside the machine workspace");
         }
         var requestedCwd = request.cwd() == null || request.cwd().isBlank()
@@ -731,6 +756,6 @@ public final class DesktopCompanionServer {
         return value;
     }
 
-    private record Policy(ScopeMode scopeMode, String workspaceRoot) {
+    record Policy(ScopeMode scopeMode, String workspaceRoot) {
     }
 }
