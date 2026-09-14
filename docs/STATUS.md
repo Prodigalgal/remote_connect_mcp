@@ -2,7 +2,7 @@
 
 更新时间：2026-09-14（Asia/Shanghai）
 
-本文只记录仓库代码与当前集群只读探针能够证明的状态。产品需求基线见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)；没有通过生产门禁的内容不会标记为“已上线”。
+本文只记录仓库代码与当前集群只读探针能够证明的状态。产品需求基线见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)，分级任务清单见 [`docs/TASKS.md`](TASKS.md)；没有通过生产门禁的内容不会标记为“已上线”。
 
 ## 结论
 
