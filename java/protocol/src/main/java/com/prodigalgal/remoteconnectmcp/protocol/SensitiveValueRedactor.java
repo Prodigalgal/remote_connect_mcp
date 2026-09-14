@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
  */
 public final class SensitiveValueRedactor {
     private static final Pattern ASSIGNMENT = Pattern.compile(
-            "(?i)(\\b(?:authorization|cookie|token|password|passwd|secret|api[_-]?key|private[_-]?key|credential)\\b\\s*(?:[:=]|=>)\\s*[\\\"']?)(?!Bearer\\b)([^\\\"'\\s,;}]+)");
+            "(?i)(\\b(?:authorization|cookie|token|password|passwd|secret|api[_-]?key|private[_-]?key|credential)\\b\\s*[\\\"']?\\s*(?:[:=]|=>)\\s*[\\\"']?)(?!Bearer\\b)([^\\\"'\\s,;}]+)");
     private static final Pattern BEARER = Pattern.compile(
             "(?i)(\\bBearer\\s+)([A-Za-z0-9._~+/=-]+)");
     /* PEM labels are extensible (OpenSSH, RSA, EC, ...). Match the marker
