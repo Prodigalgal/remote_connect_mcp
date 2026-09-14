@@ -36,6 +36,7 @@ public final class ProjectService {
     private static final int MAX_NAME = 128;
     private static final int MAX_PATH = 2048;
     private static final int MAX_REF = 256;
+    private static final int MAX_COMMIT_MESSAGE = 1024;
     private static final int WORKTREE_TIMEOUT_SECONDS = 300;
 
     private final AgentRegistry agents;
@@ -312,6 +313,113 @@ public final class ProjectService {
         WorkspacePolicy.validateRemote(ScopeMode.fromWireValue(machine.scopeMode()), machine.os(),
                 machine.workspaceRoot(), machine.workspaceRoot(), base);
         return base;
+    }
+
+    /**
+     * Queue an explicit Git read or mutation. Repository contents never pass
+     * through Center: the Agent executes the quoted command under the same
+     * project/worktree contract used by ordinary tasks. Mutating operations
+     * require a caller idempotency key so a ChatGPT retry cannot create a
+     * second commit or merge.
+     */
+    public TaskView gitOperation(String projectId, String operation, ProjectGitOperationRequest request) {
+        var project = findState(projectId);
+        var machine = agents.findMachine(project.machineId, Instant.now())
+                .orElseThrow(() -> new IllegalArgumentException("machine not found"));
+        var input = request == null ? new ProjectGitOperationRequest("", "", "", "", "") : request;
+        var normalizedOperation = normalizeGitOperation(operation);
+        var worktreeId = input.worktreeId() == null ? "" : input.worktreeId().trim();
+        var scopeMode = worktreeId.isBlank() ? ScopeMode.PROJECT : ScopeMode.WORKTREE;
+        var target = project.repositoryPath;
+        var scopeRoot = project.rootPath;
+        if (!worktreeId.isBlank()) {
+            var worktree = findWorktree(project.id, worktreeId);
+            var current = refresh(worktree);
+            if (!"create".equals(worktree.operation) || !WorktreeStatus.READY.equals(current.status())) {
+                throw new IllegalArgumentException("worktree is not ready");
+            }
+            target = worktree.path;
+            scopeRoot = worktree.path;
+        }
+        // Reuse the normal Center boundary checks before constructing the
+        // command, then let the Agent perform its real-path check again.
+        target = resolveCwd(project.machineId, project.id, worktreeId, target);
+        var command = buildGitCommand(machine, target, normalizedOperation, input);
+        var mutating = "commit".equals(normalizedOperation) || "merge".equals(normalizedOperation);
+        var clientKey = normalizeIdempotency(input.idempotencyKey());
+        if (mutating && clientKey.isBlank()) {
+            throw new IllegalArgumentException("mutating Git operations require idempotency_key");
+        }
+        var taskKey = clientKey.isBlank() ? "" : "rcm-git:" + project.id + ":" + normalizedOperation + ":" + clientKey;
+        var timeout = WORKTREE_TIMEOUT_SECONDS;
+        var task = new TaskCommand("", TaskKind.COMMAND, "command", command, target,
+                Map.of("GIT_TERMINAL_PROMPT", "0", "GIT_EDITOR", "true"), timeout, null, Instant.now());
+        var session = "project-git-" + normalizedOperation + "-" + UUID.randomUUID().toString().replace("-", "");
+        return tasks.create(new CreateTaskRequest(project.machineId, task, taskKey, project.id, worktreeId,
+                scopeMode, scopeRoot, session, mutating ? "high" : "low", false));
+    }
+
+    private static String buildGitCommand(MachineView machine, String target, String operation,
+                                          ProjectGitOperationRequest request) {
+        var git = "git -C " + quote(machine, target);
+        return switch (operation) {
+            case "status" -> git + " status --short --branch --no-renames";
+            case "diff" -> {
+                var mode = request.mode() == null || request.mode().isBlank() ? "stat" : request.mode().trim().toLowerCase(Locale.ROOT);
+                if (!("stat".equals(mode) || "patch".equals(mode))) {
+                    throw new IllegalArgumentException("Git diff mode must be stat or patch");
+                }
+                var args = "stat".equals(mode) ? " --stat" : " --binary";
+                var ref = request.ref() == null || request.ref().isBlank() ? "" : normalizeRef(request.ref());
+                yield git + " diff --no-ext-diff" + args + (ref.isBlank() ? "" : " " + gitArgument(machine, ref)) + " --";
+            }
+            case "log" -> git + " log --oneline --decorate -n 50";
+            case "commit" -> git + " add --all && " + git + " commit -m " + gitArgument(machine, requiredCommitMessage(request.message()));
+            case "merge" -> git + " merge --no-edit --no-ff " + gitArgument(machine, requiredRef(request.ref()));
+            default -> throw new IllegalArgumentException("unsupported Git operation: " + operation);
+        };
+    }
+
+    private static String normalizeGitOperation(String value) {
+        var operation = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+        if (!List.of("status", "diff", "log", "commit", "merge").contains(operation)) {
+            throw new IllegalArgumentException("unsupported Git operation: " + operation);
+        }
+        return operation;
+    }
+
+    private static String requiredCommitMessage(String value) {
+        if (value == null || value.isBlank()) throw new IllegalArgumentException("commit message is required");
+        var message = value.trim();
+        if (message.length() > MAX_COMMIT_MESSAGE || message.indexOf('\u0000') >= 0
+                || message.indexOf('\r') >= 0 || message.indexOf('\n') >= 0
+                || message.indexOf('"') >= 0 || message.indexOf('%') >= 0
+                || message.indexOf('&') >= 0 || message.indexOf('|') >= 0
+                || message.indexOf('<') >= 0 || message.indexOf('>') >= 0
+                || message.indexOf('^') >= 0 || message.indexOf(';') >= 0) {
+            throw new IllegalArgumentException("commit message contains unsupported shell characters");
+        }
+        return message;
+    }
+
+    private static String requiredRef(String value) {
+        if (value == null || value.isBlank()) throw new IllegalArgumentException("merge ref is required");
+        return normalizeRef(value);
+    }
+
+    private static String gitArgument(MachineView machine, String value) {
+        var normalized = requiredText(value, "git argument", MAX_COMMIT_MESSAGE);
+        return isWindows(machine) ? quoteWindowsArgument(normalized) : quotePosix(normalized);
+    }
+
+    private static String quoteWindowsArgument(String value) {
+        if (value.indexOf('"') >= 0 || value.indexOf('%') >= 0 || value.indexOf('&') >= 0
+                || value.indexOf('|') >= 0 || value.indexOf('<') >= 0 || value.indexOf('>') >= 0
+                || value.indexOf('^') >= 0 || value.indexOf(';') >= 0
+                || value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0) {
+            throw new IllegalArgumentException("Git argument contains unsupported shell characters");
+        }
+        return "\"" + value + "\"";
     }
 
     private void queueOperation(ProjectState project, WorktreeState state, boolean persisted) {

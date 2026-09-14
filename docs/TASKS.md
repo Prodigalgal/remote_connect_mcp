@@ -40,7 +40,7 @@
 
 | 状态 | 编号 | 任务 | 当前情况与完成条件 | 验收证据 |
 | --- | --- | --- | --- | --- |
-| [ ] | P1-01 | Project Registry 与 Git worktree 闭环 | 注册、创建/删除和 cwd 解析已有；补齐 commit、diff、变更预览、显式 merge、冲突和权限回归 | 项目/Agent 目标机 Git 测试 |
+| [ ] | P1-01 | Project Registry 与 Git worktree 闭环 | 注册、创建/删除和 cwd 解析已有；已增加受项目/工作树合同约束的 status、diff、log、幂等 commit 和显式 merge 排队 API；冲突输出、提交差异审阅和目标机权限回归仍待补齐 | 项目/Agent 目标机 Git 测试 |
 | [ ] | P1-02 | Windows/Linux Desktop Companion 真实能力 | 基础截图、屏幕枚举、启动、输入和剪贴板已有；补齐 Windows 多会话/UAC/RDP、Linux X11/Wayland、多显示器和会话失效恢复 | 真实目标机矩阵、截图/输入工件 |
 | [ ] | P1-03 | Browser Agent 生产运行时 | Worker 监管、结构化引用、有界快照、下载工件和清理已有；补齐目标浏览器安装、持久 profile、登录态、stale ref 恢复和 Playwright/Patchright/Comoufox 回归 | 目标机浏览器矩阵、长任务和清理报告 |
 | [ ] | P1-04 | React 控制台完整工作流 | 基础机器、项目、任务、令牌、升级页面已有；补齐范围/会话/桌面/浏览器任务编排、审计详情、分页/虚拟化、实时状态、无障碍和视觉回归 | Console E2E、a11y、视觉 CI |

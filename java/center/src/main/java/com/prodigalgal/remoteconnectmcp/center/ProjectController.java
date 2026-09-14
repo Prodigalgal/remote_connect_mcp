@@ -84,6 +84,19 @@ public final class ProjectController {
         });
     }
 
+    /** Queue one explicit Git inspection or mutating operation on the Agent. */
+    @PostMapping("/{projectId}/git/{operation}")
+    public CompletableFuture<ResponseEntity<?>> git(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String projectId,
+            @PathVariable String operation,
+            @RequestBody(required = false) ProjectGitOperationRequest request) {
+        return execute(() -> {
+            authenticate(authorization);
+            return ResponseEntity.accepted().body(projects.gitOperation(projectId, operation, request));
+        });
+    }
+
     private CompletableFuture<ResponseEntity<?>> execute(java.util.concurrent.Callable<ResponseEntity<?>> action) {
         return async.submit(action).exceptionally(failure -> error(unwrap(failure)));
     }

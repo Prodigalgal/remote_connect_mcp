@@ -65,4 +65,27 @@ class ProjectServiceTest {
         assertThrows(IllegalArgumentException.class, () -> projects.register(
                 new ProjectRegistrationRequest(registration.machineId(), "outside", "/srv/demo", "/tmp/repo", "HEAD")));
     }
+
+    @Test
+    void gitOperationsAreScopedAndMutationsRequireIdempotency() {
+        var registry = AgentRegistry.forTest("enrollment");
+        var registration = registry.register(new RegisterRequest("builder", "host-a", "host-a", "linux", "amd64",
+                "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enrollment");
+        var tasks = new TaskService(registry);
+        var projects = new ProjectService(registry, tasks);
+        var project = projects.register(new ProjectRegistrationRequest(registration.machineId(), "demo", "/srv/demo", null, "main"));
+
+        var status = projects.gitOperation(project.id(), "status", new ProjectGitOperationRequest("", "", "", "", ""));
+        assertTrue(status.command().command().contains("git -C '/srv/demo' status"));
+        assertEquals(ScopeMode.PROJECT, status.command().contract().scopeMode());
+        assertThrows(IllegalArgumentException.class, () -> projects.gitOperation(project.id(), "commit",
+                new ProjectGitOperationRequest("", "", "message", "", "")));
+
+        var request = new ProjectGitOperationRequest("", "", "message", "", "commit-1");
+        var first = projects.gitOperation(project.id(), "commit", request);
+        var retry = projects.gitOperation(project.id(), "commit", request);
+        assertEquals(first.id(), retry.id(), "commit retries must be idempotent");
+        assertThrows(IllegalArgumentException.class, () -> projects.gitOperation(project.id(), "merge",
+                new ProjectGitOperationRequest("", "feature/../main", "", "", "merge-1")));
+    }
 }
