@@ -232,6 +232,10 @@ public final class AgentRuntime {
                 Thread.currentThread().interrupt();
             }
             running.clear();
+            // A headless desktop launch may deliberately outlive its task.
+            // Reap it with the Agent so upgrades/restarts cannot leave an
+            // unbounded set of GUI processes behind.
+            desktopProcessBudget.close();
         }
     }
 

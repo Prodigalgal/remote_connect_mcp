@@ -17,7 +17,7 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.21 生产发布；四�
 | 任务可靠性 | 异步入队、幂等键、租约、取消、输出游标、断线重连、有界 spool、无超时任务恢复；过期租约区分可恢复持久任务与不可安全重放的定时任务，Go/Java 都按 Agent 范围在下一次 poll 修复，JDBC 修复后的任务 ID 在事务提交后精准唤醒 `task_wait`；Go/Java 两条兼容实现每次真正领取租约都会递增并暴露 `attempt`，Java Agent 在状态/输出/工件回传携带 attempt 栅栏，便于阻断断线后的旧进程重投；旧客户端只在首次派发允许省略 attempt，重新租约后缺少标头也会被拒绝；PostgreSQL 按任务摘要路由 `LISTEN/NOTIFY` 事件唤醒，高频输出只唤醒等待同一任务的请求（可跨 Center 副本），截止时间返回快照，不运行固定行读取循环 | Java Agent/Center 单元测试与 GitHub Actions 门禁 |
 | 注册与身份 | 一次性 Enrollment Token，注册后换取每 Agent 日常 Token；身份文件原子写入 | Agent/Center 测试通过 |
 | 配置热更新 | Center 下发 generation、长轮询等待时间、兼容退避间隔和并发槽位；Agent 原子落盘并只接受更新代次；每次心跳还携带版本化 runtime descriptor（单任务及 Agent 总进程预算、资源能力、scope_mode 与桌面/浏览器配置及会话状态），Center 以固定大小 JSONB 投影保存；管理员可将配置历史作为新 generation 回滚；旧 descriptor 缺失总预算字段时按有界默认值兼容 | `AgentRuntimeSettingsTest`、`AgentConfigurationServiceTest`、runtime descriptor protocol/registry tests |
-| Desktop | 独立 `desktop` Native 目标的用户会话 companion；截图/屏幕枚举、启动、点击/拖拽、组合按键、剪贴板、窗口聚焦和文本输入通过受保护 loopback IPC；伴侣退出时会终止其登记的 GUI 子进程，避免重启留下无界孤儿进程 | `DesktopCompanionClientTest`、协议测试，以及 GitHub Actions `34795775084` 的 Linux amd64/arm64、Windows amd64 Native smoke 通过 |
+| Desktop | 独立 `desktop` Native 目标的用户会话 companion；截图/屏幕枚举、启动、点击/拖拽、组合按键、剪贴板、窗口聚焦和文本输入通过受保护 loopback IPC；伴侣退出时会终止其登记的 GUI 子进程；没有用户会话时的 command-agent 直启进程也登记在有界预算中，并在 Agent 退出/升级时统一回收，避免重启留下无界孤儿进程 | `DesktopCompanionClientTest`、`DesktopProcessBudgetTest`、协议测试，以及 GitHub Actions Native smoke 通过 |
 | Browser | 独立 `browser` Native 目标的单任务 supervisor；command-agent 负责 Center 生命周期、超时、日志和工件，browser-agent 再启动本机 Playwright/Patchright/Comoufox Worker | `BrowserTaskRunnerTest`、`BrowserTaskRunner`，以及 GitHub Actions `34795775084` 的三目标 Native smoke 通过 |
 | 升级 | Center canary/批次状态机，HTTPS + SHA-256，Agent Helper 原子替换和回滚；offer/status 与 detached helper result 支持可选升级 attempt，迟到报告不会覆盖更新尝试；PostgreSQL offer/control/status 路径现在按 campaign/target 行锁串行化，避免并发 Agent 重复领取同一尝试；升级编排使用有界分段机器快照（最多 10000 台），不会因 Admin 单页 200 台而漏掉离线目标；发布工作流资产名已与解析器对齐 | `UpgradeServiceTest`；`.github/workflows/java-release.yml` 静态校验 |
 | 控制台 | React/Vite 经典后台布局，机器、项目/worktree、任务、令牌、升级、审计和设置页面；任务编排支持 command/desktop/browser、项目/worktree/path/unrestricted 显式范围、风险/提权/会话与幂等键；项目卡片支持有确认的 status/diff/log/commit/merge/merge-abort；全局搜索、机器在线筛选、任务状态筛选和任务输出 16 KiB 游标分页查看；机器、项目、任务、升级、审计列表按 `has_more` 增量加载；实时刷新与“下一页”并发时使用请求代次栅栏，升级页支持只重排队单个失败目标；Admin Token 只在当前标签页内存 | v0.1.21 GitHub Actions React 构建与生产 Console 路由验收通过；本轮新增代码待 CI |
@@ -56,7 +56,7 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.21 生产发布；四�
   64 MiB、聚合 spool 64 MiB。Native Agent 的目标 RSS 必须在 CI/目标平台用同一版本实测；当前没有把
   编译进程的内存数字冒充运行时测量。Go 基线仓库内 Linux Agent 文件大小为 6,537,378 字节，但这
   只是磁盘体积，也不能替代同场景 RSS 对比。
-- 每个 Java Agent 任务现在有独立进程树监督：默认最多 32 个后代进程，可选墙钟、累计 CPU 时间和 Linux `/proc` RSS 上限；超限终止整棵树并回传明确失败原因。command/desktop/browser 任务还共享 Agent 级总进程预算（`REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`，默认随并发增长但封顶 256，允许 1–4096），动态进程树扩展和桌面直启都会占用同一预算，任务结束或进程退出自动释放。资源监督只在任务运行期间存在，不增加空闲轮询；Windows RSS 仍需后续 Job Object/目标机门禁补齐。
+- 每个 Java Agent 任务现在有独立进程树监督：默认最多 32 个后代进程，可选墙钟、累计 CPU 时间和 Linux `/proc` RSS 上限；超限终止整棵树并回传明确失败原因。command/desktop/browser 任务还共享 Agent 级总进程预算（`REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`，默认随并发增长但封顶 256，允许 1–4096），动态进程树扩展和桌面直启都会占用同一预算，任务结束或进程退出自动释放；Agent 关闭时会对仍由直启预算登记的 GUI 进程做一次有界回收并释放名额。资源监督只在任务运行期间存在，不增加空闲轮询；Windows RSS 仍需后续 Job Object/目标机门禁补齐。
 - `scripts/smoke-java-agent.sh/.ps1` 在 Agent 在线和任务闭环期间采样工作集峰值；Release/迁移工作流
   会先按 256 MiB 默认预算校验，再将 JSON 作为私有 Actions 工件上传，不放入公开 Release；
   该门禁只约束 Native Agent 常驻烟测，不把单次编译峰值直接当作宿主机硬限制。
