@@ -78,7 +78,19 @@ public final class AgentRuntime {
         var wakeSignal = new AgentWakeSignal();
         var wakeClient = AgentWakeClient.startIfEnabled(config, identity, wakeSignal::signal);
         var executor = Executors.newVirtualThreadPerTaskExecutor();
+        var desktopCleanupHook = new Thread(desktopProcessBudget::close, "rcm-desktop-budget-cleanup");
+        var shutdownHookInstalled = false;
         try {
+            try {
+                Runtime.getRuntime().addShutdownHook(desktopCleanupHook);
+                shutdownHookInstalled = true;
+            } catch (IllegalStateException | SecurityException hookFailure) {
+                // A shutdown already in progress (or a restricted runtime)
+                // still reaches the normal finally path in ordinary service
+                // exits; do not make task dispatch fail solely because the
+                // best-effort emergency hook could not be registered.
+                LOG.log(Level.FINE, "could not install desktop cleanup shutdown hook", hookFailure);
+            }
             reportPendingUpgradeResult(identity);
             recoverDurable(identity, durableStore, executor, settings, resourceBudget, processBudget);
             while (!Thread.currentThread().isInterrupted() && !stopRequested.get()) {
@@ -229,6 +241,14 @@ public final class AgentRuntime {
                 }
             }
         } finally {
+            if (shutdownHookInstalled) {
+                try {
+                    Runtime.getRuntime().removeShutdownHook(desktopCleanupHook);
+                } catch (IllegalStateException | SecurityException ignored) {
+                    // JVM shutdown is already executing; the hook itself is
+                    // responsible for the final desktop-process cleanup.
+                }
+            }
             if (wakeClient != null) wakeClient.close();
             // Do not use ExecutorService.close() here: it waits indefinitely for
             // an unattended command. Interrupt the command/output virtual
