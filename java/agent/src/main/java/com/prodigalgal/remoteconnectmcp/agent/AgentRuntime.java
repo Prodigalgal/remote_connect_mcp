@@ -157,7 +157,16 @@ public final class AgentRuntime {
                                 }
                             }
                         };
-                        running.put(task.id(), future);
+                        if (!registerTaskIfAbsent(running, task.id(), future)) {
+                            // A lost response/retry must never replace an
+                            // already-running Future.  The Center lease is
+                            // still owned by the existing runner, so simply
+                            // drop this duplicate response and keep the
+                            // browser slot available for a real task.
+                            LOG.warning(() -> "Center returned duplicate task " + task.id() + "; keeping the existing runner");
+                            if (browserSlotAcquired) browserRunning.decrementAndGet();
+                            continue;
+                        }
                         if (runner instanceof DurableCommandRunner durable) {
                             durableRunning.put(task.id(), durable);
                         }
@@ -246,6 +255,17 @@ public final class AgentRuntime {
         return configured.stream().filter(value -> !"browser".equals(value)).toList();
     }
 
+    /**
+     * Install a task Future without replacing a runner that won a previous
+     * poll response.  This method is package-visible for a focused
+     * concurrency test and keeps the dispatch fence next to the loop that
+     * owns the running-task map.
+     */
+    static boolean registerTaskIfAbsent(Map<String, Future<?>> running, String taskId, Future<?> future) {
+        if (running == null || taskId == null || taskId.isBlank() || future == null) return false;
+        return running.putIfAbsent(taskId, future) == null;
+    }
+
     private void recoverDurable(AgentIdentity identity, DurableTaskStore store, ExecutorService executor,
                                 AgentRuntimeSettings settings, AgentResourceBudget resourceBudget,
                                 AgentProcessBudget processBudget) {
@@ -254,7 +274,7 @@ public final class AgentRuntime {
                 LOG.warning("durable task recovery reached the configured concurrency limit");
                 return;
             }
-            if (running.containsKey(record.taskId()) || !config.capabilities().contains("command")) {
+            if (!config.capabilities().contains("command")) {
                 continue;
             }
             var task = record.taskCommand();
@@ -270,7 +290,9 @@ public final class AgentRuntime {
                     durableRunning.remove(task.id(), runner);
                 }
             };
-            running.put(task.id(), future);
+            if (!registerTaskIfAbsent(running, task.id(), future)) {
+                continue;
+            }
             durableRunning.put(task.id(), runner);
             executor.execute(future);
             LOG.info(() -> "recovered durable task " + task.id());

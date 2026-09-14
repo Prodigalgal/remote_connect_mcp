@@ -17,12 +17,25 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class AgentRuntimeTest {
+    @Test
+    void duplicateTaskRegistrationKeepsTheFirstRunner() {
+        var running = new ConcurrentHashMap<String, java.util.concurrent.Future<?>>();
+        var first = new FutureTask<Void>(() -> null);
+        var duplicate = new FutureTask<Void>(() -> null);
+
+        assertTrue(AgentRuntime.registerTaskIfAbsent(running, "task-1", first));
+        assertTrue(!AgentRuntime.registerTaskIfAbsent(running, "task-1", duplicate));
+        assertEquals(first, running.get("task-1"));
+    }
+
     @Test
     void registersOncePersistsIdentityAndAdvertisesAvailableSlot(@TempDir Path tempDir) throws Exception {
         var transport = new ScriptedTransport();

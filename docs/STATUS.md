@@ -57,6 +57,7 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.21 生产发布；四�
   编译进程的内存数字冒充运行时测量。Go 基线仓库内 Linux Agent 文件大小为 6,537,378 字节，但这
   只是磁盘体积，也不能替代同场景 RSS 对比。
 - 每个 Java Agent 任务现在有独立进程树监督：默认最多 32 个后代进程，可选墙钟、累计 CPU 时间和 Linux `/proc` RSS 上限；超限终止整棵树并回传明确失败原因。command/desktop/browser 任务还共享 Agent 级总进程预算（`REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`，默认随并发增长但封顶 256，允许 1–4096），动态进程树扩展和桌面直启都会占用同一预算，任务结束或进程退出自动释放；Agent 关闭时会对仍由直启预算登记的 GUI 进程做一次有界回收并释放名额。资源监督只在任务运行期间存在，不增加空闲轮询；Windows RSS 仍需后续 Job Object/目标机门禁补齐。
+- Agent dispatch 对同一 task ID 使用原子 `putIfAbsent` fence；Center/网络重试在旧 runner 仍存在时只丢弃重复响应，不覆盖 Future 或重复执行任务。该保护不替代 Center 的租约/Attempt 真相源，重启和断线演练仍待目标环境验收。
 - `scripts/smoke-java-agent.sh/.ps1` 在 Agent 在线和任务闭环期间采样工作集峰值；Release/迁移工作流
   会先按 256 MiB 默认预算校验，再将 JSON 作为私有 Actions 工件上传，不放入公开 Release；
   该门禁只约束 Native Agent 常驻烟测，不把单次编译峰值直接当作宿主机硬限制。
