@@ -130,7 +130,7 @@ public final class FileSystemArtifactStore implements ArtifactStore {
                     .toList();
             for (var path : candidates) {
                 if (deleted >= limit) break;
-                var relative = root.relativize(path).toString().replace('\\', '/');
+                var relative = objectRoot.relativize(path).toString().replace('\\', '/');
                 var objectKey = PREFIX + relative;
                 if (references.contains(objectKey)) continue;
                 var modified = Files.getLastModifiedTime(path, LinkOption.NOFOLLOW_LINKS).toInstant();
