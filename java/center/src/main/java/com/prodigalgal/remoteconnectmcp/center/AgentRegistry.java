@@ -1,6 +1,7 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
 import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
+import com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
@@ -35,6 +36,8 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public final class AgentRegistry {
+    private static final int MACHINE_PAGE_SIZE = 200;
+    private static final int MAX_MACHINE_SNAPSHOT = 10_000;
     private final CenterTokenConfig tokens;
     private final EnrollmentTokenService enrollments;
     private final JdbcTemplate jdbc;
@@ -168,12 +171,14 @@ public final class AgentRegistry {
 
     private void updateHeartbeatMetadata(String machineId, AgentMetadata metadata) {
         var capabilities = new String(JsonCodec.write(metadata.capabilities()), StandardCharsets.UTF_8);
+        var runtime = new String(JsonCodec.write(metadata.runtime()), StandardCharsets.UTF_8);
         jdbc.update("""
                 UPDATE rcm_agent SET machine_name = ?, host_id = ?, hostname = ?, os = ?, arch = ?, version = ?,
                     default_cwd = ?, scope_mode = ?, workspace_root = ?, capabilities = CAST(? AS jsonb),
+                    runtime_descriptor = CAST(? AS jsonb),
                     updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?
                 """, metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
-                metadata.defaultCwd(), metadata.scopeMode().wireValue(), metadata.workspaceRoot(), capabilities, machineId);
+                metadata.defaultCwd(), metadata.scopeMode().wireValue(), metadata.workspaceRoot(), capabilities, runtime, machineId);
     }
 
     public boolean acceptsAgent(String machineId, String agentToken) {
@@ -198,7 +203,7 @@ public final class AgentRegistry {
         }
         var rows = jdbc.query("""
                 SELECT agent_id, machine_name, host_id, hostname, os, arch, version,
-                       default_cwd, scope_mode, workspace_root, capabilities,
+                       default_cwd, scope_mode, workspace_root, capabilities, runtime_descriptor,
                        created_at, last_seen_at
                   FROM rcm_agent WHERE agent_id = ?
                 """, ps -> ps.setString(1, machineId), (rs, rowNum) -> machineView(rs, now));
@@ -223,13 +228,37 @@ public final class AgentRegistry {
         }
         return List.copyOf(jdbc.query("""
                 SELECT agent_id, machine_name, host_id, hostname, os, arch, version,
-                       default_cwd, scope_mode, workspace_root, capabilities,
+                       default_cwd, scope_mode, workspace_root, capabilities, runtime_descriptor,
                        created_at, last_seen_at
                   FROM rcm_agent ORDER BY machine_name, agent_id OFFSET ? LIMIT ?
                 """, ps -> {
                     ps.setInt(1, offset);
                     ps.setInt(2, limit);
                 }, (rs, rowNum) -> machineView(rs, now)));
+    }
+
+    /**
+     * Read a bounded, complete machine snapshot for one control-plane
+     * operation.  Admin inventory remains paginated, but upgrade reconciliation
+     * must also see a target registered after the first page; otherwise an
+     * offline or newly-added Agent could be silently omitted from a campaign.
+     * This is an explicit operation (not a timer/poll loop) and has a hard
+     * ceiling so a malformed or unexpectedly huge fleet cannot exhaust Center
+     * memory.
+     */
+    public List<MachineView> listAllMachines(Instant now) {
+        var reference = now == null ? Instant.now() : now;
+        var result = new ArrayList<MachineView>();
+        var offset = 0;
+        while (true) {
+            var page = listMachines(offset, MACHINE_PAGE_SIZE, reference);
+            result.addAll(page);
+            if (result.size() > MAX_MACHINE_SNAPSHOT) {
+                throw new IllegalStateException("machine inventory exceeds the control-plane snapshot limit");
+            }
+            if (page.size() < MACHINE_PAGE_SIZE) return List.copyOf(result);
+            offset += page.size();
+        }
     }
 
     private static MachineView machineView(java.sql.ResultSet rs, Instant now) throws java.sql.SQLException {
@@ -245,13 +274,25 @@ public final class AgentRegistry {
                 // inventory page; the raw value is not exposed to MCP.
             }
         }
+        var runtime = AgentRuntimeDescriptor.defaults();
+        var runtimeJson = rs.getString("runtime_descriptor");
+        if (runtimeJson != null && !runtimeJson.isBlank()) {
+            try {
+                var parsed = JsonCodec.read(runtimeJson.getBytes(StandardCharsets.UTF_8), AgentRuntimeDescriptor.class);
+                if (parsed != null) runtime = parsed;
+            } catch (RuntimeException ignored) {
+                // A malformed or pre-013 runtime descriptor must not make the
+                // inventory endpoint unavailable.  The bounded default keeps
+                // the projection safe until the next heartbeat repairs it.
+            }
+        }
         var last = lastSeen == null ? null : lastSeen.toInstant();
         return new MachineView(
                 rs.getString("agent_id"), rs.getString("machine_name"), rs.getString("host_id"),
                 rs.getString("hostname"), rs.getString("os"), rs.getString("arch"), rs.getString("version"),
                 rs.getString("default_cwd"), rs.getString("scope_mode"), rs.getString("workspace_root"),
                 capabilities, created == null ? null : created.toInstant(), last,
-                last != null && now.minusSeconds(45).isBefore(last));
+                last != null && now.minusSeconds(45).isBefore(last), runtime);
     }
 
     public int size() {
@@ -260,6 +301,11 @@ public final class AgentRegistry {
         }
         var count = jdbc.queryForObject("SELECT COUNT(*) FROM rcm_agent", Long.class);
         return count == null ? 0 : Math.toIntExact(count);
+    }
+
+    /** Total number of registered Agent identities for paginated admin views. */
+    public int totalCount() {
+        return size();
     }
 
     /** Count heartbeats without loading machine metadata or credentials. */
@@ -279,12 +325,13 @@ public final class AgentRegistry {
 
     private void insertAgent(String machineId, AgentMetadata metadata, byte[] tokenHash, Instant now) {
         var capabilities = new String(JsonCodec.write(metadata.capabilities()), StandardCharsets.UTF_8);
+        var runtime = new String(JsonCodec.write(metadata.runtime()), StandardCharsets.UTF_8);
         jdbc.update("""
                 INSERT INTO rcm_agent (
                     agent_id, machine_name, host_id, hostname, os, arch, version,
-                    default_cwd, scope_mode, workspace_root, capabilities, token_hash,
+                    default_cwd, scope_mode, workspace_root, capabilities, runtime_descriptor, token_hash,
                     last_seen_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?)
                 """,
                 machineId,
                 metadata.name(),
@@ -297,6 +344,7 @@ public final class AgentRegistry {
                 metadata.scopeMode().wireValue(),
                 metadata.workspaceRoot(),
                 capabilities,
+                runtime,
                 hexHash(tokenHash),
                 java.sql.Timestamp.from(now),
                 java.sql.Timestamp.from(now),
@@ -305,12 +353,14 @@ public final class AgentRegistry {
 
     private void updateAgent(String machineId, AgentMetadata metadata, byte[] tokenHash, Instant now) {
         var capabilities = new String(JsonCodec.write(metadata.capabilities()), StandardCharsets.UTF_8);
+        var runtime = new String(JsonCodec.write(metadata.runtime()), StandardCharsets.UTF_8);
         jdbc.update("""
                 UPDATE rcm_agent SET machine_name = ?, host_id = ?, hostname = ?, os = ?, arch = ?, version = ?,
-                    default_cwd = ?, scope_mode = ?, workspace_root = ?, capabilities = CAST(? AS jsonb), token_hash = ?,
+                    default_cwd = ?, scope_mode = ?, workspace_root = ?, capabilities = CAST(? AS jsonb),
+                    runtime_descriptor = CAST(? AS jsonb), token_hash = ?,
                     last_seen_at = ?, updated_at = ? WHERE agent_id = ?
                 """, metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
-                metadata.defaultCwd(), metadata.scopeMode().wireValue(), metadata.workspaceRoot(), capabilities, hexHash(tokenHash),
+                metadata.defaultCwd(), metadata.scopeMode().wireValue(), metadata.workspaceRoot(), capabilities, runtime, hexHash(tokenHash),
                 java.sql.Timestamp.from(now), java.sql.Timestamp.from(now), machineId);
     }
 
@@ -373,7 +423,7 @@ public final class AgentRegistry {
         private MachineView view(String id, Instant now) {
             return new MachineView(id, metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
                     metadata.defaultCwd(), metadata.scopeMode().wireValue(), metadata.workspaceRoot(), metadata.capabilities(), lastSeen, lastSeen,
-                    lastSeen != null && now.minusSeconds(45).isBefore(lastSeen));
+                    lastSeen != null && now.minusSeconds(45).isBefore(lastSeen), metadata.runtime());
         }
     }
 

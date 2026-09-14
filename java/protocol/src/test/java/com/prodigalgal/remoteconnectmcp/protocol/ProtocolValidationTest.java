@@ -1,13 +1,25 @@
 package com.prodigalgal.remoteconnectmcp.protocol;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class ProtocolValidationTest {
+    @Test
+    void registrationCarriesInitialRuntimeDescriptor() {
+        var runtime = new AgentRuntimeDescriptor(1, 7, 2, 1,
+                2L * 1024 * 1024, 8L * 1024 * 1024, 8, 60, 0, 0,
+                false, true);
+        var request = new RegisterRequest("agent", "host", "node", "linux", "amd64", "v1",
+                "/srv", ScopeMode.WORKSPACE, "/srv", List.of("command", "browser"), runtime);
+        assertEquals(runtime, request.metadata().runtime());
+    }
+
     @Test
     void validatesExplicitWorktreeExecutionContract() {
         var contract = new ExecutionContract("machine-1", "host-1", ScopeMode.WORKTREE,
@@ -83,5 +95,16 @@ class ProtocolValidationTest {
         var task = new TaskCommand("task-screen", TaskKind.DESKTOP, "desktop", null, null, Map.of(), 30,
                 new TaskCommand.DesktopAction("screens", "powershell.exe", java.util.List.of(), null), Instant.now());
         assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateTask(task));
+    }
+
+    @Test
+    void rejectsCapabilityKindConfusion() {
+        var desktopAsCommand = new TaskCommand("task-confused", TaskKind.COMMAND, "desktop", "echo blocked",
+                "/srv", Map.of(), 30, null, Instant.now());
+        var browserAsDesktop = new TaskCommand("task-confused-desktop", TaskKind.DESKTOP, "browser", null,
+                "/srv", Map.of(), 30,
+                new TaskCommand.DesktopAction("screens", null, List.of(), null), Instant.now());
+        assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateTask(desktopAsCommand));
+        assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateTask(browserAsDesktop));
     }
 }

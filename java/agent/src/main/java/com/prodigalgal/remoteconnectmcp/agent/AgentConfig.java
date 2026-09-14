@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.AgentCapability;
 import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
+import com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor;
 import com.prodigalgal.remoteconnectmcp.protocol.ProtocolValidation;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
@@ -95,13 +96,84 @@ public record AgentConfig(
     }
 
     public AgentMetadata metadata() {
+        return metadata(0L, maxConcurrency);
+    }
+
+    AgentMetadata metadata(long configGeneration, int effectiveConcurrency) {
         // The release pipeline injects the binary version through the
         // environment. Keeping the default as dev preserves local protocol
         // tests while allowing Center to observe the real deployed version.
+        var runtime = new AgentRuntimeDescriptor(1, Math.max(0L, configGeneration), effectiveConcurrency,
+                Math.min(effectiveConcurrency, maxBrowserWorkers()), maxOutputBytes, maxAggregateOutputBytes,
+                maxTaskChildProcesses(), maxTaskDurationSeconds(), maxTaskRssBytes(), maxTaskCpuSeconds(),
+                desktopEnabled, !browserAdapter.isBlank(), scopeMode,
+                desktopSessionAvailable(), browserSessionAvailable(), resourceEnforcement());
         var metadata = new AgentMetadata(name, hostId, hostname(), operatingSystem(), architecture(),
-                currentVersion(), defaultCwd, scopeMode, workspaceRoot, capabilities);
+                currentVersion(), defaultCwd, scopeMode, workspaceRoot, capabilities, runtime);
         ProtocolValidation.validateMetadata(metadata);
         return metadata;
+    }
+
+    private boolean desktopSessionAvailable() {
+        return desktopEnabled && DesktopCompanionClient.discover(stateDir) != null;
+    }
+
+    private boolean browserSessionAvailable() {
+        return !browserAdapter.isBlank()
+                && Files.isRegularFile(stateDir.toAbsolutePath().normalize().resolve("browser-session.json"));
+    }
+
+    /** Non-secret description of the host-level process containment strategy. */
+    public String resourceEnforcement() {
+        return isLinux() && !resourceCgroupPath().isBlank() ? "cgroup-v2" : "process-tree";
+    }
+
+    /** Optional pre-created cgroup v2 directory for task processes. */
+    public String resourceCgroupPath() {
+        return optional("REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH");
+    }
+
+    /** Optional persistent browser profile kept entirely on the target host. */
+    public String browserProfileDir() {
+        var value = optional("REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR");
+        if (value.isBlank()) return "";
+        try {
+            var path = Path.of(value);
+            if (!path.isAbsolute()) throw new IllegalArgumentException("browser profile path must be absolute");
+            return path.normalize().toString();
+        } catch (RuntimeException exception) {
+            throw new IllegalArgumentException("REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR is invalid", exception);
+        }
+    }
+
+    /** Browser adapter engine selected locally; Center never chooses it. */
+    public String browserEngine() {
+        var value = optional("REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE");
+        if (value.isBlank()) return "playwright";
+        var normalized = value.toLowerCase(java.util.Locale.ROOT);
+        if (!List.of("playwright", "patchright", "comoufox").contains(normalized)) {
+            throw new IllegalArgumentException("REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE must be playwright, patchright, or comoufox");
+        }
+        return normalized;
+    }
+
+    public String browserName() {
+        var value = optional("REMOTE_CONNECT_MCP_AGENT_BROWSER");
+        if (value.isBlank()) return "chromium";
+        var normalized = value.toLowerCase(java.util.Locale.ROOT);
+        if (!List.of("chromium", "firefox", "webkit").contains(normalized)) {
+            throw new IllegalArgumentException("REMOTE_CONNECT_MCP_AGENT_BROWSER must be chromium, firefox, or webkit");
+        }
+        return normalized;
+    }
+
+    public boolean browserHeadless() {
+        var value = optional("REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS");
+        if (value.isBlank()) return true;
+        var normalized = value.toLowerCase(java.util.Locale.ROOT);
+        if (List.of("1", "true", "yes").contains(normalized)) return true;
+        if (List.of("0", "false", "no").contains(normalized)) return false;
+        throw new IllegalArgumentException("REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS must be 0/1");
     }
 
     /** Long-poll hold time in seconds; zero explicitly restores legacy polling. */
@@ -157,7 +229,7 @@ public record AgentConfig(
 
     public RegisterRequest registerRequest() {
         var metadata = metadata();
-        return new RegisterRequest(metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(), metadata.defaultCwd(), metadata.scopeMode(), metadata.workspaceRoot(), metadata.capabilities());
+        return new RegisterRequest(metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(), metadata.defaultCwd(), metadata.scopeMode(), metadata.workspaceRoot(), metadata.capabilities(), metadata.runtime());
     }
 
     public static AgentConfig fromEnvironment() {
@@ -269,6 +341,10 @@ public record AgentConfig(
     private static boolean isLoopback(String host) {
         var value = host == null ? "" : host.toLowerCase();
         return "localhost".equals(value) || "127.0.0.1".equals(value) || "::1".equals(value) || "[::1]".equals(value);
+    }
+
+    private static boolean isLinux() {
+        return System.getProperty("os.name", "").toLowerCase().contains("linux");
     }
 
     /**

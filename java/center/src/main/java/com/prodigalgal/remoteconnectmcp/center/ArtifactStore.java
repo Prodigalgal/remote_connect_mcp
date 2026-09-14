@@ -1,6 +1,8 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
 import java.util.Objects;
+import java.time.Instant;
+import java.util.Set;
 
 /**
  * Payload store for task artifacts.
@@ -20,6 +22,17 @@ public interface ArtifactStore {
 
     /** Best-effort removal used by explicit retention/garbage-collection jobs. */
     void delete(String objectKey);
+
+    /**
+     * Remove a bounded number of old objects which are not referenced by the
+     * supplied metadata snapshot.  Backends which cannot enumerate objects
+     * may return zero; the task database remains the source of truth.  The
+     * grace period prevents a concurrent upload (put-before-metadata-insert)
+     * from being mistaken for an orphan.
+     */
+    default int sweepOrphans(Set<String> referencedKeys, Instant olderThan, int limit) {
+        return 0;
+    }
 
     /** Stable backend name recorded in metadata and diagnostics. */
     String backend();

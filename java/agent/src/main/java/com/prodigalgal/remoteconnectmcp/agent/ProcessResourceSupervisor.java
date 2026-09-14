@@ -49,17 +49,29 @@ final class ProcessResourceSupervisor implements AutoCloseable {
     static ProcessResourceSupervisor start(Process process, AgentConfig config, TaskCommand task,
                                            Runnable terminate) {
         if (process == null) return null;
-        return new ProcessResourceSupervisor(process.toHandle(), AgentResourcePolicy.forTask(config, task), terminate);
+        return start(process.toHandle(), config, task, terminate);
     }
 
     static ProcessResourceSupervisor start(ProcessHandle process, AgentConfig config, TaskCommand task,
                                            Runnable terminate) {
         if (process == null) return null;
-        return new ProcessResourceSupervisor(process, AgentResourcePolicy.forTask(config, task), terminate);
+        var supervisor = new ProcessResourceSupervisor(process, AgentResourcePolicy.forTask(config, task), terminate);
+        var cgroupFailure = LinuxCgroupV2.tryAttach(process, config);
+        if (cgroupFailure != null) supervisor.failClosed(cgroupFailure);
+        return supervisor;
     }
 
     String violation() {
         return violation.get();
+    }
+
+    private void failClosed(String reason) {
+        if (!violation.compareAndSet(null, reason)) return;
+        try {
+            terminate.run();
+        } catch (RuntimeException failure) {
+            LOG.log(Level.FINE, "could not terminate process after cgroup setup failure", failure);
+        }
     }
 
     private void run() {

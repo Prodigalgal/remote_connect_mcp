@@ -1,5 +1,6 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -37,7 +38,10 @@ public final class ProjectController {
             @RequestParam(defaultValue = "50") int limit) {
         return execute(() -> {
             authenticate(authorization);
-            return ResponseEntity.ok(Map.of("items", projects.list(machineId, offset, limit), "offset", offset, "limit", limit));
+            var items = projects.list(machineId, offset, limit);
+            var total = projects.count(machineId);
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
         });
     }
 
@@ -84,6 +88,16 @@ public final class ProjectController {
         });
     }
 
+    @DeleteMapping("/{projectId}")
+    public CompletableFuture<ResponseEntity<?>> remove(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String projectId) {
+        return execute(() -> {
+            authenticate(authorization);
+            return ResponseEntity.ok(projects.remove(projectId));
+        });
+    }
+
     /** Queue one explicit Git inspection or mutating operation on the Agent. */
     @PostMapping("/{projectId}/git/{operation}")
     public CompletableFuture<ResponseEntity<?>> git(
@@ -123,7 +137,12 @@ public final class ProjectController {
     }
 
     private static String message(Throwable exception) {
-        return exception == null || exception.getMessage() == null || exception.getMessage().isBlank()
+        var message = exception == null || exception.getMessage() == null || exception.getMessage().isBlank()
                 ? "request failed" : exception.getMessage();
+        return SensitiveValueRedactor.redact(message);
+    }
+
+    private static boolean hasMore(int offset, int size, int total) {
+        return offset >= 0 && size > 0 && offset < total - size;
     }
 }

@@ -14,6 +14,13 @@ param(
     [string]$Capabilities = "command,durable_tasks",
     [string]$Version = "dev",
     [string]$BrowserAdapter = "",
+    [string]$BrowserProfileDir = $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR,
+    [ValidateSet("playwright", "patchright", "comoufox")]
+    [string]$BrowserEngine = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE } else { "playwright" }),
+    [ValidateSet("chromium", "firefox", "webkit")]
+    [string]$BrowserName = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER } else { "chromium" }),
+    [ValidateSet("0", "1")]
+    [string]$BrowserHeadless = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS } else { "1" }),
     [string]$DesktopBinaryPath = "",
     [string]$BrowserBinaryPath = "",
     [switch]$DesktopEnabled,
@@ -36,6 +43,7 @@ param(
     [long]$MaxCpuSeconds = 0,
     [ValidateRange(250, 10000)]
     [long]$ResourceSampleIntervalMs = 1000,
+    [string]$CgroupPath = $env:REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH,
     [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
     [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent"
 )
@@ -123,6 +131,7 @@ $parsedCenterUrl = [Uri]$CenterUrl
 if (-not $parsedCenterUrl.IsAbsoluteUri -or $parsedCenterUrl.Scheme -ne 'https') { throw "CenterUrl must use HTTPS." }
 if ([string]::IsNullOrWhiteSpace($AgentName)) { throw "AgentName is required." }
 if ([string]::IsNullOrWhiteSpace($HostId)) { $HostId = $AgentName }
+if ($CgroupPath -and ($CgroupPath.Contains("`r") -or $CgroupPath.Contains("`n") -or $CgroupPath.Length -gt 4096)) { throw "CgroupPath must be a single path up to 4096 characters." }
 if (-not (Test-Path -LiteralPath $DefaultCwd -PathType Container)) { throw "DefaultCwd does not exist: $DefaultCwd" }
 if ($ScopeMode -eq "workspace") {
     if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) { $WorkspaceRoot = $DefaultCwd }
@@ -245,6 +254,10 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
         REMOTE_CONNECT_MCP_AGENT_CAPABILITIES = $Capabilities
         REMOTE_CONNECT_MCP_AGENT_VERSION = $Version.Trim()
         REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER = $BrowserAdapter.Trim()
+        REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR = [string]$BrowserProfileDir
+        REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE = $BrowserEngine
+        REMOTE_CONNECT_MCP_AGENT_BROWSER = $BrowserName
+        REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS = $BrowserHeadless
         REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED = $DesktopEnabled.IsPresent.ToString().ToLowerInvariant()
         REMOTE_CONNECT_MCP_AGENT_STATE_DIR = $StateDir
         REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY = $MaxConcurrency.ToString()
@@ -257,6 +270,7 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
         REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES = $MaxRssBytes.ToString()
         REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS = $MaxCpuSeconds.ToString()
         REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS = $ResourceSampleIntervalMs.ToString()
+        REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH = [string]$CgroupPath
     }
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $destination
@@ -298,6 +312,10 @@ $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_CAPABILITIES=$Capabilities",
     "REMOTE_CONNECT_MCP_AGENT_VERSION=$($Version.Trim())",
     "REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER=$($BrowserAdapter.Trim())",
+    "REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR=$BrowserProfileDir",
+    "REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE=$BrowserEngine",
+    "REMOTE_CONNECT_MCP_AGENT_BROWSER=$BrowserName",
+    "REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS=$BrowserHeadless",
     "REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=$($DesktopEnabled.IsPresent.ToString().ToLowerInvariant())",
     "REMOTE_CONNECT_MCP_AGENT_STATE_DIR=$StateDir",
     "REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY=$MaxConcurrency",
@@ -310,6 +328,7 @@ $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES=$MaxRssBytes",
     "REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS=$MaxCpuSeconds",
     "REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS=$ResourceSampleIntervalMs",
+    "REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH=$CgroupPath",
     "REMOTE_CONNECT_MCP_AGENT_BINARY_PATH=$destination",
     "REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME=$serviceName"
 )
@@ -355,4 +374,5 @@ Start-Service -Name $serviceName
     DesktopBinary = $desktopDestination
     BrowserBinary = $browserDestination
     MaxAggregateOutputBytes = $MaxAggregateOutputBytes
+    CgroupPath = $CgroupPath
 }

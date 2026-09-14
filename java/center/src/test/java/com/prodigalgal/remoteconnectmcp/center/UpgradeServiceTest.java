@@ -73,6 +73,33 @@ class UpgradeServiceTest {
     }
 
     @Test
+    void retryTargetRequeuesOnlyTheFailedMachine() {
+        var registry = AgentRegistry.forTest("enroll");
+        var first = registry.register(registration("one", "v1.0.0"), "enroll");
+        var second = registry.register(registration("two", "v1.0.0"), "enroll");
+        var tasks = new TaskService(registry);
+        var upgrades = new UpgradeService(registry, tasks, new UpgradeConfig(true, ""));
+        var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                List.of(first.machineId(), second.machineId()), Map.of("linux/amd64",
+                        new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
+        var plan = upgrades.offer(first.machineId(), new PollRequest(List.of(), 1, List.of("command")));
+        assertNotNull(plan);
+        var failed = upgrades.updateStatus(first.machineId(), new UpgradeStatusRequest(
+                campaign.id(), UpgradeService.FAILED, "temporary token=should-not-be-visible", plan.attempt()));
+        assertEquals(UpgradeService.PAUSED, failed.status());
+        assertEquals("temporary token=[redacted]", failed.targets().stream()
+                .filter(target -> target.machineId().equals(first.machineId())).findFirst().orElseThrow().error());
+        var retried = upgrades.retryTarget(campaign.id(), first.machineId());
+        assertEquals(UpgradeService.RUNNING, retried.status());
+        assertEquals(UpgradeService.PENDING, retried.targets().stream()
+                .filter(target -> target.machineId().equals(first.machineId())).findFirst().orElseThrow().status());
+        assertEquals(UpgradeService.PENDING, retried.targets().stream()
+                .filter(target -> target.machineId().equals(second.machineId())).findFirst().orElseThrow().status());
+        assertEquals(1, retried.targets().stream()
+                .filter(target -> target.machineId().equals(first.machineId())).findFirst().orElseThrow().attempts());
+    }
+
+    @Test
     void refusesToUpgradeWhileNonDurableTaskIsAttached() {
         var registry = AgentRegistry.forTest("enroll");
         var registration = registry.register(registration("one", "v1.0.0"), "enroll");
@@ -104,6 +131,44 @@ class UpgradeServiceTest {
 
         assertEquals(UpgradeService.CANCELED, late.status());
         assertEquals(UpgradeService.OFFERED, late.targets().getFirst().status());
+    }
+
+    @Test
+    void ignoresStatusWithADifferentOfferAttempt() {
+        var registry = AgentRegistry.forTest("enroll");
+        var registration = registry.register(registration("one", "v1.0.0"), "enroll");
+        var tasks = new TaskService(registry);
+        var upgrades = new UpgradeService(registry, tasks, new UpgradeConfig(true, ""));
+        var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                List.of(registration.machineId()), Map.of("linux/amd64",
+                        new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
+        var first = upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command")));
+        assertNotNull(first);
+
+        // A report carrying a different attempt is stale. It must not turn the
+        // still-offered target into a completed target.
+        var stale = upgrades.updateStatus(registration.machineId(),
+                new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, first.attempt() + 1));
+
+        assertEquals(UpgradeService.OFFERED, stale.targets().getFirst().status());
+    }
+
+    @Test
+    void ignoresOutOfOrderStatusAfterCompletion() {
+        var registry = AgentRegistry.forTest("enroll");
+        var registration = registry.register(registration("one", "v1.0.0"), "enroll");
+        var tasks = new TaskService(registry);
+        var upgrades = new UpgradeService(registry, tasks, new UpgradeConfig(true, ""));
+        var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                List.of(registration.machineId()), Map.of("linux/amd64",
+                        new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
+        var plan = upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command")));
+        assertNotNull(plan);
+        assertEquals(UpgradeService.COMPLETED, upgrades.updateStatus(registration.machineId(),
+                new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, plan.attempt())).status());
+        var late = upgrades.updateStatus(registration.machineId(),
+                new UpgradeStatusRequest(campaign.id(), UpgradeService.DOWNLOADING, null, plan.attempt()));
+        assertEquals(UpgradeService.COMPLETED, late.targets().getFirst().status());
     }
 
     @Test

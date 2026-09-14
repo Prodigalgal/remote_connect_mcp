@@ -54,11 +54,20 @@ public final class AgentRuntime {
         TaskOutputSpool.cleanupOrphans(config.stateDir(), Duration.ofDays(7));
         var durableStore = new DurableTaskStore(config.stateDir());
         var identity = loadOrRegister();
-        // Metadata is immutable for the lifetime of this process. Cache it
-        // instead of rereading the version marker and rebuilding JSON on every
-        // long-poll request; a successful self-upgrade restarts the Agent and
-        // refreshes the marker in the new process.
-        var metadata = config.metadata();
+        if (config.desktopEnabled()) {
+            try {
+                // Publish a non-secret machine policy for the user-session
+                // companion.  The command Agent remains the authority, while
+                // the companion adds a second cwd/expiry check before GUI I/O.
+                DesktopCompanionServer.writePolicy(config.stateDir(), config.scopeMode(), config.workspaceRoot());
+            } catch (IOException failure) {
+                LOG.log(Level.WARNING, "could not publish desktop companion scope policy", failure);
+            }
+        }
+        // Runtime metadata is rebuilt at each poll so hot configuration
+        // generations and desktop/browser session availability are visible
+        // without a restart.  It is a fixed-size, non-secret projection and
+        // does not include task output or environment values.
         var settings = new AgentRuntimeSettings(config);
         var backoff = settings.pollInterval();
         var resourceBudget = new AgentResourceBudget(config.maxAggregateOutputBytes());
@@ -70,7 +79,7 @@ public final class AgentRuntime {
         var executor = Executors.newVirtualThreadPerTaskExecutor();
         try {
             reportPendingUpgradeResult(identity);
-            recoverDurable(identity, durableStore, executor, settings);
+            recoverDurable(identity, durableStore, executor, settings, resourceBudget);
             while (!Thread.currentThread().isInterrupted() && !stopRequested.get()) {
                 try {
                     var availableSlots = upgrading.get() ? 0 : Math.max(0, settings.maxConcurrency() - running.size());
@@ -81,6 +90,7 @@ public final class AgentRuntime {
                     // unbounded number of browser workers in the Agent.
                     var availableCapabilities = availableCapabilities(config.capabilities(),
                             browserRunning.get(), maxBrowserWorkers);
+                    var metadata = config.metadata(settings.generation(), settings.maxConcurrency());
                     var poll = transport.poll(identity.machineId(), identity.token(),
                             new PollRequest(runningTaskIds, availableSlots, availableCapabilities, metadata,
                                     settings.generation()));
@@ -123,7 +133,8 @@ public final class AgentRuntime {
                         var runner = switch (task.kind()) {
                             case COMMAND -> task.timeoutSeconds() <= 0
                                     ? new DurableCommandRunner(config, taskIdentity,
-                                    durableRecord == null ? task : durableRecord.taskCommand(), transport, durableStore, durableRecord)
+                                    durableRecord == null ? task : durableRecord.taskCommand(), transport, durableStore, durableRecord,
+                                    resourceBudget)
                                     : new CommandRunner(config, taskIdentity, task, transport, resourceBudget);
                             case DESKTOP -> new DesktopTaskRunner(config, taskIdentity, task, transport, desktopProcessBudget);
                             case BROWSER -> new BrowserTaskRunner(config, taskIdentity, task, transport, resourceBudget);
@@ -231,7 +242,7 @@ public final class AgentRuntime {
     }
 
     private void recoverDurable(AgentIdentity identity, DurableTaskStore store, ExecutorService executor,
-                                AgentRuntimeSettings settings) {
+                                AgentRuntimeSettings settings, AgentResourceBudget resourceBudget) {
         for (var record : store.load()) {
             if (running.size() >= settings.maxConcurrency()) {
                 LOG.warning("durable task recovery reached the configured concurrency limit");
@@ -241,7 +252,7 @@ public final class AgentRuntime {
                 continue;
             }
             var task = record.taskCommand();
-            var runner = new DurableCommandRunner(config, identity, task, transport, store, record);
+            var runner = new DurableCommandRunner(config, identity, task, transport, store, record, resourceBudget);
             var future = new FutureTask<Void>(() -> {
                 runner.run();
                 return null;
@@ -311,7 +322,7 @@ public final class AgentRuntime {
             var result = JsonCodec.read(Files.readAllBytes(resultFile), AgentUpgradeHelper.Result.class);
             AgentRetry.call(LOG, "upgrade result " + result.campaignId(), () -> {
                 transport.reportUpgrade(identity.machineId(), identity.token(),
-                        new UpgradeStatusRequest(result.campaignId(), result.status(), result.error()));
+                        new UpgradeStatusRequest(result.campaignId(), result.status(), result.error(), result.attempt()));
                 return null;
             });
             Files.deleteIfExists(resultFile);

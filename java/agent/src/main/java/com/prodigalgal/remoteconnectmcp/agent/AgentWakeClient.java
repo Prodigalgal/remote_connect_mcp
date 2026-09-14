@@ -1,13 +1,17 @@
 package com.prodigalgal.remoteconnectmcp.agent;
 
+import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -28,6 +32,7 @@ final class AgentWakeClient implements AutoCloseable {
     private final Runnable wake;
     private final HttpClient http;
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicLong lastWakeSequence = new AtomicLong();
     private final AtomicReference<WebSocket> socket = new AtomicReference<>();
     private volatile Thread loop;
 
@@ -149,20 +154,37 @@ final class AgentWakeClient implements AutoCloseable {
 
         @Override
         public void onOpen(WebSocket webSocket) {
+            // The Center keeps the per-machine sequence only while a waiter
+            // or socket is retained; after a quiet disconnect it may start a
+            // fresh sequence at one.  Reset at connection establishment so a
+            // new socket is not mistaken for a replay of the old socket.
+            lastWakeSequence.set(0L);
             webSocket.request(1);
         }
 
         @Override
         public CompletableFuture<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
             webSocket.request(1);
-            if (last && data.length() <= 4096 && data.toString().contains("\"type\":\"wake\"")) {
-                try {
-                    wake.run();
-                } catch (RuntimeException exception) {
-                    LOG.log(Level.FINE, "Agent wake callback failed", exception);
-                }
-            }
+            if (last) handleWakeMessage(data);
             return CompletableFuture.completedFuture(null);
+        }
+
+        private void handleWakeMessage(CharSequence data) {
+            if (data == null || data.length() == 0 || data.length() > 4096) return;
+            try {
+                @SuppressWarnings("unchecked")
+                var value = JsonCodec.read(data.toString().getBytes(StandardCharsets.UTF_8), Map.class);
+                if (!"wake".equals(String.valueOf(value.get("type")))) return;
+                var rawSequence = value.get("sequence");
+                if (rawSequence instanceof Number number && !acceptWakeSequence(number.longValue())) return;
+                wake.run();
+            } catch (RuntimeException exception) {
+                LOG.log(Level.FINE, "Agent wake message/callback failed", exception);
+            }
+        }
+
+        private boolean acceptWakeSequence(long sequence) {
+            return AgentWakeClient.acceptWakeSequence(lastWakeSequence, sequence);
         }
 
         @Override
@@ -175,6 +197,20 @@ final class AgentWakeClient implements AutoCloseable {
         public void onError(WebSocket webSocket, Throwable error) {
             disconnected.countDown();
             if (!closed.get()) LOG.log(Level.FINE, "Agent WebSocket wake channel closed", error);
+        }
+    }
+
+    /**
+     * Accept only a strictly newer server sequence.  A non-positive value is
+     * the legacy message shape, which remains a valid wake hint without
+     * ordering semantics.
+     */
+    static boolean acceptWakeSequence(AtomicLong lastSequence, long sequence) {
+        if (lastSequence == null || sequence <= 0) return true;
+        while (true) {
+            var previous = lastSequence.get();
+            if (sequence <= previous) return false;
+            if (lastSequence.compareAndSet(previous, sequence)) return true;
         }
     }
 }

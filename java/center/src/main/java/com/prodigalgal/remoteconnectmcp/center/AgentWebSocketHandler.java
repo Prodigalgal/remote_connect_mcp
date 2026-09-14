@@ -41,8 +41,9 @@ final class AgentWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         session.getAttributes().put(MACHINE_ATTRIBUTE, machineId);
-        wakes.register(machineId, session);
-        session.sendMessage(new TextMessage("{\"type\":\"ready\"}"));
+        if (wakes.register(machineId, session) && session.isOpen()) {
+            session.sendMessage(new TextMessage("{\"type\":\"ready\"}"));
+        }
     }
 
     @Override

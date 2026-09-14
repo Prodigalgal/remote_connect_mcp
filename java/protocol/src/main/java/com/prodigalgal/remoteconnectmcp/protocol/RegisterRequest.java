@@ -13,9 +13,17 @@ public record RegisterRequest(
         @JsonProperty("default_cwd") String defaultCwd,
         @JsonProperty("scope_mode") ScopeMode scopeMode,
         @JsonProperty("workspace_root") String workspaceRoot,
-        List<String> capabilities) {
+        List<String> capabilities,
+        AgentRuntimeDescriptor runtime) {
+
+    /** Compatibility constructor for clients that predate runtime self-description. */
+    public RegisterRequest(String name, String hostId, String hostname, String os, String arch, String version,
+                           String defaultCwd, ScopeMode scopeMode, String workspaceRoot, List<String> capabilities) {
+        this(name, hostId, hostname, os, arch, version, defaultCwd, scopeMode, workspaceRoot, capabilities,
+                AgentRuntimeDescriptor.defaults());
+    }
 
     public AgentMetadata metadata() {
-        return new AgentMetadata(name, hostId, hostname, os, arch, version, defaultCwd, scopeMode, workspaceRoot, capabilities);
+        return new AgentMetadata(name, hostId, hostname, os, arch, version, defaultCwd, scopeMode, workspaceRoot, capabilities, runtime);
     }
 }

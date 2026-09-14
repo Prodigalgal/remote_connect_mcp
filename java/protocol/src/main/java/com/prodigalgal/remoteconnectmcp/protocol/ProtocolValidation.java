@@ -56,6 +56,21 @@ public final class ProtocolValidation {
         if (task.contract() != null) {
             validateContract(task.contract(), task);
         }
+        if (task.kind() != TaskKind.DESKTOP && task.desktop() != null) {
+            throw new IllegalArgumentException("desktop action is only valid for desktop tasks");
+        }
+        if (task.kind() == TaskKind.DESKTOP && !AgentCapability.DESKTOP.wireValue().equalsIgnoreCase(task.requiredCapability())) {
+            throw new IllegalArgumentException("desktop tasks require the desktop capability");
+        }
+        if (task.kind() == TaskKind.BROWSER && !AgentCapability.BROWSER.wireValue().equalsIgnoreCase(task.requiredCapability())) {
+            throw new IllegalArgumentException("browser tasks require the browser capability");
+        }
+        if (task.kind() == TaskKind.COMMAND && task.requiredCapability() != null
+                && !task.requiredCapability().isBlank()
+                && !AgentCapability.COMMAND.wireValue().equalsIgnoreCase(task.requiredCapability())
+                && !AgentCapability.DURABLE_TASKS.wireValue().equalsIgnoreCase(task.requiredCapability())) {
+            throw new IllegalArgumentException("command tasks require command or durable_tasks capability");
+        }
         if (task.kind() == TaskKind.DESKTOP) {
             if (task.desktop() == null || task.desktop().operation() == null || task.desktop().operation().isBlank()) {
                 throw new IllegalArgumentException("desktop action is required for desktop tasks");

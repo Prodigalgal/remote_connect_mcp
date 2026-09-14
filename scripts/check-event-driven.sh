@@ -33,10 +33,11 @@ report_forbidden() {
 # avoid. setTimeout remains allowed for one-shot deadlines and retry backoff.
 report_forbidden 'fixed-interval scheduler' 'setInterval|scheduleAtFixedRate|scheduleWithFixedDelay|time[.]Tick[[:space:]]*\('
 
-# pgjdbc's no-argument overload returns immediately and can spin a listener at
-# CPU speed. LISTEN/NOTIFY listeners must use getNotifications(0), which blocks
-# on the database socket until a notification or connection error.
-report_forbidden 'non-blocking PostgreSQL notification API' 'getNotifications[[:space:]]*\([[:space:]]*\)'
+# pgjdbc's no-argument and zero-timeout overloads return immediately and can
+# spin a listener at CPU speed. LISTEN/NOTIFY listeners must use a positive
+# timeout so the driver waits on the database socket until a notification,
+# liveness timeout, or connection error.
+report_forbidden 'non-blocking PostgreSQL notification API' 'getNotifications[[:space:]]*\([[:space:]]*(0[[:space:]]*)?\)'
 
 # One deliberately explicit compatibility exception remains for Go agents
 # recovered on very old kernels/ACLs where no waitable process handle exists.

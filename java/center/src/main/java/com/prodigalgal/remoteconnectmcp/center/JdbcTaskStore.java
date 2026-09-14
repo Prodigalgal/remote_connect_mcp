@@ -8,11 +8,13 @@ import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.Duration;
 import java.security.MessageDigest;
 import java.util.List;
 import java.util.Map;
@@ -137,6 +139,11 @@ final class JdbcTaskStore {
         return value == null ? 0L : value;
     }
 
+    long taskCount() {
+        var value = jdbc.queryForObject("SELECT COUNT(*) FROM rcm_task", Long.class);
+        return value == null ? 0L : value;
+    }
+
     TaskView cancel(String taskId) {
         return transactions.execute(status -> {
             var task = findForUpdateMeta(taskId);
@@ -235,6 +242,21 @@ final class JdbcTaskStore {
         return updateState(machineId, taskId, update, null);
     }
 
+    boolean hasActiveProjectTasks(String projectId) {
+        return Boolean.TRUE.equals(jdbc.query("""
+                SELECT EXISTS (
+                    SELECT 1 FROM rcm_task
+                     WHERE execution_contract ->> 'project_id' = ?
+                       AND status NOT IN (?, ?, ?)
+                )
+                """, ps -> {
+            ps.setString(1, projectId);
+            ps.setString(2, TaskStatus.COMPLETED);
+            ps.setString(3, TaskStatus.FAILED);
+            ps.setString(4, TaskStatus.CANCELED);
+        }, rs -> rs.next() && rs.getBoolean(1)));
+    }
+
     TaskView updateState(String machineId, String taskId, TaskUpdateRequest update, Integer attempt) {
         return transactions.execute(status -> {
             var task = findForUpdateMeta(taskId);
@@ -282,8 +304,8 @@ final class JdbcTaskStore {
     }
 
     OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data, Integer attempt) {
-        if (offset < 0 || data == null) {
-            throw new IllegalArgumentException("offset and data are required");
+        if (offset < 0 || data == null || data.length > TaskService.MAX_OUTPUT_CHUNK_BYTES) {
+            throw new IllegalArgumentException("offset and data are required; output chunks are limited to 256 KiB");
         }
         return transactions.execute(status -> {
             // Lock only the small task row.  The output blob stays in
@@ -313,7 +335,7 @@ final class JdbcTaskStore {
                 }
             }
             var appendFrom = overlap;
-            var remaining = Math.max(0L, TaskService.MAX_OUTPUT_BYTES - currentBytes);
+            var remaining = Math.max(0L, TaskService.outputLimit(task) - currentBytes);
             var appendLength = Math.toIntExact(Math.min((long) data.length - appendFrom, remaining));
             if (appendLength > 0) {
                 var append = Arrays.copyOfRange(data, appendFrom, appendFrom + appendLength);
@@ -378,7 +400,11 @@ final class JdbcTaskStore {
             if (task == null) throw new IllegalArgumentException("task not found");
             if (!task.machineId().equals(machineId)) throw new SecurityException("task does not belong to this machine");
             assertAttempt(task, attempt);
-            var existing = jdbc.query("SELECT storage_backend, object_key, sha256, artifact_data FROM rcm_task_artifact WHERE task_id = ? FOR UPDATE",
+            if (data.length > TaskService.artifactLimit(task)) {
+                throw new IllegalArgumentException("artifact exceeds the execution contract limit of "
+                        + TaskService.artifactLimit(task) + " bytes");
+            }
+            var existing = jdbc.query("SELECT storage_backend, object_key, sha256, artifact_data, mime_type, bytes FROM rcm_task_artifact WHERE task_id = ? FOR UPDATE",
                     ps -> ps.setString(1, taskId), rs -> {
                         if (!rs.next()) return null;
                         return new ArtifactRow(rs.getString("storage_backend"), rs.getString("object_key"),
@@ -386,6 +412,9 @@ final class JdbcTaskStore {
                     });
             if (existing != null) {
                 if (!existing.sha256().equalsIgnoreCase(sha256)) throw new IllegalArgumentException("task already has a different artifact");
+                if (existing.bytes() > 0 && existing.bytes() != data.length) {
+                    throw new IllegalArgumentException("task artifact bytes do not match the existing digest");
+                }
                 // A row imported from the old Go/inline schema is migrated on
                 // the first successful retry.  New requests never write a
                 // payload into PostgreSQL bytea.
@@ -456,7 +485,20 @@ final class JdbcTaskStore {
             if (rows.isEmpty()) return List.<ArtifactCandidate>of();
             var deleted = new ArrayList<ArtifactCandidate>(rows.size());
             for (var row : rows) {
-                if (jdbc.update("DELETE FROM rcm_task_artifact WHERE task_id = ? AND object_key = ?", row.taskId(), row.objectKey()) > 0) {
+                var removed = row.objectKey() == null
+                        ? jdbc.update("DELETE FROM rcm_task_artifact WHERE task_id = ? AND object_key IS NULL", row.taskId())
+                        : jdbc.update("DELETE FROM rcm_task_artifact WHERE task_id = ? AND object_key = ?", row.taskId(), row.objectKey());
+                if (removed > 0) {
+                    // Keep the task projection honest after retention: a
+                    // deleted artifact must not continue to advertise stale
+                    // bytes/MIME/SHA-256 to MCP or the console.  The metadata
+                    // row is already locked in this transaction.
+                    jdbc.update("""
+                            UPDATE rcm_task
+                               SET artifact_bytes = 0, artifact_mime = NULL,
+                                   artifact_sha256 = NULL, updated_at = CURRENT_TIMESTAMP
+                             WHERE task_id = ?
+                            """, row.taskId());
                     deleted.add(row);
                 }
             }
@@ -465,6 +507,12 @@ final class JdbcTaskStore {
         var deletedObjects = 0;
         var deleteFailures = 0;
         for (var candidate : candidates) {
+            if (candidate.objectKey() == null || candidate.objectKey().isBlank()) {
+                // Legacy inline rows have no filesystem object.  Their
+                // metadata was removed above; there is nothing to delete and
+                // this should not be reported as a storage failure.
+                continue;
+            }
             try {
                 artifactStore.delete(candidate.objectKey());
                 deletedObjects++;
@@ -474,6 +522,23 @@ final class JdbcTaskStore {
                 // orphan; task execution is never coupled to GC availability.
                 deleteFailures++;
             }
+        }
+        // A process crash can leave a filesystem object after the metadata
+        // transaction has rolled back (put happens before the INSERT).  Take
+        // a small authoritative key snapshot and let the backend remove only
+        // objects older than a grace period.  The grace period closes the
+        // concurrent upload race; an enumerating backend may safely return
+        // zero when it cannot provide this operation.
+        var referenced = jdbc.query("""
+                SELECT object_key FROM rcm_task_artifact
+                 WHERE storage_backend = ? AND object_key IS NOT NULL
+                """, ps -> ps.setString(1, artifactStore.backend()),
+                (rs, rowNum) -> rs.getString("object_key"));
+        try {
+            deletedObjects += artifactStore.sweepOrphans(java.util.Set.copyOf(referenced),
+                    Instant.now().minus(Duration.ofHours(1)), limit);
+        } catch (RuntimeException failure) {
+            deleteFailures++;
         }
         return new TaskService.ArtifactGcResult(candidates.size(), deletedObjects, deleteFailures);
     }
@@ -628,7 +693,13 @@ final class JdbcTaskStore {
     }
 
     private static void assertAttempt(TaskState task, Integer attempt) {
-        if (attempt != null && attempt > 0 && task.attempt() != attempt) {
+        if (attempt == null) {
+            // Keep the first dispatch compatible with old Go Agents, but do
+            // not allow a legacy process to write after a lease retry.
+            if (task.attempt() > 1) throw new SecurityException("task dispatch attempt is required after a retry");
+            return;
+        }
+        if (attempt > 0 && task.attempt() != attempt) {
             throw new SecurityException("stale task dispatch attempt");
         }
     }
@@ -653,7 +724,7 @@ final class JdbcTaskStore {
     }
 
     private static String compactError(String error) {
-        var value = error.trim();
+        var value = SensitiveValueRedactor.redact(error.trim());
         return value.length() <= 4096 ? value : value.substring(0, 4096);
     }
 

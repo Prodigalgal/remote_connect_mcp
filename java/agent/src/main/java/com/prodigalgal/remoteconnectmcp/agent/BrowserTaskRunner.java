@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import java.io.IOException;
 import java.time.Instant;
@@ -18,6 +19,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -29,6 +32,7 @@ import java.util.logging.Logger;
 final class BrowserTaskRunner implements Runnable {
     private static final Logger LOG = Logger.getLogger(BrowserTaskRunner.class.getName());
     private static final int CHUNK_SIZE = 16 * 1024;
+    private static final ConcurrentHashMap<Path, Semaphore> PROFILE_LOCKS = new ConcurrentHashMap<>();
 
     private final AgentConfig config;
     private final AgentIdentity identity;
@@ -62,6 +66,8 @@ final class BrowserTaskRunner implements Runnable {
         ProcessResourceSupervisor resourceSupervisor = null;
         var outputFailure = new AtomicReference<Throwable>();
         var outputCursor = new AtomicLong();
+        Semaphore profileLock = null;
+        boolean profileAcquired = false;
         try {
             if (!config.capabilities().contains("browser")) {
                 throw new IOException("browser capability is not enabled for this Agent");
@@ -71,6 +77,13 @@ final class BrowserTaskRunner implements Runnable {
                 throw new IOException("browser adapter is not configured; set REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER");
             }
             var cwd = AgentPaths.resolveCwd(config, identity.machineId(), task, task.cwd());
+            var configuredProfile = config.browserProfileDir();
+            if (!configuredProfile.isBlank()) {
+                profileLock = PROFILE_LOCKS.computeIfAbsent(Path.of(configuredProfile).toAbsolutePath().normalize(),
+                        ignored -> new Semaphore(1));
+                profileAcquired = profileLock.tryAcquire(Math.min(TaskLimits.timeoutSeconds(task, 30), 30), TimeUnit.SECONDS);
+                if (!profileAcquired) throw new IOException("browser profile is busy; retry after the active session completes");
+            }
             Files.createDirectories(config.stateDir());
             requestFile = Files.createTempFile(config.stateDir(), "browser-request-", ".json");
             Files.write(requestFile, JsonCodec.write(task));
@@ -98,6 +111,10 @@ final class BrowserTaskRunner implements Runnable {
             // strings, fragments, cookies, or CDP credentials.
             builder.environment().put("RCM_BROWSER_SESSION_FILE",
                     config.stateDir().toAbsolutePath().normalize().resolve("browser-session.json").toString());
+            if (!configuredProfile.isBlank()) builder.environment().put("RCM_BROWSER_PROFILE_DIR", configuredProfile);
+            builder.environment().put("RCM_BROWSER_ENGINE", config.browserEngine());
+            builder.environment().put("RCM_BROWSER_BROWSER", config.browserName());
+            builder.environment().put("RCM_BROWSER_HEADLESS", config.browserHeadless() ? "1" : "0");
             var timeout = Math.min(TaskLimits.timeoutSeconds(task, 300), 24 * 60 * 60);
             builder.environment().put("RCM_BROWSER_TASK_TIMEOUT_SECONDS", Integer.toString(timeout));
             outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), TaskLimits.outputBytes(config, task), resourceBudget);
@@ -180,6 +197,7 @@ final class BrowserTaskRunner implements Runnable {
             deleteTree(artifactDir);
             if (outputSpool != null) outputSpool.close();
             if (outputExecutor != null) outputExecutor.shutdownNow();
+            if (profileAcquired && profileLock != null) profileLock.release();
         }
     }
 
@@ -223,15 +241,23 @@ final class BrowserTaskRunner implements Runnable {
         if (bytes.length > 64 * 1024) throw new IOException("browser result manifest exceeds 64 KiB");
         var raw = JsonCodec.read(bytes, Map.class);
         var status = text(raw.get("status"));
-        if (!status.isBlank() && !status.equalsIgnoreCase("completed") && !status.equalsIgnoreCase("success")) {
-            throw new IOException(compactError(text(raw.get("error"))));
-        }
-        var output = text(raw.get("output"));
+        var failed = !status.isBlank() && !status.equalsIgnoreCase("completed") && !status.equalsIgnoreCase("success");
+        // The reference worker already redacts its manifest, but adapters are
+        // user-supplied and may return diagnostic text directly.  Apply the
+        // same boundary redaction here before bytes enter the durable Center
+        // output stream; this keeps a custom Playwright/Patchright/Comoufox
+        // adapter from bypassing the Agent's error/log hygiene.
+        var output = SensitiveValueRedactor.redact(text(raw.get("output")));
         if (!output.isBlank()) {
-            if (output.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 64 * 1024) {
+            var outputData = (output + System.lineSeparator()).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            if (outputData.length > 64 * 1024) {
                 throw new IOException("browser result output exceeds 64 KiB");
             }
             sendOutput(output + System.lineSeparator(), outputCursor);
+            outputCursor += outputData.length;
+        }
+        if (failed) {
+            throw new IOException(compactError(text(raw.get("error"))));
         }
         var artifact = raw.get("artifact");
         if (!(artifact instanceof Map<?, ?> values)) return;
@@ -356,14 +382,11 @@ final class BrowserTaskRunner implements Runnable {
     }
 
     private static void cleanSensitiveEnvironment(java.util.Map<String, String> environment) {
-        environment.keySet().removeIf(key -> {
-            var upper = key.toUpperCase(Locale.ROOT);
-            return upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("SECRET") || upper.contains("COOKIE");
-        });
+        environment.keySet().removeIf(CommandRunner::isSensitive);
     }
 
     private static String compactError(String value) {
-        var error = value == null || value.isBlank() ? "browser task failed" : value.trim();
+        var error = value == null || value.isBlank() ? "browser task failed" : SensitiveValueRedactor.redact(value.trim());
         return error.length() <= 4096 ? error : error.substring(0, 4096);
     }
 }

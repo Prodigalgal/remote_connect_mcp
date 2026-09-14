@@ -121,12 +121,13 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 控制台使用独立的 Center Admin Token，支持：
 
 - 查看机器在线状态、平台、Agent 版本和最后心跳；
-- 创建命令任务并指定机器、工作目录和超时；
-- 注册 Agent 本地项目并创建/移除 Git worktree，任务可选择已就绪的 project/worktree cwd；
+- 创建 command、desktop 或 browser 任务，并指定机器、项目/worktree/path/unrestricted 范围、工作目录、风险、会话和超时；
+- 注册 Agent 本地项目并创建/移除 Git worktree，任务可选择已就绪的 project/worktree cwd；项目卡片还支持带确认和幂等键的 Git status/diff/log/commit/merge/merge-abort；
 - 查看最近任务、执行状态和完整输出；
 - 取消排队或运行中的任务；
 - 手动刷新机器、任务和当前输出；长输出按 cursor 分页读取，不阻塞页面。
 - 查看升级活动、canary/批次进度，并暂停、恢复或取消发布；升级资产必须通过 HTTPS 和 SHA-256 校验。
+- 查看有界脱敏审计事件；需要时可在审计页显式清理一年以前的记录，不会自动启动定时清理线程。
 - 查看 GitHub Release 版本目录（稳定版/预发布、发布时间和三平台 Agent 资产覆盖），从下拉框选择升级目标；目录短缓存，GitHub 暂时不可达时显示最近一次成功结果。
 
 管理 Token 只保存在 React 当前标签页内存，刷新或关闭页面后消失，不写入 `localStorage`、`sessionStorage` 或静态构建产物。
@@ -193,6 +194,7 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES` | `0` | 单任务 RSS 上限；Linux 通过 `/proc` 执行，0 或不支持的平台表示关闭（最多 16 GiB） |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS` | `0` | 单任务累计 CPU 时间上限（范围 0–2592000） |
 | `REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS` | `1000` | 资源监督的任务级采样间隔（250–10000 ms）；只在任务运行时启用，不产生空闲 Agent 轮询 |
+| `REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH` | 空 | Linux 可选的预创建 cgroup v2 目录；任务启动时加入该 cgroup，目录不可用则任务 fail-closed；留空使用 JDK 进程树监督 |
 | `REMOTE_CONNECT_MCP_AGENT_POLL_INTERVAL_MS` | `5000` | 仅用于旧 Center/长轮询关闭时的兼容退避；范围 250–60000 ms，断线时自动指数退避 |
 | `REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS` | `25` | Agent 单次 HTTPS 长轮询等待秒数（0–25）；事件/取消/配置到达即返回，0 仅用于旧 Center 兼容 |
 | `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT` | `poll` | 设置为 `websocket` 时启用额外的 Agent WebSocket 唤醒提示；任务数据和认证仍走 HTTPS，连接失败自动退避 |
@@ -201,6 +203,10 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED` | `false` | 显式启用桌面伴侣；必须以用户会话运行，系统服务本身不链接 AWT |
 | `REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER` | 空 | Browser Agent 本机 Playwright/Patchright/Comoufox Worker 命令；设置后才可执行 browser 任务，任务 JSON 通过临时请求文件传入，截图/下载通过受目录约束的结果清单回传；仓库参考 Worker 为 `scripts/browser-worker.mjs` |
 | `REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY` | 同目录 `rcm-browser-agent` | 可选的独立 Browser Agent Native 二进制；未配置时自动查找 command-agent 同目录的 `rcm-browser-agent`，找不到则兼容地直接执行适配器命令 |
+| `REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR` | 空 | 可选的目标机持久浏览器 Profile 目录；只由 Browser Worker 使用，不上传 Cookie、扩展或 CDP 凭据 |
+| `REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE` | `playwright` | 本机适配器引擎：`playwright`、`patchright` 或 `comoufox`；不由 Center/模型远程选择 |
+| `REMOTE_CONNECT_MCP_AGENT_BROWSER` | `chromium` | 本机浏览器类型：`chromium`、`firefox` 或 `webkit` |
+| `REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS` | `1` | Browser Worker 是否无头运行；仅影响目标机本地会话，不改变 Center 权限 |
 | `REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES` | `16` | 没有用户会话 companion 时，命令 Agent 的桌面启动回退上限（1–64）；伴侣进程有独立上限 |
 
 Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 Center，原始值以 `0600` 权限保存在 Agent 状态目录。注册时会同时上报 `host_id`、`scope_mode` 和 `workspace_root`，控制台的机器详情可据此区分同一终端上的多个物理 Agent。若身份被吊销或丢失，请在 Center 重新生成一次性 Token，更新目标 Agent 的配置并重启；正常的 Center 重启和新建 Enrollment Token 不会影响已注册 Agent。

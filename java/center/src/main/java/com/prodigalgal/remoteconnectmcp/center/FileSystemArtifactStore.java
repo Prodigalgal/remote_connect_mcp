@@ -7,8 +7,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.LinkOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.util.EnumSet;
+import java.util.Set;
 import java.util.HexFormat;
 import java.util.UUID;
 
@@ -35,6 +40,7 @@ public final class FileSystemArtifactStore implements ArtifactStore {
             if (!Files.isDirectory(this.root) || !Files.isWritable(this.root)) {
                 throw new IOException("artifact root is not a writable directory");
             }
+            restrictOwner(this.root, true);
         } catch (IOException exception) {
             throw new ArtifactStore.StorageException("cannot initialize artifact root", exception);
         }
@@ -56,7 +62,9 @@ public final class FileSystemArtifactStore implements ArtifactStore {
             var temporary = target.resolveSibling("." + target.getFileName() + "." + UUID.randomUUID() + ".part");
             try {
                 Files.write(temporary, data, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+                restrictOwner(temporary, false);
                 moveAtomically(temporary, target);
+                restrictOwner(target, false);
             } finally {
                 Files.deleteIfExists(temporary);
             }
@@ -89,6 +97,40 @@ public final class FileSystemArtifactStore implements ArtifactStore {
             pruneEmptyParents(target.getParent());
         } catch (IOException exception) {
             throw new ArtifactStore.StorageException("cannot delete artifact object", exception);
+        }
+    }
+
+    @Override
+    public int sweepOrphans(Set<String> referencedKeys, Instant olderThan, int limit) {
+        if (limit < 1) return 0;
+        var references = referencedKeys == null ? Set.<String>of() : Set.copyOf(referencedKeys);
+        var cutoff = olderThan == null ? Instant.now() : olderThan;
+        var deleted = 0;
+        // Only enumerate the store-owned namespace.  The configured root may
+        // be shared with a marker/backup directory; an orphan sweep must
+        // never delete files which do not belong to an fs-v1 object key.
+        var objectRoot = root.resolve(PREFIX.substring(0, PREFIX.length() - 1)).normalize();
+        if (!Files.isDirectory(objectRoot, LinkOption.NOFOLLOW_LINKS)) return 0;
+        try (var paths = Files.walk(objectRoot)) {
+            var candidates = paths
+                    .filter(path -> !path.equals(objectRoot))
+                    .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                    .filter(path -> !path.getFileName().toString().contains(".part"))
+                    .sorted()
+                    .toList();
+            for (var path : candidates) {
+                if (deleted >= limit) break;
+                var relative = root.relativize(path).toString().replace('\\', '/');
+                var objectKey = PREFIX + relative;
+                if (references.contains(objectKey)) continue;
+                var modified = Files.getLastModifiedTime(path, LinkOption.NOFOLLOW_LINKS).toInstant();
+                if (!modified.isBefore(cutoff)) continue;
+                Files.deleteIfExists(path);
+                deleted++;
+            }
+            return deleted;
+        } catch (IOException exception) {
+            throw new ArtifactStore.StorageException("cannot sweep orphan artifact objects", exception);
         }
     }
 
@@ -138,6 +180,17 @@ public final class FileSystemArtifactStore implements ArtifactStore {
             }
             Files.deleteIfExists(current);
             current = current.getParent();
+        }
+    }
+
+    private static void restrictOwner(Path path, boolean directory) {
+        try {
+            var permissions = EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+            if (directory) permissions.add(PosixFilePermission.OWNER_EXECUTE);
+            Files.setPosixFilePermissions(path, permissions);
+        } catch (UnsupportedOperationException | IOException ignored) {
+            // Windows ACLs and some mounted filesystems do not expose POSIX
+            // modes; the deployment volume/ACL remains the outer boundary.
         }
     }
 

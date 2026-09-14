@@ -1,0 +1,34 @@
+databaseChangeLog:
+  - changeSet:
+      id: 012-audit-events
+      author: remote-connect-mcp
+      changes:
+        - sql:
+            splitStatements: false
+            sql: |
+              CREATE TABLE IF NOT EXISTS rcm_audit_event (
+                audit_id VARCHAR(64) PRIMARY KEY,
+                event_type VARCHAR(64) NOT NULL,
+                actor VARCHAR(128) NOT NULL,
+                agent_id VARCHAR(180),
+                task_id VARCHAR(180),
+                scope_mode VARCHAR(32),
+                risk VARCHAR(16),
+                outcome VARCHAR(32),
+                detail_text VARCHAR(4096),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+              );
+              CREATE INDEX IF NOT EXISTS rcm_audit_event_task_idx
+                ON rcm_audit_event(task_id, created_at DESC);
+              CREATE INDEX IF NOT EXISTS rcm_audit_event_agent_idx
+                ON rcm_audit_event(agent_id, created_at DESC);
+              CREATE INDEX IF NOT EXISTS rcm_audit_event_created_idx
+                ON rcm_audit_event(created_at DESC, audit_id DESC);
+      rollback:
+        - sql:
+            splitStatements: false
+            sql: |
+              DROP INDEX IF EXISTS rcm_audit_event_created_idx;
+              DROP INDEX IF EXISTS rcm_audit_event_agent_idx;
+              DROP INDEX IF EXISTS rcm_audit_event_task_idx;
+              DROP TABLE IF EXISTS rcm_audit_event;

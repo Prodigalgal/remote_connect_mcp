@@ -3,6 +3,10 @@ plugins {
     application
 }
 
+dependencies {
+    implementation(project(":protocol"))
+}
+
 application {
     mainClass.set("com.prodigalgal.remoteconnectmcp.browser.BrowserAgentApplication")
 }

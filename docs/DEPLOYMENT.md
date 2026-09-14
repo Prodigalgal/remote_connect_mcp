@@ -58,7 +58,10 @@ Linux 完整 tar 包的根目录包含 `install-java-agent.sh` 和匹配版本�
 设置为 `REMOTE_CONNECT_MCP_AGENT_BINARY`。需要桌面/浏览器能力时，再设置
 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY=./desktop/rcm-desktop-companion.zip` 和
 `REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=./browser/rcm-browser-agent.zip`；安装器会将两个
-companion 放到隔离目录，桌面伴侣仍应由用户会话自启动。安装器会在每个 ZIP 旁存在 `.sha256`
+companion 放到隔离目录。Linux 同时设置 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=true`、
+`REMOTE_CONNECT_MCP_AGENT_DESKTOP_USER=<登录用户名>` 后，安装器会为该账号创建
+systemd user companion unit，并仅通过 ACL 授予 `state_dir/desktop` 访问；没有 `acl` 或活动图形会话时只安装二进制，不伪造桌面在线状态。
+Windows 仍由 `-DesktopEnabled` 创建按用户登录触发的 Scheduled Task。安装器会在每个 ZIP 旁存在 `.sha256`
 时先校验，再复制 ELF 及其 `.so` 旁路库，并使用包内 systemd 模板（也可用
 `REMOTE_CONNECT_MCP_AGENT_SERVICE_FILE` 显式覆盖）。
 
@@ -133,13 +136,23 @@ Linux/Windows 原生二进制还会由 GitHub OIDC 生成 Artifact Attestation�
 rcm-center --migrate
 ```
 
-该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`、`009-task-lease-index`、`010-execution-contract`、`011-artifact-storage`；仓库不使用 Flyway。
+该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`、`009-task-lease-index`、`010-execution-contract`、`011-artifact-storage`、`012-audit-events`、`013-agent-runtime-descriptor`、`014-agent-config-history`；仓库不使用 Flyway。
 
 Java Center 的 memory 模式只用于协议回归/开发。生产必须同时设置
 `RCM_CENTER_PERSISTENCE_MODE=postgres` 和
 `RCM_CENTER_REQUIRE_DURABLE_STORAGE=true`，并设置
 `RCM_CENTER_ARTIFACT_STORE=filesystem`、`RCM_CENTER_ARTIFACT_ROOT` 指向持久卷；后者会让 `/api/v1/readyz` 在模式或工件存储错误时返回
 503，即使进程本身仍能响应 `/api/v1/healthz`，从而阻止错误实例被 Service 接收流量。
+
+审计记录默认只通过有界异步队列写入 PostgreSQL。保留清理由管理员或外部
+维护作业显式触发，不运行定时轮询线程：
+
+```text
+POST /api/v1/admin/audit/gc?retentionDays=365&limit=500
+Authorization: Bearer <Admin Token>
+```
+
+接口最多处理 5000 条/次，返回删除数量；任务、工件和机器数据不会因审计清理被删除。
 
 从旧 Go 文件存储切换时，先停止旧 Center 并完整备份其状态目录，再在已完成 Liquibase 的空 PostgreSQL 库上执行：
 
@@ -240,4 +253,4 @@ Agent 烟测同时在注册后的空闲/命令阶段采样 Agent 工作集，生
 
 ## Agent 资源预算
 
-默认值按 1C/1G 级别终端设计：空闲 Agent 只保持一个最长 25 秒的 HTTPS 长轮询请求，不运行固定 5 秒心跳；事件到达或服务端 deadline 才结束请求，断线时才使用指数退避。`MAX_CONCURRENCY=1` 限制同时子进程数，`MAX_BROWSER_WORKERS=1` 再对浏览器适配器做独立上限；每任务 stdout/stderr 默认为 64 MiB，普通任务共享 `MAX_AGGREGATE_OUTPUT_BYTES` 聚合 spool 上限（默认随并发增长但不超过 256 MiB）；输出上传使用 16 KiB 分片。每个运行中的任务另外由任务级监督器限制进程树（默认 32）、合同/任务墙钟时长，并可通过 `MAX_RSS_BYTES`（Linux procfs）、`MAX_CPU_SECONDS` 和采样间隔启用资源硬边界；超限会终止整棵子进程树并回传明确失败原因，不会给空闲 Agent 增加轮询。Browser 任务无显式超时时默认 300 秒，最长 24 小时；durable 日志看门器由 fsnotify/WatchService 文件事件驱动，只有极旧系统没有可等待进程句柄时才保留显式、低频的 5 秒兼容回退。Desktop companion 另有最多 4 个并发 IPC 请求和 16 个活动启动进程，并通过文件锁保证单实例。聚合上限达到时普通任务继续执行并标记输出截断，只有 durable 任务达到其硬上限才会终止，确保节约资源不会把可恢复任务静默杀掉。确需并行时逐台提高并发并观察 RSS、磁盘和 Center 延迟，不建议在小规格主机上直接设置 32 个槽位或 1 GiB 输出上限。
+默认值按 1C/1G 级别终端设计：空闲 Agent 只保持一个最长 25 秒的 HTTPS 长轮询请求，不运行固定 5 秒心跳；事件到达或服务端 deadline 才结束请求，断线时才使用指数退避。`MAX_CONCURRENCY=1` 限制同时子进程数，`MAX_BROWSER_WORKERS=1` 再对浏览器适配器做独立上限；每任务 stdout/stderr 默认为 64 MiB，普通任务共享 `MAX_AGGREGATE_OUTPUT_BYTES` 聚合 spool 上限（默认随并发增长但不超过 256 MiB）；输出上传使用 16 KiB 分片。每个运行中的任务另外由任务级监督器限制进程树（默认 32）、合同/任务墙钟时长，并可通过 `MAX_RSS_BYTES`（Linux procfs）、`MAX_CPU_SECONDS` 和采样间隔启用资源硬边界；在 Linux 可将预创建的 cgroup v2 目录通过 `REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH` 交给每个任务，Agent 无法附加时 fail-closed；Windows 由 JDK 进程树监督配合 SCM/服务资源配置，暂不伪造 Job Object 已启用。超限会终止整棵子进程树并回传明确失败原因，不会给空闲 Agent 增加轮询。Browser 任务无显式超时时默认 300 秒，最长 24 小时；配置 `REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR` 后，Playwright/Patchright/Comoufox Worker 使用目标机持久 Profile，Center 只看到脱敏 origin/path 标记；引擎、浏览器和 headless 选项均为 Agent 本地环境配置。引用失效时 Worker 返回一次新的有界 snapshot 建议，不会盲目重放动作。durable 日志看门器由 fsnotify/WatchService 文件事件驱动，只有极旧系统没有可等待进程句柄时才保留显式、低频的 5 秒兼容回退。Desktop companion 另有最多 4 个并发 IPC 请求和 16 个活动启动进程，并通过文件锁保证单实例。聚合上限达到时普通任务继续执行并标记输出截断，只有 durable 任务达到其硬上限才会终止，确保节约资源不会把可恢复任务静默杀掉。确需并行时逐台提高并发并观察 RSS、磁盘和 Center 延迟，不建议在小规格主机上直接设置 32 个槽位或 1 GiB 输出上限。

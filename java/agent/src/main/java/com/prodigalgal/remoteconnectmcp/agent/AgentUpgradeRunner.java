@@ -3,6 +3,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -77,7 +78,7 @@ final class AgentUpgradeRunner implements Runnable {
             var helperConfig = new AgentUpgradeHelper.Config(
                     plan.campaignId(), plan.version(), staged.toString(), target.toString(),
                     config.stateDir().toAbsolutePath().normalize().toString(), serviceName(),
-                    ProcessHandle.current().pid(), archive);
+                    ProcessHandle.current().pid(), archive, plan.attempt());
             var configPath = directory.resolve("helper-" + safeVersion + ".json");
             writeConfig(configPath, helperConfig);
             report("installing", null);
@@ -98,7 +99,7 @@ final class AgentUpgradeRunner implements Runnable {
     private void report(String status, String error) throws IOException, InterruptedException {
         AgentRetry.call(LOG, "upgrade status " + plan.campaignId(), () -> {
             transport.reportUpgrade(identity.machineId(), identity.token(),
-                    new UpgradeStatusRequest(plan.campaignId(), status, error));
+                    new UpgradeStatusRequest(plan.campaignId(), status, error, plan.attempt()));
             return null;
         });
     }
@@ -236,7 +237,7 @@ final class AgentUpgradeRunner implements Runnable {
         catch (java.security.NoSuchAlgorithmException exception) { throw new IllegalStateException(exception); }
     }
     private static String compactError(String value) {
-        var error = value == null || value.isBlank() ? "Agent upgrade failed" : value.trim();
+        var error = value == null || value.isBlank() ? "Agent upgrade failed" : SensitiveValueRedactor.redact(value.trim());
         return error.length() <= 4096 ? error : error.substring(0, 4096);
     }
 }

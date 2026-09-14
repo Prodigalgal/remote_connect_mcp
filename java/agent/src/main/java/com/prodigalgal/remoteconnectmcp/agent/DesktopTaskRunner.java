@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -51,10 +52,18 @@ final class DesktopTaskRunner implements Runnable {
             validate(action);
             sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
             var operation = action.operation().trim().toLowerCase(Locale.ROOT);
+            // Validate the contract before entering the user-session IPC.
+            // The companion is intentionally a small loopback process and
+            // must not become a second scope authority.  In particular,
+            // launch requests cannot smuggle an arbitrary cwd through the
+            // companion JSON after the command Agent has accepted the task.
+            var resolvedCwd = resolveCwd(action.cwd());
+            var scopedAction = withCwd(action, resolvedCwd.toString());
             var companion = DesktopCompanionClient.discover(config.stateDir());
             if (companion != null) {
                 try {
-                    completeCompanion(companion.call(action, Duration.ofSeconds(Math.min(TaskLimits.timeoutSeconds(task, 30), 300))));
+                    completeCompanion(companion.call(scopedAction, task.contract(),
+                            Duration.ofSeconds(Math.min(TaskLimits.timeoutSeconds(task, 30), 300))));
                     return;
                 } catch (IOException exception) {
                     // A stale endpoint may be left while the user session is
@@ -68,7 +77,7 @@ final class DesktopTaskRunner implements Runnable {
                 throw new IOException("desktop user-session companion is not available for input actions");
             }
             if ("launch".equals(operation)) {
-                launch(action);
+                launch(scopedAction);
             } else if ("screenshot".equals(operation)) {
                 screenshot(action);
             } else {
@@ -214,6 +223,12 @@ final class DesktopTaskRunner implements Runnable {
         return AgentPaths.resolveCwd(config, identity.machineId(), task, requested);
     }
 
+    private static TaskCommand.DesktopAction withCwd(TaskCommand.DesktopAction action, String cwd) {
+        return new TaskCommand.DesktopAction(action.operation(), action.executable(), action.args(), cwd,
+                action.text(), action.x(), action.y(), action.key(), action.x2(), action.y2(),
+                action.durationMs(), action.screen(), action.windowTitle());
+    }
+
     private void sendOutput(String text) throws IOException, InterruptedException {
         var data = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         AgentRetry.call(LOG, "desktop output upload " + task.id(), () -> {
@@ -269,10 +284,7 @@ final class DesktopTaskRunner implements Runnable {
     }
 
     private static void cleanSensitiveEnvironment(java.util.Map<String, String> environment) {
-        environment.keySet().removeIf(key -> {
-            var upper = key.toUpperCase(Locale.ROOT);
-            return upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("SECRET");
-        });
+        environment.keySet().removeIf(CommandRunner::isSensitive);
     }
 
     private static String sha256(byte[] data) {
@@ -284,7 +296,7 @@ final class DesktopTaskRunner implements Runnable {
     }
 
     private static String compactError(String value) {
-        var error = value == null || value.isBlank() ? "desktop task failed" : value.trim();
+        var error = value == null || value.isBlank() ? "desktop task failed" : SensitiveValueRedactor.redact(value.trim());
         return error.length() <= 4096 ? error : error.substring(0, 4096);
     }
 

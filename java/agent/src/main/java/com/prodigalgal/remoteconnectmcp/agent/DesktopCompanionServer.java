@@ -1,6 +1,8 @@
 package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
+import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.awt.AWTException;
 import java.awt.Graphics2D;
 import java.awt.GraphicsConfiguration;
@@ -25,13 +27,17 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -58,6 +64,7 @@ public final class DesktopCompanionServer {
     private static final int DEFAULT_MAX_LAUNCHED_PROCESSES = 16;
     private static final int MAX_ALLOWED_LAUNCHED_PROCESSES = 64;
     private static final String TOKEN_FILE = "desktop-companion.token";
+    private static final String POLICY_FILE = "desktop-companion-policy.json";
     private static final String COMPANION_DIR = "desktop";
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -66,6 +73,7 @@ public final class DesktopCompanionServer {
     private final int requestedPort;
     private final int maxConnections;
     private final int maxLaunchedProcesses;
+    private final Policy policy;
     private final Semaphore connectionSlots;
     private final Semaphore launchSlots;
     private final ConcurrentMap<Long, ProcessHandle> launchedProcesses = new ConcurrentHashMap<>();
@@ -76,14 +84,21 @@ public final class DesktopCompanionServer {
 
     DesktopCompanionServer(Path stateDir, String token, int requestedPort,
                            int maxConnections, int maxLaunchedProcesses) {
+        this(stateDir, token, requestedPort, maxConnections, maxLaunchedProcesses,
+                new Policy(ScopeMode.UNRESTRICTED, null));
+    }
+
+    DesktopCompanionServer(Path stateDir, String token, int requestedPort,
+                           int maxConnections, int maxLaunchedProcesses, Policy policy) {
         this.stateDir = stateDir.toAbsolutePath().normalize();
-        this.token = token;
+        this.token = normalizeToken(token);
         this.requestedPort = requestedPort;
         this.maxConnections = bounded(maxConnections, 1, MAX_ALLOWED_CONNECTIONS, "desktop companion max connections");
         this.maxLaunchedProcesses = bounded(maxLaunchedProcesses, 1, MAX_ALLOWED_LAUNCHED_PROCESSES,
                 "desktop companion max launched processes");
         this.connectionSlots = new Semaphore(this.maxConnections);
         this.launchSlots = new Semaphore(this.maxLaunchedProcesses);
+        this.policy = policy == null ? new Policy(ScopeMode.UNRESTRICTED, null) : policy;
     }
 
     public static void run(Path stateDir) throws IOException {
@@ -95,7 +110,41 @@ public final class DesktopCompanionServer {
         var maxLaunchedProcesses = parseBounded(System.getenv("REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES"),
                 DEFAULT_MAX_LAUNCHED_PROCESSES, 1, MAX_ALLOWED_LAUNCHED_PROCESSES,
                 "REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES");
-        new DesktopCompanionServer(stateDir, token.trim(), port, maxConnections, maxLaunchedProcesses).serve();
+        token = normalizeToken(token);
+        new DesktopCompanionServer(stateDir, token, port, maxConnections, maxLaunchedProcesses,
+                loadPolicy(stateDir)).serve();
+    }
+
+    /** Publish the machine-level desktop scope for the user-session process. */
+    public static void writePolicy(Path stateDir, ScopeMode scopeMode, String workspaceRoot) throws IOException {
+        var directory = stateDir.toAbsolutePath().normalize().resolve(COMPANION_DIR);
+        Files.createDirectories(directory);
+        var target = directory.resolve(POLICY_FILE).normalize();
+        if (!directory.equals(target.getParent())) throw new IOException("desktop companion policy path escapes state directory");
+        var mode = scopeMode == null ? ScopeMode.WORKSPACE : scopeMode;
+        var root = workspaceRoot == null || workspaceRoot.isBlank() ? null : workspaceRoot.trim();
+        if (root != null && (root.length() > 4096 || root.indexOf('\u0000') >= 0
+                || root.indexOf('\r') >= 0 || root.indexOf('\n') >= 0
+                || root.chars().anyMatch(Character::isISOControl))) {
+            throw new IOException("desktop companion policy root is invalid");
+        }
+        if (mode.bounded() && (root == null || root.isBlank())) {
+            throw new IOException("bounded desktop companion policy requires a workspace root");
+        }
+        var policy = new Policy(mode, root);
+        var temporary = Files.createTempFile(directory, "desktop-policy-", ".tmp");
+        try {
+            Files.write(temporary, JsonCodec.write(policy));
+            restrictOwner(temporary);
+            try {
+                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            restrictOwner(target);
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
 
     private void serve() throws IOException {
@@ -107,9 +156,11 @@ public final class DesktopCompanionServer {
              var workers = Executors.newVirtualThreadPerTaskExecutor()) {
             var endpoint = companionDir.resolve("desktop-companion.json");
             writeEndpoint(endpoint, server.getLocalPort(), token);
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            var cleanup = new Thread(() -> {
+                terminateLaunchedProcesses();
                 try { Files.deleteIfExists(endpoint); } catch (IOException ignored) { }
-            }, "rcm-desktop-companion-cleanup"));
+            }, "rcm-desktop-companion-cleanup");
+            Runtime.getRuntime().addShutdownHook(cleanup);
             LOG.info(() -> "desktop companion listening on loopback port " + server.getLocalPort());
             while (!Thread.currentThread().isInterrupted()) {
                 var client = server.accept();
@@ -118,7 +169,33 @@ public final class DesktopCompanionServer {
                 }
             }
         } finally {
+            terminateLaunchedProcesses();
             Files.deleteIfExists(companionDir.resolve("desktop-companion.json"));
+        }
+    }
+
+    /**
+     * A companion restart must not leave GUI applications orphaned forever.
+     * Normal application exits release their launch permits through
+     * {@code ProcessHandle.onExit}; this path is only for explicit shutdown
+     * or a crashed service wrapper and therefore walks the bounded registry
+     * once instead of running a background poller.
+     */
+    private void terminateLaunchedProcesses() {
+        for (var handle : List.copyOf(launchedProcesses.values())) {
+            try {
+                handle.descendants().forEach(child -> {
+                    try { child.destroy(); } catch (RuntimeException ignored) { }
+                    if (child.isAlive()) {
+                        try { child.destroyForcibly(); } catch (RuntimeException ignored) { }
+                    }
+                });
+                handle.destroy();
+                if (handle.isAlive()) handle.destroyForcibly();
+            } catch (RuntimeException ignored) {
+                // The process may have exited between snapshot and cleanup.
+            }
+            launchedProcesses.remove(handle.pid(), handle);
         }
     }
 
@@ -182,6 +259,7 @@ public final class DesktopCompanionServer {
     private DesktopCompanionClient.Response execute(DesktopCompanionClient.Request request) throws Exception {
         var operation = request.operation() == null ? "" : request.operation().trim().toLowerCase(Locale.ROOT);
         validate(request, operation);
+        validateScope(request);
         return switch (operation) {
             case "screenshot" -> screenshot(request);
             case "screens" -> screens();
@@ -442,6 +520,56 @@ public final class DesktopCompanionServer {
         if (!operation.equals("launch") && request.executable() != null && !request.executable().isBlank()) throw new IllegalArgumentException("executable is allowed only for launch");
     }
 
+    /** Re-check the Center contract before executing any user-session action. */
+    private void validateScope(DesktopCompanionClient.Request request) throws IOException {
+        var machineMode = policy.scopeMode() == null ? ScopeMode.WORKSPACE : policy.scopeMode();
+        var requestedMode = request.scopeMode() == null || request.scopeMode().isBlank()
+                ? machineMode : ScopeMode.fromWireValue(request.scopeMode());
+        if (machineMode.bounded() && !requestedMode.bounded()) {
+            throw new IOException("desktop request exceeds the machine workspace policy");
+        }
+        if (request.contractExpiresAt() != null && !Instant.now().isBefore(request.contractExpiresAt())) {
+            throw new IOException("desktop execution contract has expired");
+        }
+        if (!requestedMode.bounded() && !machineMode.bounded()) return;
+        var machineRoot = policy.workspaceRoot();
+        if (machineRoot == null || machineRoot.isBlank()) {
+            throw new IOException("desktop workspace policy has no root");
+        }
+        var machineReal = resolveThroughExistingParents(Path.of(machineRoot));
+        var contractRoot = request.scopeRoot() == null || request.scopeRoot().isBlank()
+                ? machineReal : resolveThroughExistingParents(Path.of(request.scopeRoot()));
+        if (!within(machineReal, contractRoot)) {
+            throw new IOException("desktop contract root is outside the machine workspace");
+        }
+        var requestedCwd = request.cwd() == null || request.cwd().isBlank()
+                ? contractRoot : resolveThroughExistingParents(Path.of(request.cwd()));
+        if (!within(contractRoot, requestedCwd)) {
+            throw new IOException("desktop cwd is outside the execution contract scope");
+        }
+    }
+
+    private static Path resolveThroughExistingParents(Path candidate) throws IOException {
+        var missing = new java.util.ArrayDeque<Path>();
+        var existing = candidate.toAbsolutePath().normalize();
+        while (!Files.exists(existing)) {
+            var name = existing.getFileName();
+            if (name == null) throw new IOException("desktop cwd has no existing parent");
+            missing.addFirst(name);
+            existing = existing.getParent();
+            if (existing == null) throw new IOException("desktop cwd has no existing parent");
+        }
+        var resolved = existing.toRealPath();
+        for (var name : missing) resolved = resolved.resolve(name);
+        return resolved.normalize();
+    }
+
+    private static boolean within(Path root, Path candidate) {
+        var normalizedRoot = root.toAbsolutePath().normalize();
+        var normalizedCandidate = candidate.toAbsolutePath().normalize();
+        return normalizedCandidate.equals(normalizedRoot) || normalizedCandidate.startsWith(normalizedRoot);
+    }
+
     private static void ensureDisplay() {
         if (GraphicsEnvironment.isHeadless()) throw new IllegalStateException("user session has no desktop display");
     }
@@ -470,13 +598,18 @@ public final class DesktopCompanionServer {
         var file = stateDir.toAbsolutePath().normalize().resolve(COMPANION_DIR).resolve(TOKEN_FILE);
         if (Files.isRegularFile(file)) {
             var value = Files.readString(file).trim();
-            if (!value.isBlank()) return value;
+            if (!value.isBlank()) {
+                var normalized = normalizeToken(value);
+                restrictOwner(file);
+                return normalized;
+            }
         }
         var bytes = new byte[32];
         RANDOM.nextBytes(bytes);
         var value = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         Files.createDirectories(file.getParent());
         Files.writeString(file, value, StandardCharsets.UTF_8);
+        restrictOwner(file);
         return value;
     }
 
@@ -484,12 +617,69 @@ public final class DesktopCompanionServer {
         var temp = Files.createTempFile(target.getParent(), "desktop-companion-", ".tmp");
         try {
             Files.write(temp, JsonCodec.write(new DesktopCompanionClient.Endpoint(port, token)));
+            restrictOwner(temp);
             try {
                 Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
             }
+            restrictOwner(target);
         } finally { Files.deleteIfExists(temp); }
+    }
+
+    /**
+     * Load the policy published by the command Agent.  The companion is a
+     * user-session helper. New Agent installations publish a valid policy
+     * before the companion is used. A missing or malformed policy fails closed
+     * to the Agent state directory rather than widening a user-session process
+     * to whole-host access. The constructor-only legacy policy remains
+     * available for direct protocol tests, but the production environment
+     * loader never treats absent policy as unrestricted authority.
+     */
+    private static Policy loadPolicy(Path stateDir) {
+        var file = stateDir.toAbsolutePath().normalize().resolve(COMPANION_DIR).resolve(POLICY_FILE);
+        try {
+            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+                return new Policy(ScopeMode.PATH, stateDir.toAbsolutePath().normalize().toString());
+            }
+            if (Files.size(file) > 4096) throw new IOException("desktop companion policy is too large");
+            var parsed = JsonCodec.read(Files.readAllBytes(file), Policy.class);
+            if (parsed == null || parsed.scopeMode() == null) {
+                throw new IOException("desktop companion policy has no scope mode");
+            }
+            var root = parsed.workspaceRoot();
+            if (root != null && (root.isBlank() || root.indexOf('\u0000') >= 0
+                    || root.indexOf('\r') >= 0 || root.indexOf('\n') >= 0
+                    || root.length() > 4096)) {
+                throw new IOException("desktop companion policy root is invalid");
+            }
+            return new Policy(parsed.scopeMode(), root == null ? null : root.trim());
+        } catch (Exception failure) {
+            LOG.log(Level.WARNING, "could not load desktop companion scope policy; using a fail-closed local policy", failure);
+            return new Policy(ScopeMode.PATH, stateDir.toAbsolutePath().normalize().toString());
+        }
+    }
+
+    /** Keep local IPC material private where the host filesystem supports it. */
+    private static void restrictOwner(Path path) {
+        try {
+            Files.setPosixFilePermissions(path, EnumSet.of(PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE));
+        } catch (UnsupportedOperationException | IOException ignored) {
+            // Windows and some mounted filesystems do not expose POSIX modes;
+            // installers apply an ACL there instead.
+        }
+    }
+
+    private static String normalizeToken(String value) {
+        if (value == null) throw new IllegalArgumentException("desktop companion token is required");
+        var normalized = value.trim();
+        if (normalized.length() < 32 || normalized.length() > 256
+                || normalized.indexOf('\u0000') >= 0 || normalized.indexOf('\r') >= 0
+                || normalized.indexOf('\n') >= 0 || normalized.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("desktop companion token must be 32-256 single-line characters");
+        }
+        return normalized;
     }
 
     private static boolean constantTimeEquals(String expected, String actual) {
@@ -499,11 +689,14 @@ public final class DesktopCompanionServer {
 
     private static boolean sensitiveEnvironment(String key) {
         var upper = key.toUpperCase(Locale.ROOT);
-        return upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("SECRET") || upper.contains("COOKIE");
+        return upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("PASSWD")
+                || upper.contains("SECRET") || upper.contains("COOKIE") || upper.contains("AUTHORIZATION")
+                || upper.contains("API_KEY") || upper.contains("PRIVATE_KEY") || upper.contains("CREDENTIAL");
     }
 
     private static String compactError(String error) {
-        var value = error == null || error.isBlank() ? "desktop companion request failed" : error.trim();
+        var value = error == null || error.isBlank() ? "desktop companion request failed"
+                : SensitiveValueRedactor.redact(error.trim());
         return value.length() <= 4096 ? value : value.substring(0, 4096);
     }
 
@@ -536,5 +729,8 @@ public final class DesktopCompanionServer {
     private static int bounded(int value, int minimum, int maximum, String name) {
         if (value < minimum || value > maximum) throw new IllegalArgumentException(name + " is outside the allowed range");
         return value;
+    }
+
+    private record Policy(ScopeMode scopeMode, String workspaceRoot) {
     }
 }

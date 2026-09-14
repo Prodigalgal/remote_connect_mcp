@@ -8,7 +8,6 @@ const MAX_COMMAND_BYTES = 64 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_SELECTOR_LENGTH = 2048;
 const MAX_TEXT_BYTES = 64 * 1024;
-const MAX_SCRIPT_BYTES = 32 * 1024;
 const MAX_WAIT_MS = 30_000;
 const MAX_EVENT_ENTRIES = 64;
 const MAX_EVENT_TEXT_BYTES = 1024;
@@ -37,7 +36,8 @@ try {
 } catch (error) {
   const message = compactError(error instanceof Error ? error.message : String(error));
   try {
-    await writeResult({ status: "failed", error: message });
+    const recovery = await staleReferenceObservation(message);
+    await writeResult({ status: "failed", error: message, ...(recovery ? { output: recovery } : {}) });
   } catch (writeError) {
     console.error("[rcm-browser] result manifest failed: " + compactError(writeError instanceof Error ? writeError.message : String(writeError)));
   }
@@ -53,6 +53,34 @@ try {
     if (browser) await browser.close();
   } catch {
     // Persistent contexts already close their browser in context.close().
+  }
+}
+
+/**
+ * A reference is a bounded observation, not a durable DOM handle.  When a
+ * page changed underneath a later action, return one fresh compact
+ * observation so the caller can decide how to continue instead of blindly
+ * replaying a stale click/fill.  Any failure while observing is ignored; the
+ * original adapter error remains authoritative.
+ */
+async function staleReferenceObservation(message) {
+  if (!message || !/reference/i.test(message) || !context) return "";
+  try {
+    const pages = typeof context.pages === "function" ? context.pages() : [];
+    const page = pages[0];
+    if (!page) return "";
+    const snapshot = await snapshotPage(page);
+    const elements = await elementReferences(page);
+    return limitText(JSON.stringify({
+      next_action: "snapshot",
+      reason: "stale_reference",
+      url: safeEventUrl(page.url()),
+      title: safePageTitle(await page.title()),
+      snapshot,
+      elements,
+    }), MAX_OUTPUT_BYTES);
+  } catch {
+    return "";
   }
 }
 
@@ -92,12 +120,12 @@ async function executeOperation(page, command, operation) {
     case "navigate": {
       const url = safeUrl(command.url);
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-      return { output: JSON.stringify({ operation, url: safeEventUrl(page.url()), title: await page.title() }) };
+      return { output: JSON.stringify({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()) }) };
     }
     case "snapshot": {
       const snapshot = await snapshotPage(page);
       const elements = await elementReferences(page);
-      return { output: limitText(JSON.stringify({ operation, url: safeEventUrl(page.url()), title: await page.title(), snapshot, elements }), MAX_OUTPUT_BYTES) };
+      return { output: limitText(JSON.stringify({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()), snapshot, elements }), MAX_OUTPUT_BYTES) };
     }
     case "click": {
       await locator(page, command.selector).click();
@@ -119,7 +147,7 @@ async function executeOperation(page, command, operation) {
       return { output: JSON.stringify({ operation, wait_ms: waitMs }) };
     }
     case "title":
-      return { output: JSON.stringify({ operation, title: await page.title(), url: safeEventUrl(page.url()) }) };
+      return { output: JSON.stringify({ operation, title: safePageTitle(await page.title()), url: safeEventUrl(page.url()) }) };
     case "url":
       return { output: JSON.stringify({ operation, url: safeEventUrl(page.url()) }) };
     case "screenshot": {
@@ -144,11 +172,6 @@ async function executeOperation(page, command, operation) {
         output: JSON.stringify({ operation, file_name: fileName, url: safeEventUrl(page.url()) }),
         artifact: { path: fileName, mime_type: "application/octet-stream" }
       };
-    }
-    case "evaluate": {
-      const script = boundedText(command.script, MAX_SCRIPT_BYTES, "script");
-      const value = await page.evaluate(script);
-      return { output: limitText(JSON.stringify({ operation, result: value }), MAX_OUTPUT_BYTES) };
     }
     default:
       throw new Error("unsupported browser operation: " + operation);
@@ -210,10 +233,11 @@ function withEventSummary(result, events) {
   if (events.pageErrors.length > 0) summary.page_errors = events.pageErrors;
   if (Object.keys(summary).length === 0) return result;
   let payload;
+  const safeOutput = redactEventText(result.output);
   try {
-    payload = JSON.parse(result.output);
+    payload = JSON.parse(safeOutput);
   } catch {
-    payload = { result: result.output };
+    payload = { result: safeOutput };
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = { result: payload };
   Object.assign(payload, summary);
@@ -242,16 +266,20 @@ function compactEventText(value, maxBytes) {
 
 function redactEventText(value) {
   return value
-    .replace(/\b(?:authorization|cookie|token|password|secret|api[_-]?key)\b\s*[:=]\s*["']?[^"'\s,;]+/gi, "$&".replace(/[:=].*$/, "=[redacted]"))
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]");
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/(\b(?:authorization|cookie|token|password|passwd|secret|api[_-]?key|private[_-]?key|credential)\b\s*[:=]\s*["']?)[^"'\s,;}]+/gi, "$1[redacted]");
 }
 
 async function snapshotPage(page) {
   const body = page.locator("body");
   if (typeof body.ariaSnapshot === "function") {
-    return limitText(await body.ariaSnapshot(), 48 * 1024);
+    return limitText(redactEventText(await body.ariaSnapshot()), 48 * 1024);
   }
-  return limitText(await body.innerText(), 48 * 1024);
+  return limitText(redactEventText(await body.innerText()), 48 * 1024);
+}
+
+function safePageTitle(value) {
+  return compactEventText(value, MAX_EVENT_TEXT_BYTES);
 }
 
 /**
@@ -530,7 +558,7 @@ function limitText(value, maxBytes) {
 }
 
 function compactError(value) {
-  const output = String(value || "browser task failed").replace(/[\r\n]+/g, " ").trim();
+  const output = redactEventText(String(value || "browser task failed").replace(/[\r\n]+/g, " ").trim());
   return output.length <= 4096 ? output : output.slice(0, 4093) + "...";
 }
 

@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
+import com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
@@ -14,6 +16,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -70,6 +73,36 @@ class TaskServiceTest {
     }
 
     @Test
+    void rejectsOversizedOutputChunkBeforeTouchingTaskState() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var task = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "printf output", "/srv", Map.of(), 30, null, null), "chunk-limit"));
+        var oversized = new byte[TaskService.MAX_OUTPUT_CHUNK_BYTES + 1];
+
+        assertThrows(IllegalArgumentException.class,
+                () -> tasks.appendOutput(registration.machineId(), task.id(), 0, oversized));
+        assertEquals(0, tasks.find(task.id()).orElseThrow().outputBytes());
+    }
+
+    @Test
+    void legacyFenceHeadersAreAcceptedOnlyForTheFirstDispatch() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var task = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "printf retry", "/srv", java.util.Map.of(), 0, null, null), "legacy-fence"));
+        var first = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        tasks.updateState(registration.machineId(), task.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false));
+        assertEquals(1, first.attempt());
+        tasks.find(task.id()).orElseThrow().leaseUntil(java.time.Instant.now().minusSeconds(1));
+        tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command")));
+        assertThrows(SecurityException.class, () -> tasks.updateState(registration.machineId(), task.id(),
+                new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), null));
+    }
+
+    @Test
     void createsBoundedContractForWorkspaceAgent() {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("workspace-agent", "host-a", "host-a", "linux", "amd64", "dev",
@@ -83,6 +116,67 @@ class TaskServiceTest {
         var state = tasks.find(task.id()).orElseThrow();
         assertEquals(ScopeMode.WORKSPACE, state.command().contract().scopeMode());
         assertEquals("/srv/project", state.command().contract().scopeRoot());
+    }
+
+    @Test
+    void centerNeverLetsCallerSuppliedContractEnlargeOuterBudgets() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var supplied = new ExecutionContract(registration.machineId(), "host-a", ScopeMode.UNRESTRICTED,
+                null, null, null, "caller-session", "command",
+                new ExecutionContract.Budget(3600, 128L * 1024 * 1024, 16L * 1024 * 1024, 64),
+                java.time.Instant.now().plus(java.time.Duration.ofDays(365)), "caller-key", "low", false, null);
+
+        var task = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "echo bounded", "/srv", java.util.Map.of(),
+                        30, null, null, supplied), "contract-bound"));
+        var contract = tasks.find(task.id()).orElseThrow().command().contract();
+
+        assertEquals(TaskService.MAX_OUTPUT_BYTES, contract.budget().maxOutputBytes());
+        assertEquals(8L * 1024 * 1024, contract.budget().maxArtifactBytes());
+        assertEquals(32, contract.budget().maxChildProcesses());
+        assertTrue(!contract.expiresAt().isAfter(java.time.Instant.now().plus(TaskService.DEFAULT_CONTRACT_LIFETIME)));
+    }
+
+    @Test
+    void contractBudgetIsAlsoNarrowedToAdvertisedAgentRuntime() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var runtime = new AgentRuntimeDescriptor(1, 0, 2, 1,
+                2L * 1024 * 1024, 4L * 1024 * 1024, 5, 60,
+                100L * 1024 * 1024, 120, false, false);
+        var registration = registry.register(new RegisterRequest("bounded-agent", "host-a", "host-a", "linux", "amd64", "dev",
+                "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"), runtime), "enroll-test");
+        var tasks = new TaskService(registry);
+        var supplied = new ExecutionContract(registration.machineId(), "host-a", ScopeMode.UNRESTRICTED,
+                null, null, null, "caller-session", "command",
+                new ExecutionContract.Budget(3600, 128L * 1024 * 1024, 16L * 1024 * 1024, 64,
+                        2L * 1024 * 1024 * 1024, 3600),
+                java.time.Instant.now().plus(java.time.Duration.ofDays(365)), "runtime-bound", "low", false, null);
+
+        var task = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "echo bounded", "/srv", Map.of(),
+                        30, null, null, supplied), "runtime-bound"));
+        var budget = tasks.find(task.id()).orElseThrow().command().contract().budget();
+
+        assertEquals(2L * 1024 * 1024, budget.maxOutputBytes());
+        assertEquals(5, budget.maxChildProcesses());
+        assertEquals(60, budget.maxDurationSeconds());
+        assertEquals(100L * 1024 * 1024, budget.maxRssBytes());
+        assertEquals(120, budget.maxCpuSeconds());
+    }
+
+    @Test
+    void stripsCredentialShapedEnvironmentBeforeDurableTaskStorage() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var task = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "echo safe", "/srv",
+                        Map.of("LANG", "C", "GITHUB_TOKEN", "must-not-persist", "API_KEY", "must-not-persist"),
+                        30, null, null), "environment-redaction"));
+
+        assertEquals(Map.of("LANG", "C"), tasks.find(task.id()).orElseThrow().command().env());
     }
 
     @Test
@@ -147,6 +241,25 @@ class TaskServiceTest {
         assertEquals(digest, artifact.sha256());
         assertArrayEquals(bytes, artifact.data());
         assertThrows(IllegalArgumentException.class, () -> tasks.appendArtifact(registration.machineId(), task.id(), "image/png", "bad", bytes));
+    }
+
+    @Test
+    void enforcesArtifactBudgetFromTheCenterContract() throws Exception {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "windows", "amd64", "dev", "C:\\", ScopeMode.UNRESTRICTED, null, List.of("desktop")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var contract = new ExecutionContract(registration.machineId(), "host-a", ScopeMode.UNRESTRICTED,
+                null, null, null, "session", "desktop",
+                new ExecutionContract.Budget(30, 1024L * 1024, 0, 32),
+                java.time.Instant.now().plusSeconds(300), "artifact-budget", "low", false, null);
+        var task = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.DESKTOP, "desktop", null, null, java.util.Map.of(), 30,
+                        new TaskCommand.DesktopAction("screens", null, List.of(), null), null, contract), "artifact-budget"));
+
+        var bytes = new byte[]{1};
+        var digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        assertThrows(IllegalArgumentException.class,
+                () -> tasks.appendArtifact(registration.machineId(), task.id(), "application/octet-stream", digest, bytes));
     }
 
     @Test

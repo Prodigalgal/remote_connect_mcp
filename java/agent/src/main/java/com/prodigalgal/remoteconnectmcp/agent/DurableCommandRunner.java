@@ -3,6 +3,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -48,21 +49,29 @@ final class DurableCommandRunner implements Runnable {
     private final AgentTransport transport;
     private final DurableTaskStore store;
     private final DurableTaskStore.Record recovered;
+    private final AgentResourceBudget resourceBudget;
     private volatile boolean cancelRequested;
 
     DurableCommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
                          AgentTransport transport, DurableTaskStore store) {
-        this(config, identity, task, transport, store, null);
+        this(config, identity, task, transport, store, null, null);
     }
 
     DurableCommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
                          AgentTransport transport, DurableTaskStore store, DurableTaskStore.Record recovered) {
+        this(config, identity, task, transport, store, recovered, null);
+    }
+
+    DurableCommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
+                         AgentTransport transport, DurableTaskStore store, DurableTaskStore.Record recovered,
+                         AgentResourceBudget resourceBudget) {
         this.config = config;
         this.identity = identity;
         this.task = task;
         this.transport = transport;
         this.store = store;
         this.recovered = recovered;
+        this.resourceBudget = resourceBudget;
     }
 
     void requestCancel() {
@@ -77,7 +86,7 @@ final class DurableCommandRunner implements Runnable {
         try {
             if (record == null) {
                 var cwd = AgentPaths.resolveCwd(config, identity.machineId(), task, task.cwd());
-                var started = store.start(task, cwd, TaskLimits.outputBytes(config, task));
+                var started = store.start(task, cwd, TaskLimits.outputBytes(config, task), resourceBudget);
                 process = started.process();
                 record = started.record();
             }
@@ -91,7 +100,7 @@ final class DurableCommandRunner implements Runnable {
             var handleForSupervisor = handle;
             resourceSupervisor = ProcessResourceSupervisor.start(handleForSupervisor, config, task,
                     () -> terminate(handleForSupervisor));
-            store.guard(record, TaskLimits.outputBytes(config, task));
+            store.guard(record, TaskLimits.outputBytes(config, task), resourceBudget);
 
             if (!record.completed()) {
                 sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
@@ -122,7 +131,9 @@ final class DurableCommandRunner implements Runnable {
                 error = resourceViolation;
                 if (exitCode == 0) exitCode = -1;
             }
-            var finalError = relay.error() == null || relay.error().isBlank() ? error : relay.error();
+            var guardError = store.guardError(record.taskId());
+            var finalError = relay.error() == null || relay.error().isBlank()
+                    ? (guardError == null || guardError.isBlank() ? error : guardError) : relay.error();
             var status = exitCode == 0 && (finalError == null || finalError.isBlank()) ? "completed" : "failed";
             sendState(new TaskUpdateRequest(status, exitCode, finalError, null, Instant.now(), relay.truncated()));
             store.remove(record);
@@ -396,7 +407,7 @@ final class DurableCommandRunner implements Runnable {
     }
 
     private static String compactError(String value) {
-        var error = value == null || value.isBlank() ? "durable command failed" : value.trim();
+        var error = value == null || value.isBlank() ? "durable command failed" : SensitiveValueRedactor.redact(value.trim());
         return error.length() <= 4096 ? error : error.substring(0, 4096);
     }
 }

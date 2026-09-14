@@ -1,0 +1,12 @@
+databaseChangeLog:
+  - changeSet:
+      id: 013-agent-runtime-descriptor
+      author: remote-connect-mcp
+      changes:
+        - sql:
+            splitStatements: false
+            sql: |
+              ALTER TABLE rcm_agent ADD COLUMN IF NOT EXISTS runtime_descriptor JSONB NOT NULL DEFAULT '{}'::jsonb;
+      rollback:
+        - sql:
+            sql: ALTER TABLE rcm_agent DROP COLUMN IF EXISTS runtime_descriptor;

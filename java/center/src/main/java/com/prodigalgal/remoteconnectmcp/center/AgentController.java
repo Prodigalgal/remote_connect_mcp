@@ -5,6 +5,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.ProtocolValidation;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputRequest;
@@ -282,8 +283,9 @@ public final class AgentController {
     }
 
     private static String message(Throwable exception) {
-        return exception == null || exception.getMessage() == null || exception.getMessage().isBlank()
+        var message = exception == null || exception.getMessage() == null || exception.getMessage().isBlank()
                 ? "request failed" : exception.getMessage();
+        return SensitiveValueRedactor.redact(message);
     }
 
     private static Throwable unwrap(Throwable failure) {

@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -247,11 +248,13 @@ final class CommandRunner implements Runnable {
 
     static boolean isSensitive(String key) {
         var upper = key.toUpperCase(java.util.Locale.ROOT);
-        return upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("SECRET");
+        return upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("PASSWD")
+                || upper.contains("SECRET") || upper.contains("COOKIE") || upper.contains("AUTHORIZATION")
+                || upper.contains("API_KEY") || upper.contains("PRIVATE_KEY") || upper.contains("CREDENTIAL");
     }
 
     private static String compactError(String value) {
-        var error = value == null || value.isBlank() ? "command execution failed" : value.trim();
+        var error = value == null || value.isBlank() ? "command execution failed" : SensitiveValueRedactor.redact(value.trim());
         return error.length() <= 4096 ? error : error.substring(0, 4096);
     }
 }

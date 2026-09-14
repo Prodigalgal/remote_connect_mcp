@@ -39,7 +39,7 @@ Center 是唯一的公网入口和控制面；迁移目标为 Java 25 + Spring B
 - `/api/v1` 和 `/console/`：管理员操作面；
 - `/agent/v1/*`：Agent 注册、心跳、任务和工件通道；
 - `/metrics`：仅输出计数类指标，不返回命令、路径、Token 或输出；
-- 升级编排：Center 保存 Release URL/SHA-256 和 canary/批次状态；Agent 通过 HTTPS 直取受校验资产，后续可把同一接口接到对象存储缓存，不改变 Agent 协议。
+- 升级编排：Center 保存 Release URL/SHA-256 和 canary/批次状态；Agent 通过 HTTPS 直取受校验资产，后续可把同一接口接到对象存储缓存，不改变 Agent 协议。升级活动读取有界的分段机器快照（最多 10000 台），Admin 机器列表仍按 200 台分页。
 
 Center 不扫描 Agent 文件系统，也不假设同一 `host_id` 的 Agent 权限相同。任务在排队时绑定目标 Agent，派发时再次检查能力和租约。
 
@@ -113,10 +113,13 @@ Desktop 能力默认由同一安装包的用户会话伴侣提供，而不是让
 
 - Center 仍只登记一个 Agent 身份；服务进程负责心跳、任务队列和权限校验，用户会话由独立的 `rcm-desktop-companion` 可执行文件启动；
 - 伴侣只绑定 `127.0.0.1`，通过 `STATE_DIR/desktop/desktop-companion.json` 的本机令牌和 ACL 保护的 IPC 接收任务，不向 Center 注册第二台机器；
+- command-agent 在启动/重注册时原子发布 `desktop-companion-policy.json`；伴侣在 IPC 执行前再次检查 scope、真实路径和合同过期时间。缺失策略只为旧手工启动兼容，损坏策略则退回到 state 目录的 fail-closed 本地范围；
 - 当前支持有界截图/屏幕枚举、应用启动、点击/拖拽、组合按键、文本输入、剪贴板和窗口聚焦；截图以 `image/png` 工件回传，不回显 Base64 文本；
 - 伴侣使用状态目录中的 `desktop-companion.lock` 保证单实例；默认最多 4 个并发 IPC 请求、16 个仍存活的启动进程，达到上限时返回可重试错误；进程退出通过 `ProcessHandle.onExit()` 释放槽位，不留下无限增长的注册表；
 - 未登录或伴侣不可达时，输入操作明确失败、截图/启动按兼容回退处理；回退启动受 Agent 侧上限约束，命令 Agent 继续保持无人值守可用；
 - command-agent 使用 `agent.lock` 防止服务重启重叠产生第二个任务执行器；停止时附着任务按既有取消语义回收，durable 任务保留其可恢复日志。
+
+任务的环境变量会在 Center 持久化前、Agent 启动子进程前各过滤一次；`TOKEN`、`PASSWORD`、`PASSWD`、`SECRET`、`COOKIE`、`AUTHORIZATION`、`API_KEY`、`PRIVATE_KEY` 和 `CREDENTIAL` 形态的键不会进入任务投影或子进程环境。MCP 只内联不超过 2 MiB 的图片，较大图片/下载只返回 SHA-256、大小和控制台下载提示，避免工具结果污染对话上下文。
 
 ## 6. Browser Agent
 
@@ -129,13 +132,13 @@ Browser Agent 与 Desktop Agent 分离，Java Agent 负责身份、生命周期�
 - Center 只路由带 `browser` capability 的任务，不代理任意第三方 MCP。Agent 为每次任务生成
   有界临时 JSON 请求文件，通过 `RCM_BROWSER_TASK_REQUEST_FILE` 传给适配器并在任务结束后删除；
  `RCM_BROWSER_TASK_COMMAND` 仅作为旧 Worker 的兼容字段保留。
-  仓库提供 `scripts/browser-worker.mjs` 作为最小参考适配器，通过 `RCM_BROWSER_ENGINE` 动态加载 Playwright、Patchright 或 Comoufox，并把 `navigate`、`snapshot`、`click`、`fill`、`press`、`wait`、`title`、`url`、`screenshot`、`download`、`evaluate` 映射为少量结构化操作。`snapshot` 同时返回最多 64 个有界 `rcm-ref-v1` 元素引用；引用只编码 role/name、test-id、placeholder 或 text 定位及序号，后续任务可以复用引用而不把整棵 DOM 带回 MCP。启用独立 profile 时，Agent 在状态目录保留最近页面的脱敏 origin/path，会话重新打开时先尝试恢复该页面；query、fragment、Cookie 和 CDP 凭据永不写入会话标记。
+  仓库提供 `scripts/browser-worker.mjs` 作为最小参考适配器，通过 `RCM_BROWSER_ENGINE` 动态加载 Playwright、Patchright 或 Comoufox，并把 `navigate`、`snapshot`、`click`、`fill`、`press`、`wait`、`title`、`url`、`screenshot`、`download` 映射为少量结构化操作。Worker 不提供任意 `evaluate` 脚本入口，避免页面脚本把 Cookie、Profile 或其他凭据带回 Center。`snapshot` 同时返回最多 64 个有界 `rcm-ref-v1` 元素引用；引用只编码 role/name、test-id、placeholder 或 text 定位及序号，后续任务可以复用引用而不把整棵 DOM 带回 MCP。启用独立 profile 时，Agent 在状态目录保留最近页面的脱敏 origin/path，会话重新打开时先尝试恢复该页面；query、fragment、Cookie 和 CDP 凭据永不写入会话标记。
   结果清单由 Agent 校验 MIME、路径、大小和 SHA-256 后才上传单个工件；适配器异常或越界均 fail-closed。Worker 已支持 CSS、`rcm-ref-v1`、role、label、placeholder、text 和 test-id 结构化定位，并返回有界脱敏网络/控制台/页面错误摘要；稳定引用依赖页面仍可访问，定位失败时应重新执行 `snapshot`。目标主机仍需安装浏览器运行时并完成持久会话、跨浏览器和真实站点回归。
 - Agent 默认只允许 1 个 Browser Worker（总并发为 1 时自然为 1），可通过 `REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` 提高到最多 8，且始终不超过总并发。每个 browser 任务由独立的 `rcm-browser-agent` Native 进程编排本机适配器；该进程无 Center Token、只存活一个任务，任务有默认 300 秒超时、最长 24 小时硬上限，超时/取消/Agent 关闭会终止整个子进程树并删除临时请求、结果和工件目录；达到 Browser cap 时 Agent 从下一次 poll 的 `available_capabilities` 中移除 `browser`，不会在本机堆积等待进程。
 
 ## 7. 连接与配置演进
 
-Java Agent 默认通过 25 秒 HTTPS 长轮询领取任务；请求在任务、取消、配置或升级事件到达时立即返回，空闲只由服务端 deadline 结束。旧 Go Center 或显式禁用长轮询时才退避重试；可选 WebSocket 仅传递唤醒提示，任务数据和认证仍由 HTTPS 负责。PostgreSQL 模式下 Center 还会用阻塞式 LISTEN/NOTIFY 在多副本之间转发 Agent 唤醒和按任务摘要路由的任务等待提示；高频输出 chunk 只在本副本唤醒任务等待者，避免广播风暴，终态/控制面事件仍跨副本广播。通知是 best-effort，丢失时由长轮询 deadline 和下一次显式读取修复，不把数据库通知当作任务状态来源。
+Java Agent 默认通过 25 秒 HTTPS 长轮询领取任务；请求在任务、取消、配置或升级事件到达时立即返回，空闲只由服务端 deadline 结束。旧 Go Center 或显式禁用长轮询时才退避重试；可选 WebSocket 仅传递带单调序列号的唤醒提示，客户端兼容无序列号旧提示并丢弃重复/乱序事件，任务数据和认证仍由 HTTPS 负责。PostgreSQL 模式下 Center 还会用阻塞式 LISTEN/NOTIFY 在多副本之间转发 Agent 唤醒和按任务摘要路由的任务等待提示；高频输出 chunk 只在本副本唤醒任务等待者，避免广播风暴，终态/控制面事件仍跨副本广播。通知是 best-effort，丢失时由长轮询 deadline 和下一次显式读取修复，不把数据库通知当作任务状态来源。
 
 1. WebSocket：已实现为可选 wake-only 通道，适合普通公网反向代理并降低事件延迟；消息丢失时由 HTTPS 长轮询补偿；
 2. PostgreSQL LISTEN/NOTIFY：已实现跨 Center 副本的 Agent 唤醒和 `task_wait` 事件桥接，驱动在数据库 socket 上阻塞等待，连接异常时才自动退避重连；

@@ -13,6 +13,13 @@ binary_source="${REMOTE_CONNECT_MCP_AGENT_BINARY:-./rcm-agent}"
 [[ -f "$binary_source" ]] || { echo "Java native Agent binary or flat ZIP is missing: $binary_source" >&2; exit 1; }
 desktop_source="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY:-}"
 browser_source="${REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY:-}"
+desktop_enabled="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED:-false}"
+desktop_enabled="${desktop_enabled,,}"
+desktop_user="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_USER:-${SUDO_USER:-}}"
+browser_profile_dir="${REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR:-}"
+browser_engine="${REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE:-playwright}"
+browser_name="${REMOTE_CONNECT_MCP_AGENT_BROWSER:-chromium}"
+browser_headless="${REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS:-1}"
 
 verify_archive_checksum() {
   local artifact="$1" sidecar="${1}.sha256" expected listed actual
@@ -89,6 +96,37 @@ max_child_processes="${REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES:-32}"
 max_rss_bytes="${REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES:-0}"
 max_cpu_seconds="${REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS:-0}"
 resource_sample_interval="${REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS:-1000}"
+cgroup_path="${REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH:-}"
+[[ "$browser_profile_dir" != *$'\r'* && "$browser_profile_dir" != *$'\n'* && ${#browser_profile_dir} -le 4096 ]] || {
+  echo "REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR must be a single path up to 4096 characters" >&2; exit 1;
+}
+[[ "$browser_engine" == playwright || "$browser_engine" == patchright || "$browser_engine" == comoufox ]] || {
+  echo "REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE must be playwright, patchright, or comoufox" >&2; exit 1;
+}
+[[ "$browser_name" == chromium || "$browser_name" == firefox || "$browser_name" == webkit ]] || {
+  echo "REMOTE_CONNECT_MCP_AGENT_BROWSER must be chromium, firefox, or webkit" >&2; exit 1;
+}
+[[ "$browser_headless" == 0 || "$browser_headless" == 1 ]] || {
+  echo "REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS must be 0 or 1" >&2; exit 1;
+}
+[[ "$desktop_enabled" == true || "$desktop_enabled" == false ]] || {
+  echo "REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED must be true or false" >&2; exit 1;
+}
+[[ "$state_dir" != *$'\r'* && "$state_dir" != *$'\n'* && "$state_dir" != *'"'* \
+  && "$install_root" != *$'\r'* && "$install_root" != *$'\n'* && "$install_root" != *'"'* ]] || {
+  echo "state/install paths must not contain quotes or newlines" >&2; exit 1;
+}
+if [[ -n "$desktop_user" ]]; then
+  [[ "$desktop_user" =~ ^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$ ]] || {
+    echo "REMOTE_CONNECT_MCP_AGENT_DESKTOP_USER is invalid" >&2; exit 1;
+  }
+  id "$desktop_user" >/dev/null 2>&1 || {
+    echo "desktop user does not exist: $desktop_user" >&2; exit 1;
+  }
+fi
+[[ "$cgroup_path" != *$'\r'* && "$cgroup_path" != *$'\n'* && ${#cgroup_path} -le 4096 ]] || {
+  echo "REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH must be a single path up to 4096 characters" >&2; exit 1;
+}
 [[ "$max_concurrency" =~ ^[0-9]+$ ]] && (( max_concurrency >= 1 && max_concurrency <= 32 )) || {
   echo "REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY must be between 1 and 32" >&2; exit 1;
 }
@@ -125,6 +163,92 @@ install -d -m 0755 "$install_root"
 install -d -m 0700 "$state_dir"
 install_companion_bundle "$desktop_source" rcm-desktop-companion "$install_root/desktop"
 install_companion_bundle "$browser_source" rcm-browser-agent "$install_root/browser"
+
+# On Linux the command Agent is a root system service, while AWT/Wayland/X11
+# must run in the logged-in user's session.  Install an optional systemd-user
+# unit for that same user.  It is deliberately not enabled when no user was
+# supplied: a headless host can still install the desktop binary without
+# creating a broken background process.  The companion only gets ACL access
+# to state_dir/desktop; identity.json and the Center token remain root-only.
+configure_linux_desktop_companion() {
+  [[ "$desktop_enabled" == true ]] || return 0
+  [[ "$(uname -s)" == Linux ]] || return 0
+  local desktop_binary="$install_root/desktop/rcm-desktop-companion"
+  if [[ -n "$desktop_source" ]]; then
+    # A supplied bundle has already been installed above.  Reusing the
+    # resolved destination keeps rerunning the installer idempotent.
+    [[ -x "$desktop_binary" ]] || { echo "Desktop companion binary was not installed: $desktop_binary" >&2; exit 1; }
+  elif [[ ! -x "$desktop_binary" ]]; then
+    echo "Desktop is enabled but no companion binary was supplied" >&2
+    exit 1
+  fi
+  if [[ -z "$desktop_user" ]]; then
+    echo "desktop companion installed; set REMOTE_CONNECT_MCP_AGENT_DESKTOP_USER to enable Linux session auto-start" >&2
+    return 0
+  fi
+  local uid home unit_dir unit_file escaped_binary escaped_state
+  uid="$(id -u "$desktop_user")"
+  home="$(getent passwd "$desktop_user" | cut -d: -f6)"
+  [[ -n "$home" && -d "$home" ]] || { echo "could not resolve home for desktop user: $desktop_user" >&2; exit 1; }
+  unit_dir="$home/.config/systemd/user"
+  unit_file="$unit_dir/remote-connect-mcp-desktop.service"
+  desktop_binary="$install_root/desktop/rcm-desktop-companion"
+  [[ -x "$desktop_binary" ]] || { echo "desktop companion binary was not installed: $desktop_binary" >&2; exit 1; }
+  install -d -m 0700 "$unit_dir" "$state_dir/desktop"
+  chown "$desktop_user:$desktop_user" "$unit_dir" "$state_dir/desktop" 2>/dev/null || chown "$desktop_user" "$unit_dir" "$state_dir/desktop"
+  # Do not relax the root-owned identity/configuration directory.  If ACLs are
+  # unavailable, leave the binary installed but skip auto-start rather than
+  # exposing the Agent token to the interactive user.
+  if ! command -v setfacl >/dev/null 2>&1; then
+    echo "setfacl is unavailable; desktop companion will not be auto-started (install acl and rerun)" >&2
+    return 0
+  fi
+  setfacl -m "u:$desktop_user:--x" "$state_dir"
+  setfacl -m "u:$desktop_user:rwx" "$state_dir/desktop"
+  setfacl -m "d:u:$desktop_user:rwx" "$state_dir/desktop"
+  escaped_binary="\"${desktop_binary//\\/\\\\}\""
+  escaped_state="\"${state_dir//\\/\\\\}\""
+  {
+    printf '[Unit]\n'
+    printf 'Description=Remote Connect MCP desktop companion\n'
+    printf 'After=graphical-session.target\n'
+    printf 'PartOf=graphical-session.target\n\n'
+    printf '[Service]\nType=simple\n'
+    printf 'ExecStart=%s --desktop-companion %s\n' "$escaped_binary" "$escaped_state"
+    printf 'Restart=on-failure\nRestartSec=3\n'
+    printf 'PassEnvironment=DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XAUTHORITY XDG_SESSION_TYPE\n'
+    printf 'Environment=REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_CONNECTIONS=4\n'
+    printf 'Environment=REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES=%s\n' "$desktop_max_launched"
+    printf 'NoNewPrivileges=true\nUMask=0077\n\n'
+    printf '[Install]\nWantedBy=graphical-session.target\n'
+  } > "$unit_file"
+  chown "$desktop_user:$desktop_user" "$unit_file" 2>/dev/null || chown "$desktop_user" "$unit_file"
+  chmod 0600 "$unit_file"
+  if [[ -d "/run/user/$uid" ]] && command -v systemctl >/dev/null 2>&1; then
+    if runuser -u "$desktop_user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user daemon-reload >/dev/null 2>&1 \
+      && runuser -u "$desktop_user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user enable --now remote-connect-mcp-desktop.service >/dev/null 2>&1; then
+      echo "Linux desktop companion enabled for user $desktop_user"
+    else
+      echo "desktop unit installed but current graphical session is not ready; it will start on the next login" >&2
+    fi
+  else
+    echo "desktop unit installed for user $desktop_user; it will start on the next graphical login" >&2
+  fi
+}
+
+disable_linux_desktop_companion() {
+  [[ "$(uname -s)" == Linux ]] || return 0
+  [[ -n "$desktop_user" ]] || return 0
+  local uid home unit_file
+  uid="$(id -u "$desktop_user" 2>/dev/null || true)"
+  home="$(getent passwd "$desktop_user" 2>/dev/null | cut -d: -f6 || true)"
+  unit_file="${home:-}/.config/systemd/user/remote-connect-mcp-desktop.service"
+  if [[ -n "$uid" && -d "/run/user/$uid" ]] && command -v runuser >/dev/null 2>&1; then
+    runuser -u "$desktop_user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user disable --now remote-connect-mcp-desktop.service >/dev/null 2>&1 || true
+    runuser -u "$desktop_user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user daemon-reload >/dev/null 2>&1 || true
+  fi
+  [[ -z "$home" ]] || rm -f -- "$unit_file"
+}
 
 # Native Image may emit shared libraries beside the ELF.  Accept the flat
 # Agent ZIP produced by GitHub Actions as well as an already extracted binary;
@@ -182,6 +306,10 @@ if [[ "$re_enroll" == true || ! -f "$identity" ]]; then
   REMOTE_CONNECT_MCP_AGENT_CAPABILITIES="${REMOTE_CONNECT_MCP_AGENT_CAPABILITIES:-command,durable_tasks}" \
   REMOTE_CONNECT_MCP_AGENT_VERSION="${REMOTE_CONNECT_MCP_AGENT_VERSION:-dev}" \
   REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER="${REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER:-}" \
+  REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR="$browser_profile_dir" \
+  REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE="$browser_engine" \
+  REMOTE_CONNECT_MCP_AGENT_BROWSER="$browser_name" \
+  REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS="$browser_headless" \
   REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED:-false}" \
   REMOTE_CONNECT_MCP_AGENT_STATE_DIR="$state_dir" \
   REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY="$max_concurrency" \
@@ -194,6 +322,7 @@ if [[ "$re_enroll" == true || ! -f "$identity" ]]; then
   REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES="$max_rss_bytes" \
   REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS="$max_cpu_seconds" \
   REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS="$resource_sample_interval" \
+  REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH="$cgroup_path" \
   "$install_root/rcm-agent" --register-once >"$tmp_log" 2>&1
   rc=$?
   set -e
@@ -218,6 +347,10 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   printf 'REMOTE_CONNECT_MCP_AGENT_CAPABILITIES=%s\n' "${REMOTE_CONNECT_MCP_AGENT_CAPABILITIES:-command,durable_tasks}"
   printf 'REMOTE_CONNECT_MCP_AGENT_VERSION=%s\n' "${REMOTE_CONNECT_MCP_AGENT_VERSION:-dev}"
   printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER=%s\n' "${REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER:-}"
+  printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR=%s\n' "$browser_profile_dir"
+  printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE=%s\n' "$browser_engine"
+  printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER=%s\n' "$browser_name"
+  printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS=%s\n' "$browser_headless"
   printf 'REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=%s\n' "${REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED:-false}"
   printf 'REMOTE_CONNECT_MCP_AGENT_STATE_DIR=%s\n' "$state_dir"
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY=%s\n' "$max_concurrency"
@@ -230,6 +363,7 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES=%s\n' "$max_rss_bytes"
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS=%s\n' "$max_cpu_seconds"
   printf 'REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS=%s\n' "$resource_sample_interval"
+  printf 'REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH=%s\n' "$cgroup_path"
   printf 'REMOTE_CONNECT_MCP_AGENT_BINARY_PATH=%s\n' "$install_root/rcm-agent"
   printf 'REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME=remote-connect-mcp-agent\n'
   if [[ -n "$desktop_source" ]]; then
@@ -241,6 +375,7 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
 } > /etc/remote-connect-mcp-agent/agent.env
 
 install -m 0644 "$service_file" /etc/systemd/system/remote-connect-mcp-agent.service
+configure_linux_desktop_companion
 systemctl daemon-reload
 systemctl enable --now remote-connect-mcp-agent.service
 systemctl is-active --quiet remote-connect-mcp-agent.service

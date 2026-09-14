@@ -10,9 +10,48 @@ export type Machine = {
   scopeMode?: string
   workspaceRoot?: string
   capabilities: string[]
+  runtime?: AgentRuntimeDescriptor
   createdAt?: string
   lastSeen?: string
   online: boolean
+}
+
+export type AgentRuntimeDescriptor = {
+  schemaVersion: number
+  configGeneration: number
+  maxConcurrency: number
+  maxBrowserWorkers: number
+  maxOutputBytes: number
+  maxAggregateOutputBytes: number
+  maxChildProcesses: number
+  maxTaskDurationSeconds: number
+  maxRssBytes: number
+  maxCpuSeconds: number
+  desktopEnabled: boolean
+  browserAdapterConfigured: boolean
+  resourceEnforcement: string
+  scopeMode: string
+  desktopSessionAvailable: boolean
+  browserSessionAvailable: boolean
+}
+
+export type AuditEvent = {
+  id: string
+  eventType: string
+  actor: string
+  agentId?: string
+  taskId?: string
+  scopeMode?: string
+  risk?: string
+  outcome?: string
+  detail?: string
+  createdAt?: string
+}
+
+export type AgentConfig = {
+  generation: number
+  pollIntervalMs: number
+  maxConcurrency: number
 }
 
 export type Task = {
@@ -97,6 +136,15 @@ export type ReleaseCatalog = {
   stale: boolean
   available: boolean
   warning?: string
+}
+
+/** Bounded list metadata returned by Center admin projections. */
+export type PageResult<T> = {
+  items: T[]
+  offset: number
+  limit: number
+  total: number
+  hasMore: boolean
 }
 
 export type Worktree = {
@@ -185,8 +233,14 @@ export async function waitForAdminChange(token: string, cursor = 0, waitMs = 25_
 }
 
 export async function listMachines(token: string): Promise<Machine[]> {
-  const response = await request<{ items: Array<Record<string, unknown>> }>('/api/v1/admin/machines?offset=0&limit=200', token)
-  return (response.items ?? []).map((item) => ({
+  return (await listMachinesPage(token, 0, 200)).items
+}
+
+export async function listMachinesPage(token: string, offset = 0, limit = 200): Promise<PageResult<Machine>> {
+  const boundedOffset = Math.max(0, Math.trunc(offset))
+  const boundedLimit = Math.min(200, Math.max(1, Math.trunc(limit)))
+  const response = await request<{ items: Array<Record<string, unknown>>; offset?: number; limit?: number; total?: number; has_more?: boolean }>(`/api/v1/admin/machines?offset=${boundedOffset}&limit=${boundedLimit}`, token)
+  const items = (response.items ?? []).map((item) => ({
     id: String(item.id ?? ''),
     name: String(item.name ?? ''),
     hostId: String(item.host_id ?? ''),
@@ -198,15 +252,122 @@ export async function listMachines(token: string): Promise<Machine[]> {
     scopeMode: item.scope_mode as string | undefined,
     workspaceRoot: item.workspace_root as string | undefined,
     capabilities: Array.isArray(item.capabilities) ? item.capabilities.map(String) : [],
+    runtime: mapRuntime(item.runtime),
     createdAt: item.created_at as string | undefined,
     lastSeen: item.last_seen as string | undefined,
     online: Boolean(item.online),
   }))
+  return pageResult(items, response, boundedOffset, boundedLimit)
+}
+
+function pageResult<T>(items: T[], response: { offset?: number; limit?: number; total?: number; has_more?: boolean }, offset: number, limit: number): PageResult<T> {
+  const actualOffset = Number.isFinite(Number(response.offset)) ? Math.max(0, Number(response.offset)) : offset
+  const actualLimit = Number.isFinite(Number(response.limit)) ? Math.max(1, Number(response.limit)) : limit
+  const total = Number.isFinite(Number(response.total)) ? Math.max(0, Number(response.total)) : actualOffset + items.length
+  return {
+    items,
+    offset: actualOffset,
+    limit: actualLimit,
+    total,
+    hasMore: response.has_more === undefined ? actualOffset + items.length < total : Boolean(response.has_more),
+  }
+}
+
+function mapRuntime(value: unknown): AgentRuntimeDescriptor | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const item = value as Record<string, unknown>
+  return {
+    schemaVersion: Number(item.schema_version ?? 1),
+    configGeneration: Number(item.config_generation ?? 0),
+    maxConcurrency: Number(item.max_concurrency ?? 1),
+    maxBrowserWorkers: Number(item.max_browser_workers ?? 1),
+    maxOutputBytes: Number(item.max_output_bytes ?? 0),
+    maxAggregateOutputBytes: Number(item.max_aggregate_output_bytes ?? 0),
+    maxChildProcesses: Number(item.max_child_processes ?? 0),
+    maxTaskDurationSeconds: Number(item.max_task_duration_seconds ?? 0),
+    maxRssBytes: Number(item.max_rss_bytes ?? 0),
+    maxCpuSeconds: Number(item.max_cpu_seconds ?? 0),
+    desktopEnabled: Boolean(item.desktop_enabled),
+    browserAdapterConfigured: Boolean(item.browser_adapter_configured),
+    resourceEnforcement: String(item.resource_enforcement ?? 'process-tree'),
+    scopeMode: String(item.scope_mode ?? 'workspace'),
+    desktopSessionAvailable: Boolean(item.desktop_session_available),
+    browserSessionAvailable: Boolean(item.browser_session_available),
+  }
+}
+
+export async function listAudit(token: string): Promise<AuditEvent[]> {
+  return (await listAuditPage(token, 0, 200)).items
+}
+
+export async function listAuditPage(token: string, offset = 0, limit = 200): Promise<PageResult<AuditEvent>> {
+  const boundedOffset = Math.max(0, Math.trunc(offset))
+  const boundedLimit = Math.min(200, Math.max(1, Math.trunc(limit)))
+  const response = await request<{ items: Array<Record<string, unknown>>; offset?: number; limit?: number; total?: number; has_more?: boolean }>(`/api/v1/admin/audit?offset=${boundedOffset}&limit=${boundedLimit}`, token)
+  const items = (response.items ?? []).map((item) => ({
+    id: String(item.id ?? ''),
+    eventType: String(item.event_type ?? ''),
+    actor: String(item.actor ?? ''),
+    agentId: item.agent_id as string | undefined,
+    taskId: item.task_id as string | undefined,
+    scopeMode: item.scope_mode as string | undefined,
+    risk: item.risk as string | undefined,
+    outcome: item.outcome as string | undefined,
+    detail: item.detail as string | undefined,
+    createdAt: item.created_at as string | undefined,
+  }))
+  return pageResult(items, response, boundedOffset, boundedLimit)
+}
+
+export async function purgeAudit(token: string, retentionDays = 365, limit = 500): Promise<{ deleted: number }> {
+  const body = await request<Record<string, unknown>>(
+    `/api/v1/admin/audit/gc?retentionDays=${Math.max(1, Math.trunc(retentionDays))}&limit=${Math.min(5000, Math.max(1, Math.trunc(limit)))}`,
+    token,
+    { method: 'POST' },
+  )
+  return { deleted: Number(body.deleted ?? 0) }
+}
+
+function mapAgentConfig(body: Record<string, unknown>): AgentConfig {
+  const generation = Number(body.generation ?? 0)
+  const configuredPoll = Number(body.poll_interval_ms ?? 5000)
+  const configuredConcurrency = Number(body.max_concurrency ?? 1)
+  return {
+    generation,
+    pollIntervalMs: configuredPoll >= 250 ? configuredPoll : 5000,
+    maxConcurrency: configuredConcurrency >= 1 ? configuredConcurrency : 1,
+  }
+}
+
+export async function getMachineConfig(token: string, machineId: string): Promise<AgentConfig> {
+  const body = await request<Record<string, unknown>>(`/api/v1/admin/machines/${encodeURIComponent(machineId)}/config`, token)
+  return mapAgentConfig(body)
+}
+
+export async function updateMachineConfig(token: string, machineId: string, payload: { poll_interval_ms?: number; max_concurrency?: number; expected_generation?: number }): Promise<AgentConfig> {
+  const body = await request<Record<string, unknown>>(`/api/v1/admin/machines/${encodeURIComponent(machineId)}/config`, token, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return mapAgentConfig(body)
+}
+
+export async function rollbackMachineConfig(token: string, machineId: string): Promise<AgentConfig> {
+  const body = await request<Record<string, unknown>>(`/api/v1/admin/machines/${encodeURIComponent(machineId)}/config/rollback`, token, { method: 'POST' })
+  return mapAgentConfig(body)
 }
 
 export async function listTasks(token: string): Promise<Task[]> {
-  const response = await request<{ items: Array<Record<string, unknown>> }>('/api/v1/admin/tasks?offset=0&limit=200', token)
-  return (response.items ?? []).map(mapTask)
+  return (await listTasksPage(token, 0, 200)).items
+}
+
+export async function listTasksPage(token: string, offset = 0, limit = 200): Promise<PageResult<Task>> {
+  const boundedOffset = Math.max(0, Math.trunc(offset))
+  const boundedLimit = Math.min(200, Math.max(1, Math.trunc(limit)))
+  const response = await request<{ items: Array<Record<string, unknown>>; offset?: number; limit?: number; total?: number; has_more?: boolean }>(`/api/v1/admin/tasks?offset=${boundedOffset}&limit=${boundedLimit}`, token)
+  const items = (response.items ?? []).map(mapTask)
+  return pageResult(items, response, boundedOffset, boundedLimit)
 }
 
 function mapTask(item: Record<string, unknown>): Task {
@@ -323,8 +484,15 @@ function mapUpgrade(item: Record<string, unknown>): UpgradeCampaign {
 }
 
 export async function listUpgrades(token: string): Promise<UpgradeCampaign[]> {
-  const response = await request<{ items: Array<Record<string, unknown>> }>('/api/v1/admin/upgrades?offset=0&limit=100', token)
-  return (response.items ?? []).map(mapUpgrade)
+  return (await listUpgradesPage(token, 0, 100)).items
+}
+
+export async function listUpgradesPage(token: string, offset = 0, limit = 100): Promise<PageResult<UpgradeCampaign>> {
+  const boundedOffset = Math.max(0, Math.trunc(offset))
+  const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)))
+  const response = await request<{ items: Array<Record<string, unknown>>; offset?: number; limit?: number; total?: number; has_more?: boolean }>(`/api/v1/admin/upgrades?offset=${boundedOffset}&limit=${boundedLimit}`, token)
+  const items = (response.items ?? []).map(mapUpgrade)
+  return pageResult(items, response, boundedOffset, boundedLimit)
 }
 
 function mapReleaseAsset(item: Record<string, unknown>): ReleaseAsset {
@@ -391,9 +559,16 @@ function mapProject(item: Record<string, unknown>): Project {
 }
 
 export async function listProjects(token: string, machineId = ''): Promise<Project[]> {
+  return (await listProjectsPage(token, machineId, 0, 200)).items
+}
+
+export async function listProjectsPage(token: string, machineId = '', offset = 0, limit = 200): Promise<PageResult<Project>> {
   const suffix = machineId.trim() ? `&machine_id=${encodeURIComponent(machineId.trim())}` : ''
-  const response = await request<{ items: Array<Record<string, unknown>> }>(`/api/v1/admin/projects?offset=0&limit=200${suffix}`, token)
-  return (response.items ?? []).map(mapProject)
+  const boundedOffset = Math.max(0, Math.trunc(offset))
+  const boundedLimit = Math.min(200, Math.max(1, Math.trunc(limit)))
+  const response = await request<{ items: Array<Record<string, unknown>>; offset?: number; limit?: number; total?: number; has_more?: boolean }>(`/api/v1/admin/projects?offset=${boundedOffset}&limit=${boundedLimit}${suffix}`, token)
+  const items = (response.items ?? []).map(mapProject)
+  return pageResult(items, response, boundedOffset, boundedLimit)
 }
 
 export async function registerProject(token: string, payload: unknown): Promise<Project> {
@@ -402,6 +577,11 @@ export async function registerProject(token: string, payload: unknown): Promise<
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+  return mapProject(body)
+}
+
+export async function removeProject(token: string, projectId: string): Promise<Project> {
+  const body = await request<Record<string, unknown>>(`/api/v1/admin/projects/${encodeURIComponent(projectId)}`, token, { method: 'DELETE' })
   return mapProject(body)
 }
 
@@ -420,6 +600,15 @@ export async function removeProjectWorktree(token: string, projectId: string, wo
   return mapWorktree(body)
 }
 
+export async function runProjectGit(token: string, projectId: string, operation: string, payload: unknown = {}): Promise<Task> {
+  const body = await request<Record<string, unknown>>(`/api/v1/admin/projects/${encodeURIComponent(projectId)}/git/${encodeURIComponent(operation)}`, token, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return mapTask(body)
+}
+
 export async function createUpgrade(token: string, payload: unknown): Promise<UpgradeCampaign> {
   const body = await request<Record<string, unknown>>('/api/v1/admin/upgrades', token, {
     method: 'POST',
@@ -431,6 +620,11 @@ export async function createUpgrade(token: string, payload: unknown): Promise<Up
 
 export async function controlUpgrade(token: string, campaignId: string, action: 'resume' | 'cancel'): Promise<UpgradeCampaign> {
   const body = await request<Record<string, unknown>>(`/api/v1/admin/upgrades/${encodeURIComponent(campaignId)}/${action}`, token, { method: 'POST' })
+  return mapUpgrade(body)
+}
+
+export async function retryUpgradeTarget(token: string, campaignId: string, machineId: string): Promise<UpgradeCampaign> {
+  const body = await request<Record<string, unknown>>(`/api/v1/admin/upgrades/${encodeURIComponent(campaignId)}/targets/${encodeURIComponent(machineId)}/retry`, token, { method: 'POST' })
   return mapUpgrade(body)
 }
 

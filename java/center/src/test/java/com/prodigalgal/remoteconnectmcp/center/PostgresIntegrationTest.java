@@ -6,9 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
+import com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
@@ -107,6 +108,18 @@ class PostgresIntegrationTest {
         var restartedRegistry = AgentRegistry.forTest("integration-enrollment", jdbc);
         assertTrue(restartedRegistry.findMachine(agentId, Instant.now()).isPresent());
         assertTrue(restartedRegistry.acceptsAgent(agentId, registration.token()));
+
+        var runtime = new AgentRuntimeDescriptor(1, 7, 2, 1,
+                32L * 1024 * 1024, 96L * 1024 * 1024, 12, 900, 0, 0, false, true);
+        var heartbeat = new AgentMetadata("postgres-it-agent-" + agentId, "postgres-it-host",
+                "postgres-it-host", "linux", "amd64", "integration-2", "/tmp",
+                ScopeMode.UNRESTRICTED, null, List.of("command", "browser"), runtime);
+        registry.poll(agentId, registration.token(), new PollRequest(List.of(), 1,
+                List.of("command", "browser"), heartbeat));
+        var persistedRuntime = restartedRegistry.findMachine(agentId, Instant.now()).orElseThrow().runtime();
+        assertEquals(7, persistedRuntime.configGeneration());
+        assertEquals(2, persistedRuntime.maxConcurrency());
+        assertTrue(persistedRuntime.browserAdapterConfigured());
 
         // Project/worktree rows use the same Agent-local task contract.  The
         // Center never opens the repository; completion of the generated Git

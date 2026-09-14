@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
@@ -40,6 +41,7 @@ public final class AdminController {
     private final ProjectService projects;
     private final TaskChangeRegistry changes;
     private final ReleaseCatalogService releases;
+    private final AuditService audit;
 
     @org.springframework.beans.factory.annotation.Autowired
     public AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
@@ -48,7 +50,8 @@ public final class AdminController {
                            ObjectProvider<AgentWakeRegistry> wakeProvider,
                            ProjectService projects,
                            ObjectProvider<TaskChangeRegistry> changeProvider,
-                           ObjectProvider<ReleaseCatalogService> releaseProvider) {
+                           ObjectProvider<ReleaseCatalogService> releaseProvider,
+                           ObjectProvider<AuditService> auditProvider) {
         this.tokens = tokens;
         this.agents = agents;
         this.tasks = tasks;
@@ -60,13 +63,14 @@ public final class AdminController {
         this.projects = projects;
         this.changes = changeProvider == null ? null : changeProvider.getIfAvailable();
         this.releases = releaseProvider == null ? null : releaseProvider.getIfAvailable();
+        this.audit = auditProvider == null ? null : auditProvider.getIfAvailable();
     }
 
     /** Compatibility constructor for direct protocol/controller tests. */
     AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                     EnrollmentTokenService enrollments, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
-        this(tokens, agents, tasks, enrollments, upgrades, configurations, async, null, null, null, null);
+        this(tokens, agents, tasks, enrollments, upgrades, configurations, async, null, null, null, null, null);
     }
 
     /**
@@ -106,7 +110,46 @@ public final class AdminController {
                                                          @RequestParam(defaultValue = "50") int limit) {
         return execute(() -> {
             authenticate(authorization);
-            return ResponseEntity.ok(Map.of("items", agents.listMachines(offset, limit, java.time.Instant.now()), "offset", offset, "limit", limit));
+            var items = agents.listMachines(offset, limit, java.time.Instant.now());
+            var total = agents.totalCount();
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
+        });
+    }
+
+    /** Bounded, redacted audit projection for the console; MCP never exposes this feed. */
+    @GetMapping("/audit")
+    public CompletableFuture<ResponseEntity<?>> audit(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(value = "event_type", required = false) String eventType,
+            @RequestParam(value = "agent_id", required = false) String agentId,
+            @RequestParam(value = "task_id", required = false) String taskId,
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestParam(defaultValue = "50") int limit) {
+        return execute(() -> {
+            authenticate(authorization);
+            var items = audit == null ? java.util.List.<AuditEventView>of()
+                    : audit.list(eventType, agentId, taskId, offset, limit);
+            var total = audit == null ? 0 : audit.count(eventType, agentId, taskId);
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
+        });
+    }
+
+    /** Explicit, bounded audit retention; never runs from a timer. */
+    @PostMapping("/audit/gc")
+    public CompletableFuture<ResponseEntity<?>> garbageCollectAudit(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "365") int retentionDays,
+            @RequestParam(defaultValue = "500") int limit) {
+        return execute(() -> {
+            authenticate(authorization);
+            var deleted = audit == null ? 0 : audit.purge(retentionDays, limit);
+            if (audit != null) {
+                audit.record("audit.gc", "admin", null, null, null, "medium", "accepted",
+                        "deleted=" + deleted + ",retention_days=" + retentionDays);
+            }
+            return ResponseEntity.ok(Map.of("deleted", deleted, "retention_days", retentionDays, "limit", limit));
         });
     }
 
@@ -116,7 +159,10 @@ public final class AdminController {
                                                          @RequestParam(defaultValue = "50") int limit) {
         return execute(() -> {
             authenticate(authorization);
-            return ResponseEntity.ok(Map.of("items", tasks.list(offset, limit), "offset", offset, "limit", limit));
+            var items = tasks.list(offset, limit);
+            var total = tasks.totalCount();
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
         });
     }
 
@@ -153,7 +199,25 @@ public final class AdminController {
             // the new generation over the authoritative HTTPS poll path.
             if (wakes != null) wakes.signal(machineId);
             signalChange();
+            if (audit != null) audit.record("agent.config.update", "admin", machineId, null, null, "medium", "accepted",
+                    "generation=" + updated.generation());
             return ResponseEntity.ok(updated);
+        });
+    }
+
+    @PostMapping("/machines/{machineId}/config/rollback")
+    public CompletableFuture<ResponseEntity<?>> rollbackMachineConfig(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String machineId) {
+        return execute(() -> {
+            authenticate(authorization);
+            agents.findMachine(machineId, java.time.Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
+            var rolledBack = configurations.rollback(machineId);
+            if (wakes != null) wakes.signal(machineId);
+            signalChange();
+            if (audit != null) audit.record("agent.config.rollback", "admin", machineId, null, null, "medium", "accepted",
+                    "generation=" + rolledBack.generation());
+            return ResponseEntity.ok(rolledBack);
         });
     }
 
@@ -331,7 +395,10 @@ public final class AdminController {
                                                           @RequestParam(defaultValue = "20") int limit) {
         return execute(() -> {
             authenticate(authorization);
-            return ResponseEntity.ok(Map.of("items", upgrades.list(offset, limit), "offset", offset, "limit", limit));
+            var items = upgrades.list(offset, limit);
+            var total = upgrades.count();
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
         });
     }
 
@@ -372,6 +439,19 @@ public final class AdminController {
         });
     }
 
+    @PostMapping("/upgrades/{campaignId}/targets/{machineId}/retry")
+    public CompletableFuture<ResponseEntity<?>> retryUpgradeTarget(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String campaignId,
+            @PathVariable String machineId) {
+        return execute(() -> {
+            authenticate(authorization);
+            var result = upgrades.retryTarget(campaignId, machineId);
+            signalChange();
+            return ResponseEntity.ok(result);
+        });
+    }
+
     @PostMapping("/enrollment-tokens")
     public CompletableFuture<ResponseEntity<?>> issueEnrollment(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                                 @RequestBody(required = false) IssueEnrollmentRequest request) {
@@ -381,6 +461,14 @@ public final class AdminController {
             var seconds = body.expiresInSeconds() == null ? 24 * 60 * 60L : body.expiresInSeconds();
             var issued = enrollments.issue(body.requestedName(), Duration.ofSeconds(seconds));
             signalChange();
+            if (audit != null) {
+                // Never put the plaintext enrollment credential (or the
+                // requested machine name) into audit storage.  The token is
+                // returned once in the response and only its lifecycle event
+                // is retained here.
+                audit.record("enrollment.issue", "admin", null, null, null, "medium", "accepted",
+                        "token_issued=true,expires_at=" + issued.expiresAt());
+            }
             // The plaintext token is returned exactly once by this response;
             // database rows only contain the SHA-256 digest.
             return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
@@ -396,6 +484,10 @@ public final class AdminController {
             authenticate(authorization);
             var revoked = enrollments.revoke(tokenId) > 0;
             if (revoked) signalChange();
+            if (audit != null) {
+                audit.record("enrollment.revoke", "admin", null, null, null, "medium",
+                        revoked ? "accepted" : "not_found", "token_id_present=" + !tokenId.isBlank());
+            }
             return ResponseEntity.ok(Map.of("token_id", tokenId, "revoked", revoked));
         });
     }
@@ -431,8 +523,13 @@ public final class AdminController {
     }
 
     private static String message(Throwable exception) {
-        return exception == null || exception.getMessage() == null || exception.getMessage().isBlank()
+        var message = exception == null || exception.getMessage() == null || exception.getMessage().isBlank()
                 ? "request failed" : exception.getMessage();
+        return SensitiveValueRedactor.redact(message);
+    }
+
+    private static boolean hasMore(int offset, int size, int total) {
+        return offset >= 0 && size > 0 && offset < total - size;
     }
 
     private static Throwable unwrap(Throwable failure) {

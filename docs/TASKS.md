@@ -21,10 +21,10 @@
 | [x] | P0-01 | 固定 MCP 地址和多机器路由 | `/mcp`、Bearer 和按 machine ID 路由已可用；后续不因 Center/Agent/Console 升级改变连接器地址 | v0.1.21 MCP/health/ready 验收 |
 | [x] | P0-02 | 机器注册与凭据分层 | 一次性 Enrollment Token、独立 Agent Token、稳定 MCP Token、独立 Admin Token 已实现；Enrollment 不写入长期配置 | 注册与身份测试、生产 Secret |
 | [ ] | P0-03 | 异步任务全链路恢复 | 已有幂等、租约、Attempt、旧 attempt 回传栅栏、取消、输出游标和 LISTEN/NOTIFY；仍需完成 Center 重启、Agent 断线、重复重试、长任务和高并发正式演练 | 需补充故障演练报告和重启后任务状态证据 |
-| [x] | P0-04 | PostgreSQL + Liquibase 唯一事实来源 | 生产数据库、Liquibase `001`–`011`、旧 Go 状态导入和迁移 Job 已验证；内存仅用于测试/短期唤醒 | PostgreSQL/Liquibase CI 与生产迁移记录 |
-| [ ] | P0-05 | 任务与工件的持久化边界 | 已完成 `ArtifactStore` 抽象、独立持久卷文件对象、原子写入/读取校验、旧 `artifact_data` 懒迁移和显式 GC API；仍需完成生产卷备份/恢复、孤儿对象扫描、保留策略演练和 CI/目标环境验收 | 对象存储适配、迁移/恢复、生命周期测试 |
-| [ ] | P0-06 | 执行范围与权限合同 | 已增加 project/worktree/path/workspace/unrestricted 会话模型；unrestricted 必须显式授权；任务持久化 machine、host、scope、capability、预算、过期和 lease；Center 与 Agent 双重校验；合同预算可进一步收紧 Agent 的输出/工件/时长上限 | 仍需 GitHub Actions 编译、数据库迁移、绕过测试和目标机回归 |
-| [ ] | P0-07 | Agent 资源硬限制 | 已加入任务级进程树/墙钟监督、CPU 时间与 Linux RSS 可选硬边界，并保留输出/磁盘/并发上限；仍需补 Windows Job Object/cgroup 部署策略、总预算与目标机压测 | Linux cgroup/Windows Job Object 或等效实现、目标机压测 |
+| [ ] | P0-04 | PostgreSQL + Liquibase 唯一事实来源 | 生产数据库、Liquibase `001`–`011`、旧 Go 状态导入和迁移 Job 已验证；新增 `012` 审计表、`013` Agent 运行时描述与 `014` 配置历史已加入源码，待随本轮发布迁移 | PostgreSQL/Liquibase CI 与生产迁移记录 |
+| [ ] | P0-05 | 任务与工件的持久化边界 | 已完成 `ArtifactStore` 抽象、独立持久卷文件对象、原子写入/读取校验、旧 `artifact_data` 懒迁移和显式 GC API；GC 现在会在一小时并发写入宽限期后扫描未被 PostgreSQL 元数据引用的文件；仍需完成生产卷备份/恢复、保留策略演练和 CI/目标环境验收 | 对象存储适配、迁移/恢复、生命周期测试 |
+| [ ] | P0-06 | 执行范围与权限合同 | 已增加 project/worktree/path/workspace/unrestricted 会话模型；unrestricted 必须显式授权；任务持久化 machine、host、scope、capability、预算、过期和 lease；Center 与 Agent 双重校验，桌面 companion IPC 也复用同一 cwd/真实路径校验；合同预算现在还会按 Agent runtime descriptor 的输出、子进程、CPU/RSS/时长上限继续收窄，凭据形态环境变量在持久化和启动两侧均过滤 | 仍需 GitHub Actions 编译、数据库迁移、绕过测试和目标机回归 |
+| [ ] | P0-07 | Agent 资源硬限制 | 已加入任务级进程树/墙钟监督、CPU 时间与 Linux RSS 可选硬边界，并保留输出/磁盘/并发上限；Linux 可选绑定预创建 cgroup v2，Windows 采用有界进程树/SCM 配置路径，仍需补总预算与目标机压测 | Linux cgroup/Windows 等效策略、目标机压测 |
 | [x] | P0-08 | 隐私、密钥和仓库卫生 | 公开仓库使用模板值；真实域名、Token、Secret 和私有 GitOps 留在受保护环境；日志/指标有脱敏约定 | 仓库扫描、CI hygiene、私有部署检查 |
 | [x] | P0-09 | GitHub Actions 构建和可安装包 | Java/Native/React/安装包、SBOM、签名和烟测由 GitHub Actions 完成；开发机不编译 | Java Release workflow、Native smoke、RSS gate |
 | [ ] | P0-10 | 全部已登记 Agent 的恢复 | 升级活动默认把未显式指定的全部登记 Agent（含离线）写入持久目标集；离线 Agent 下次心跳自动领取同一 offer，仍需完成真实在线清单、升级活动和任务闭环 | Agent 在线清单、升级活动和任务闭环记录 |
@@ -40,15 +40,15 @@
 
 | 状态 | 编号 | 任务 | 当前情况与完成条件 | 验收证据 |
 | --- | --- | --- | --- | --- |
-| [ ] | P1-01 | Project Registry 与 Git worktree 闭环 | 注册、创建/删除和 cwd 解析已有；已增加受项目/工作树合同约束的 status、diff、log、幂等 commit 和显式 merge 排队 API；冲突输出、提交差异审阅和目标机权限回归仍待补齐 | 项目/Agent 目标机 Git 测试 |
-| [ ] | P1-02 | Windows/Linux Desktop Companion 真实能力 | 基础截图、屏幕枚举、启动、输入和剪贴板已有；补齐 Windows 多会话/UAC/RDP、Linux X11/Wayland、多显示器和会话失效恢复 | 真实目标机矩阵、截图/输入工件 |
+| [ ] | P1-01 | Project Registry 与 Git worktree 闭环 | 注册、受保护删除、创建/删除 worktree 和 cwd 解析已有；已增加受项目/工作树合同约束的 status、diff、log、幂等 commit、显式 merge 和 `merge_abort` 冲突恢复排队 API，并接入精简 MCP `project` 操作；冲突输出、提交差异审阅和目标机权限回归仍待补齐 | 项目/Agent 目标机 Git 测试 |
+| [ ] | P1-02 | Windows/Linux Desktop Companion 真实能力 | 基础截图、屏幕枚举、启动、输入和剪贴板已有；IPC 已复用 Center 合同的 scope/真实路径/过期检查，并限制连接、启动进程和工件大小；补齐 Windows 多会话/UAC/RDP、Linux X11/Wayland、多显示器和会话失效恢复 | 真实目标机矩阵、截图/输入工件 |
 | [ ] | P1-03 | Browser Agent 生产运行时 | Worker 监管、结构化引用、有界快照、下载工件和清理已有；补齐目标浏览器安装、持久 profile、登录态、stale ref 恢复和 Playwright/Patchright/Comoufox 回归 | 目标机浏览器矩阵、长任务和清理报告 |
-| [ ] | P1-04 | React 控制台完整工作流 | 基础机器、项目、任务、令牌、升级页面已有；补齐范围/会话/桌面/浏览器任务编排、审计详情、分页/虚拟化、实时状态、无障碍和视觉回归 | Console E2E、a11y、视觉 CI |
-| [ ] | P1-05 | 升级 offer/attempt 与兼容回滚 | canary、批次、SHA-256、原子替换和回滚已有；补齐迟到报告/CAS、版本兼容矩阵、离线补升级和失败暂停/重排队 | 多 Agent 并发升级、回滚和兼容测试 |
+| [ ] | P1-04 | React 控制台完整工作流 | 基础机器、项目、任务、令牌、升级和审计页面已有；机器页可展示 Agent runtime 自描述；范围/会话/桌面/浏览器任务编排已接入，MCP/Console 对图片结果使用有界内联策略；Admin 列表统一返回 `total/has_more`，MCP 项目列表支持有界 offset/limit；机器、项目、任务、升级和审计页已按页增量加载，实时刷新与下一页请求使用代次栅栏避免旧响应污染；仍需补实时状态、无障碍和视觉回归 | Console E2E、a11y、视觉 CI |
+| [ ] | P1-05 | 升级 offer/attempt 与兼容回滚 | canary、批次、SHA-256、原子替换和回滚已有；offer/status 已携带可选 attempt 并拒绝迟到状态覆盖；PostgreSQL campaign/target 行锁已串行化 offer、控制和状态更新；管理员可只重排队单个失败目标，不重复成功目标；仍需补齐数据库并发验证、版本兼容矩阵、离线补升级和失败暂停/重排队现场演练 | 多 Agent 并发升级、回滚和兼容测试 |
 | [ ] | P1-06 | WebSocket/事件唤醒生产验收 | wake-only WebSocket、指数重连、HTTPS 回退和 PG 通知桥接已有；补齐真实反向代理、多副本、序列号、断线和 Center 重启演练 | 代理/多副本故障演练 |
-| [ ] | P1-07 | 配置与心跳自描述 | generation、并发和退避热更新已有；补齐能力、范围、资源、浏览器/桌面状态的版本化自描述和热更新回滚 | Agent 心跳 schema、配置回滚测试 |
+| [ ] | P1-07 | 配置与心跳自描述 | 已加入版本化 runtime descriptor：generation、并发、输出/资源预算、scope_mode、桌面/浏览器配置与会话状态随心跳发送并持久化到 Center；配置更新支持可选 `expected_generation` CAS、有界历史和单调 generation 回滚；当前明确支持 schema 1，旧 Agent 使用有界默认值，未知未来 schema 在协议边界拒绝而不猜测新语义；仍需目标机回滚演练 | Agent 心跳 schema、配置回滚测试 |
 | [ ] | P1-08 | 终端与子 Agent 生命周期 | 默认一个 command-agent 身份，桌面/浏览器作为子组件；补齐多物理 Agent 的显式隔离、互斥、回收、崩溃拉起和 Center 视图 | 主机多 Agent、进程树和 Token 隔离测试 |
-| [ ] | P1-09 | 审计与错误可解释性 | 记录请求来源、范围、风险、审批、重试、升级和失败原因；敏感字段脱敏且可按 task ID 追踪 | 审计查询、脱敏抽样和故障报告 |
+| [ ] | P1-09 | 审计与错误可解释性 | 已增加有界异步审计队列、PostgreSQL `rcm_audit_event`、Admin 分页查询和 Console 审计页，记录任务状态/尝试、工件、Git、配置与升级事件且不写入命令/凭据；任务/升级/控制器错误在落库和返回前统一脱敏，已加入管理员确认后的有界保留清理入口；仍需接入审批来源、脱敏抽样和真实故障报告 | 审计查询、保留清理、脱敏抽样和故障报告 |
 
 ### P1 完成门禁
 
