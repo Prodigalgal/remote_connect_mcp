@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -98,6 +99,10 @@ final class ProcessResourceSupervisor implements AutoCloseable {
                 } catch (TimeoutException ignored) {
                     // A resource check is due; this is task-local and only
                     // exists while a process with a policy is running.
+                } catch (ExecutionException ignored) {
+                    // The task runner owns the process exit code/error path;
+                    // a failed process is already terminal for supervision.
+                    return;
                 }
             }
         } catch (InterruptedException interrupted) {

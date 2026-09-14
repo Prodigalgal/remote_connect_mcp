@@ -423,7 +423,7 @@ public final class TaskService {
             var appendFrom = overlap;
             var maxOutputBytes = outputLimit(task);
             var remaining = Math.max(0L, maxOutputBytes - current.length);
-            var appendLength = Math.min(data.length - appendFrom, remaining);
+            var appendLength = (int) Math.min((long) data.length - appendFrom, remaining);
             if (appendLength > 0) {
                 task.output().write(data, appendFrom, appendLength);
             }
@@ -753,7 +753,7 @@ public final class TaskService {
         var rss = minPositive(value.maxRssBytes(), descriptor.maxRssBytes());
         var cpu = minPositive(value.maxCpuSeconds(), descriptor.maxCpuSeconds());
         return new ExecutionContract.Budget(
-                Math.min(duration, ProtocolValidation.MAX_TIMEOUT_SECONDS),
+                Math.toIntExact(Math.min(duration, (long) ProtocolValidation.MAX_TIMEOUT_SECONDS)),
                 Math.min(value.maxOutputBytes(), Math.min(MAX_OUTPUT_BYTES, descriptor.maxOutputBytes())),
                 Math.min(value.maxArtifactBytes(), MAX_ARTIFACT_BYTES),
                 Math.min(value.maxChildProcesses(), Math.min(MAX_CHILD_PROCESSES, descriptor.maxChildProcesses())),

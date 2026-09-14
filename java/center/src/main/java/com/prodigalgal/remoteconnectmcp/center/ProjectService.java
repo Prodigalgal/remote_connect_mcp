@@ -224,7 +224,7 @@ public final class ProjectService {
                 }
             }
         }
-        var operation = () -> {
+        java.util.function.Supplier<ProjectView> operation = () -> {
             // Serialize project deletion with concurrent task/worktree
             // registrations.  Without a row lock, a task could resolve the
             // project just before this DELETE and leave an execution contract

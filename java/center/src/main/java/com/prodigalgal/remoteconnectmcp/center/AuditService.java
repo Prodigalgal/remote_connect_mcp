@@ -189,7 +189,7 @@ public final class AuditService implements AutoCloseable {
         var normalized = value.trim();
         if (normalized.length() > max) normalized = normalized.substring(0, max);
         var clean = normalized.chars().mapToObj(code -> {
-            var character = (char) code.intValue();
+            var character = (char) code;
             return character == '\r' || character == '\n' || Character.isISOControl(character) ? " " : String.valueOf(character);
         }).collect(java.util.stream.Collectors.joining());
         var redacted = SensitiveValueRedactor.redact(clean);
