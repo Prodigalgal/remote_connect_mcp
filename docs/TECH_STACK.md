@@ -24,7 +24,7 @@
 - Java command-agent 已有可执行自包含 JAR、原子身份文件、一次性注册换取日常 Token、断线指数退避、401 自动重新注册、虚拟线程命令执行、有界磁盘 spool/异步上传与无超时进程恢复、用户会话 Desktop IPC 客户端和 Browser Agent 监管；desktop/browser 目标分别隔离 AWT 和浏览器适配器生命周期；同一 Agent 内的 command/desktop/browser 任务共享有界进程总预算，避免提高并发或桌面遗留进程后无界堆积；
 - 已建立 `web/` React/Vite 控制台并接入 Admin API 的机器/任务分页读取、取消和真实升级活动，Admin Token 只驻留当前 React 内存；
 - Java Center/Agent v0.1.21 已替换生产 Center，四台在线 Oracle Agent 已完成迁移；Go Center 已缩容为 0，Go Agent 仅作为离线节点的兼容/回滚基线保留。Java 已实现注册、心跳、异步任务、工件、项目/worktree 和 Center 控制的升级编排；升级活动在 PostgreSQL 模式通过 Liquibase `005-upgrades`、`006-agent-config` 和 `007-projects-worktrees` 持久化，`008-agent-name-unique` 约束并发注册的同名身份；Agent 侧普通任务输出还受单任务与聚合 spool 双重上限保护；
-- Agent 配置已支持带 generation 的长轮询等待时间、兼容退避间隔和并发槽位热更新；配置原子写入状态目录，输出上限、Token 和工作区边界仍保持启动时约束；
+- Agent 配置已支持带 generation 的长轮询等待时间、兼容退避间隔和并发槽位热更新；心跳 runtime descriptor 同时公布单任务与 Agent 级总进程预算，旧 descriptor 缺失新增字段时按有界默认值兼容；配置原子写入状态目录，输出上限、Token 和工作区边界仍保持启动时约束；
 - JVM 测试、Center/Agent JAR 构建、React 生产构建，以及 Linux amd64/arm64、Windows amd64 的 Center/Agent/desktop/browser Native Image 和 MCP 烟测已由 GitHub Actions `34795775084` 重新验证；当前不在开发机执行构建或测试。正式 tag 的签名、Release 资产和目标机安装/升级回归仍由发布门禁负责。
 
 ## 2. 选型总表

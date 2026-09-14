@@ -49,7 +49,7 @@ Windows 开启 `-DesktopEnabled` 时，安装器还会注册一个当前用户�
 在本机直接运行会安全退出并提示提交到 Actions；`java/Dockerfile.*.native` 与 `web/Dockerfile` 也要求
 CI 构建参数。Gradle 根配置还会拦截本机的 `build/test/compile/jar/native` 等任务；只读的
 `tasks`、`dependencies` 查询不受影响。不要在目标主机安装或运行 Gradle/GraalVM。
-Agent 默认使用 HTTPS 长轮询：单次 `/agent/v1/poll?wait_ms=25000` 会在任务、取消、配置或升级事件时立即返回，空闲只由服务端 deadline 结束，不再叠加固定 sleep。设置 `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT=websocket` 后会额外连接 Center 的 `/agent/v1/ws`，只接收有界 `wake` 提示以进一步降低事件延迟；任务领取、输出、工件和 Token 校验仍走 HTTPS。长轮询/WebSocket 均不可用时才按指数退避重试。Center 端使用 `RCM_CENTER_AGENT_WEBSOCKET_ENABLED=true` 开启该可选端点。
+Agent 默认使用 HTTPS 长轮询：单次 `/agent/v1/poll?wait_ms=25000` 会在任务、取消、配置或升级事件时立即返回，空闲只由服务端 deadline 结束，不再叠加固定 sleep。设置 `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT=websocket` 后会额外连接 Center 的 `/agent/v1/ws`，只接收有界 `wake` 提示以进一步降低事件延迟；任务领取、输出、工件和 Token 校验仍走 HTTPS。长轮询/WebSocket 均不可用时才按指数退避重试。Center 端使用 `RCM_CENTER_AGENT_WEBSOCKET_ENABLED=true` 开启该可选端点。每次心跳的 runtime descriptor 还公布单任务和 Agent 级进程预算，旧 Center/Agent 缺失总预算字段时按有界默认值兼容。
 
 Native Agent 烟测可设置 `RCM_SMOKE_RESOURCE_REPORT=/tmp/rcm-agent-resource.json`（Windows PowerShell
 使用 `-ResourceReport`），脚本会在 Agent 在线和命令闭环期间采样工作集峰值；该文件只用于 CI 资源回归，

@@ -18,10 +18,24 @@ class AgentRuntimeDescriptorTest {
 
         assertEquals(12, decoded.configGeneration());
         assertEquals(4, decoded.maxConcurrency());
+        assertEquals(128, decoded.maxTotalChildProcesses());
         assertEquals(512L * 1024 * 1024, decoded.maxRssBytes());
         assertTrue(decoded.desktopEnabled());
         assertTrue(json.contains("max_rss_bytes"));
+        assertTrue(json.contains("max_total_child_processes"));
         assertTrue(decoded.compatibleWith(AgentRuntimeDescriptor.CURRENT_SCHEMA_VERSION));
+    }
+
+    @Test
+    void acceptsLegacyJsonWithoutAgentTotalBudget() {
+        var legacy = "{\"schema_version\":1,\"config_generation\":0,\"max_concurrency\":2,"
+                + "\"max_browser_workers\":1,\"max_output_bytes\":1048576,"
+                + "\"max_aggregate_output_bytes\":1048576,\"max_child_processes\":8,"
+                + "\"max_task_duration_seconds\":0,\"max_rss_bytes\":0,\"max_cpu_seconds\":0,"
+                + "\"desktop_enabled\":false,\"browser_adapter_configured\":false}";
+        var decoded = JsonCodec.read(legacy.getBytes(StandardCharsets.UTF_8), AgentRuntimeDescriptor.class);
+
+        assertEquals(64, decoded.maxTotalChildProcesses());
     }
 
     @Test

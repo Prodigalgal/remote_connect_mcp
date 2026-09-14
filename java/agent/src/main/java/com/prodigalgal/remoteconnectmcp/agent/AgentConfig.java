@@ -106,7 +106,7 @@ public record AgentConfig(
         // tests while allowing Center to observe the real deployed version.
         var runtime = new AgentRuntimeDescriptor(1, Math.max(0L, configGeneration), effectiveConcurrency,
                 Math.min(effectiveConcurrency, maxBrowserWorkers()), maxOutputBytes, maxAggregateOutputBytes,
-                maxTaskChildProcesses(), maxTaskDurationSeconds(), maxTaskRssBytes(), maxTaskCpuSeconds(),
+                maxTaskChildProcesses(), maxTotalChildProcesses(), maxTaskDurationSeconds(), maxTaskRssBytes(), maxTaskCpuSeconds(),
                 desktopEnabled, !browserAdapter.isBlank(), scopeMode,
                 desktopSessionAvailable(), browserSessionAvailable(), resourceEnforcement());
         var metadata = new AgentMetadata(name, hostId, hostname(), operatingSystem(), architecture(),

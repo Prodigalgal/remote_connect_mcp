@@ -284,7 +284,7 @@ function MachineRow({ machine }: { machine: Machine | DemoMachine }) {
   const host = live ? machine.hostId : machine.host
   const os = live ? `${machine.os ?? 'unknown'} · ${machine.arch ?? 'unknown'}` : machine.os
   const runtime = live ? machine.runtime : undefined
-  const runtimeLabel = runtime ? `${role} agent · 并发 ${runtime.maxConcurrency} · ${runtime.resourceEnforcement} · g${runtime.configGeneration}` : `${role} agent`
+  const runtimeLabel = runtime ? `${role} agent · 并发 ${runtime.maxConcurrency} · 进程 ${runtime.maxTotalChildProcesses} · ${runtime.resourceEnforcement} · g${runtime.configGeneration}` : `${role} agent`
   return <div className="table-row"><div className="agent-name"><span className="agent-symbol">{role === 'command' ? '⌁' : role === 'desktop' ? '▣' : '◌'}</span><div><strong>{machine.name}</strong><span>{runtimeLabel}</span></div></div><span className="mono">{host}</span><span className="capability-pill">{role}</span><span>{os}</span><span className={`state ${tone}`}><i />{state}</span></div>
 }
 

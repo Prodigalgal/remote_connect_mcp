@@ -24,6 +24,7 @@ export type AgentRuntimeDescriptor = {
   maxOutputBytes: number
   maxAggregateOutputBytes: number
   maxChildProcesses: number
+  maxTotalChildProcesses: number
   maxTaskDurationSeconds: number
   maxRssBytes: number
   maxCpuSeconds: number
@@ -276,14 +277,17 @@ function pageResult<T>(items: T[], response: { offset?: number; limit?: number; 
 function mapRuntime(value: unknown): AgentRuntimeDescriptor | undefined {
   if (!value || typeof value !== 'object') return undefined
   const item = value as Record<string, unknown>
+  const maxConcurrency = Number(item.max_concurrency ?? 1)
+  const legacyTotal = Math.min(256, Math.max(32, Math.max(1, maxConcurrency) * 32))
   return {
     schemaVersion: Number(item.schema_version ?? 1),
     configGeneration: Number(item.config_generation ?? 0),
-    maxConcurrency: Number(item.max_concurrency ?? 1),
+    maxConcurrency,
     maxBrowserWorkers: Number(item.max_browser_workers ?? 1),
     maxOutputBytes: Number(item.max_output_bytes ?? 0),
     maxAggregateOutputBytes: Number(item.max_aggregate_output_bytes ?? 0),
     maxChildProcesses: Number(item.max_child_processes ?? 0),
+    maxTotalChildProcesses: Number(item.max_total_child_processes ?? legacyTotal),
     maxTaskDurationSeconds: Number(item.max_task_duration_seconds ?? 0),
     maxRssBytes: Number(item.max_rss_bytes ?? 0),
     maxCpuSeconds: Number(item.max_cpu_seconds ?? 0),

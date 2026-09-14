@@ -643,6 +643,7 @@ public class McpConfiguration {
                 Map.entry("max_output_bytes", runtime.maxOutputBytes()),
                 Map.entry("max_aggregate_output_bytes", runtime.maxAggregateOutputBytes()),
                 Map.entry("max_child_processes", runtime.maxChildProcesses()),
+                Map.entry("max_total_child_processes", runtime.maxTotalChildProcesses()),
                 Map.entry("max_task_duration_seconds", runtime.maxTaskDurationSeconds()),
                 Map.entry("max_rss_bytes", runtime.maxRssBytes()),
                 Map.entry("max_cpu_seconds", runtime.maxCpuSeconds()),

@@ -11,6 +11,7 @@ public record AgentRuntimeDescriptor(
         @JsonProperty("max_output_bytes") long maxOutputBytes,
         @JsonProperty("max_aggregate_output_bytes") long maxAggregateOutputBytes,
         @JsonProperty("max_child_processes") int maxChildProcesses,
+        @JsonProperty("max_total_child_processes") int maxTotalChildProcesses,
         @JsonProperty("max_task_duration_seconds") long maxTaskDurationSeconds,
         @JsonProperty("max_rss_bytes") long maxRssBytes,
         @JsonProperty("max_cpu_seconds") long maxCpuSeconds,
@@ -30,7 +31,8 @@ public record AgentRuntimeDescriptor(
                                   int maxChildProcesses, long maxTaskDurationSeconds, long maxRssBytes,
                                   long maxCpuSeconds, boolean desktopEnabled, boolean browserAdapterConfigured) {
         this(schemaVersion, configGeneration, maxConcurrency, maxBrowserWorkers, maxOutputBytes,
-                maxAggregateOutputBytes, maxChildProcesses, maxTaskDurationSeconds, maxRssBytes,
+                maxAggregateOutputBytes, maxChildProcesses, defaultTotalChildProcesses(maxConcurrency),
+                maxTaskDurationSeconds, maxRssBytes,
                 maxCpuSeconds, desktopEnabled, browserAdapterConfigured, ScopeMode.WORKSPACE,
                 false, false, "process-tree");
     }
@@ -53,6 +55,12 @@ public record AgentRuntimeDescriptor(
         if (maxOutputBytes < 1024L * 1024 || maxOutputBytes > 1024L * 1024 * 1024) throw new IllegalArgumentException("runtime max output is outside the allowed range");
         if (maxAggregateOutputBytes < maxOutputBytes || maxAggregateOutputBytes > 4L * 1024 * 1024 * 1024) throw new IllegalArgumentException("runtime aggregate output is outside the allowed range");
         if (maxChildProcesses < 1 || maxChildProcesses > 256) throw new IllegalArgumentException("runtime max child processes is outside the allowed range");
+        // JSON written by pre-total-budget Agents omits this field and
+        // Jackson supplies zero for the primitive component. Use the same
+        // bounded default as the current Agent instead of rejecting a valid
+        // legacy heartbeat.
+        if (maxTotalChildProcesses == 0) maxTotalChildProcesses = defaultTotalChildProcesses(maxConcurrency);
+        if (maxTotalChildProcesses < 1 || maxTotalChildProcesses > 4096) throw new IllegalArgumentException("runtime max total child processes is outside the allowed range");
         if (maxTaskDurationSeconds < 0 || maxTaskDurationSeconds > ProtocolValidation.MAX_TIMEOUT_SECONDS) throw new IllegalArgumentException("runtime max duration is outside the allowed range");
         if (maxRssBytes < 0 || maxRssBytes > 16L * 1024 * 1024 * 1024) throw new IllegalArgumentException("runtime max RSS is outside the allowed range");
         if (maxCpuSeconds < 0 || maxCpuSeconds > ProtocolValidation.MAX_TIMEOUT_SECONDS) throw new IllegalArgumentException("runtime max CPU is outside the allowed range");
@@ -60,8 +68,12 @@ public record AgentRuntimeDescriptor(
 
     public static AgentRuntimeDescriptor defaults() {
         return new AgentRuntimeDescriptor(1, 0, 1, 1, 64L * 1024 * 1024,
-                64L * 1024 * 1024, 32, 0, 0, 0, false, false,
+                64L * 1024 * 1024, 32, 32, 0, 0, 0, false, false,
                 ScopeMode.WORKSPACE, false, false, "process-tree");
+    }
+
+    private static int defaultTotalChildProcesses(int concurrency) {
+        return Math.min(256, Math.max(32, Math.max(1, concurrency) * 32));
     }
 
     /**
