@@ -14,6 +14,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -41,6 +42,15 @@ public final class AgentRuntime {
     }
 
     public void run() throws IOException, InterruptedException {
+        // A service restart can briefly overlap the old process (especially
+        // while a long-poll request is being closed).  Keep one command Agent
+        // and one child-process pool per state directory.
+        try (var ignored = AgentLock.acquire(config.stateDir())) {
+            runLocked();
+        }
+    }
+
+    private void runLocked() throws IOException, InterruptedException {
         TaskOutputSpool.cleanupOrphans(config.stateDir(), Duration.ofDays(7));
         var durableStore = new DurableTaskStore(config.stateDir());
         var identity = loadOrRegister();
@@ -52,6 +62,9 @@ public final class AgentRuntime {
         var settings = new AgentRuntimeSettings(config);
         var backoff = settings.pollInterval();
         var resourceBudget = new AgentResourceBudget(config.maxAggregateOutputBytes());
+        var desktopProcessBudget = new DesktopProcessBudget();
+        var maxBrowserWorkers = config.maxBrowserWorkers();
+        var browserRunning = new AtomicInteger();
         var wakeSignal = new AgentWakeSignal();
         var wakeClient = AgentWakeClient.startIfEnabled(config, identity, wakeSignal::signal);
         var executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -62,8 +75,14 @@ public final class AgentRuntime {
                 try {
                     var availableSlots = upgrading.get() ? 0 : Math.max(0, settings.maxConcurrency() - running.size());
                     var runningTaskIds = running.keySet().stream().sorted().toList();
+                    // The Center chooses a task from this capability list. By
+                    // withdrawing `browser` when its dedicated cap is full,
+                    // command/desktop slots remain usable without queuing an
+                    // unbounded number of browser workers in the Agent.
+                    var availableCapabilities = availableCapabilities(config.capabilities(),
+                            browserRunning.get(), maxBrowserWorkers);
                     var poll = transport.poll(identity.machineId(), identity.token(),
-                            new PollRequest(runningTaskIds, availableSlots, config.capabilities(), metadata,
+                            new PollRequest(runningTaskIds, availableSlots, availableCapabilities, metadata,
                                     settings.generation()));
                     if (poll.config() != null && settings.apply(poll.config())) {
                         LOG.info(() -> "applied Center runtime config generation " + settings.generation()
@@ -85,6 +104,19 @@ public final class AgentRuntime {
                         backoff = settings.pollInterval();
                     } else if (poll.task() != null && availableSlots > 0 && !upgrading.get()) {
                         var task = poll.task();
+                        if (task.kind() == com.prodigalgal.remoteconnectmcp.protocol.TaskKind.BROWSER
+                                && browserRunning.get() >= maxBrowserWorkers) {
+                            // This can only happen if a legacy Center ignores
+                            // available_capabilities.  Leave the lease for
+                            // its normal expiry instead of starting a process
+                            // beyond the local cap.
+                            LOG.warning("Center returned a browser task while the local browser worker cap is full; deferring it");
+                            backoff = settings.pollInterval();
+                            wakeSignal.await(backoff);
+                            continue;
+                        }
+                        var browserSlotAcquired = task.kind() == com.prodigalgal.remoteconnectmcp.protocol.TaskKind.BROWSER;
+                        if (browserSlotAcquired) browserRunning.incrementAndGet();
                         var taskIdentity = identity;
                         var durableRecord = task.kind() == com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND
                                 && task.timeoutSeconds() <= 0 ? durableStore.find(task.id()).orElse(null) : null;
@@ -93,7 +125,7 @@ public final class AgentRuntime {
                                     ? new DurableCommandRunner(config, taskIdentity,
                                     durableRecord == null ? task : durableRecord.taskCommand(), transport, durableStore, durableRecord)
                                     : new CommandRunner(config, taskIdentity, task, transport, resourceBudget);
-                            case DESKTOP -> new DesktopTaskRunner(config, taskIdentity, task, transport);
+                            case DESKTOP -> new DesktopTaskRunner(config, taskIdentity, task, transport, desktopProcessBudget);
                             case BROWSER -> new BrowserTaskRunner(config, taskIdentity, task, transport, resourceBudget);
                         };
                         // FutureTask removes itself from the running map in its
@@ -107,6 +139,7 @@ public final class AgentRuntime {
                             @Override
                             protected void done() {
                                 running.remove(task.id(), this);
+                                if (browserSlotAcquired) browserRunning.decrementAndGet();
                                 if (runner instanceof DurableCommandRunner durable) {
                                     durableRunning.remove(task.id(), durable);
                                 }
@@ -188,6 +221,13 @@ public final class AgentRuntime {
             }
             running.clear();
         }
+    }
+
+    private static java.util.List<String> availableCapabilities(java.util.List<String> configured,
+                                                                 int browserRunning,
+                                                                 int maxBrowserWorkers) {
+        if (browserRunning < maxBrowserWorkers || !configured.contains("browser")) return configured;
+        return configured.stream().filter(value -> !"browser".equals(value)).toList();
     }
 
     private void recoverDurable(AgentIdentity identity, DurableTaskStore store, ExecutorService executor,

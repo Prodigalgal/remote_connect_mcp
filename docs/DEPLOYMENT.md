@@ -22,7 +22,8 @@ JAR/Native Image，不会自行触发构建。
 两个工作流都会先执行 `scripts/scan-repository-secrets.sh`。检查只输出命中文件名，不会把令牌或
 私钥内容写入日志；真实域名、内网地址和部署 Secret 必须留在集群外的私有配置层。
 
-产物名为 `rcm-center` 和 `rcm-agent`。当前仓库的 Linux Native Docker builder 固定为
+产物名为 `rcm-center`、`rcm-agent`、`rcm-desktop-companion` 和 `rcm-browser-agent`。其中后三个 Agent
+目标分别隔离命令、用户桌面和浏览器适配器生命周期；当前仓库的 Linux Native Docker builder 固定为
 `ghcr.io/graalvm/native-image-community:25@sha256:0d936f32bb8acb5bc60c41b33e05f064d7a6aaf36b726538296c54949bd4a3c0`；更新构建器时必须同步更新两个 Dockerfile、重新跑全套 Native smoke，并记录新的 digest。当前 GraalVM/NIK 25 的可验证 Native Image
 矩阵是 Linux amd64/arm64、Windows amd64；Windows arm64 会被脚本明确拒绝，暂时只能
 使用 JVM/Go 兼容包，不能把交叉编译结果当作原生生产物。每个支持目标都必须分别构建
@@ -33,11 +34,11 @@ GraalVM 运行时 DLL 会分别与 `rcm-center.exe`、`rcm-agent.exe` 放入各�
 同样复制完整 `nativeCompile/` 运行目录，使 `libawt`、字体和其他 `.so` 旁路库与对应 ELF
 一起进入镜像；不能只把 `rcm-center`/`rcm-agent` 单文件复制到最终层。
 
-仓库保留 `scripts/build-java.*`、`scripts/build-native.*` 和 `scripts/build-all.*` 作为 CI 内部兼容入口；这些脚本在非 GitHub Actions 环境会安全退出，不会在本机启动编译。Native 构建仍由工作流按当前 OS/架构输出两个二进制、`.sha256`、manifest、SBOM 和安装归档；Linux 会把可能由 Java Desktop 生成的 `.so` 与对应 ELF 放入隔离 bundle，Windows 同样生成隔离 bundle、平铺 Agent ZIP 及完整 bundle ZIP。
+仓库保留 `scripts/build-java.*`、`scripts/build-native.*` 和 `scripts/build-all.*` 作为 CI 内部兼容入口；这些脚本在非 GitHub Actions 环境会安全退出，不会在本机启动编译。Native 构建仍由工作流按当前 OS/架构输出 Center 加三个 Agent 二进制、`.sha256`、manifest、SBOM 和安装归档；Linux 会把各目标可能生成的 `.so` 与对应 ELF 放入隔离 bundle，Windows 同样生成隔离 bundle、三个平铺 ZIP 及完整 bundle ZIP。
 
 `java/Dockerfile.*.native` 和 `web/Dockerfile` 同样要求构建参数 `RCM_CI_BUILD=true`；工作流会自动注入，本机直接 `docker build` 会在编译前拒绝执行。
 
-Windows 安装器 `scripts/install-java-agent.ps1` 的 `-BinaryPath` 可直接接收平铺 Agent ZIP（推荐），也兼容与 DLL 同目录的原始 `rcm-agent.exe`；它会在复制完整 bundle 前停止旧服务，避免只替换 exe 造成运行时 DLL 不匹配。
+Windows 安装器 `scripts/install-java-agent.ps1` 的 `-BinaryPath` 可直接接收平铺 command-agent ZIP（推荐），也兼容与 DLL 同目录的原始 `rcm-agent.exe`；`-DesktopBinaryPath` 和 `-BrowserBinaryPath` 可分别接收两个独立 companion ZIP/EXE，安装到隔离子目录，避免 `java.dll`/`jvm.dll` 同名覆盖。它会在复制完整 bundle 前停止旧服务和桌面计划任务，避免只替换 exe 造成运行时 DLL 不匹配。
 
 正式发布使用 `.github/workflows/java-release.yml`：推送 `main` 或 `java-vX.Y.Z` Tag 后，CI 先执行
 JVM/React 门禁，再在匹配架构的 GitHub-hosted runner（`ubuntu-24.04` 与
@@ -45,16 +46,19 @@ JVM/React 门禁，再在匹配架构的 GitHub-hosted runner（`ubuntu-24.04` �
 amd64 runner 上构建 Windows Native Image。Release 同时
 上传安装压缩包和按 `remote-connect-mcp-agent-vX.Y.Z-<os>-<arch>` 命名的 Agent
 升级资产及 `.sha256`，供 Center 自动升级解析；Linux/Windows 资产都是包含 Agent 可执行文件与
-Native Image 运行库的同名平铺 ZIP（旧版本 Linux/Windows 裸可执行文件仍可回退）。Windows 主安装包另外包含 `center/` 与 `agent/` 两个
+Native Image 运行库的同名平铺 ZIP（旧版本 Linux/Windows 裸可执行文件仍可回退）。Windows 主安装包另外包含 `center/`、`agent/`、`desktop/` 与 `browser/` 四个
 隔离 bundle。main 推送会创建预发布 Release，供 Center 版本目录选择；稳定 Tag 会创建正式 Release；
 手动运行工作流只构建，不创建 Release。
 
 Linux 完整 tar 包的根目录包含 `install-java-agent.sh` 和匹配版本的
 `remote-connect-mcp-agent.service`；从 tar 根目录运行
 `REMOTE_CONNECT_MCP_AGENT_BINARY=./agent/rcm-agent ./install-java-agent.sh`，或把平铺 Agent ZIP
-设置为 `REMOTE_CONNECT_MCP_AGENT_BINARY`。安装器会在 ZIP 旁存在 `.sha256` 时先校验，再复制 ELF
-及其 `.so` 旁路库，并使用包内 systemd 模板（也可用 `REMOTE_CONNECT_MCP_AGENT_SERVICE_FILE`
-显式覆盖）。
+设置为 `REMOTE_CONNECT_MCP_AGENT_BINARY`。需要桌面/浏览器能力时，再设置
+`REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY=./desktop/rcm-desktop-companion.zip` 和
+`REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=./browser/rcm-browser-agent.zip`；安装器会将两个
+companion 放到隔离目录，桌面伴侣仍应由用户会话自启动。安装器会在每个 ZIP 旁存在 `.sha256`
+时先校验，再复制 ELF 及其 `.so` 旁路库，并使用包内 systemd 模板（也可用
+`REMOTE_CONNECT_MCP_AGENT_SERVICE_FILE` 显式覆盖）。
 
 ## PostgreSQL 与 Liquibase
 
@@ -231,4 +235,4 @@ Agent 烟测同时在注册后的空闲/命令阶段采样 Agent 工作集，生
 
 ## Agent 资源预算
 
-默认值按 1C/1G 级别终端设计：空闲 Agent 只保持一个最长 25 秒的 HTTPS 长轮询请求，不运行固定 5 秒心跳；事件到达或服务端 deadline 才结束请求，断线时才使用指数退避。`MAX_CONCURRENCY=1` 限制同时子进程数；每任务 stdout/stderr 默认为 64 MiB，普通任务共享 `MAX_AGGREGATE_OUTPUT_BYTES` 聚合 spool 上限（默认随并发增长但不超过 256 MiB）；输出上传使用 16 KiB 分片；Browser 任务无显式超时时默认 300 秒；durable 日志看门器由 fsnotify/WatchService 文件事件驱动，只有极旧系统没有可等待进程句柄时才保留显式、低频的 5 秒兼容回退。聚合上限达到时普通任务继续执行并标记输出截断，只有 durable 任务达到其硬上限才会终止，确保节约资源不会把可恢复任务静默杀掉。确需并行时逐台提高并发并观察 RSS、磁盘和 Center 延迟，不建议在小规格主机上直接设置 32 个槽位或 1 GiB 输出上限。
+默认值按 1C/1G 级别终端设计：空闲 Agent 只保持一个最长 25 秒的 HTTPS 长轮询请求，不运行固定 5 秒心跳；事件到达或服务端 deadline 才结束请求，断线时才使用指数退避。`MAX_CONCURRENCY=1` 限制同时子进程数，`MAX_BROWSER_WORKERS=1` 再对浏览器适配器做独立上限；每任务 stdout/stderr 默认为 64 MiB，普通任务共享 `MAX_AGGREGATE_OUTPUT_BYTES` 聚合 spool 上限（默认随并发增长但不超过 256 MiB）；输出上传使用 16 KiB 分片；Browser 任务无显式超时时默认 300 秒，最长 24 小时；durable 日志看门器由 fsnotify/WatchService 文件事件驱动，只有极旧系统没有可等待进程句柄时才保留显式、低频的 5 秒兼容回退。Desktop companion 另有最多 4 个并发 IPC 请求和 16 个活动启动进程，并通过文件锁保证单实例。聚合上限达到时普通任务继续执行并标记输出截断，只有 durable 任务达到其硬上限才会终止，确保节约资源不会把可恢复任务静默杀掉。确需并行时逐台提高并发并观察 RSS、磁盘和 Center 延迟，不建议在小规格主机上直接设置 32 个槽位或 1 GiB 输出上限。

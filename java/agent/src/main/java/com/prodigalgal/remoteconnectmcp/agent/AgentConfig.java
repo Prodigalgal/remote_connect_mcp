@@ -101,6 +101,20 @@ public record AgentConfig(
         return parseLongEnv("REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS", 25, 0, 25);
     }
 
+    /**
+     * Browser adapters are heavier than command tasks.  Keep their process
+     * pool independently bounded even when a host increases the general task
+     * concurrency.  The value is intentionally boot-time/environment based;
+     * Center hot configuration can lower general concurrency but cannot
+     * silently create more browser processes.
+     */
+    public int maxBrowserWorkers() {
+        var defaultValue = Math.min(2, maxConcurrency);
+        var configured = Math.toIntExact(parseLongEnv(
+                "REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS", defaultValue, 1, 8));
+        return Math.min(maxConcurrency, configured);
+    }
+
     public RegisterRequest registerRequest() {
         var metadata = metadata();
         return new RegisterRequest(metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(), metadata.defaultCwd(), metadata.scopeMode(), metadata.workspaceRoot(), metadata.capabilities());

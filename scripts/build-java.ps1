@@ -14,7 +14,7 @@ Write-Host '== Java tests ==' -ForegroundColor Cyan
 & $gradle test --no-daemon
 
 Write-Host '== JVM artifacts ==' -ForegroundColor Cyan
-& $gradle :center:bootJar :agent:jar --no-daemon
+& $gradle :center:bootJar :agent:jar :desktop:jar :browser:jar --no-daemon
 
 Write-Host '== React production build ==' -ForegroundColor Cyan
 pnpm --dir (Join-Path $root 'web') install --frozen-lockfile

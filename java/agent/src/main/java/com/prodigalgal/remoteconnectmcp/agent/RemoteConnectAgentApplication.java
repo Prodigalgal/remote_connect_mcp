@@ -23,7 +23,7 @@ public final class RemoteConnectAgentApplication {
                                 ? Path.of(System.getenv().getOrDefault("ProgramData", "."), "RemoteConnectMCPAgent").toString()
                                 : "/var/lib/remote-connect-mcp-agent");
                 var stateDir = args.length == 2 ? Path.of(args[1]) : Path.of(defaultStateDir);
-                DesktopCompanionServer.run(stateDir);
+                DesktopCompanionLauncher.run(stateDir);
                 return;
             } catch (Exception exception) {
                 LOG.log(Level.SEVERE, "desktop companion failed", exception);
@@ -35,7 +35,8 @@ public final class RemoteConnectAgentApplication {
             var metadata = config.metadata();
             LOG.info(() -> "java agent configuration valid: name=" + metadata.name() + ", hostId=" + metadata.hostId()
                     + ", os=" + metadata.os() + ", arch=" + metadata.arch() + ", capabilities=" + metadata.capabilities()
-                    + ", maxConcurrency=" + config.maxConcurrency() + ", maxOutputBytes=" + config.maxOutputBytes()
+                    + ", maxConcurrency=" + config.maxConcurrency() + ", maxBrowserWorkers=" + config.maxBrowserWorkers()
+                    + ", maxOutputBytes=" + config.maxOutputBytes()
                     + ", maxAggregateOutputBytes=" + config.maxAggregateOutputBytes());
             return;
         }

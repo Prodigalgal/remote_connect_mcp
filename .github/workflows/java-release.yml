@@ -206,25 +206,45 @@ jobs:
           docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
             --build-arg RCM_CI_BUILD=true \
             --file java/Dockerfile.agent.native --output "type=local,dest=out/agent-${TARGET_ARCH}" java
+          docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
+            --build-arg RCM_CI_BUILD=true \
+            --file java/Dockerfile.desktop.native --output "type=local,dest=out/desktop-${TARGET_ARCH}" java
+          docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
+            --build-arg RCM_CI_BUILD=true \
+            --file java/Dockerfile.browser.native --output "type=local,dest=out/browser-${TARGET_ARCH}" java
           center="$(find "out/center-${TARGET_ARCH}" -type f -name rcm-center -print -quit)"
           agent="$(find "out/agent-${TARGET_ARCH}" -type f -name rcm-agent -print -quit)"
-          test -n "${center}" && test -n "${agent}"
+          desktop="$(find "out/desktop-${TARGET_ARCH}" -type f -name rcm-desktop-companion -print -quit)"
+          browser="$(find "out/browser-${TARGET_ARCH}" -type f -name rcm-browser-agent -print -quit)"
+          test -n "${center}" && test -n "${agent}" && test -n "${desktop}" && test -n "${browser}"
           center_bundle="out/${TARGET_ARCH}/center"
           agent_bundle="out/${TARGET_ARCH}/agent"
-          mkdir -p "${center_bundle}" "${agent_bundle}"
+          desktop_bundle="out/${TARGET_ARCH}/desktop"
+          browser_bundle="out/${TARGET_ARCH}/browser"
+          mkdir -p "${center_bundle}" "${agent_bundle}" "${desktop_bundle}" "${browser_bundle}"
           cp "${center}" "${center_bundle}/rcm-center"
           cp "${agent}" "${agent_bundle}/rcm-agent"
+          cp "${desktop}" "${desktop_bundle}/rcm-desktop-companion"
+          cp "${browser}" "${browser_bundle}/rcm-browser-agent"
           # Java Desktop may emit libawt/libfontmanager and other shared
           # objects. Keep each executable with its own runtime libraries and
           # never merge Center/Agent files with the same SONAME.
           find "$(dirname "${center}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "${center_bundle}/" \;
           find "$(dirname "${agent}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "${agent_bundle}/" \;
+          find "$(dirname "${desktop}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "${desktop_bundle}/" \;
+          find "$(dirname "${browser}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "${browser_bundle}/" \;
           cp "${center}" "out/${TARGET_ARCH}/rcm-center"
           cp "${agent}" "out/${TARGET_ARCH}/rcm-agent"
+          cp "${desktop}" "out/${TARGET_ARCH}/rcm-desktop-companion"
+          cp "${browser}" "out/${TARGET_ARCH}/rcm-browser-agent"
           cp scripts/install-java-agent.sh deploy/systemd/remote-connect-mcp-agent.service deploy/systemd/agent.env.example README.md LICENSE NOTICE "out/${TARGET_ARCH}/"
           chmod +x "out/${TARGET_ARCH}/rcm-center" "out/${TARGET_ARCH}/rcm-agent" "${center_bundle}/rcm-center" "${agent_bundle}/rcm-agent" "out/${TARGET_ARCH}/install-java-agent.sh"
+          chmod +x "out/${TARGET_ARCH}/rcm-desktop-companion" "${desktop_bundle}/rcm-desktop-companion"
+          chmod +x "out/${TARGET_ARCH}/rcm-browser-agent" "${browser_bundle}/rcm-browser-agent"
           (cd "${center_bundle}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS)
           (cd "${agent_bundle}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS)
+          (cd "${desktop_bundle}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS)
+          (cd "${browser_bundle}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS)
           # Verify the actual target binaries, not only the JVM build or the
           # image assembly.  The second smoke test exercises one-time
           # enrollment, identity-only restart and a real command round trip.
@@ -234,14 +254,24 @@ jobs:
           bash scripts/smoke-java-websocket.sh "${center_bundle}/rcm-center" 18185
           RCM_AGENT_MAX_RSS_MIB=256 python3 scripts/check-agent-resource-report.py "${RUNNER_TEMP}/rcm-agent-resource-${TARGET_ARCH}.json"
           agent_archive="remote-connect-mcp-agent-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          desktop_archive="remote-connect-mcp-desktop-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          browser_archive="remote-connect-mcp-browser-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
           center_archive="remote-connect-mcp-center-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
           agent_files=$(cd "${agent_bundle}" && find . -maxdepth 1 -type f \( -name 'rcm-agent' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
           center_files=$(cd "${center_bundle}" && find . -maxdepth 1 -type f \( -name 'rcm-center' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
+          desktop_files=$(cd "${desktop_bundle}" && find . -maxdepth 1 -type f \( -name 'rcm-desktop-companion' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
+          browser_files=$(cd "${browser_bundle}" && find . -maxdepth 1 -type f \( -name 'rcm-browser-agent' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
           (cd "${agent_bundle}" && zip -q -j "${GITHUB_WORKSPACE}/${agent_archive}" ${agent_files})
           (cd "${center_bundle}" && zip -q -j "${GITHUB_WORKSPACE}/${center_archive}" ${center_files})
+          (cd "${desktop_bundle}" && zip -q -j "${GITHUB_WORKSPACE}/${desktop_archive}" ${desktop_files})
+          (cd "${browser_bundle}" && zip -q -j "${GITHUB_WORKSPACE}/${browser_archive}" ${browser_files})
           sha256sum "${agent_archive}" > "${agent_archive}.sha256"
           sha256sum "${center_archive}" > "${center_archive}.sha256"
+          sha256sum "${desktop_archive}" > "${desktop_archive}.sha256"
+          sha256sum "${browser_archive}" > "${browser_archive}.sha256"
           bash scripts/verify-native-bundle.sh "${agent_archive}"
+          bash scripts/verify-native-bundle.sh "${desktop_archive}" rcm-desktop-companion
+          bash scripts/verify-native-bundle.sh "${browser_archive}" rcm-browser-agent
           tar -C "out" -czf "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" "${TARGET_ARCH}"
           sha256sum "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" > "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz.sha256"
       - name: Native Liquibase migration smoke
@@ -272,6 +302,8 @@ jobs:
           subject-path: |
             out/${{ matrix.arch }}/rcm-center
             out/${{ matrix.arch }}/rcm-agent
+            out/${{ matrix.arch }}/rcm-desktop-companion
+            out/${{ matrix.arch }}/rcm-browser-agent
             remote-connect-mcp-*.tar.gz
             remote-connect-mcp-*.zip
             remote-connect-mcp-*.spdx.json
@@ -283,6 +315,10 @@ jobs:
             remote-connect-mcp-*.tar.gz.sha256
             remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.zip
             remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-connect-mcp-desktop-*-linux-${{ matrix.arch }}.zip
+            remote-connect-mcp-desktop-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-connect-mcp-browser-*-linux-${{ matrix.arch }}.zip
+            remote-connect-mcp-browser-*-linux-${{ matrix.arch }}.zip.sha256
             remote-connect-mcp-center-*-linux-${{ matrix.arch }}.zip
             remote-connect-mcp-center-*-linux-${{ matrix.arch }}.zip.sha256
             remote-connect-mcp-*.spdx.json
@@ -309,15 +345,23 @@ jobs:
       - name: Build Windows amd64 Native Images
         working-directory: java
         shell: pwsh
-        # Native Image can consume several GiB per image. Serialize the two
+        # Native Image can consume several GiB per image. Serialize the four
         # images so the Windows hosted runner does not page/OOM.
-        run: .\gradlew.bat :center:nativeCompile :agent:nativeCompile --no-daemon --no-parallel
+        run: .\gradlew.bat :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
       - name: Native MCP and Agent smoke tests
         shell: pwsh
         run: |
           .\scripts\smoke-java.ps1 -CenterBinary .\java\center\build\native\nativeCompile\rcm-center.exe -Port 18185
           .\scripts\smoke-java-agent.ps1 -CenterBinary .\java\center\build\native\nativeCompile\rcm-center.exe -AgentBinary .\java\agent\build\native\nativeCompile\rcm-agent.exe -Port 18186 -ResourceReport "$env:RUNNER_TEMP\rcm-agent-resource-windows-amd64.json"
           .\scripts\smoke-java-websocket.ps1 -CenterBinary .\java\center\build\native\nativeCompile\rcm-center.exe -Port 18187
+          $desktopBinary = '.\java\desktop\build\native\nativeCompile\rcm-desktop-companion.exe'
+          if (-not (Test-Path -LiteralPath $desktopBinary -PathType Leaf)) { throw "desktop companion Native Image was not produced" }
+          & $desktopBinary --invalid-arguments *> $null
+          if ($LASTEXITCODE -ne 2) { throw "desktop companion argument contract failed with exit code $LASTEXITCODE" }
+          $browserBinary = '.\java\browser\build\native\nativeCompile\rcm-browser-agent.exe'
+          if (-not (Test-Path -LiteralPath $browserBinary -PathType Leaf)) { throw "browser Agent Native Image was not produced" }
+          & $browserBinary --invalid-arguments *> $null
+          if ($LASTEXITCODE -ne 2) { throw "browser Agent argument contract failed with exit code $LASTEXITCODE" }
           $env:RCM_AGENT_MAX_RSS_MIB = '256'
           python scripts/check-agent-resource-report.py "$env:RUNNER_TEMP\rcm-agent-resource-windows-amd64.json"
       - name: Package Windows amd64 artifacts
@@ -327,27 +371,45 @@ jobs:
         run: |
           $out = Join-Path $PWD 'java-release-windows-amd64'
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          $centerOut = Join-Path $out 'center'
-          $agentOut = Join-Path $out 'agent'
-          New-Item -ItemType Directory -Force -Path $centerOut, $agentOut | Out-Null
-          Copy-Item java/center/build/native/nativeCompile/rcm-center.exe $centerOut/rcm-center.exe
-          Copy-Item java/agent/build/native/nativeCompile/rcm-agent.exe $agentOut/rcm-agent.exe
-          Get-ChildItem java/center/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $centerOut
-          Get-ChildItem java/agent/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $agentOut
-          Copy-Item scripts/install-java-agent.ps1, README.md, LICENSE, NOTICE $out
-          foreach ($bundle in @($centerOut, $agentOut)) {
-            Get-FileHash (Get-ChildItem $bundle -File | Where-Object { $_.Extension -in '.exe','.dll' }) -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content (Join-Path $bundle 'SHA256SUMS') -Encoding ascii
-          }
+           $centerOut = Join-Path $out 'center'
+           $agentOut = Join-Path $out 'agent'
+           $desktopOut = Join-Path $out 'desktop'
+           $browserOut = Join-Path $out 'browser'
+           New-Item -ItemType Directory -Force -Path $centerOut, $agentOut, $desktopOut, $browserOut | Out-Null
+           Copy-Item java/center/build/native/nativeCompile/rcm-center.exe $centerOut/rcm-center.exe
+           Copy-Item java/agent/build/native/nativeCompile/rcm-agent.exe $agentOut/rcm-agent.exe
+           Copy-Item java/desktop/build/native/nativeCompile/rcm-desktop-companion.exe $desktopOut/rcm-desktop-companion.exe
+           Copy-Item java/browser/build/native/nativeCompile/rcm-browser-agent.exe $browserOut/rcm-browser-agent.exe
+           Get-ChildItem java/center/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $centerOut
+           Get-ChildItem java/agent/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $agentOut
+           Get-ChildItem java/desktop/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $desktopOut
+           Get-ChildItem java/browser/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $browserOut
+           Copy-Item scripts/install-java-agent.ps1, README.md, LICENSE, NOTICE $out
+           foreach ($bundle in @($centerOut, $agentOut, $desktopOut, $browserOut)) {
+             Get-FileHash (Get-ChildItem $bundle -File | Where-Object { $_.Extension -in '.exe','.dll' }) -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content (Join-Path $bundle 'SHA256SUMS') -Encoding ascii
+           }
           # The Agent updater consumes a flat bundle so the executable and all
           # Native Image DLLs are replaced atomically.  Keep this asset name in
           # sync with UpgradeService.resolveReleaseArtifact().
           $agentArchive = Join-Path $PWD "remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"
           Push-Location $agentOut
-          try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath $agentArchive -Force }
-          finally { Pop-Location }
-          (Get-FileHash "remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip.sha256" -Encoding ascii
-          & "$PWD/scripts/verify-native-bundle.ps1" -AgentArchive "$PWD/remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"
-          Compress-Archive -Path "$out/*" -DestinationPath "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Force
+           try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath $agentArchive -Force }
+           finally { Pop-Location }
+           (Get-FileHash "remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip.sha256" -Encoding ascii
+           & "$PWD/scripts/verify-native-bundle.ps1" -AgentArchive "$PWD/remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"
+           $desktopArchive = Join-Path $PWD "remote-connect-mcp-desktop-$env:RELEASE_VERSION-windows-amd64.zip"
+           Push-Location $desktopOut
+           try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath $desktopArchive -Force }
+           finally { Pop-Location }
+           (Get-FileHash $desktopArchive -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-desktop-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "$desktopArchive.sha256" -Encoding ascii
+           & "$PWD/scripts/verify-native-bundle.ps1" -AgentArchive $desktopArchive -ExecutableName 'rcm-desktop-companion.exe'
+           $browserArchive = Join-Path $PWD "remote-connect-mcp-browser-$env:RELEASE_VERSION-windows-amd64.zip"
+           Push-Location $browserOut
+           try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath $browserArchive -Force }
+           finally { Pop-Location }
+           (Get-FileHash $browserArchive -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-browser-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "$browserArchive.sha256" -Encoding ascii
+           & "$PWD/scripts/verify-native-bundle.ps1" -AgentArchive $browserArchive -ExecutableName 'rcm-browser-agent.exe'
+           Compress-Archive -Path "$out/*" -DestinationPath "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Force
           (Get-FileHash "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip.sha256" -Encoding ascii
       - name: Generate Windows Native SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
@@ -364,6 +426,8 @@ jobs:
           subject-path: |
             java-release-windows-amd64/center/rcm-center.exe
             java-release-windows-amd64/agent/rcm-agent.exe
+            java-release-windows-amd64/desktop/rcm-desktop-companion.exe
+            java-release-windows-amd64/browser/rcm-browser-agent.exe
             remote-connect-mcp-*.zip
             remote-connect-mcp-*.spdx.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

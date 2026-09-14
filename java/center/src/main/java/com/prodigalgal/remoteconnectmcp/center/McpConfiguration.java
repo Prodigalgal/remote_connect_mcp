@@ -165,7 +165,7 @@ public class McpConfiguration {
                 tool("desktop", "Queue a bounded screenshot, screen listing, launch, click, drag, key, text, clipboard, or window-focus action on an explicitly desktop-capable user-session Agent.", schema(
                         Map.ofEntries(
                                 Map.entry("operation", string("screenshot, screens, launch, click, drag, key, type, clipboard_read, clipboard_write, focus, or result")),
-                                Map.entry("machine_id", string("desktop Agent machine ID")),
+                                Map.entry("machine_id", string("command-agent machine ID with desktop capability")),
                                 Map.entry("task_id", string("existing desktop task for result")),
                                 Map.entry("executable", string("literal application for launch")),
                                 Map.entry("args", objectArray("literal launch arguments")),
@@ -184,7 +184,7 @@ public class McpConfiguration {
                                 Map.entry("idempotency_key", string("stable retry key"))),
                         List.of("operation")), request -> desktop(agents, tasks, request), scheduler),
                 tool("browser", "Queue one bounded browser adapter request on an explicitly browser-capable Agent.", schema(
-                        Map.of("machine_id", string("browser Agent machine ID"), "command", string("adapter request; URL/selector data stays on the Agent"),
+                        Map.of("machine_id", string("command-agent machine ID with browser capability"), "command", string("adapter request; URL/selector data stays on the Agent"),
                                 "cwd", string("optional adapter working directory"), "timeout_seconds", integer("0 means default"),
                                 "wait_ms", integer("0-15000"), "idempotency_key", string("stable retry key")),
                         List.of("machine_id", "command")), request -> browser(agents, tasks, request), scheduler),
