@@ -296,7 +296,7 @@ public final class AdminController {
                         decoded.projectId(), decoded.worktreeId(), mode, scopeRoot, internal.sessionId(),
                         internal.risk(), internal.elevationRequired());
             }
-            return ResponseEntity.status(HttpStatus.CREATED).body(tasks.create(internal));
+            return ResponseEntity.status(HttpStatus.CREATED).body(tasks.create(internal, "console"));
         });
     }
 

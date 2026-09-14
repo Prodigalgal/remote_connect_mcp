@@ -378,7 +378,7 @@ public class McpConfiguration {
                     null, args.command(), scope.cwd(), args.env(), timeout, null, Instant.now());
             var task = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
-                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())));
+                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())), "mcp");
             return json(Map.of("task", taskMap(task), "next_action", "use task_wait or task_output with this task_id"));
         } catch (Exception exception) {
             return error(exception);
@@ -398,7 +398,7 @@ public class McpConfiguration {
                     "browser", args.command(), scope.cwd(), Map.of(), timeout, null, Instant.now());
             var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
-                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())));
+                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())), "mcp");
             var waitMs = args.waitMs() == null ? 0 : args.waitMs();
             if (waitMs < 0 || waitMs > 15000) throw new IllegalArgumentException("wait_ms must be between 0 and 15000");
             if (waitMs > 0) return taskResult(tasks, tasks.waitForTerminal(created.id(), Duration.ofMillis(waitMs)), 0, 16 * 1024);
@@ -448,7 +448,7 @@ public class McpConfiguration {
                     "desktop", null, scope.cwd(), Map.of(), timeout, action, Instant.now());
             var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
-                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())));
+                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())), "mcp");
             if (waitMs > 0) {
                 var completed = tasks.waitForTerminal(created.id(), Duration.ofMillis(waitMs));
                 return desktopResult(tasks, completed);

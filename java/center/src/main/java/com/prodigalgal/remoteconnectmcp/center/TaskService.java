@@ -94,7 +94,19 @@ public final class TaskService {
         this.audit = null;
     }
 
+    /**
+     * Enqueue a task using the legacy/admin audit source.  Callers that know
+     * the request channel should use {@link #create(CreateTaskRequest, String)}
+     * so the audit timeline can distinguish MCP/model requests from console
+     * actions without storing command text or credentials.
+     */
     public TaskView create(CreateTaskRequest request) {
+        return create(request, "admin");
+    }
+
+    /** Enqueue a task and retain only a bounded, normalized audit source. */
+    public TaskView create(CreateTaskRequest request, String auditActor) {
+        var actor = normalizeAuditActor(auditActor);
         if (request == null || request.machineId().isBlank()) {
             throw new IllegalArgumentException("machineId is required");
         }
@@ -131,7 +143,7 @@ public final class TaskService {
             var created = jdbcStore.create(id, request.machineId(), command, request.idempotencyKey(), command.createdAt());
             signalChanged(id);
             signalWake(request.machineId());
-            audit("task.created", "admin", request.machineId(), created.id(), command, "accepted",
+            audit("task.created", actor, request.machineId(), created.id(), command, "accepted",
                     "attempt=0,elevation=" + command.contract().elevationRequired());
             return created;
         }
@@ -155,7 +167,7 @@ public final class TaskService {
             signalChanged();
             var created = new TaskView(state);
             signalWake(request.machineId());
-            audit("task.created", "admin", request.machineId(), created.id(), command, "accepted",
+            audit("task.created", actor, request.machineId(), created.id(), command, "accepted",
                     "attempt=0,elevation=" + command.contract().elevationRequired());
             return created;
         } finally {
@@ -195,6 +207,15 @@ public final class TaskService {
             return List.of();
         }
         return all.subList(offset, Math.min(all.size(), offset + limit)).stream().map(TaskView::new).toList();
+    }
+
+    private static String normalizeAuditActor(String value) {
+        if (value == null || value.isBlank()) return "system";
+        var normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+        if (normalized.length() > 32 || !normalized.matches("[a-z0-9][a-z0-9._:-]*")) {
+            return "system";
+        }
+        return normalized;
     }
 
     /**

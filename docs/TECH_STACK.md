@@ -105,7 +105,7 @@ Center 或显式禁用时才退避回退。当前已加入只传递 wake 提示�
 
 ### 3.4 可观测性
 
-指标只记录计数、延迟、连接、任务状态、版本和错误类别；命令、路径、环境变量、Token、Cookie、截图内容不进指标标签。日志使用 JSON，默认脱敏；审计记录 actor、machine/agent ID、task ID、结果和时间线，命令正文按策略摘要化。
+指标只记录计数、延迟、连接、任务状态、版本和错误类别；命令、路径、环境变量、Token、Cookie、截图内容不进指标标签。日志使用 JSON，默认脱敏；审计记录 actor（例如 `mcp`、`console`、`agent`）、machine/agent ID、task ID、结果和时间线，命令正文按策略摘要化。
 
 ## 4. Agent 详细设计
 
