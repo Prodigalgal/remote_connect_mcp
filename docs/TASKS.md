@@ -47,7 +47,7 @@
 | [ ] | P1-05 | 升级 offer/attempt 与兼容回滚 | canary、批次、SHA-256、原子替换和回滚已有；offer/status 已携带可选 attempt 并拒绝迟到状态覆盖；PostgreSQL campaign/target 行锁已串行化 offer、控制和状态更新；管理员可只重排队单个失败目标，不重复成功目标；仍需补齐数据库并发验证、版本兼容矩阵、离线补升级和失败暂停/重排队现场演练 | 多 Agent 并发升级、回滚和兼容测试 |
 | [ ] | P1-06 | WebSocket/事件唤醒生产验收 | wake-only WebSocket、指数重连、HTTPS 回退和 PG 通知桥接已有；补齐真实反向代理、多副本、序列号、断线和 Center 重启演练 | 代理/多副本故障演练 |
 | [ ] | P1-07 | 配置与心跳自描述 | 已加入版本化 runtime descriptor：generation、并发、单任务及 Agent 总进程预算、输出/资源预算、scope_mode、桌面/浏览器配置与会话状态随心跳发送并持久化到 Center；配置更新支持可选 `expected_generation` CAS、有界历史和单调 generation 回滚；当前明确支持 schema 1，旧 Agent 缺失总预算字段时使用有界默认值，未知未来 schema 在协议边界拒绝而不猜测新语义；仍需目标机回滚演练 | Agent 心跳 schema、配置回滚测试 |
-| [ ] | P1-08 | 终端与子 Agent 生命周期 | 默认一个 command-agent 身份，桌面/浏览器作为子组件；command-agent 的桌面直启进程已纳入有界预算，并在 Agent 关闭/升级时回收；仍需补齐多物理 Agent 的显式隔离、互斥、崩溃拉起和 Center 视图 | `DesktopProcessBudgetTest`、GitHub Actions；仍需主机多 Agent、进程树和 Token 隔离测试 |
+| [ ] | P1-08 | 终端与子 Agent 生命周期 | 默认一个 command-agent 身份，桌面/浏览器作为子组件；command-agent 的桌面直启进程已纳入有界预算，并在 Agent 关闭/升级/JVM shutdown hook 中回收；仍需补齐多物理 Agent 的显式隔离、互斥、崩溃拉起和 Center 视图 | `DesktopProcessBudgetTest`、GitHub Actions；仍需主机多 Agent、进程树和 Token 隔离测试 |
 | [ ] | P1-09 | 审计与错误可解释性 | 已增加有界异步审计队列、PostgreSQL `rcm_audit_event`、Admin 分页查询和 Console 审计页，记录任务状态/尝试、工件、Git、配置与升级事件且不写入命令/凭据；任务创建已区分 `mcp` 与 `console` 来源，任务/升级/控制器错误在落库和返回前统一脱敏，已加入管理员确认后的有界保留清理入口；仍需接入更细的审批来源、脱敏抽样和真实故障报告 | 审计查询、保留清理、脱敏抽样和故障报告 |
 
 ### P1 完成门禁
