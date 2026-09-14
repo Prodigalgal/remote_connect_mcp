@@ -5,7 +5,9 @@
 
 Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统。ChatGPT 只连接一个 MCP Gateway；每台目标机器运行一个主动连接 Center 的 Agent。Center 同时提供机器注册、持久化异步任务、断线续传、Web 控制台和 Agent 集群升级编排。
 
-目标架构和演进边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，异步调用契约见 [`docs/ASYNC_CONTRACT.md`](docs/ASYNC_CONTRACT.md)，详细语言、运行时、原生构建和前端选型见 [`docs/TECH_STACK.md`](docs/TECH_STACK.md)，Java/React 发布门禁见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)，当前实现/生产阻塞见 [`docs/STATUS.md`](docs/STATUS.md)。Java 25 Center/Agent 与 React 控制台已建立可独立验收的实现；现有 Go Center/Agent 在全部生产门禁通过前仍作为兼容基线，不会被未验证的 Java 构建替换。一个物理终端默认只有一个向 Center 注册的 `command-agent` 身份；桌面能力由同安装包启动的用户会话 `desktop-companion` 提供，浏览器能力由有界的本机 Browser Worker 提供，不增加额外 machine ID 或 Token。确需隔离时才为同一终端显式注册多个 Agent。
+产品需求基线见 [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md)。本文档说明使用和部署；需求基线、架构、异步契约和实现状态分别维护，规划中的能力不会自动视为已上线。
+
+目标架构和演进边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，异步调用契约见 [`docs/ASYNC_CONTRACT.md`](docs/ASYNC_CONTRACT.md)，详细语言、运行时、原生构建和前端选型见 [`docs/TECH_STACK.md`](docs/TECH_STACK.md)，Java/React 发布门禁见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)，当前实现/生产阻塞见 [`docs/STATUS.md`](docs/STATUS.md)。Java 25 Center/Agent 与 React 控制台已经进入生产路径；Go 组件仅作为离线节点的兼容/回滚基线保留。一个物理终端默认只有一个向 Center 注册的 `command-agent` 身份；桌面能力由同安装包启动的用户会话 `desktop-companion` 提供，浏览器能力由有界的本机 Browser Worker 提供，不增加额外 machine ID 或 Token。确需隔离时才为同一终端显式注册多个 Agent。
 
 项目不代理其他 MCP，也不对命令内容做白名单过滤。Agent 支持两种目录策略：默认的 `unrestricted` 模式保持整机运维能力；`workspace` 模式会在 Center 和 Agent 两侧校验任务工作目录，只允许指定工作区及其子目录。
 
@@ -16,7 +18,7 @@ Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统
 
 完整的目标架构、Desktop/Browser Agent、项目注册、worktree、长连接和热更新边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
-Java/React 迁移已完成 Center/Console 的 v0.1.15 生产切换，并正在分批替换存量 Agent：`java/` 提供 Java 25 多模块 Center、command-agent、desktop-companion 和 browser-agent 三个 Native 构建目标，异步 MCP、事务任务/输出/工件适配和本机能力桥接；`web/` 提供独立 React/Vite 控制台并可用 Admin Token 读取 Center API。Java Center 的持久化路线固定为 PostgreSQL + Liquibase，不使用 Flyway；Go Center 已缩容为 0，Go Agent 仅作为尚未上线节点的兼容/回滚基线保留。
+Java/React 迁移已完成 Center/Console 的 v0.1.21 生产切换，四台在线 Oracle Agent 已升级到 v0.1.21，离线节点保留旧版兼容路径：`java/` 提供 Java 25 多模块 Center、command-agent、desktop-companion 和 browser-agent 三个 Native 构建目标，异步 MCP、事务任务/输出/工件适配和本机能力桥接；`web/` 提供独立 React/Vite 控制台并可用 Admin Token 读取 Center API。Java Center 的持久化路线固定为 PostgreSQL + Liquibase，不使用 Flyway；Go Center 已缩容为 0，Go Agent 仅作为尚未上线节点的兼容/回滚基线保留。
 
 ```text
 ChatGPT Web

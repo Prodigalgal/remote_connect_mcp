@@ -1,5 +1,7 @@
 # Java/React 生产发布门禁
 
+产品需求基线：[`docs/REQUIREMENTS.md`](REQUIREMENTS.md)。本文只描述构建、发布和部署验收，不定义新的产品范围。
+
 Java Center/Agent 的目标发布物是 Java 25 Native Image；JVM JAR 只作为诊断和回退包。所有测试、JVM 包、React 资源和 Native Image 均由 GitHub Actions 完成；开发机和目标宿主机不执行任何编译或打包，避免 Native Image 峰值占满内存。
 
 ## 构建

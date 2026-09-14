@@ -1,6 +1,6 @@
 # Remote Connect MCP 目标架构
 
-本文档定义 RCM 的长期架构边界和演进顺序。仓库同时保留 Go 兼容基线与 Java 25 Center/Agent 实现；Java 生产路径已覆盖异步任务、MCP、PostgreSQL/Liquibase、桌面工件和 Browser Worker 入口，Center/Console 已完成 v0.1.15 切换，存量 Agent 仍按 canary/批次通过故障恢复门禁逐台替换。React 控制台独立部署。文档中的“规划中”能力不会在没有协议、权限和兼容性评估时自动暴露给 MCP。Java/React 的具体技术选型见 [`docs/TECH_STACK.md`](TECH_STACK.md)。
+本文档定义 RCM 的长期架构边界和演进顺序。上游需求基线见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)；本文只说明组件如何实现这些需求。仓库同时保留 Go 兼容基线与 Java 25 Center/Agent 实现，React 控制台独立部署。文档中的“规划中”能力不会在没有协议、权限和兼容性评估时自动暴露给 MCP。Java/React 的具体技术选型见 [`docs/TECH_STACK.md`](TECH_STACK.md)。
 
 ## 1. 总体拓扑
 
