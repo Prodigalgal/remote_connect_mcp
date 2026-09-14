@@ -18,10 +18,8 @@ databaseChangeLog:
                   defaultValue: inline
                   constraints:
                     nullable: false
-        - addCheckConstraint:
-            tableName: rcm_task_artifact
-            constraintName: ck_rcm_artifact_storage_backend
-            checkConstraint: storage_backend IN ('inline', 'filesystem', 's3')
+        - sql:
+            sql: ALTER TABLE rcm_task_artifact ADD CONSTRAINT ck_rcm_artifact_storage_backend CHECK (storage_backend IN ('inline', 'filesystem', 's3'))
         - createIndex:
             tableName: rcm_task_artifact
             indexName: idx_rcm_artifact_created_at
@@ -32,9 +30,8 @@ databaseChangeLog:
         - dropIndex:
             tableName: rcm_task_artifact
             indexName: idx_rcm_artifact_created_at
-        - dropCheckConstraint:
-            tableName: rcm_task_artifact
-            constraintName: ck_rcm_artifact_storage_backend
+        - sql:
+            sql: ALTER TABLE rcm_task_artifact DROP CONSTRAINT ck_rcm_artifact_storage_backend
         - dropColumn:
             tableName: rcm_task_artifact
             columnName: storage_backend
