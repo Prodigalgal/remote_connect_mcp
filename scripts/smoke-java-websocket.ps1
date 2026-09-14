@@ -152,6 +152,7 @@ try {
 
     $task = Invoke-Json 'POST' '/api/v1/admin/tasks' $adminToken @{
         machine_id = [string]$registration.machine_id
+        scope_mode = 'unrestricted'
         command = @{
             kind = 'command'
             required_capability = 'command'

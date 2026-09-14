@@ -174,6 +174,6 @@ Agent 心跳自描述版本、平台、HostID、角色、能力、范围策略�
 4. **可靠性阶段**：完善 Task Attempt、死信/过期任务和 WebSocket；配置代次/热更新与心跳自描述已落地。
 5. **开发工作流阶段**：Project Registry 与 Git worktree 已落地基础闭环；继续补结构化文件/Git/检查、提交审阅和显式合并工具。
 6. **专用自动化阶段**：Browser Agent 的 Playwright/Patchright/Comoufox 完整 Worker 协议、会话生命周期和工件策略；桌面输入基础能力已落地，继续补窗口/焦点适配。
-7. **规模化阶段**：在 PostgreSQL + Liquibase 持久化已经成为默认生产路径后，再按多副本需求增加 Center 副本、LISTEN/NOTIFY 唤醒和对象存储扩展，保持 MCP URL 与工具契约不变。
+7. **规模化阶段**：在 PostgreSQL + Liquibase 持久化已经成为默认生产路径后，再按多副本需求增加 Center 副本、LISTEN/NOTIFY 唤醒和 S3 兼容对象存储扩展，保持 MCP URL 与工具契约不变；当前文件对象实现只依赖独立持久卷。
 
 明确不在当前范围：OAuth 2.1 强制化、代理其他 MCP、把任意范围模式冒充 OS 沙箱、把 ChatGPT 的动作审批策略写入 Center、或一次性暴露海量浏览器/桌面底层工具。

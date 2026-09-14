@@ -21,7 +21,7 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.21 生产发布；四�
 | Browser | 独立 `browser` Native 目标的单任务 supervisor；command-agent 负责 Center 生命周期、超时、日志和工件，browser-agent 再启动本机 Playwright/Patchright/Comoufox Worker | `BrowserTaskRunnerTest`、`BrowserTaskRunner`，以及 GitHub Actions `34795775084` 的三目标 Native smoke 通过 |
 | 升级 | Center canary/批次状态机，HTTPS + SHA-256，Agent Helper 原子替换和回滚；发布工作流资产名已与解析器对齐 | `UpgradeServiceTest`；`.github/workflows/java-release.yml` 静态校验 |
 | 控制台 | React/Vite 经典后台布局，机器、项目/worktree、任务、令牌、升级和设置页面；全局搜索、机器在线筛选、任务状态筛选和任务输出 16 KiB 游标分页查看；Admin Token 只在当前标签页内存 | v0.1.21 GitHub Actions React 构建与生产 Console 路由验收通过 |
-| 数据库 | PostgreSQL 适配器与 Liquibase `001`–`009` changelog；内存模式仍用于协议回归；发布工作流带 PostgreSQL 16 服务容器集成、备份和恢复门禁 | Liquibase 资源/迁移单元测试通过；CI `PostgresIntegrationTest` 会覆盖注册、项目/worktree、幂等任务、租约、输出续传和工件往返，随后执行 custom-format dump/restore |
+| 数据库 | PostgreSQL 适配器与 Liquibase `001`–`011` changelog；内存模式仍用于协议回归；发布工作流带 PostgreSQL 16 服务容器集成、备份和恢复门禁 | Liquibase 资源/迁移单元测试通过；CI `PostgresIntegrationTest` 会覆盖注册、项目/worktree、幂等任务、租约、输出续传和工件往返，随后执行 custom-format dump/restore |
 | 发布脚本 | Java JVM 构建、Native Image 门禁脚本、Windows/Linux Agent 安装器、Java Center/Agent JVM/Native 烟测脚本，以及 Windows/Linux WebSocket wake 烟测 | 当前只做静态校验；Native Image、完整原生烟测、Agent RSS 资源报告和仓库卫生扫描交给 GitHub Actions，Windows/Linux 安装器均支持 CI 平铺 ZIP + 旁路库 |
 
 ## 部分实现或仍需补齐

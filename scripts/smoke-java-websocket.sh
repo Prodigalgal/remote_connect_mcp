@@ -139,6 +139,7 @@ const task = await jsonFetch("/api/v1/admin/tasks", {
   method: "POST",
   body: JSON.stringify({
     machine_id: registration.machine_id,
+    scope_mode: "unrestricted",
     command: { kind: "command", required_capability: "command", command: "echo websocket-wake", cwd: process.cwd(), env: {}, timeout_seconds: 30 },
   }),
 });
