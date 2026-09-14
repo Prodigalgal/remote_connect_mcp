@@ -220,7 +220,7 @@ final class JdbcTaskStore {
             task.attempt(task.attempt() + 1);
             task.dispatchedAt(now);
             task.leaseUntil(lease);
-            return new PollResult(new PollResponse(task.command(), cancelIds, null), recoveredTaskIds);
+            return new PollResult(new PollResponse(task.command().withAttempt(task.attempt()), cancelIds, null), recoveredTaskIds);
         });
     }
 
@@ -232,6 +232,10 @@ final class JdbcTaskStore {
     }
 
     TaskView updateState(String machineId, String taskId, TaskUpdateRequest update) {
+        return updateState(machineId, taskId, update, null);
+    }
+
+    TaskView updateState(String machineId, String taskId, TaskUpdateRequest update, Integer attempt) {
         return transactions.execute(status -> {
             var task = findForUpdateMeta(taskId);
             if (task == null) {
@@ -240,6 +244,7 @@ final class JdbcTaskStore {
             if (!task.machineId().equals(machineId)) {
                 throw new SecurityException("task does not belong to this machine");
             }
+            assertAttempt(task, attempt);
             var next = update.status().trim().toLowerCase();
             if (!validStatus(next)) {
                 throw new IllegalArgumentException("unsupported task status: " + next);
@@ -273,6 +278,10 @@ final class JdbcTaskStore {
     }
 
     OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data) {
+        return appendOutput(machineId, taskId, offset, data, null);
+    }
+
+    OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data, Integer attempt) {
         if (offset < 0 || data == null) {
             throw new IllegalArgumentException("offset and data are required");
         }
@@ -284,6 +293,7 @@ final class JdbcTaskStore {
             var task = findForUpdateMeta(taskId);
             if (task == null) throw new IllegalArgumentException("task not found");
             if (!task.machineId().equals(machineId)) throw new SecurityException("task does not belong to this machine");
+            assertAttempt(task, attempt);
             var currentBytes = task.outputBytes();
             if (offset > currentBytes) throw new IllegalArgumentException("output offset is ahead of the confirmed cursor");
             if (offset > Integer.MAX_VALUE - 1L) throw new IllegalArgumentException("output offset is outside the supported range");
@@ -358,10 +368,16 @@ final class JdbcTaskStore {
     }
 
     ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256, byte[] data) {
+        return appendArtifact(machineId, taskId, mimeType, sha256, data, null);
+    }
+
+    ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256,
+                                    byte[] data, Integer attempt) {
         return transactions.execute(status -> {
             var task = findForUpdateMeta(taskId);
             if (task == null) throw new IllegalArgumentException("task not found");
             if (!task.machineId().equals(machineId)) throw new SecurityException("task does not belong to this machine");
+            assertAttempt(task, attempt);
             var existing = jdbc.query("SELECT storage_backend, object_key, sha256, artifact_data FROM rcm_task_artifact WHERE task_id = ? FOR UPDATE",
                     ps -> ps.setString(1, taskId), rs -> {
                         if (!rs.next()) return null;
@@ -609,6 +625,12 @@ final class JdbcTaskStore {
                 && left.timeoutSeconds() == right.timeoutSeconds()
                 && Objects.equals(left.desktop(), right.desktop())
                 && (left.contract() == null ? right.contract() == null : left.contract().sameIntent(right.contract()));
+    }
+
+    private static void assertAttempt(TaskState task, Integer attempt) {
+        if (attempt != null && attempt > 0 && task.attempt() != attempt) {
+            throw new SecurityException("stale task dispatch attempt");
+        }
     }
 
     private static boolean validStatus(String status) {

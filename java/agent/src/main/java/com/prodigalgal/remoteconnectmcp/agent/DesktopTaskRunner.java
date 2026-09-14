@@ -112,13 +112,23 @@ final class DesktopTaskRunner implements Runnable {
                 builder.environment().put("RCM_DESKTOP_SCREENSHOT", file.toString());
             }
             var process = builder.start();
-            var timeout = Math.min(TaskLimits.timeoutSeconds(task, 30), 300);
-            if (!process.waitFor(timeout, TimeUnit.SECONDS)) {
-                process.destroyForcibly();
-                throw new IOException("desktop screenshot timed out");
-            }
-            if (process.exitValue() != 0) {
-                throw new IOException("desktop screenshot command exited with code " + process.exitValue());
+            var resourceSupervisor = ProcessResourceSupervisor.start(process, config, task,
+                    () -> terminate(process));
+            try {
+                var timeout = Math.min(TaskLimits.timeoutSeconds(task, 30), 300);
+                if (!process.waitFor(timeout, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    throw new IOException("desktop screenshot timed out");
+                }
+                var resourceViolation = resourceSupervisor == null ? null : resourceSupervisor.violation();
+                if (resourceViolation != null && !resourceViolation.isBlank()) {
+                    throw new IOException(resourceViolation);
+                }
+                if (process.exitValue() != 0) {
+                    throw new IOException("desktop screenshot command exited with code " + process.exitValue());
+                }
+            } finally {
+                if (resourceSupervisor != null) resourceSupervisor.close();
             }
             var data = Files.readAllBytes(file);
             var maxArtifactBytes = TaskLimits.artifactBytes(task, MAX_SCREENSHOT_BYTES);
@@ -130,7 +140,7 @@ final class DesktopTaskRunner implements Runnable {
             }
             var digest = sha256(data);
             AgentRetry.call(LOG, "desktop artifact upload " + task.id(), () -> {
-                transport.appendArtifact(identity.machineId(), identity.token(), task.id(), "image/png", digest, data);
+                transport.appendArtifact(identity.machineId(), identity.token(), task.id(), task.attempt(), "image/png", digest, data);
                 return null;
             });
             sendOutput("screenshot captured (" + data.length + " bytes)" + System.lineSeparator());
@@ -151,7 +161,7 @@ final class DesktopTaskRunner implements Runnable {
             }
             var digest = sha256(data);
             AgentRetry.call(LOG, "desktop companion artifact upload " + task.id(), () -> {
-                transport.appendArtifact(identity.machineId(), identity.token(), task.id(), "image/png", digest, data);
+                transport.appendArtifact(identity.machineId(), identity.token(), task.id(), task.attempt(), "image/png", digest, data);
                 return null;
             });
         }
@@ -207,14 +217,14 @@ final class DesktopTaskRunner implements Runnable {
     private void sendOutput(String text) throws IOException, InterruptedException {
         var data = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         AgentRetry.call(LOG, "desktop output upload " + task.id(), () -> {
-            transport.appendOutput(identity.machineId(), identity.token(), task.id(), 0, data);
+            transport.appendOutput(identity.machineId(), identity.token(), task.id(), task.attempt(), 0, data);
             return null;
         });
     }
 
     private void sendState(TaskUpdateRequest state) throws IOException, InterruptedException {
         AgentRetry.call(LOG, "desktop state upload " + task.id(), () -> {
-            transport.updateState(identity.machineId(), identity.token(), task.id(), state);
+            transport.updateState(identity.machineId(), identity.token(), task.id(), task.attempt(), state);
             return null;
         });
     }
@@ -276,5 +286,23 @@ final class DesktopTaskRunner implements Runnable {
     private static String compactError(String value) {
         var error = value == null || value.isBlank() ? "desktop task failed" : value.trim();
         return error.length() <= 4096 ? error : error.substring(0, 4096);
+    }
+
+    private static void terminate(Process process) {
+        if (process == null) return;
+        try {
+            var descendants = process.descendants().toList();
+            for (var index = descendants.size() - 1; index >= 0; index--) descendants.get(index).destroy();
+            process.destroy();
+            if (!process.waitFor(2, TimeUnit.SECONDS) && process.isAlive()) process.destroyForcibly();
+            for (var index = descendants.size() - 1; index >= 0; index--) {
+                if (descendants.get(index).isAlive()) descendants.get(index).destroyForcibly();
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+        } catch (RuntimeException ignored) {
+            process.destroyForcibly();
+        }
     }
 }

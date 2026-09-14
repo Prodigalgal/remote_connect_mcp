@@ -13,10 +13,22 @@ public record CreateUpgradeCampaignRequest(
         @JsonProperty("canary_count") Integer canaryCount,
         @JsonProperty("batch_size") Integer batchSize,
         @JsonProperty("machine_ids") List<String> machineIds,
-        Map<String, UpgradeArtifact> artifacts) {
+        Map<String, UpgradeArtifact> artifacts,
+        @JsonProperty("include_offline") Boolean includeOffline) {
+
+    /** Compatibility constructor for the original five-field request. */
+    public CreateUpgradeCampaignRequest(String version, Integer canaryCount, Integer batchSize,
+                                        List<String> machineIds, Map<String, UpgradeArtifact> artifacts) {
+        this(version, canaryCount, batchSize, machineIds, artifacts, null);
+    }
 
     public CreateUpgradeCampaignRequest {
         machineIds = machineIds == null ? List.of() : Collections.unmodifiableList(new java.util.ArrayList<>(machineIds));
         artifacts = artifacts == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(artifacts));
+        // A campaign created without an explicit machine list is a fleet
+        // campaign.  Keep offline registrations in the target set so an
+        // Agent that reconnects later receives the same signed release offer;
+        // callers that need the old online-only behavior can opt out.
+        includeOffline = includeOffline == null || includeOffline;
     }
 }

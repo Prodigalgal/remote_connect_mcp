@@ -33,6 +33,10 @@ public record AgentConfig(
     private static final long DEFAULT_MAX_OUTPUT_BYTES = 64L * 1024 * 1024;
     private static final long DEFAULT_MAX_AGGREGATE_OUTPUT_BYTES = 256L * 1024 * 1024;
     private static final long MAX_AGGREGATE_OUTPUT_BYTES = 4L * 1024 * 1024 * 1024;
+    private static final int DEFAULT_MAX_CHILD_PROCESSES = 32;
+    private static final long MAX_TASK_DURATION_SECONDS = 30L * 24 * 60 * 60;
+    private static final long MAX_TASK_RSS_BYTES = 16L * 1024 * 1024 * 1024;
+    private static final long MAX_TASK_CPU_SECONDS = 30L * 24 * 60 * 60;
 
     /** Compatibility constructor for callers written before output limits were configurable. */
     public AgentConfig(URI centerUrl, String enrollmentToken, String name, String hostId,
@@ -117,6 +121,38 @@ public record AgentConfig(
         var configured = Math.toIntExact(parseLongEnv(
                 "REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS", defaultValue, 1, 8));
         return Math.min(maxConcurrency, configured);
+    }
+
+    /**
+     * Optional host-wide ceiling for one task. Zero preserves the durable
+     * no-timeout command contract; a positive value is narrowed further by a
+     * Center execution contract. This is read once per task from the process
+     * environment, so a service restart is required to change hard limits.
+     */
+    public long maxTaskDurationSeconds() {
+        return parseLongEnv("REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS", 0,
+                0, MAX_TASK_DURATION_SECONDS);
+    }
+
+    /** Maximum descendants (including the root process) allowed for one task. */
+    public int maxTaskChildProcesses() {
+        return Math.toIntExact(parseLongEnv("REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES",
+                DEFAULT_MAX_CHILD_PROCESSES, 1, 256));
+    }
+
+    /** Optional resident-set ceiling. Zero means the platform probe is disabled. */
+    public long maxTaskRssBytes() {
+        return parseLongEnv("REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES", 0, 0, MAX_TASK_RSS_BYTES);
+    }
+
+    /** Optional aggregate CPU-time ceiling. Zero means the probe is disabled. */
+    public long maxTaskCpuSeconds() {
+        return parseLongEnv("REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS", 0, 0, MAX_TASK_CPU_SECONDS);
+    }
+
+    /** Low-frequency fallback probe interval for platforms without cgroups. */
+    public long resourceSampleIntervalMillis() {
+        return parseLongEnv("REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS", 1000, 250, 10000);
     }
 
     public RegisterRequest registerRequest() {

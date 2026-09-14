@@ -47,6 +47,7 @@ final class CommandRunner implements Runnable {
         Future<?> outputDrainFuture = null;
         Future<?> outputUploadFuture = null;
         TaskOutputSpool outputSpool = null;
+        ProcessResourceSupervisor resourceSupervisor = null;
         var outputFailure = new AtomicReference<Throwable>();
         try {
             var cwd = resolveCwd(task.cwd());
@@ -62,6 +63,9 @@ final class CommandRunner implements Runnable {
             }
             outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), TaskLimits.outputBytes(config, task), resourceBudget);
             process = builder.start();
+            var processForSupervisor = process;
+            resourceSupervisor = ProcessResourceSupervisor.start(processForSupervisor, config, task,
+                    () -> terminate(processForSupervisor));
 
             // Reading the child and uploading to Center are separate workers.
             // A transient network outage therefore cannot fill the child pipe
@@ -82,7 +86,7 @@ final class CommandRunner implements Runnable {
             outputUploadFuture = outputExecutor.submit(() -> {
                 try {
                     TaskOutputPump.upload(LOG, "task output upload " + task.id(), spool,
-                            (offset, data) -> transport.appendOutput(identity.machineId(), identity.token(), task.id(), offset, data));
+                            (offset, data) -> transport.appendOutput(identity.machineId(), identity.token(), task.id(), task.attempt(), offset, data));
                 } catch (Throwable failure) {
                     outputFailure.compareAndSet(null, failure);
                     terminate(startedProcess);
@@ -113,6 +117,11 @@ final class CommandRunner implements Runnable {
             if (streamFailure != null) {
                 throw asIOException(streamFailure);
             }
+            var resourceViolation = resourceSupervisor == null ? null : resourceSupervisor.violation();
+            if (resourceViolation != null && !resourceViolation.isBlank()) {
+                sendState(new TaskUpdateRequest("failed", exitCode, resourceViolation, null, Instant.now(), spool.truncated()));
+                return;
+            }
             sendState(new TaskUpdateRequest(exitCode == 0 ? "completed" : "failed", exitCode,
                     exitCode == 0 ? null : "command exited with code " + exitCode, null, Instant.now(), spool.truncated()));
         } catch (InterruptedException exception) {
@@ -141,6 +150,7 @@ final class CommandRunner implements Runnable {
                 LOG.log(Level.WARNING, "could not report failed task " + task.id(), sendFailure);
             }
         } finally {
+            if (resourceSupervisor != null) resourceSupervisor.close();
             if (outputSpool != null) outputSpool.close();
             if (outputExecutor != null) {
                 outputExecutor.shutdownNow();
@@ -215,7 +225,7 @@ final class CommandRunner implements Runnable {
 
     private void sendState(TaskUpdateRequest update) throws IOException, InterruptedException {
         AgentRetry.call(LOG, "task state upload " + task.id(), () -> {
-            transport.updateState(identity.machineId(), identity.token(), task.id(), update);
+            transport.updateState(identity.machineId(), identity.token(), task.id(), task.attempt(), update);
             return null;
         });
     }

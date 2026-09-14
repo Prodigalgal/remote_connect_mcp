@@ -73,6 +73,7 @@ final class DurableCommandRunner implements Runnable {
     public void run() {
         DurableTaskStore.Record record = recovered;
         Process process = null;
+        ProcessResourceSupervisor resourceSupervisor = null;
         try {
             if (record == null) {
                 var cwd = AgentPaths.resolveCwd(config, identity.machineId(), task, task.cwd());
@@ -87,6 +88,9 @@ final class DurableCommandRunner implements Runnable {
             if (process == null && !record.completed()) {
                 store.watchRecoveredCompletion(record, handle);
             }
+            var handleForSupervisor = handle;
+            resourceSupervisor = ProcessResourceSupervisor.start(handleForSupervisor, config, task,
+                    () -> terminate(handleForSupervisor));
             store.guard(record, TaskLimits.outputBytes(config, task));
 
             if (!record.completed()) {
@@ -112,6 +116,11 @@ final class DurableCommandRunner implements Runnable {
                     error = "command exited with code " + exitCode;
                 }
                 store.markCompleted(record, exitCode, error);
+            }
+            var resourceViolation = resourceSupervisor == null ? null : resourceSupervisor.violation();
+            if (resourceViolation != null && !resourceViolation.isBlank()) {
+                error = resourceViolation;
+                if (exitCode == 0) exitCode = -1;
             }
             var finalError = relay.error() == null || relay.error().isBlank() ? error : relay.error();
             var status = exitCode == 0 && (finalError == null || finalError.isBlank()) ? "completed" : "failed";
@@ -144,6 +153,8 @@ final class DurableCommandRunner implements Runnable {
                     LOG.log(Level.WARNING, "could not report durable task failure " + task.id(), reportFailure);
                 }
             }
+        } finally {
+            if (resourceSupervisor != null) resourceSupervisor.close();
         }
     }
 
@@ -183,7 +194,7 @@ final class DurableCommandRunner implements Runnable {
                     }
                     var uploadOffset = offset;
                     OutputResponse response = AgentRetry.call(LOG, "durable output upload " + task.id(),
-                            () -> transport.appendOutput(identity.machineId(), identity.token(), task.id(), uploadOffset, data));
+                            () -> transport.appendOutput(identity.machineId(), identity.token(), task.id(), task.attempt(), uploadOffset, data));
                     var next = response.nextOffset();
                     if (next < uploadOffset || next > uploadOffset + data.length) {
                         throw new IOException("Center returned an invalid output cursor: " + next);
@@ -320,7 +331,7 @@ final class DurableCommandRunner implements Runnable {
 
     private void sendState(TaskUpdateRequest update) throws IOException, InterruptedException {
         AgentRetry.call(LOG, "durable state upload " + task.id(), () -> {
-            transport.updateState(identity.machineId(), identity.token(), task.id(), update);
+            transport.updateState(identity.machineId(), identity.token(), task.id(), task.attempt(), update);
             return null;
         });
     }

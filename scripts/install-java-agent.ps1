@@ -26,6 +26,16 @@ param(
     [ValidateRange(1048576, 1073741824)]
     [long]$MaxOutputBytes = 67108864,
     [long]$MaxAggregateOutputBytes = 0,
+    [ValidateRange(0, 2592000)]
+    [long]$MaxTaskDurationSeconds = 0,
+    [ValidateRange(1, 256)]
+    [int]$MaxChildProcesses = 32,
+    [ValidateRange(0, 17179869184)]
+    [long]$MaxRssBytes = 0,
+    [ValidateRange(0, 2592000)]
+    [long]$MaxCpuSeconds = 0,
+    [ValidateRange(250, 10000)]
+    [long]$ResourceSampleIntervalMs = 1000,
     [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
     [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent"
 )
@@ -242,6 +252,11 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
         REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES = $DesktopMaxLaunchedProcesses.ToString()
         REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES = $MaxOutputBytes.ToString()
         REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES = $MaxAggregateOutputBytes.ToString()
+        REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS = $MaxTaskDurationSeconds.ToString()
+        REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES = $MaxChildProcesses.ToString()
+        REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES = $MaxRssBytes.ToString()
+        REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS = $MaxCpuSeconds.ToString()
+        REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS = $ResourceSampleIntervalMs.ToString()
     }
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $destination
@@ -290,6 +305,11 @@ $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES=$DesktopMaxLaunchedProcesses",
     "REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES=$MaxOutputBytes",
     "REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES=$MaxAggregateOutputBytes",
+    "REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS=$MaxTaskDurationSeconds",
+    "REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES=$MaxChildProcesses",
+    "REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES=$MaxRssBytes",
+    "REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS=$MaxCpuSeconds",
+    "REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS=$ResourceSampleIntervalMs",
     "REMOTE_CONNECT_MCP_AGENT_BINARY_PATH=$destination",
     "REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME=$serviceName"
 )

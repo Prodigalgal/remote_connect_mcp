@@ -59,6 +59,7 @@ final class BrowserTaskRunner implements Runnable {
         Future<?> outputDrainFuture = null;
         Future<?> outputUploadFuture = null;
         TaskOutputSpool outputSpool = null;
+        ProcessResourceSupervisor resourceSupervisor = null;
         var outputFailure = new AtomicReference<Throwable>();
         var outputCursor = new AtomicLong();
         try {
@@ -101,6 +102,9 @@ final class BrowserTaskRunner implements Runnable {
             builder.environment().put("RCM_BROWSER_TASK_TIMEOUT_SECONDS", Integer.toString(timeout));
             outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), TaskLimits.outputBytes(config, task), resourceBudget);
             process = builder.start();
+            var processForSupervisor = process;
+            resourceSupervisor = ProcessResourceSupervisor.start(processForSupervisor, config, task,
+                    () -> terminate(processForSupervisor));
             outputExecutor = Executors.newVirtualThreadPerTaskExecutor();
             var startedProcess = process;
             var spool = outputSpool;
@@ -117,7 +121,7 @@ final class BrowserTaskRunner implements Runnable {
             outputUploadFuture = outputExecutor.submit(() -> {
                 try {
                     outputCursor.set(TaskOutputPump.upload(LOG, "browser output upload " + task.id(), spool,
-                            (offset, data) -> transport.appendOutput(identity.machineId(), identity.token(), task.id(), offset, data)));
+                            (offset, data) -> transport.appendOutput(identity.machineId(), identity.token(), task.id(), task.attempt(), offset, data)));
                 } catch (Throwable failure) {
                     outputFailure.compareAndSet(null, failure);
                     terminate(startedProcess);
@@ -135,6 +139,11 @@ final class BrowserTaskRunner implements Runnable {
             }
             awaitOutputs(outputDrainFuture, outputUploadFuture);
             if (outputFailure.get() != null) throw asIOException(outputFailure.get());
+            var resourceViolation = resourceSupervisor == null ? null : resourceSupervisor.violation();
+            if (resourceViolation != null && !resourceViolation.isBlank()) {
+                sendState(new TaskUpdateRequest("failed", process.exitValue(), resourceViolation, null, Instant.now(), spool.truncated()));
+                return;
+            }
             publishResult(resultFile, artifactDir, outputCursor.get());
             var exitCode = process.exitValue();
             sendState(new TaskUpdateRequest(exitCode == 0 ? "completed" : "failed", exitCode,
@@ -161,6 +170,7 @@ final class BrowserTaskRunner implements Runnable {
                 LOG.log(Level.WARNING, "could not report failed browser task " + task.id(), sendFailure);
             }
         } finally {
+            if (resourceSupervisor != null) resourceSupervisor.close();
             if (requestFile != null) {
                 try { Files.deleteIfExists(requestFile); } catch (IOException ignored) { }
             }
@@ -186,7 +196,7 @@ final class BrowserTaskRunner implements Runnable {
 
     private void sendState(TaskUpdateRequest state) throws IOException, InterruptedException {
         AgentRetry.call(LOG, "browser state upload " + task.id(), () -> {
-            transport.updateState(identity.machineId(), identity.token(), task.id(), state);
+            transport.updateState(identity.machineId(), identity.token(), task.id(), task.attempt(), state);
             return null;
         });
     }
@@ -194,7 +204,7 @@ final class BrowserTaskRunner implements Runnable {
     private void sendOutput(String text, long offset) throws IOException, InterruptedException {
         var data = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         AgentRetry.call(LOG, "browser output upload " + task.id(), () -> {
-            transport.appendOutput(identity.machineId(), identity.token(), task.id(), offset, data);
+            transport.appendOutput(identity.machineId(), identity.token(), task.id(), task.attempt(), offset, data);
             return null;
         });
     }
@@ -251,7 +261,7 @@ final class BrowserTaskRunner implements Runnable {
             throw new IOException("SHA-256 is unavailable", exception);
         }
         AgentRetry.call(LOG, "browser artifact upload " + task.id(), () -> {
-            transport.appendArtifact(identity.machineId(), identity.token(), task.id(), mimeType, sha256, data);
+            transport.appendArtifact(identity.machineId(), identity.token(), task.id(), task.attempt(), mimeType, sha256, data);
             return null;
         });
     }

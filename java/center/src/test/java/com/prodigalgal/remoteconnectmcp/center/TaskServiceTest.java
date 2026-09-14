@@ -49,6 +49,27 @@ class TaskServiceTest {
     }
 
     @Test
+    void staleDispatchAttemptCannotPublishAfterLeaseIsReclaimed() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var task = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "printf retry", "/srv", java.util.Map.of(), 0, null, null), "attempt-fence"));
+
+        var first = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        assertEquals(1, first.attempt());
+        tasks.find(task.id()).orElseThrow().leaseUntil(java.time.Instant.now().minusSeconds(1));
+        var second = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        assertEquals(2, second.attempt());
+
+        assertThrows(SecurityException.class, () -> tasks.appendOutput(registration.machineId(), task.id(), 1,
+                "stale".getBytes(StandardCharsets.UTF_8), 1));
+        assertThrows(SecurityException.class, () -> tasks.updateState(registration.machineId(), task.id(),
+                new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), 1));
+        assertEquals(2, tasks.find(task.id()).orElseThrow().attempt());
+    }
+
+    @Test
     void createsBoundedContractForWorkspaceAgent() {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("workspace-agent", "host-a", "host-a", "linux", "amd64", "dev",

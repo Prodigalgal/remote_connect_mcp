@@ -43,6 +43,20 @@ class UpgradeServiceTest {
     }
 
     @Test
+    void fleetCampaignRetainsAllRegisteredMachinesWhenMachineListIsOmitted() {
+        var registry = AgentRegistry.forTest("enroll");
+        registry.register(registration("one", "v1.0.0"), "enroll");
+        registry.register(registration("two", "v1.0.0"), "enroll");
+        var tasks = new TaskService(registry);
+        var upgrades = new UpgradeService(registry, tasks, new UpgradeConfig(true, ""));
+
+        var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                List.of(), Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
+
+        assertEquals(2, campaign.targets().size(), "offline registrations must remain durable campaign targets");
+    }
+
+    @Test
     void failurePausesCampaignAndResumeRequeuesOnlyFailedTarget() {
         var registry = AgentRegistry.forTest("enroll");
         var registration = registry.register(registration("one", "v1.0.0"), "enroll");

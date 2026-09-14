@@ -188,6 +188,11 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` | `1`（默认不超过 2，且不超过总并发） | Browser Worker 独立上限，范围 1–8；达到上限时 Agent 暂不向 Center 声明 `browser` 能力 |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES` | `67108864` | 单任务 stdout/stderr 捕获上限，范围 1 MiB–1 GiB |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES` | `67108864`（并发提高时默认最多 256 MiB） | 所有普通任务磁盘 spool 的聚合上限；必须不小于单任务上限，范围单任务上限–4 GiB；达到后任务继续运行但后续输出标记为截断 |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS` | `0` | 单任务墙钟上限；0 表示不额外收紧任务/合同（范围 0–2592000） |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES` | `32` | 单任务进程树上限（含根进程，范围 1–256），超限会终止整棵树 |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES` | `0` | 单任务 RSS 上限；Linux 通过 `/proc` 执行，0 或不支持的平台表示关闭（最多 16 GiB） |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS` | `0` | 单任务累计 CPU 时间上限（范围 0–2592000） |
+| `REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS` | `1000` | 资源监督的任务级采样间隔（250–10000 ms）；只在任务运行时启用，不产生空闲 Agent 轮询 |
 | `REMOTE_CONNECT_MCP_AGENT_POLL_INTERVAL_MS` | `5000` | 仅用于旧 Center/长轮询关闭时的兼容退避；范围 250–60000 ms，断线时自动指数退避 |
 | `REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS` | `25` | Agent 单次 HTTPS 长轮询等待秒数（0–25）；事件/取消/配置到达即返回，0 仅用于旧 Center 兼容 |
 | `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT` | `poll` | 设置为 `websocket` 时启用额外的 Agent WebSocket 唤醒提示；任务数据和认证仍走 HTTPS，连接失败自动退避 |

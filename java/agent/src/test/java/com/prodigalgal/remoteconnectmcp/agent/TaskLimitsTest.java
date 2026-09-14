@@ -21,7 +21,8 @@ class TaskLimitsTest {
                 "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"), false,
                 Path.of("."), Duration.ofSeconds(1), 1, 16L * 1024 * 1024);
         var contract = new ExecutionContract("machine-1", "host-1", ScopeMode.UNRESTRICTED, null, null, null,
-                "session-1", "command", new ExecutionContract.Budget(7, 2L * 1024 * 1024, 1024, 1),
+                "session-1", "command", new ExecutionContract.Budget(7, 2L * 1024 * 1024, 1024, 1,
+                        64L * 1024 * 1024, 2),
                 Instant.now().plusSeconds(60), "retry-1", "low", false, null);
         var task = new TaskCommand("task-1", TaskKind.COMMAND, "command", "echo ok", "/srv", Map.of(), 0,
                 null, Instant.now(), contract);
@@ -29,6 +30,9 @@ class TaskLimitsTest {
         assertEquals(2L * 1024 * 1024, TaskLimits.outputBytes(config, task));
         assertEquals(7, TaskLimits.timeoutSeconds(task, 300));
         assertEquals(1024, TaskLimits.artifactBytes(task, 8L * 1024 * 1024));
+        assertEquals(64L * 1024 * 1024, TaskLimits.rssBytes(config, task));
+        assertEquals(2, TaskLimits.cpuSeconds(config, task));
+        assertEquals(1, TaskLimits.childProcesses(config, task));
     }
 
     @Test

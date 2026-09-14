@@ -109,7 +109,8 @@ public final class UpgradeService {
         if (!config.enabled()) throw new IllegalStateException("Agent upgrades are disabled");
         var version = normalizeVersion(request == null ? null : request.version());
         var machines = agents.listMachines(0, 200, Instant.now());
-        var selected = selectMachines(request == null ? List.of() : request.machineIds(), machines);
+        var selected = selectMachines(request == null ? List.of() : request.machineIds(), machines,
+                request == null || request.includeOffline());
         if (selected.isEmpty()) throw new IllegalArgumentException("at least one machine is required");
         var artifacts = resolveArtifacts(version, selected, request == null ? Map.of() : request.artifacts());
         var canary = normalizePositive(request == null ? null : request.canaryCount(), 1, selected.size());
@@ -578,8 +579,16 @@ public final class UpgradeService {
         if (!SHA256.matcher(artifact.sha256().trim()).matches()) throw new IllegalArgumentException("artifact SHA-256 for " + key + " is invalid");
     }
 
-    private static List<MachineView> selectMachines(List<String> requested, List<MachineView> machines) {
-        if (requested == null || requested.isEmpty()) return machines.stream().filter(MachineView::online).toList();
+    private static List<MachineView> selectMachines(List<String> requested, List<MachineView> machines,
+                                                    boolean includeOffline) {
+        if (requested == null || requested.isEmpty()) {
+            // Offline Agents are deliberately included in the durable target
+            // set by default.  They cannot receive an offer until their next
+            // heartbeat, but the campaign remains resumable and the target
+            // is not silently lost when a machine is temporarily powered off.
+            return includeOffline ? List.copyOf(machines)
+                    : machines.stream().filter(MachineView::online).toList();
+        }
         var byId = machines.stream().collect(java.util.stream.Collectors.toMap(MachineView::id, value -> value));
         var result = new ArrayList<MachineView>();
         for (var raw : requested) {

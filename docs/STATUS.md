@@ -14,7 +14,7 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.21 生产发布；四�
 | --- | --- | --- |
 | Java 工程 | `protocol`、`center`、`agent` Gradle 多模块，Java 25 toolchain | GitHub Actions `34745635544`：JVM、Liquibase、备份恢复、React、Linux amd64/arm64、Windows amd64 全部成功 |
 | MCP | Streamable HTTP `/mcp`、Bearer 校验、精简工具面、分页结果 | v0.1.15 公网验收已作为兼容基线保留；当前 v0.1.21 继续使用同一 `/mcp` 契约 |
-| 任务可靠性 | 异步入队、幂等键、租约、取消、输出游标、断线重连、有界 spool、无超时任务恢复；过期租约区分可恢复持久任务与不可安全重放的定时任务，Go/Java 都按 Agent 范围在下一次 poll 修复，JDBC 修复后的任务 ID 在事务提交后精准唤醒 `task_wait`；Go/Java 两条兼容实现每次真正领取租约都会递增并暴露 `attempt`，便于识别断线后的重新投递；PostgreSQL 按任务摘要路由 `LISTEN/NOTIFY` 事件唤醒，高频输出只唤醒等待同一任务的请求（可跨 Center 副本），截止时间返回快照，不运行固定行读取循环 | Java Agent/Center 单元测试与 GitHub Actions 门禁 |
+| 任务可靠性 | 异步入队、幂等键、租约、取消、输出游标、断线重连、有界 spool、无超时任务恢复；过期租约区分可恢复持久任务与不可安全重放的定时任务，Go/Java 都按 Agent 范围在下一次 poll 修复，JDBC 修复后的任务 ID 在事务提交后精准唤醒 `task_wait`；Go/Java 两条兼容实现每次真正领取租约都会递增并暴露 `attempt`，Java Agent 在状态/输出/工件回传携带 attempt 栅栏，便于阻断断线后的旧进程重投；PostgreSQL 按任务摘要路由 `LISTEN/NOTIFY` 事件唤醒，高频输出只唤醒等待同一任务的请求（可跨 Center 副本），截止时间返回快照，不运行固定行读取循环 | Java Agent/Center 单元测试与 GitHub Actions 门禁 |
 | 注册与身份 | 一次性 Enrollment Token，注册后换取每 Agent 日常 Token；身份文件原子写入 | Agent/Center 测试通过 |
 | 配置热更新 | Center 下发 generation、长轮询等待时间、兼容退避间隔和并发槽位；Agent 原子落盘并只接受更新代次 | `AgentRuntimeSettingsTest`、`AgentConfigurationServiceTest` |
 | Desktop | 独立 `desktop` Native 目标的用户会话 companion；截图/屏幕枚举、启动、点击/拖拽、组合按键、剪贴板、窗口聚焦和文本输入通过受保护 loopback IPC | `DesktopCompanionClientTest`、协议测试，以及 GitHub Actions `34795775084` 的 Linux amd64/arm64、Windows amd64 Native smoke 通过 |
@@ -56,6 +56,7 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.21 生产发布；四�
   64 MiB、聚合 spool 64 MiB。Native Agent 的目标 RSS 必须在 CI/目标平台用同一版本实测；当前没有把
   编译进程的内存数字冒充运行时测量。Go 基线仓库内 Linux Agent 文件大小为 6,537,378 字节，但这
   只是磁盘体积，也不能替代同场景 RSS 对比。
+- 每个 Java Agent 任务现在有独立进程树监督：默认最多 32 个后代进程，可选墙钟、累计 CPU 时间和 Linux `/proc` RSS 上限；超限终止整棵树并回传明确失败原因。资源监督只在任务运行期间存在，不增加空闲轮询；Windows RSS 仍需后续 Job Object/目标机门禁补齐。
 - `scripts/smoke-java-agent.sh/.ps1` 在 Agent 在线和任务闭环期间采样工作集峰值；Release/迁移工作流
   会先按 256 MiB 默认预算校验，再将 JSON 作为私有 Actions 工件上传，不放入公开 Release；
   该门禁只约束 Native Agent 常驻烟测，不把单次编译峰值直接当作宿主机硬限制。

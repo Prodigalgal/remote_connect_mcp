@@ -268,7 +268,10 @@ public final class TaskService {
                     selected.attempt(selected.attempt() + 1);
                     selected.dispatchedAt(now);
                     selected.leaseUntil(now.plus(LEASE_DURATION));
-                    task = selected.command();
+                    // Carry the monotonically increasing lease attempt on the
+                    // wire. Agent state/output delivery can then be fenced if
+                    // a stale process wakes after its lease was reclaimed.
+                    task = selected.command().withAttempt(selected.attempt());
                     signalChanged();
                 }
             }
@@ -279,11 +282,21 @@ public final class TaskService {
     }
 
     public TaskView updateState(String machineId, String taskId, TaskUpdateRequest update) {
+        return updateState(machineId, taskId, update, null);
+    }
+
+    /**
+     * Apply a state update with an optional dispatch-attempt fence. A zero or
+     * absent attempt preserves compatibility with older Go Agents; new Java
+     * Agents send the attempt returned by poll so a stale process cannot
+     * complete a task after its lease has been reclaimed and reissued.
+     */
+    public TaskView updateState(String machineId, String taskId, TaskUpdateRequest update, Integer attempt) {
         if (update == null || update.status() == null || update.status().isBlank()) {
             throw new IllegalArgumentException("status is required");
         }
         if (jdbcStore != null) {
-            var view = jdbcStore.updateState(machineId, taskId, update);
+            var view = jdbcStore.updateState(machineId, taskId, update, attempt);
             signalChanged(taskId);
             return view;
         }
@@ -291,6 +304,7 @@ public final class TaskService {
         try {
             var task = required(taskId);
             assertMachine(task, machineId);
+            assertAttempt(task, attempt);
             var status = update.status().trim().toLowerCase();
             if (!validStatus(status)) {
                 throw new IllegalArgumentException("unsupported task status: " + status);
@@ -327,11 +341,16 @@ public final class TaskService {
     }
 
     public OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data) {
+        return appendOutput(machineId, taskId, offset, data, null);
+    }
+
+    /** Append output while fencing a stale dispatch attempt when supplied. */
+    public OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data, Integer attempt) {
         if (offset < 0 || data == null) {
             throw new IllegalArgumentException("offset and data are required");
         }
         if (jdbcStore != null) {
-            var response = jdbcStore.appendOutput(machineId, taskId, offset, data);
+            var response = jdbcStore.appendOutput(machineId, taskId, offset, data, attempt);
             signalOutputChanged(taskId);
             return response;
         }
@@ -339,6 +358,7 @@ public final class TaskService {
         try {
             var task = required(taskId);
             assertMachine(task, machineId);
+            assertAttempt(task, attempt);
             var current = task.output().toByteArray();
             if (offset > current.length) {
                 throw new IllegalArgumentException("output offset is ahead of the confirmed cursor");
@@ -395,6 +415,12 @@ public final class TaskService {
     }
 
     public ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256, byte[] data) {
+        return appendArtifact(machineId, taskId, mimeType, sha256, data, null);
+    }
+
+    /** Append an artifact while fencing a stale dispatch attempt when supplied. */
+    public ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256,
+                                           byte[] data, Integer attempt) {
         var normalizedMime = normalizeMimeType(mimeType);
         if (data == null || data.length == 0) {
             throw new IllegalArgumentException("artifact mimeType and data are required");
@@ -407,7 +433,7 @@ public final class TaskService {
             throw new IllegalArgumentException("artifact sha256 does not match data");
         }
         if (jdbcStore != null) {
-            var response = jdbcStore.appendArtifact(machineId, taskId, normalizedMime, digest, data);
+            var response = jdbcStore.appendArtifact(machineId, taskId, normalizedMime, digest, data, attempt);
             signalOutputChanged(taskId);
             return response;
         }
@@ -415,6 +441,7 @@ public final class TaskService {
         try {
             var task = required(taskId);
             assertMachine(task, machineId);
+            assertAttempt(task, attempt);
             if (task.artifactData() != null && task.artifactData().length > 0 && !digest.equals(task.artifactSha256())) {
                 throw new IllegalArgumentException("task already has a different artifact");
             }
@@ -630,6 +657,12 @@ public final class TaskService {
                 request.elevationRequired(), null);
         if (contract.expired(createdAt)) throw new IllegalArgumentException("execution contract expires before task creation");
         return contract;
+    }
+
+    private static void assertAttempt(TaskState task, Integer attempt) {
+        if (attempt != null && attempt > 0 && task.attempt() != attempt) {
+            throw new SecurityException("stale task dispatch attempt");
+        }
     }
 
     private static String firstNonBlank(String primary, String fallback) {

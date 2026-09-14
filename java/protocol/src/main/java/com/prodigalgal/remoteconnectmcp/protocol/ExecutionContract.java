@@ -107,7 +107,15 @@ public record ExecutionContract(
             @JsonProperty("max_duration_seconds") int maxDurationSeconds,
             @JsonProperty("max_output_bytes") long maxOutputBytes,
             @JsonProperty("max_artifact_bytes") long maxArtifactBytes,
-            @JsonProperty("max_child_processes") int maxChildProcesses) {
+            @JsonProperty("max_child_processes") int maxChildProcesses,
+            @JsonProperty("max_rss_bytes") long maxRssBytes,
+            @JsonProperty("max_cpu_seconds") long maxCpuSeconds) {
+
+        /** Compatibility constructor for the original four-field budget. */
+        public Budget(int maxDurationSeconds, long maxOutputBytes, long maxArtifactBytes,
+                      int maxChildProcesses) {
+            this(maxDurationSeconds, maxOutputBytes, maxArtifactBytes, maxChildProcesses, 0L, 0L);
+        }
 
         public Budget {
             if (maxDurationSeconds < 0 || maxDurationSeconds > ProtocolValidation.MAX_TIMEOUT_SECONDS) {
@@ -122,10 +130,16 @@ public record ExecutionContract(
             if (maxChildProcesses < 1 || maxChildProcesses > 256) {
                 throw new IllegalArgumentException("maxChildProcesses is outside the allowed range");
             }
+            if (maxRssBytes < 0 || maxRssBytes > 16L * 1024 * 1024 * 1024) {
+                throw new IllegalArgumentException("maxRssBytes is outside the allowed range");
+            }
+            if (maxCpuSeconds < 0 || maxCpuSeconds > 30L * 24 * 60 * 60) {
+                throw new IllegalArgumentException("maxCpuSeconds is outside the allowed range");
+            }
         }
 
         public static Budget defaults() {
-            return new Budget(0, 64L * 1024 * 1024, 8L * 1024 * 1024, 32);
+            return new Budget(0, 64L * 1024 * 1024, 8L * 1024 * 1024, 32, 0L, 0L);
         }
     }
 }

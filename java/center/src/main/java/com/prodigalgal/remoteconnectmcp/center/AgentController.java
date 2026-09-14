@@ -190,6 +190,7 @@ public final class AgentController {
     public CompletableFuture<ResponseEntity<?>> taskState(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                           @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
                                                           @RequestHeader(value = "X-Task-Output-Truncated", required = false) String outputTruncated,
+                                                          @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
                                                           @PathVariable String taskId,
                                                           @RequestBody(required = false) TaskUpdateRequest request) {
         return execute(() -> {
@@ -198,13 +199,14 @@ public final class AgentController {
             if (update != null && "1".equals(outputTruncated)) {
                 update = new TaskUpdateRequest(update.status(), update.exitCode(), update.error(), update.startedAt(), update.finishedAt(), true);
             }
-            return ResponseEntity.ok(tasks.updateState(machineId, taskId, update));
+            return ResponseEntity.ok(tasks.updateState(machineId, taskId, update, parseAttempt(attemptHeader)));
         });
     }
 
     @PostMapping("/tasks/{taskId}/output")
     public CompletableFuture<ResponseEntity<?>> taskOutput(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                            @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
+                                                           @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
                                                            @PathVariable String taskId,
                                                            @RequestBody(required = false) OutputRequest request) {
         return execute(() -> {
@@ -216,13 +218,14 @@ public final class AgentController {
                 throw new IllegalArgumentException("output request exceeds 256 KiB");
             }
             var data = Base64.getDecoder().decode(request.data());
-            return ResponseEntity.ok(tasks.appendOutput(machineId, taskId, request.offset(), data));
+            return ResponseEntity.ok(tasks.appendOutput(machineId, taskId, request.offset(), data, parseAttempt(attemptHeader)));
         });
     }
 
     @PostMapping("/tasks/{taskId}/artifact")
     public CompletableFuture<ResponseEntity<?>> taskArtifact(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                              @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
+                                                             @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
                                                              @PathVariable String taskId,
                                                              @RequestBody(required = false) ArtifactRequest request) {
         return execute(() -> {
@@ -234,7 +237,8 @@ public final class AgentController {
                 throw new IllegalArgumentException("artifact request exceeds 12 MiB");
             }
             var data = Base64.getDecoder().decode(request.data());
-            return ResponseEntity.ok(tasks.appendArtifact(machineId, taskId, request.mimeType(), request.sha256(), data));
+            return ResponseEntity.ok(tasks.appendArtifact(machineId, taskId, request.mimeType(), request.sha256(), data,
+                    parseAttempt(attemptHeader)));
         });
     }
 
@@ -254,6 +258,17 @@ public final class AgentController {
         }
         var parts = authorization.trim().split("\\s+", 2);
         return parts.length == 2 && "Bearer".equalsIgnoreCase(parts[0]) ? parts[1].trim() : "";
+    }
+
+    private static Integer parseAttempt(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            var parsed = Integer.parseInt(value.trim());
+            if (parsed < 1) throw new IllegalArgumentException("X-Task-Attempt must be a positive integer");
+            return parsed;
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException("X-Task-Attempt must be a positive integer", exception);
+        }
     }
 
     private static ResponseEntity<Map<String, String>> error(Throwable exception) {

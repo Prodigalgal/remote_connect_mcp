@@ -96,12 +96,19 @@ public final class AgentTransportClient implements AgentTransport {
 
     @Override
     public void updateState(String machineId, String token, String taskId, TaskUpdateRequest update) throws IOException, InterruptedException {
+        updateState(machineId, token, taskId, 0, update);
+    }
+
+    @Override
+    public void updateState(String machineId, String token, String taskId, int attempt,
+                            TaskUpdateRequest update) throws IOException, InterruptedException {
         var builder = HttpRequest.newBuilder(centerUrl.resolve("/agent/v1/tasks/" + encodePath(taskId) + "/state"))
                 .timeout(requestTimeout)
                 .header("Authorization", "Bearer " + token)
                 .header("X-Machine-ID", machineId)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json");
+        addAttemptHeader(builder, attempt);
         var payload = update;
         if (update != null && Boolean.TRUE.equals(update.outputTruncated())) {
             // Older Centers reject fields they do not know. Carry this advisory
@@ -119,15 +126,21 @@ public final class AgentTransportClient implements AgentTransport {
 
     @Override
     public OutputResponse appendOutput(String machineId, String token, String taskId, long offset, byte[] data) throws IOException, InterruptedException {
+        return appendOutput(machineId, token, taskId, 0, offset, data);
+    }
+
+    @Override
+    public OutputResponse appendOutput(String machineId, String token, String taskId, int attempt,
+                                       long offset, byte[] data) throws IOException, InterruptedException {
         var payload = new com.prodigalgal.remoteconnectmcp.protocol.OutputRequest(offset, Base64.getEncoder().encodeToString(data));
-        var request = HttpRequest.newBuilder(centerUrl.resolve("/agent/v1/tasks/" + encodePath(taskId) + "/output"))
+        var builder = HttpRequest.newBuilder(centerUrl.resolve("/agent/v1/tasks/" + encodePath(taskId) + "/output"))
                 .timeout(requestTimeout)
                 .header("Authorization", "Bearer " + token)
                 .header("X-Machine-ID", machineId)
                 .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofByteArray(JsonCodec.write(payload)))
-                .build();
+                .header("Accept", "application/json");
+        addAttemptHeader(builder, attempt);
+        var request = builder.POST(HttpRequest.BodyPublishers.ofByteArray(JsonCodec.write(payload))).build();
         var response = send(request);
         if (response.statusCode() != 200) {
             throw new CenterTransportException("center task output update failed", response.statusCode());
@@ -137,15 +150,21 @@ public final class AgentTransportClient implements AgentTransport {
 
     @Override
     public ArtifactResponse appendArtifact(String machineId, String token, String taskId, String mimeType, String sha256, byte[] data) throws IOException, InterruptedException {
+        return appendArtifact(machineId, token, taskId, 0, mimeType, sha256, data);
+    }
+
+    @Override
+    public ArtifactResponse appendArtifact(String machineId, String token, String taskId, int attempt,
+                                           String mimeType, String sha256, byte[] data) throws IOException, InterruptedException {
         var payload = new ArtifactRequest(mimeType, sha256, Base64.getEncoder().encodeToString(data));
-        var request = HttpRequest.newBuilder(centerUrl.resolve("/agent/v1/tasks/" + encodePath(taskId) + "/artifact"))
+        var builder = HttpRequest.newBuilder(centerUrl.resolve("/agent/v1/tasks/" + encodePath(taskId) + "/artifact"))
                 .timeout(requestTimeout)
                 .header("Authorization", "Bearer " + token)
                 .header("X-Machine-ID", machineId)
                 .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofByteArray(JsonCodec.write(payload)))
-                .build();
+                .header("Accept", "application/json");
+        addAttemptHeader(builder, attempt);
+        var request = builder.POST(HttpRequest.BodyPublishers.ofByteArray(JsonCodec.write(payload))).build();
         var response = send(request);
         if (response.statusCode() != 200) {
             throw new CenterTransportException("center task artifact update failed", response.statusCode());
@@ -175,6 +194,11 @@ public final class AgentTransportClient implements AgentTransport {
             throw new IllegalArgumentException("invalid task id");
         }
         return value;
+    }
+
+    private static void addAttemptHeader(HttpRequest.Builder builder, int attempt) {
+        if (attempt < 0) throw new IllegalArgumentException("attempt must be non-negative");
+        if (attempt > 0) builder.header("X-Task-Attempt", Integer.toString(attempt));
     }
 
     /**
