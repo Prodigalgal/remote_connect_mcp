@@ -148,13 +148,15 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 | `RCM_CENTER_RELEASES_API_URL`（兼容 `REMOTE_CONNECT_MCP_CENTER_RELEASES_API_URL`） | `https://api.github.com/repos/Prodigalgal/remote_connect_mcp/releases` | 控制台版本目录的 GitHub Releases API；只读取公开元数据，不保存 GitHub 凭据 |
 | `RCM_CENTER_PERSISTENCE_MODE` | `memory` | Java Center 使用 `postgres` 才启用 PostgreSQL 任务/机器/工件存储 |
 | `RCM_CENTER_REQUIRE_DURABLE_STORAGE` | `false` | 设为 `true` 时，除 PostgreSQL 外的模式不会通过 `/api/v1/readyz`；生产必须开启 |
+| `RCM_CENTER_ARTIFACT_STORE` | `filesystem` | PostgreSQL 模式的工件字节存储；当前支持独立持久卷文件对象，生产不得使用测试内存实现 |
+| `RCM_CENTER_ARTIFACT_ROOT` | Linux `/var/lib/remote-connect-mcp-center/artifacts`；Windows `%ProgramData%\\remote-connect-mcp-center\\artifacts` | 工件对象根目录；必须位于持久卷/专用数据盘并由 Center 进程可写 |
 | `RCM_CENTER_LIQUIBASE_ENABLED` | `true` | Java Center 是否在当前进程执行 Liquibase；生产 Pod 设为 `false`，由独立 migration Job 执行 |
 | `RCM_CENTER_DATABASE_URL` | 空 | PostgreSQL JDBC URL（postgres 模式必填） |
 | `RCM_CENTER_DATABASE_USERNAME` | 空 | PostgreSQL 用户名（postgres 模式必填） |
 | `RCM_CENTER_DATABASE_PASSWORD` | 空 | PostgreSQL 密码（仅通过 Secret/env 注入） |
 | `RCM_CENTER_ALLOW_SHARED_ENROLLMENT` | `false` | 仅应急兼容旧部署；生产默认关闭，新增 Agent 通过 Admin API 生成一次性 Token |
 
-Java Center 生产使用 PostgreSQL 事务存储和单副本 `Recreate` Deployment，不再依赖旧 Go Center 的 RWO 状态 PVC；Pod 只挂载受限的临时 `/tmp`。任务创建、状态变化和升级变化会立即持久化；内存只保存可丢失的唤醒/等待状态和必要的短期快照，任何缓存失效都从 PostgreSQL 重建。`RCM_CENTER_REQUIRE_DURABLE_STORAGE=true` 会让误用 memory 模式的实例保持未就绪，避免无意接收生产流量。
+Java Center 生产使用 PostgreSQL 事务存储和单副本 `Recreate` Deployment；任务元数据使用数据库，工件字节使用单独挂载的受限持久卷，不再把大块内容写入 PostgreSQL `BYTEA`。任务创建、状态变化和升级变化会立即持久化；内存只保存可丢失的唤醒/等待状态和必要的短期快照，任何缓存失效都从 PostgreSQL 重建。`RCM_CENTER_REQUIRE_DURABLE_STORAGE=true` 会让误用 memory 模式或缺少持久工件卷的实例保持未就绪，避免无意接收生产流量。
 
 旧 Go Center 切换到 Java/PostgreSQL 时，先备份并停止旧 Center，运行 Liquibase 迁移后使用 `rcm-center --import-go <旧状态目录或 state.json>` 导入机器、Agent 摘要、任务、输出和工件。导入不读取 MCP/Admin Token 明文；旧升级活动需暂停并在新 Center 重新创建。
 

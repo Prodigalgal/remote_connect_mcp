@@ -59,10 +59,13 @@ public final class TaskService {
     public TaskService(AgentRegistry agents, ObjectProvider<JdbcTemplate> jdbcProvider,
                        ObjectProvider<TransactionTemplate> transactionProvider,
                        ObjectProvider<AgentWakeRegistry> wakeProvider,
-                       ObjectProvider<TaskChangeRegistry> taskChangeProvider) {
+                       ObjectProvider<TaskChangeRegistry> taskChangeProvider,
+                       ObjectProvider<ArtifactStore> artifactProvider) {
         this.agents = agents;
         var jdbc = jdbcProvider.getIfAvailable();
-        this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactionProvider.getIfAvailable());
+        var artifactStore = artifactProvider.getIfAvailable();
+        this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactionProvider.getIfAvailable(),
+                artifactStore == null ? new InMemoryArtifactStore() : artifactStore);
         this.wakes = wakeProvider.getIfAvailable();
         this.taskChanges = taskChangeProvider.getIfAvailable();
     }
@@ -77,7 +80,7 @@ public final class TaskService {
     /** Package-private constructor used by the PostgreSQL contract tests. */
     TaskService(AgentRegistry agents, JdbcTemplate jdbc, TransactionTemplate transactions) {
         this.agents = agents;
-        this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactions);
+        this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactions, new InMemoryArtifactStore());
         this.wakes = null;
         this.taskChanges = null;
     }
@@ -787,6 +790,19 @@ public final class TaskService {
         }
     }
 
+    /** Explicit, bounded retention operation; never runs on a fixed timer. */
+    public ArtifactGcResult gcArtifacts(int retentionDays, int limit) {
+        if (retentionDays < 1 || retentionDays > 3650) {
+            throw new IllegalArgumentException("retentionDays must be between 1 and 3650");
+        }
+        if (limit < 1 || limit > 500) {
+            throw new IllegalArgumentException("limit must be between 1 and 500");
+        }
+        var cutoff = Instant.now().minus(Duration.ofDays(retentionDays));
+        if (jdbcStore != null) return jdbcStore.gcArtifacts(cutoff, limit);
+        return new ArtifactGcResult(0, 0, 0);
+    }
+
     private static String sha256(String value) {
         return sha256(value.getBytes(StandardCharsets.UTF_8));
     }
@@ -795,5 +811,8 @@ public final class TaskService {
         public ArtifactData {
             data = data == null ? new byte[0] : data.clone();
         }
+    }
+
+    public record ArtifactGcResult(int metadataRows, int objectFiles, int deleteFailures) {
     }
 }

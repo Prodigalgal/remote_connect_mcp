@@ -83,7 +83,7 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         CreateTaskRequest.class, AdminCreateTaskRequest.class, CreateUpgradeCampaignRequest.class,
         ProjectRegistrationRequest.class, ProjectWorktreeRequest.class,
         ProjectView.class, WorktreeView.class,
-        AdminController.IssueEnrollmentRequest.class})
+        AdminController.IssueEnrollmentRequest.class, TaskService.ArtifactGcResult.class})
 public class McpConfiguration {
     private static final int MAX_MACHINE_PAGE = 50;
     private static final int MAX_OUTPUT_PAGE = 64 * 1024;

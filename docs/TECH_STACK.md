@@ -37,7 +37,7 @@
 | Center 数据访问 | Spring JDBC `JdbcClient` + 明确 SQL | 队列、租约、幂等、CAS 更新都需要可见 SQL 和事务边界；避免 ORM 隐式行为 | JPA/Hibernate 作为核心队列存储 |
 | Center 数据库 | PostgreSQL（版本锁定在部署清单） | 事务、行锁、JSONB、LISTEN/NOTIFY 和运维工具成熟 | 生产继续依赖单个 JSON/PVC 文件 |
 | 数据迁移 | Liquibase | 版本化 changelog、上下文/前置条件、SQL 预览和回滚审计完整 | 启动时无条件自动改表 |
-| 工件存储 | S3 兼容对象存储；本地文件仅开发 | 图片、日志、升级包可独立生命周期和校验 | 将大工件塞进任务 JSON |
+| 工件存储 | `ArtifactStore` 抽象；当前生产实现为独立持久卷上的原子文件对象，S3 兼容适配器保留扩展位 | 图片、日志、升级包与 PostgreSQL 元数据分离，按 key、大小和 SHA-256 校验 | 将大工件塞进任务 JSON 或 PostgreSQL `BYTEA` |
 | Agent 语言 | Java 25 模块化 JDK 应用 | 不带 Spring，原生镜像小、启动快、跨平台边界清晰 | Agent 引入完整 Spring 容器 |
 | Agent 通道 | JDK `HttpClient` 25 秒长轮询 + 原始 WebSocket 唤醒；旧端退避回退 | 无额外网络栈依赖，HTTPS/TLS 和断线重试可控，健康路径不刷固定请求 | 首版直接绑定 QUIC |
 
@@ -80,7 +80,8 @@ MCP 层使用官方 Java SDK 的 Streamable HTTP 传输，固定挂载 `/mcp`。
 - 任务创建、幂等键、租约领取、Attempt、状态机和输出游标全部由 PostgreSQL 事务保证；
 - 使用 `SELECT ... FOR UPDATE SKIP LOCKED` 或等价 CAS 语句实现多 Agent 领取，Center 副本增加前不引入额外消息队列；
 - `LISTEN/NOTIFY` 只作为唤醒提示，不能替代数据库状态，断线后仍能靠版本/游标补偿；
-- 输出、截图、升级包使用对象存储 key + SHA-256 + 大小 + MIME 元数据，数据库不保存大块 Base64；
+- 输出、截图、升级包使用对象存储 key + SHA-256 + 大小 + MIME 元数据；当前 Center 通过独立持久卷文件对象落盘，数据库不再写入新的大块 `BYTEA`，旧 `artifact_data` 只作为迁移兼容列；
+- `RCM_CENTER_ARTIFACT_STORE=filesystem` 时使用同一 PVC/专用数据卷，写入采用临时文件加原子替换，读取再次校验大小与 SHA-256；S3 兼容实现接入 `ArtifactStore` 后不改变任务或 Agent 协议；
 - Liquibase changelog 使用 Git 管理的 master YAML + 版本化 YAML/SQL 变更集，必须可回放、可 `update-sql` dry-run，并为 PostgreSQL 集成测试提供 Testcontainers 夹具；
 - 生产由独立 Kubernetes migration Job 执行 `validate/update`，应用只校验已安装的 schema 版本；禁止多个 Center Pod 同时在启动阶段抢迁移锁；
 - 每个变更集设置唯一 `id/author`、`labels/contexts` 和必要的 preconditions，危险 DDL 先在影子数据库执行 rollback 演练；

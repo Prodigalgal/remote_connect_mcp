@@ -19,3 +19,5 @@ databaseChangeLog:
       file: db/changelog/009-task-lease-index.yaml
   - include:
       file: db/changelog/010-execution-contract.yaml
+  - include:
+      file: db/changelog/011-artifact-storage.yaml

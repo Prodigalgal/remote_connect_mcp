@@ -1,0 +1,40 @@
+databaseChangeLog:
+  - changeSet:
+      id: 011-artifact-storage
+      author: remote-connect-mcp
+      labels: artifact,storage
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_task_artifact
+            columns:
+              - column:
+                  name: storage_backend
+                  type: varchar(32)
+                  defaultValue: inline
+                  constraints:
+                    nullable: false
+        - addCheckConstraint:
+            tableName: rcm_task_artifact
+            constraintName: ck_rcm_artifact_storage_backend
+            checkConstraint: storage_backend IN ('inline', 'filesystem', 's3')
+        - createIndex:
+            tableName: rcm_task_artifact
+            indexName: idx_rcm_artifact_created_at
+            columns:
+              - column:
+                  name: created_at
+      rollback:
+        - dropIndex:
+            tableName: rcm_task_artifact
+            indexName: idx_rcm_artifact_created_at
+        - dropCheckConstraint:
+            tableName: rcm_task_artifact
+            constraintName: ck_rcm_artifact_storage_backend
+        - dropColumn:
+            tableName: rcm_task_artifact
+            columnName: storage_backend

@@ -20,17 +20,20 @@ public class HealthController {
     private final String persistenceMode;
     private final boolean requireDurableStorage;
     private final JdbcTemplate jdbc;
+    private final ArtifactStore artifactStore;
     private final CenterAsyncExecutor async;
 
     public HealthController(@Value("${rcm.version:dev}") String version,
                             @Value("${rcm.persistence.mode:memory}") String persistenceMode,
                             @Value("${rcm.persistence.require-durable:false}") boolean requireDurableStorage,
                             ObjectProvider<JdbcTemplate> jdbcProvider,
+                            ObjectProvider<ArtifactStore> artifactProvider,
                             CenterAsyncExecutor async) {
         this.version = version;
         this.persistenceMode = persistenceMode;
         this.requireDurableStorage = requireDurableStorage;
         this.jdbc = jdbcProvider.getIfAvailable();
+        this.artifactStore = artifactProvider.getIfAvailable();
         this.async = async;
     }
 
@@ -55,6 +58,10 @@ public class HealthController {
             if (jdbc == null) {
                 return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                         .body(Map.of("status", "not_ready", "reason", "postgres datasource is unavailable"));
+            }
+            if (artifactStore == null || "memory-test".equalsIgnoreCase(artifactStore.backend())) {
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                        .body(Map.of("status", "not_ready", "reason", "durable artifact storage is unavailable"));
             }
             try {
                 // The core table is created by the Liquibase migration Job. A

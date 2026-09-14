@@ -1,6 +1,7 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
 import com.zaxxer.hikari.HikariDataSource;
+import java.nio.file.Path;
 import java.util.function.Supplier;
 import javax.sql.DataSource;
 import liquibase.integration.spring.SpringLiquibase;
@@ -40,7 +41,15 @@ public final class DatabaseRuntimeInitializer
         var password = setting(environment, "RCM_CENTER_DATABASE_PASSWORD", null, "");
         var liquibaseEnabled = Boolean.parseBoolean(setting(environment,
                 "RCM_CENTER_LIQUIBASE_ENABLED", null, "true"));
+        var artifactBackend = setting(environment, "RCM_CENTER_ARTIFACT_STORE", "rcm.artifact.store", "filesystem").trim();
+        if (!"filesystem".equalsIgnoreCase(artifactBackend)) {
+            throw new IllegalStateException("RCM_CENTER_ARTIFACT_STORE must be filesystem until an S3 adapter is enabled");
+        }
+        var artifactRoot = setting(environment, "RCM_CENTER_ARTIFACT_ROOT", null, defaultArtifactRoot()).trim();
+        if (artifactRoot.isEmpty()) throw new IllegalStateException("RCM_CENTER_ARTIFACT_ROOT is required in postgres mode");
 
+        register(registry, "artifactStore", FileSystemArtifactStore.class,
+                () -> new FileSystemArtifactStore(Path.of(artifactRoot)), null);
         register(registry, "dataSource", HikariDataSource.class,
                 () -> DatabaseConfiguration.dataSource(url, username, password), "close");
         register(registry, "jdbcTemplate", JdbcTemplate.class,
@@ -74,5 +83,11 @@ public final class DatabaseRuntimeInitializer
         if (value == null) value = System.getProperty(envKey);
         if (value == null) value = System.getenv(envKey);
         return value == null ? defaultValue : value;
+    }
+
+    private static String defaultArtifactRoot() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win")
+                ? Path.of(System.getenv().getOrDefault("ProgramData", "."), "remote-connect-mcp-center", "artifacts").toString()
+                : "/var/lib/remote-connect-mcp-center/artifacts";
     }
 }

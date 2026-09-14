@@ -27,7 +27,7 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.21 生产发布；四�
 ## 部分实现或仍需补齐
 
 1. Native Image：v0.1.21 正式 tag Release 已完成；Linux amd64/arm64、Windows amd64 原生构建、原生迁移烟测、SPDX SBOM、Sigstore keyless 签名、OIDC Artifact Attestation 和 Agent 资源门禁均由 GitHub Actions 完成。Windows/Linux 发布物为包含旁路运行库的平铺 ZIP，旧裸可执行文件保留回退；Windows ARM64 暂保留 JVM/Go 兼容路径。开发机不执行编译。
-2. PostgreSQL：生产库已使用独立 `remote_connect_mcp_prod` schema/database 完成 Liquibase 与旧 Go 状态导入，当前保留 9 台 Agent、1403 个任务/输出、0 个工件；v0.1.21 生产迁移 Job 成功。仍需补齐高并发抢占、Center 重启场景、长输出压测和正式恢复演练。
+2. PostgreSQL：生产库已使用独立 `remote_connect_mcp_prod` schema/database 完成 Liquibase 与旧 Go 状态导入，当前保留 9 台 Agent、1403 个任务/输出、0 个工件；v0.1.21 生产迁移 Job 成功。工件已经抽象为 `ArtifactStore`，新写入走独立持久卷文件对象，数据库只保存 key、大小、MIME 和 SHA-256；旧 `artifact_data` 仍保留用于一次性懒迁移。仍需补齐对象保留/GC、卷备份恢复、高并发抢占、Center 重启场景、长输出压测和正式恢复演练。
 3. Browser Agent：Java Agent 已提供参考 `scripts/browser-worker.mjs`，可按环境加载 Playwright/Patchright/Comoufox，并支持 CSS/`rcm-ref-v1`/role/label/placeholder/text/test-id 结构化定位；快照最多返回 64 个有界引用，Agent 在独立浏览器 profile 启用时保存脱敏的最近 origin/path 并在下一任务尝试恢复；结果仍包含有界快照、动作结果、截图、下载工件以及脱敏的网络/控制台/页面错误摘要。目标平台仍需安装浏览器运行时并完成稳定引用失效恢复、持久会话和跨浏览器回归。
 4. Desktop Agent：基础截图、屏幕枚举、输入、剪贴板和 Windows 窗口聚焦已具备；Linux 窗口管理器差异、多显示器真实会话、UAC/权限场景和跨桌面回归仍需专门验收。
 5. 构建拆分：`command-agent`、`desktop-companion`、`browser-agent` 已分别建立 Gradle Native 目标、Docker artifact 目标和 Release ZIP/校验流程；GitHub Actions 已通过 Linux amd64/arm64、Windows amd64 的四目标编译与烟测，四台在线 Oracle Agent 的安装/升级回归已完成。

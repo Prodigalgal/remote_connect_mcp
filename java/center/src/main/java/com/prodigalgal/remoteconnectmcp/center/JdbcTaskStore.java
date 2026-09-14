@@ -13,11 +13,14 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.security.MessageDigest;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.ArrayList;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -48,10 +51,16 @@ final class JdbcTaskStore {
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final ArtifactStore artifactStore;
 
     JdbcTaskStore(JdbcTemplate jdbc, TransactionTemplate transactions) {
+        this(jdbc, transactions, new InMemoryArtifactStore());
+    }
+
+    JdbcTaskStore(JdbcTemplate jdbc, TransactionTemplate transactions, ArtifactStore artifactStore) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.transactions = Objects.requireNonNull(transactions, "transactions");
+        this.artifactStore = Objects.requireNonNull(artifactStore, "artifactStore");
     }
 
     TaskView create(String taskId, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt) {
@@ -353,33 +362,104 @@ final class JdbcTaskStore {
             var task = findForUpdateMeta(taskId);
             if (task == null) throw new IllegalArgumentException("task not found");
             if (!task.machineId().equals(machineId)) throw new SecurityException("task does not belong to this machine");
-            var existing = jdbc.query("SELECT sha256 FROM rcm_task_artifact WHERE task_id = ? FOR UPDATE", ps -> ps.setString(1, taskId),
-                    rs -> rs.next() ? rs.getString(1) : null);
+            var existing = jdbc.query("SELECT storage_backend, object_key, sha256, artifact_data FROM rcm_task_artifact WHERE task_id = ? FOR UPDATE",
+                    ps -> ps.setString(1, taskId), rs -> {
+                        if (!rs.next()) return null;
+                        return new ArtifactRow(rs.getString("storage_backend"), rs.getString("object_key"),
+                                rs.getString("sha256"), rs.getBytes("artifact_data"), rs.getString("mime_type"), rs.getLong("bytes"));
+                    });
             if (existing != null) {
-                if (!existing.equalsIgnoreCase(sha256)) throw new IllegalArgumentException("task already has a different artifact");
+                if (!existing.sha256().equalsIgnoreCase(sha256)) throw new IllegalArgumentException("task already has a different artifact");
+                // A row imported from the old Go/inline schema is migrated on
+                // the first successful retry.  New requests never write a
+                // payload into PostgreSQL bytea.
+                if (existing.artifactData() != null && existing.artifactData().length > 0) {
+                    var objectKey = artifactStore.put(taskId, sha256, existing.artifactData());
+                    jdbc.update("UPDATE rcm_task_artifact SET storage_backend = ?, object_key = ?, artifact_data = NULL WHERE task_id = ?",
+                            artifactStore.backend(), objectKey, taskId);
+                }
                 return new ArtifactResponse(data.length, sha256);
             }
+            var objectKey = artifactStore.put(taskId, sha256, data);
             jdbc.update("""
-                    INSERT INTO rcm_task_artifact(task_id, mime_type, object_key, bytes, sha256, artifact_data, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    """, taskId, mimeType, "inline:" + taskId, data.length, sha256, data);
+                    INSERT INTO rcm_task_artifact(task_id, mime_type, storage_backend, object_key, bytes, sha256, artifact_data, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
+                    """, taskId, mimeType, artifactStore.backend(), objectKey, data.length, sha256);
             task.artifactBytes(data.length);
             task.artifactMime(mimeType);
             task.artifactSha256(sha256);
-            task.artifactData(data);
+            task.artifactData(new byte[0]);
             return new ArtifactResponse(data.length, sha256);
         });
     }
 
     Optional<TaskService.ArtifactData> readArtifact(String taskId) {
         if (taskId == null || taskId.isBlank()) return Optional.empty();
-        return jdbc.query("SELECT mime_type, sha256, artifact_data FROM rcm_task_artifact WHERE task_id = ?",
+        var row = jdbc.query("SELECT mime_type, storage_backend, object_key, bytes, sha256, artifact_data FROM rcm_task_artifact WHERE task_id = ?",
                 ps -> ps.setString(1, taskId.trim()), rs -> {
-                    if (!rs.next()) return Optional.empty();
-                    var data = rs.getBytes("artifact_data");
-                    if (data == null || data.length == 0) return Optional.empty();
-                    return Optional.of(new TaskService.ArtifactData(rs.getString("mime_type"), rs.getString("sha256"), data));
+                    if (!rs.next()) return null;
+                    return new ArtifactRow(rs.getString("storage_backend"), rs.getString("object_key"),
+                            rs.getString("sha256"), rs.getBytes("artifact_data"), rs.getString("mime_type"), rs.getLong("bytes"));
                 });
+        if (row == null) return Optional.empty();
+        byte[] data = row.artifactData();
+        if (data == null || data.length == 0) {
+            if (row.objectKey() == null || row.objectKey().isBlank()) return Optional.empty();
+            data = artifactStore.read(row.objectKey());
+        } else {
+            // Backfill legacy inline rows without making the read path depend
+            // on a second query while the JDBC ResultSet is still open.
+            var objectKey = artifactStore.put(taskId.trim(), row.sha256(), data);
+            jdbc.update("UPDATE rcm_task_artifact SET storage_backend = ?, object_key = ?, artifact_data = NULL WHERE task_id = ?",
+                    artifactStore.backend(), objectKey, taskId.trim());
+        }
+        if (data.length != row.bytes() || !sha256(data).equalsIgnoreCase(row.sha256())) {
+            throw new ArtifactStore.StorageException("artifact metadata does not match stored bytes");
+        }
+        return Optional.of(new TaskService.ArtifactData(row.mimeType(), row.sha256(), data));
+    }
+
+    TaskService.ArtifactGcResult gcArtifacts(Instant cutoff, int limit) {
+        var candidates = transactions.execute(status -> {
+            var rows = jdbc.query("""
+                    SELECT a.task_id, a.object_key
+                      FROM rcm_task_artifact a
+                      JOIN rcm_task t ON t.task_id = a.task_id
+                     WHERE a.created_at <= ?
+                       AND t.status IN (?, ?, ?)
+                     ORDER BY a.created_at, a.task_id
+                     LIMIT ?
+                     FOR UPDATE OF a
+                    """, ps -> {
+                ps.setTimestamp(1, timestamp(cutoff));
+                ps.setString(2, TaskStatus.COMPLETED);
+                ps.setString(3, TaskStatus.FAILED);
+                ps.setString(4, TaskStatus.CANCELED);
+                ps.setInt(5, limit);
+            }, (rs, rowNum) -> new ArtifactCandidate(rs.getString("task_id"), rs.getString("object_key")));
+            if (rows.isEmpty()) return List.<ArtifactCandidate>of();
+            var deleted = new ArrayList<ArtifactCandidate>(rows.size());
+            for (var row : rows) {
+                if (jdbc.update("DELETE FROM rcm_task_artifact WHERE task_id = ? AND object_key = ?", row.taskId(), row.objectKey()) > 0) {
+                    deleted.add(row);
+                }
+            }
+            return List.copyOf(deleted);
+        });
+        var deletedObjects = 0;
+        var deleteFailures = 0;
+        for (var candidate : candidates) {
+            try {
+                artifactStore.delete(candidate.objectKey());
+                deletedObjects++;
+            } catch (RuntimeException failure) {
+                // Metadata is already gone, so keep the response successful and
+                // expose the count.  A later filesystem sweep can remove an
+                // orphan; task execution is never coupled to GC availability.
+                deleteFailures++;
+            }
+        }
+        return new TaskService.ArtifactGcResult(candidates.size(), deletedObjects, deleteFailures);
     }
 
     private void insert(TaskState state) {
@@ -555,6 +635,21 @@ final class JdbcTaskStore {
         return value.length() <= 4096 ? value : value.substring(0, 4096);
     }
 
+    private static String sha256(byte[] data) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new ArtifactStore.StorageException("SHA-256 is unavailable", exception);
+        }
+    }
+
     private record OutputSlice(long outputBytes, boolean truncated, String status, byte[] data) {
+    }
+
+    private record ArtifactRow(String storageBackend, String objectKey, String sha256, byte[] artifactData,
+                               String mimeType, long bytes) {
+    }
+
+    private record ArtifactCandidate(String taskId, String objectKey) {
     }
 }

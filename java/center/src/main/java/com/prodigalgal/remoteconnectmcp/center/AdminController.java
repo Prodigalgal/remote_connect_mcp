@@ -284,6 +284,17 @@ public final class AdminController {
         catch (NumberFormatException exception) { throw new IllegalArgumentException("timeout_seconds must be an integer", exception); }
     }
 
+    @PostMapping("/artifacts/gc")
+    public CompletableFuture<ResponseEntity<?>> garbageCollectArtifacts(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "30") int retentionDays,
+            @RequestParam(defaultValue = "100") int limit) {
+        return execute(() -> {
+            authenticate(authorization);
+            return ResponseEntity.ok(tasks.gcArtifacts(retentionDays, limit));
+        });
+    }
+
     private static Boolean bool(Object value) {
         if (value == null) return Boolean.FALSE;
         if (value instanceof Boolean flag) return flag;

@@ -116,8 +116,10 @@ Remove-Item Env:PGPASSWORD
 脚本在发布备份前会用 `pg_restore --list` 校验归档索引，并生成同名 `.sha256` 和不含凭据的
 `.json` 元数据。恢复时先创建隔离目标库，再使用 `pg_restore --exit-on-error --no-owner --no-acl`，
 执行 `rcm-center --migrate`/`liquibase validate` 后检查 `rcm_agent`、`rcm_task`、输出游标和工件
-表；确认应用读写和 Agent 心跳后才允许切换生产路由。备份目录已加入 `.gitignore`，仍应再由对象
-存储或 Secret 管理系统设置加密、保留期和访问审计。
+表；确认应用读写和 Agent 心跳后才允许切换生产路由。生产 Center 还必须挂载独立持久卷并设置
+`RCM_CENTER_ARTIFACT_STORE=filesystem`、`RCM_CENTER_ARTIFACT_ROOT`；`/api/v1/readyz` 会拒绝
+缺少持久工件存储的 PostgreSQL 实例。备份目录已加入 `.gitignore`，对象文件还应由卷/对象
+存储策略设置加密、保留期和访问审计。
 
 Linux/Windows 原生二进制还会由 GitHub OIDC 生成 Artifact Attestation（工作流同时声明
 `id-token: write`、`attestations: write` 和 `artifact-metadata: write`）；下载 Release 资产后，
@@ -131,11 +133,12 @@ Linux/Windows 原生二进制还会由 GitHub OIDC 生成 Artifact Attestation�
 rcm-center --migrate
 ```
 
-该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`；仓库不使用 Flyway。
+该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`、`009-task-lease-index`、`010-execution-contract`、`011-artifact-storage`；仓库不使用 Flyway。
 
 Java Center 的 memory 模式只用于协议回归/开发。生产必须同时设置
 `RCM_CENTER_PERSISTENCE_MODE=postgres` 和
-`RCM_CENTER_REQUIRE_DURABLE_STORAGE=true`；后者会让 `/api/v1/readyz` 在模式错误时返回
+`RCM_CENTER_REQUIRE_DURABLE_STORAGE=true`，并设置
+`RCM_CENTER_ARTIFACT_STORE=filesystem`、`RCM_CENTER_ARTIFACT_ROOT` 指向持久卷；后者会让 `/api/v1/readyz` 在模式或工件存储错误时返回
 503，即使进程本身仍能响应 `/api/v1/healthz`，从而阻止错误实例被 Service 接收流量。
 
 从旧 Go 文件存储切换时，先停止旧 Center 并完整备份其状态目录，再在已完成 Liquibase 的空 PostgreSQL 库上执行：
