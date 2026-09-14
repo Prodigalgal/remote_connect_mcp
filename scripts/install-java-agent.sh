@@ -87,9 +87,10 @@ state_dir="${REMOTE_CONNECT_MCP_AGENT_STATE_DIR:-/var/lib/remote-connect-mcp-age
 install_root="${REMOTE_CONNECT_MCP_AGENT_INSTALL_ROOT:-/opt/remote-connect-mcp-agent}"
 re_enroll="${REMOTE_CONNECT_MCP_AGENT_REENROLL:-false}"
 max_concurrency="${REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY:-1}"
-max_browser_workers="${REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS:-1}"
-desktop_max_launched="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES:-16}"
-max_output="${REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES:-67108864}"
+  max_browser_workers="${REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS:-1}"
+  desktop_max_launched="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES:-16}"
+  max_total_child_processes="${REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES:-}"
+  max_output="${REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES:-67108864}"
 max_aggregate="${REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES:-}"
 max_task_duration="${REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS:-0}"
 max_child_processes="${REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES:-32}"
@@ -147,9 +148,20 @@ fi
   echo "REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS must be between 1 and MAX_CONCURRENCY (maximum 8)" >&2; exit 1;
 }
 [[ "$desktop_max_launched" =~ ^[0-9]+$ ]] || { echo "REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES must be an integer" >&2; exit 1; }
-(( desktop_max_launched >= 1 && desktop_max_launched <= 64 )) || {
-  echo "REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES must be between 1 and 64" >&2; exit 1;
-}
+  (( desktop_max_launched >= 1 && desktop_max_launched <= 64 )) || {
+    echo "REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES must be between 1 and 64" >&2; exit 1;
+  }
+  if [[ -z "$max_total_child_processes" ]]; then
+    max_total_child_processes=$((max_concurrency * 32))
+    (( max_total_child_processes < 32 )) && max_total_child_processes=32
+    (( max_total_child_processes > 256 )) && max_total_child_processes=256
+  fi
+  [[ "$max_total_child_processes" =~ ^[0-9]+$ ]] || {
+    echo "REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES must be an integer" >&2; exit 1;
+  }
+  (( max_total_child_processes >= 1 && max_total_child_processes <= 4096 )) || {
+    echo "REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES must be between 1 and 4096" >&2; exit 1;
+  }
 for value in "$max_task_duration" "$max_child_processes" "$max_rss_bytes" "$max_cpu_seconds" "$resource_sample_interval"; do
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "resource budget values must be non-negative integers" >&2; exit 1; }
 done
@@ -315,6 +327,7 @@ if [[ "$re_enroll" == true || ! -f "$identity" ]]; then
   REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY="$max_concurrency" \
   REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS="$max_browser_workers" \
   REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES="$desktop_max_launched" \
+  REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES="$max_total_child_processes" \
   REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES="$max_output" \
   REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES="$max_aggregate" \
   REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS="$max_task_duration" \
@@ -356,6 +369,7 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY=%s\n' "$max_concurrency"
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS=%s\n' "$max_browser_workers"
   printf 'REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES=%s\n' "$desktop_max_launched"
+  printf 'REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES=%s\n' "$max_total_child_processes"
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES=%s\n' "$max_output"
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES=%s\n' "$max_aggregate"
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS=%s\n' "$max_task_duration"

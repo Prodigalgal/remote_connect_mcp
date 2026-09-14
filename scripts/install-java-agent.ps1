@@ -37,6 +37,8 @@ param(
     [long]$MaxTaskDurationSeconds = 0,
     [ValidateRange(1, 256)]
     [int]$MaxChildProcesses = 32,
+    [ValidateRange(0, 4096)]
+    [int]$MaxTotalChildProcesses = $(if ($env:REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES) { [int]$env:REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES } else { 0 }),
     [ValidateRange(0, 17179869184)]
     [long]$MaxRssBytes = 0,
     [ValidateRange(0, 2592000)]
@@ -52,6 +54,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $serviceName = "RemoteConnectMCPAgent"
 $companionTaskName = "RemoteConnectMCPDesktopCompanion"
+
+if ($MaxTotalChildProcesses -eq 0) {
+    $MaxTotalChildProcesses = [Math]::Min(256, [Math]::Max(32, $MaxConcurrency * 32))
+}
+if ($MaxTotalChildProcesses -lt 1 -or $MaxTotalChildProcesses -gt 4096) {
+    throw "MaxTotalChildProcesses must be between 1 and 4096."
+}
 
 function Install-NativeCompanionBundle {
     param(
@@ -267,6 +276,7 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
         REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES = $MaxAggregateOutputBytes.ToString()
         REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS = $MaxTaskDurationSeconds.ToString()
         REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES = $MaxChildProcesses.ToString()
+        REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES = $MaxTotalChildProcesses.ToString()
         REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES = $MaxRssBytes.ToString()
         REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS = $MaxCpuSeconds.ToString()
         REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS = $ResourceSampleIntervalMs.ToString()
@@ -325,6 +335,7 @@ $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES=$MaxAggregateOutputBytes",
     "REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS=$MaxTaskDurationSeconds",
     "REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES=$MaxChildProcesses",
+    "REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES=$MaxTotalChildProcesses",
     "REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES=$MaxRssBytes",
     "REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS=$MaxCpuSeconds",
     "REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS=$ResourceSampleIntervalMs",

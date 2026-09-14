@@ -28,18 +28,28 @@ final class DesktopTaskRunner implements Runnable {
     private final TaskCommand task;
     private final AgentTransport transport;
     private final DesktopProcessBudget directLaunchBudget;
+    private final AgentProcessBudget processBudget;
 
     DesktopTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task, AgentTransport transport) {
-        this(config, identity, task, transport, new DesktopProcessBudget());
+        this(config, identity, task, transport, new DesktopProcessBudget(),
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
     }
 
     DesktopTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
                       AgentTransport transport, DesktopProcessBudget directLaunchBudget) {
+        this(config, identity, task, transport, directLaunchBudget,
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
+    }
+
+    DesktopTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
+                      AgentTransport transport, DesktopProcessBudget directLaunchBudget,
+                      AgentProcessBudget processBudget) {
         this.config = config;
         this.identity = identity;
         this.task = task;
         this.transport = transport;
         this.directLaunchBudget = directLaunchBudget;
+        this.processBudget = processBudget;
     }
 
     @Override
@@ -122,7 +132,7 @@ final class DesktopTaskRunner implements Runnable {
             }
             var process = builder.start();
             var resourceSupervisor = ProcessResourceSupervisor.start(process, config, task,
-                    () -> terminate(process));
+                    () -> terminate(process), processBudget);
             try {
                 var timeout = Math.min(TaskLimits.timeoutSeconds(task, 30), 300);
                 if (!process.waitFor(timeout, TimeUnit.SECONDS)) {

@@ -27,18 +27,28 @@ final class CommandRunner implements Runnable {
     private final TaskCommand task;
     private final AgentTransport transport;
     private final AgentResourceBudget resourceBudget;
+    private final AgentProcessBudget processBudget;
 
     CommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task, AgentTransport transport) {
-        this(config, identity, task, transport, new AgentResourceBudget(config.maxAggregateOutputBytes()));
+        this(config, identity, task, transport, new AgentResourceBudget(config.maxAggregateOutputBytes()),
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
     }
 
     CommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
                   AgentTransport transport, AgentResourceBudget resourceBudget) {
+        this(config, identity, task, transport, resourceBudget,
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
+    }
+
+    CommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
+                  AgentTransport transport, AgentResourceBudget resourceBudget,
+                  AgentProcessBudget processBudget) {
         this.config = config;
         this.identity = identity;
         this.task = task;
         this.transport = transport;
         this.resourceBudget = resourceBudget;
+        this.processBudget = processBudget;
     }
 
     @Override
@@ -66,7 +76,7 @@ final class CommandRunner implements Runnable {
             process = builder.start();
             var processForSupervisor = process;
             resourceSupervisor = ProcessResourceSupervisor.start(processForSupervisor, config, task,
-                    () -> terminate(processForSupervisor));
+                    () -> terminate(processForSupervisor), processBudget);
 
             // Reading the child and uploading to Center are separate workers.
             // A transient network outage therefore cannot fill the child pipe

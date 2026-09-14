@@ -16,18 +16,28 @@ final class DesktopProcessBudget {
     private static final int MAX_ALLOWED_LAUNCHED_PROCESSES = 64;
 
     private final int maxLaunchedProcesses;
+    private final AgentProcessBudget processBudget;
     private final Semaphore slots;
     private final ConcurrentMap<Long, ProcessHandle> processes = new ConcurrentHashMap<>();
 
     DesktopProcessBudget() {
-        this(parseBounded(System.getenv("REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES")));
+        this(parseBounded(System.getenv("REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES")), null);
     }
 
     DesktopProcessBudget(int maxLaunchedProcesses) {
+        this(maxLaunchedProcesses, null);
+    }
+
+    DesktopProcessBudget(AgentProcessBudget processBudget) {
+        this(parseBounded(System.getenv("REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES")), processBudget);
+    }
+
+    DesktopProcessBudget(int maxLaunchedProcesses, AgentProcessBudget processBudget) {
         if (maxLaunchedProcesses < 1 || maxLaunchedProcesses > MAX_ALLOWED_LAUNCHED_PROCESSES) {
             throw new IllegalArgumentException("desktop launch limit is outside the allowed range");
         }
         this.maxLaunchedProcesses = maxLaunchedProcesses;
+        this.processBudget = processBudget;
         this.slots = new Semaphore(maxLaunchedProcesses);
     }
 
@@ -35,16 +45,25 @@ final class DesktopProcessBudget {
         if (!slots.tryAcquire()) {
             throw new IOException("desktop launch limit reached (" + maxLaunchedProcesses + ")");
         }
+        var processReservation = processBudget == null ? 0 : processBudget.tryReserve(1);
+        if (processBudget != null && processReservation < 1) {
+            slots.release();
+            throw new IOException("Agent process budget exceeded " + processBudget.maxProcesses() + " processes");
+        }
         try {
             var process = builder.start();
             var handle = process.toHandle();
             processes.put(handle.pid(), handle);
             handle.onExit().thenRun(() -> {
-                if (processes.remove(handle.pid(), handle)) slots.release();
+                if (processes.remove(handle.pid(), handle)) {
+                    slots.release();
+                    if (processBudget != null) processBudget.release(1);
+                }
             });
             return handle;
         } catch (Exception exception) {
             slots.release();
+            if (processBudget != null && processReservation > 0) processBudget.release(processReservation);
             if (exception instanceof IOException io) throw io;
             throw new IOException("could not launch desktop process", exception);
         }

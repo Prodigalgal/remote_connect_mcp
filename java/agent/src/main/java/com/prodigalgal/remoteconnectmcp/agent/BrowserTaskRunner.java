@@ -39,18 +39,28 @@ final class BrowserTaskRunner implements Runnable {
     private final TaskCommand task;
     private final AgentTransport transport;
     private final AgentResourceBudget resourceBudget;
+    private final AgentProcessBudget processBudget;
 
     BrowserTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task, AgentTransport transport) {
-        this(config, identity, task, transport, new AgentResourceBudget(config.maxAggregateOutputBytes()));
+        this(config, identity, task, transport, new AgentResourceBudget(config.maxAggregateOutputBytes()),
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
     }
 
     BrowserTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
                       AgentTransport transport, AgentResourceBudget resourceBudget) {
+        this(config, identity, task, transport, resourceBudget,
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
+    }
+
+    BrowserTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
+                      AgentTransport transport, AgentResourceBudget resourceBudget,
+                      AgentProcessBudget processBudget) {
         this.config = config;
         this.identity = identity;
         this.task = task;
         this.transport = transport;
         this.resourceBudget = resourceBudget;
+        this.processBudget = processBudget;
     }
 
     @Override
@@ -121,7 +131,7 @@ final class BrowserTaskRunner implements Runnable {
             process = builder.start();
             var processForSupervisor = process;
             resourceSupervisor = ProcessResourceSupervisor.start(processForSupervisor, config, task,
-                    () -> terminate(processForSupervisor));
+                    () -> terminate(processForSupervisor), processBudget);
             outputExecutor = Executors.newVirtualThreadPerTaskExecutor();
             var startedProcess = process;
             var spool = outputSpool;

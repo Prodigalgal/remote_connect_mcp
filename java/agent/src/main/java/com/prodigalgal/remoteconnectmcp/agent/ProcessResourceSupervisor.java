@@ -15,6 +15,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -35,28 +36,54 @@ final class ProcessResourceSupervisor implements AutoCloseable {
 
     private final ProcessHandle root;
     private final AgentResourcePolicy policy;
+    private final AgentProcessBudget processBudget;
     private final Runnable terminate;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicReference<String> violation = new AtomicReference<>();
     private final Thread worker;
+    private final AtomicInteger reservedProcesses = new AtomicInteger();
 
-    private ProcessResourceSupervisor(ProcessHandle root, AgentResourcePolicy policy, Runnable terminate) {
+    private ProcessResourceSupervisor(ProcessHandle root, AgentResourcePolicy policy,
+                                      AgentProcessBudget processBudget, Runnable terminate) {
         this.root = root;
         this.policy = policy;
+        this.processBudget = processBudget;
         this.terminate = terminate == null ? () -> { } : terminate;
+        if (processBudget != null && processBudget.tryReserve(1) == 1) {
+            reservedProcesses.set(1);
+        } else if (processBudget != null) {
+            violation.set("Agent process budget exceeded " + processBudget.maxProcesses() + " processes");
+            try {
+                this.terminate.run();
+            } catch (RuntimeException failure) {
+                LOG.log(Level.FINE, "could not terminate process after Agent process budget rejection", failure);
+            }
+        }
         this.worker = Thread.startVirtualThread(this::run);
     }
 
     static ProcessResourceSupervisor start(Process process, AgentConfig config, TaskCommand task,
                                            Runnable terminate) {
         if (process == null) return null;
-        return start(process.toHandle(), config, task, terminate);
+        return start(process.toHandle(), config, task, terminate, null);
     }
 
     static ProcessResourceSupervisor start(ProcessHandle process, AgentConfig config, TaskCommand task,
                                            Runnable terminate) {
+        return start(process, config, task, terminate, null);
+    }
+
+    static ProcessResourceSupervisor start(Process process, AgentConfig config, TaskCommand task,
+                                           Runnable terminate, AgentProcessBudget processBudget) {
         if (process == null) return null;
-        var supervisor = new ProcessResourceSupervisor(process, AgentResourcePolicy.forTask(config, task), terminate);
+        return start(process.toHandle(), config, task, terminate, processBudget);
+    }
+
+    static ProcessResourceSupervisor start(ProcessHandle process, AgentConfig config, TaskCommand task,
+                                           Runnable terminate, AgentProcessBudget processBudget) {
+        if (process == null) return null;
+        var supervisor = new ProcessResourceSupervisor(process, AgentResourcePolicy.forTask(config, task),
+                processBudget, terminate);
         var cgroupFailure = LinuxCgroupV2.tryAttach(process, config);
         if (cgroupFailure != null) supervisor.failClosed(cgroupFailure);
         return supervisor;
@@ -76,7 +103,11 @@ final class ProcessResourceSupervisor implements AutoCloseable {
     }
 
     private void run() {
-        if (!policy.enabled()) return;
+        if (violation.get() != null) return;
+        // A shared Agent process budget is an independent safety guard. Keep
+        // supervising even when a task contract disables the optional
+        // per-task probes, otherwise a host-wide cap would be silently inert.
+        if (!policy.enabled() && processBudget == null) return;
         var started = System.nanoTime();
         var completion = root.onExit();
         var interval = Math.max(250L, policy.sampleIntervalMillis());
@@ -125,6 +156,9 @@ final class ProcessResourceSupervisor implements AutoCloseable {
         if (processes.size() > policy.maxChildProcesses()) {
             return "task process tree exceeded " + policy.maxChildProcesses() + " processes";
         }
+
+        var processBudgetViolation = adjustProcessBudget(processes.size());
+        if (processBudgetViolation != null) return processBudgetViolation;
 
         if (policy.maxCpuSeconds() > 0) {
             var cpuNanos = processes.stream().map(ProcessResourceSupervisor::cpuNanos)
@@ -190,7 +224,35 @@ final class ProcessResourceSupervisor implements AutoCloseable {
 
     @Override
     public void close() {
-        if (closed.compareAndSet(false, true)) worker.interrupt();
+        if (closed.compareAndSet(false, true)) {
+            releaseProcessBudget();
+            worker.interrupt();
+        }
+    }
+
+    private synchronized String adjustProcessBudget(int observed) {
+        if (processBudget == null) return null;
+        var reserved = reservedProcesses.get();
+        if (observed > reserved) {
+            var requested = observed - reserved;
+            var granted = processBudget.tryReserve(requested);
+            if (granted < requested) {
+                if (granted > 0) processBudget.release(granted);
+                return "Agent process budget exceeded " + processBudget.maxProcesses() + " processes";
+            }
+            reservedProcesses.addAndGet(granted);
+        } else if (observed < reserved) {
+            var released = reserved - observed;
+            processBudget.release(released);
+            reservedProcesses.addAndGet(-released);
+        }
+        return null;
+    }
+
+    private synchronized void releaseProcessBudget() {
+        if (processBudget == null) return;
+        var reserved = reservedProcesses.getAndSet(0);
+        if (reserved > 0) processBudget.release(reserved);
     }
 
     /** Immutable effective policy calculated once when the child starts. */

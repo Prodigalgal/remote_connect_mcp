@@ -50,6 +50,7 @@ final class DurableCommandRunner implements Runnable {
     private final DurableTaskStore store;
     private final DurableTaskStore.Record recovered;
     private final AgentResourceBudget resourceBudget;
+    private final AgentProcessBudget processBudget;
     private volatile boolean cancelRequested;
 
     DurableCommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
@@ -65,6 +66,13 @@ final class DurableCommandRunner implements Runnable {
     DurableCommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
                          AgentTransport transport, DurableTaskStore store, DurableTaskStore.Record recovered,
                          AgentResourceBudget resourceBudget) {
+        this(config, identity, task, transport, store, recovered, resourceBudget,
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
+    }
+
+    DurableCommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
+                         AgentTransport transport, DurableTaskStore store, DurableTaskStore.Record recovered,
+                         AgentResourceBudget resourceBudget, AgentProcessBudget processBudget) {
         this.config = config;
         this.identity = identity;
         this.task = task;
@@ -72,6 +80,7 @@ final class DurableCommandRunner implements Runnable {
         this.store = store;
         this.recovered = recovered;
         this.resourceBudget = resourceBudget;
+        this.processBudget = processBudget;
     }
 
     void requestCancel() {
@@ -99,7 +108,7 @@ final class DurableCommandRunner implements Runnable {
             }
             var handleForSupervisor = handle;
             resourceSupervisor = ProcessResourceSupervisor.start(handleForSupervisor, config, task,
-                    () -> terminate(handleForSupervisor));
+                    () -> terminate(handleForSupervisor), processBudget);
             store.guard(record, TaskLimits.outputBytes(config, task), resourceBudget);
 
             if (!record.completed()) {

@@ -56,7 +56,7 @@ Native Agent 烟测可设置 `RCM_SMOKE_RESOURCE_REPORT=/tmp/rcm-agent-resource.
 不应提交到仓库或作为运行时限制依据。
 
 资源回收约束：command-agent 在 `STATE_DIR/agent.lock` 上单实例运行；Browser Worker 达到
-`REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` 后不会再领取 browser 任务，超时/取消会终止整个子进程树并删除临时文件；Desktop companion 在 `STATE_DIR/desktop/desktop-companion.lock` 上单实例运行，最多 4 个 IPC 请求和 16 个活动启动进程，已退出的进程通过 `ProcessHandle.onExit()` 自动释放名额。没有用户会话时，command-agent 的桌面启动回退同样受 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES`（1–64）限制。Windows 服务和 Linux systemd 仍应配置服务管理器的重启/资源上限，不能用无限制的 `maxConcurrency` 代替容量规划。
+`REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` 后不会再领取 browser 任务，超时/取消会终止整个子进程树并删除临时文件；Desktop companion 在 `STATE_DIR/desktop/desktop-companion.lock` 上单实例运行，最多 4 个 IPC 请求和 16 个活动启动进程，已退出的进程通过 `ProcessHandle.onExit()` 自动释放名额。没有用户会话时，command-agent 的桌面启动回退同样受 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES`（1–64）限制。`REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`（默认按并发计算、封顶 256；可配置 1–4096）还会在 command、desktop 直启和 browser 任务之间共享一个 Agent 级进程预算。任务监督器观察到新的子进程时占用预算，任务终止/正常退出和桌面进程 `onExit()` 会释放预算；预算耗尽的任务 fail-closed 并回传可解释错误。Windows 服务和 Linux systemd 仍应配置服务管理器的重启/资源上限，不能用无限制的 `maxConcurrency` 代替容量规划。
 
 Center 持久化统一使用 PostgreSQL + Liquibase，不使用 Flyway。默认 `RCM_CENTER_PERSISTENCE_MODE=memory` 只用于无数据库协议回归；生产设置 `RCM_CENTER_PERSISTENCE_MODE=postgres`、`RCM_CENTER_DATABASE_URL`、`RCM_CENTER_DATABASE_USERNAME` 和 `RCM_CENTER_DATABASE_PASSWORD`。任务、输出游标和有界截图工件均写入事务存储。生产通过 `rcm-center --migrate` 或 `deploy/k8s/java-center/migration-job.yaml` 单独执行 Liquibase，Center Pod 设置 `RCM_CENTER_LIQUIBASE_ENABLED=false`。
 

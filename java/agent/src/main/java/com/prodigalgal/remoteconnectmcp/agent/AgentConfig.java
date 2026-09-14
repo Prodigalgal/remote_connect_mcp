@@ -38,6 +38,7 @@ public record AgentConfig(
     private static final long MAX_TASK_DURATION_SECONDS = 30L * 24 * 60 * 60;
     private static final long MAX_TASK_RSS_BYTES = 16L * 1024 * 1024 * 1024;
     private static final long MAX_TASK_CPU_SECONDS = 30L * 24 * 60 * 60;
+    private static final int MAX_TOTAL_CHILD_PROCESSES = 4096;
 
     /** Compatibility constructor for callers written before output limits were configurable. */
     public AgentConfig(URI centerUrl, String enrollmentToken, String name, String hostId,
@@ -210,6 +211,19 @@ public record AgentConfig(
     public int maxTaskChildProcesses() {
         return Math.toIntExact(parseLongEnv("REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES",
                 DEFAULT_MAX_CHILD_PROCESSES, 1, 256));
+    }
+
+    /**
+     * Host-wide process-tree ceiling shared by all concurrently running task
+     * supervisors.  The default grows with configured concurrency but stays
+     * bounded, so raising the task slot count cannot silently create an
+     * unbounded number of child processes.
+     */
+    public int maxTotalChildProcesses() {
+        var defaultValue = Math.min(256, Math.max(DEFAULT_MAX_CHILD_PROCESSES,
+                Math.multiplyExact(maxConcurrency, DEFAULT_MAX_CHILD_PROCESSES)));
+        return Math.toIntExact(parseLongEnv("REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES",
+                defaultValue, 1, MAX_TOTAL_CHILD_PROCESSES));
     }
 
     /** Optional resident-set ceiling. Zero means the platform probe is disabled. */

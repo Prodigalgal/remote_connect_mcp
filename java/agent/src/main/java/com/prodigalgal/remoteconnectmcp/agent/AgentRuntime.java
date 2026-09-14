@@ -71,7 +71,8 @@ public final class AgentRuntime {
         var settings = new AgentRuntimeSettings(config);
         var backoff = settings.pollInterval();
         var resourceBudget = new AgentResourceBudget(config.maxAggregateOutputBytes());
-        var desktopProcessBudget = new DesktopProcessBudget();
+        var processBudget = new AgentProcessBudget(config.maxTotalChildProcesses());
+        var desktopProcessBudget = new DesktopProcessBudget(processBudget);
         var maxBrowserWorkers = config.maxBrowserWorkers();
         var browserRunning = new AtomicInteger();
         var wakeSignal = new AgentWakeSignal();
@@ -79,7 +80,7 @@ public final class AgentRuntime {
         var executor = Executors.newVirtualThreadPerTaskExecutor();
         try {
             reportPendingUpgradeResult(identity);
-            recoverDurable(identity, durableStore, executor, settings, resourceBudget);
+            recoverDurable(identity, durableStore, executor, settings, resourceBudget, processBudget);
             while (!Thread.currentThread().isInterrupted() && !stopRequested.get()) {
                 try {
                     var availableSlots = upgrading.get() ? 0 : Math.max(0, settings.maxConcurrency() - running.size());
@@ -134,10 +135,10 @@ public final class AgentRuntime {
                             case COMMAND -> task.timeoutSeconds() <= 0
                                     ? new DurableCommandRunner(config, taskIdentity,
                                     durableRecord == null ? task : durableRecord.taskCommand(), transport, durableStore, durableRecord,
-                                    resourceBudget)
-                                    : new CommandRunner(config, taskIdentity, task, transport, resourceBudget);
-                            case DESKTOP -> new DesktopTaskRunner(config, taskIdentity, task, transport, desktopProcessBudget);
-                            case BROWSER -> new BrowserTaskRunner(config, taskIdentity, task, transport, resourceBudget);
+                                    resourceBudget, processBudget)
+                                    : new CommandRunner(config, taskIdentity, task, transport, resourceBudget, processBudget);
+                            case DESKTOP -> new DesktopTaskRunner(config, taskIdentity, task, transport, desktopProcessBudget, processBudget);
+                            case BROWSER -> new BrowserTaskRunner(config, taskIdentity, task, transport, resourceBudget, processBudget);
                         };
                         // FutureTask removes itself from the running map in its
                         // completion callback; no second waiter thread is needed
@@ -242,7 +243,8 @@ public final class AgentRuntime {
     }
 
     private void recoverDurable(AgentIdentity identity, DurableTaskStore store, ExecutorService executor,
-                                AgentRuntimeSettings settings, AgentResourceBudget resourceBudget) {
+                                AgentRuntimeSettings settings, AgentResourceBudget resourceBudget,
+                                AgentProcessBudget processBudget) {
         for (var record : store.load()) {
             if (running.size() >= settings.maxConcurrency()) {
                 LOG.warning("durable task recovery reached the configured concurrency limit");
@@ -252,7 +254,8 @@ public final class AgentRuntime {
                 continue;
             }
             var task = record.taskCommand();
-            var runner = new DurableCommandRunner(config, identity, task, transport, store, record, resourceBudget);
+            var runner = new DurableCommandRunner(config, identity, task, transport, store, record,
+                    resourceBudget, processBudget);
             var future = new FutureTask<Void>(() -> {
                 runner.run();
                 return null;

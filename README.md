@@ -191,6 +191,7 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES` | `67108864`（并发提高时默认最多 256 MiB） | 所有普通任务磁盘 spool 的聚合上限；必须不小于单任务上限，范围单任务上限–4 GiB；达到后任务继续运行但后续输出标记为截断 |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS` | `0` | 单任务墙钟上限；0 表示不额外收紧任务/合同（范围 0–2592000） |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES` | `32` | 单任务进程树上限（含根进程，范围 1–256），超限会终止整棵树 |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES` | `min(256, max(32, MAX_CONCURRENCY×32))` | command、desktop 直启和 browser 共享的 Agent 级进程总预算，范围 1–4096；耗尽时新任务 fail-closed，退出后自动释放 |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES` | `0` | 单任务 RSS 上限；Linux 通过 `/proc` 执行，0 或不支持的平台表示关闭（最多 16 GiB） |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS` | `0` | 单任务累计 CPU 时间上限（范围 0–2592000） |
 | `REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS` | `1000` | 资源监督的任务级采样间隔（250–10000 ms）；只在任务运行时启用，不产生空闲 Agent 轮询 |
