@@ -33,7 +33,7 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.21 生产发布；四�
 5. 构建拆分：`command-agent`、`desktop-companion`、`browser-agent` 已分别建立 Gradle Native 目标、Docker artifact 目标和 Release ZIP/校验流程；GitHub Actions 已通过 Linux amd64/arm64、Windows amd64 的四目标编译与烟测，四台在线 Oracle Agent 的安装/升级回归已完成。
 6. 长连接：已实现可选 WebSocket wake-only 通道、带单调序列号的重复/乱序提示去重、客户端指数重连和 HTTPS 长轮询；PostgreSQL 模式新增跨 Center 副本的 Agent 唤醒与任务等待 `LISTEN/NOTIFY` 桥接（best-effort，丢失时由请求截止时间和下一次显式读取补偿）；仍需在真实反向代理/多副本环境完成灰度和故障演练，QUIC 尚未实现。
 7. Project Registry/Git worktree：已实现按 Agent 归属的项目注册、受保护项目删除、项目根/仓库路径边界、异步 `git worktree add/remove`、幂等键和项目/worktree 任务 cwd 解析；精简 MCP `project` 工具已接入 status/diff/log/幂等 commit/显式 merge/`merge_abort` 冲突恢复排队；Center 不读取仓库内容，Agent 仍执行最终真实路径与权限校验。提交/差异审阅、冲突输出和实际目标机 Git/权限回归仍待补齐。
-8. 控制台：基础管理流程、项目/worktree、全局搜索/基础筛选和有界任务输出查看可用；机器、项目、任务、升级和审计列表已按服务端 `has_more` 增量加载，升级页可只重排队单个失败目标；审计页提供管理员确认后清理一年以前记录的有界入口，任务编排已覆盖 command/desktop/browser 与显式范围；MCP 只内联不超过 2 MiB 的图片，实时推送、审计详情和无障碍/视觉回归门禁尚未达到生产级完整度。
+8. 控制台：基础管理流程、项目/worktree、全局搜索/基础筛选和有界任务输出查看可用；机器、项目、任务、升级和审计列表已按服务端 `has_more` 增量加载，升级页可只重排队单个失败目标；审计页提供管理员确认后清理一年以前记录的有界入口，MCP 创建的任务与控制台创建的任务在审计来源中分别标记为 `mcp`/`console`，任务编排已覆盖 command/desktop/browser 与显式范围；MCP 只内联不超过 2 MiB 的图片，实时推送、审计详情和无障碍/视觉回归门禁尚未达到生产级完整度。
 9. 可观测性：Java Center/Go 基线均提供 Admin 鉴权的有界 `/metrics` 和脱敏日志约定；生产已通过私有 GitOps 接入 Prometheus ServiceMonitor 与 Center/数据库/Agent/升级告警。集中日志、SLO 面板和升级失败通知仍待补齐。
 10. 执行合同：已在协议、MCP/Admin 请求、任务持久化和 Agent 本地路径校验中加入 `project/worktree/path/workspace/unrestricted` 范围、machine/host/capability、预算、过期和幂等意图字段；Agent 会把合同预算作为输出、工件和操作时长的更窄上限，桌面 companion 进入 IPC 前也复用同一 cwd 合同校验；P0-06 仍保持未完成，待 GitHub Actions 编译、数据库迁移、绕过测试和目标机回归全部通过后再勾选。
 
