@@ -36,6 +36,12 @@ export type Task = {
   artifactBytes: number
   artifactMime?: string
   artifactSha256?: string
+  scopeMode?: string
+  projectId?: string
+  worktreeId?: string
+  scopeRoot?: string
+  risk?: string
+  contractExpiresAt?: string
 }
 
 export type TaskOutputPage = {
@@ -225,6 +231,12 @@ function mapTask(item: Record<string, unknown>): Task {
     artifactBytes: Number(item.artifact_bytes ?? 0),
     artifactMime: item.artifact_mime as string | undefined,
     artifactSha256: item.artifact_sha256 as string | undefined,
+    scopeMode: item.scope_mode as string | undefined,
+    projectId: item.project_id as string | undefined,
+    worktreeId: item.worktree_id as string | undefined,
+    scopeRoot: item.scope_root as string | undefined,
+    risk: item.risk as string | undefined,
+    contractExpiresAt: item.contract_expires_at as string | undefined,
   }
 }
 

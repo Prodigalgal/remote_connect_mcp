@@ -323,7 +323,9 @@ function TaskComposer({ machines, projects, token, onCreated }: { machines: Mach
     setSubmitting(true)
     setMessage('')
     try {
-      const task = await createTask(token, { machine_id: machineId, command: command.trim(), cwd: cwd.trim() || undefined, project_id: projectId || undefined, worktree_id: worktreeId || undefined, timeout_seconds: Number(timeout) || 0 })
+      const selectedMachine = machines.find((machine) => machine.id === machineId)
+      const scopeMode = worktreeId ? 'worktree' : projectId ? 'project' : (selectedMachine?.scopeMode || 'workspace')
+      const task = await createTask(token, { machine_id: machineId, command: command.trim(), cwd: cwd.trim() || undefined, project_id: projectId || undefined, worktree_id: worktreeId || undefined, scope_mode: scopeMode, timeout_seconds: Number(timeout) || 0 })
       setMessage(`已创建 ${task.id}，命令在 Agent 后台异步执行`)
       setCommand('')
       onCreated()

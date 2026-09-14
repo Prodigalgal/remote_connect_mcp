@@ -12,9 +12,14 @@ Agent 的 `/agent/v1/poll` 响应可以携带可选 `config` 对象：
 
 `generation` 由 Center 单调递增，Agent 只接受更高版本，并把不含密钥的配置
 原子写入 `STATE_DIR/runtime-config.json`；当前进程立即使用新的心跳间隔和并发槽位，
-重启后继续沿用最后一次成功配置。输出上限、工作区范围和 Token 仍是启动时配置，
+重启后继续沿用最后一次成功配置。输出上限、Agent 工作区范围和 Token 仍是启动时配置，
 不会通过热更新绕过本机安全边界。管理端接口为
 `GET/PUT /api/v1/admin/machines/{machineId}/config`。
+
+每个新任务还携带 Center 签发的 execution contract，其中包含 machine/host 身份、project/worktree/path
+范围、所需能力、预算、过期时间、风险和幂等意图。Agent 在真正启动子进程前再次校验该合同；合同缺失、过期、
+身份不匹配或范围扩大时直接 fail-closed。合同预算只能收紧 Agent 启动时的输出、工件和操作时长上限，
+不会通过任务请求放大宿主机资源额度。
 
 ## 调用方语义
 

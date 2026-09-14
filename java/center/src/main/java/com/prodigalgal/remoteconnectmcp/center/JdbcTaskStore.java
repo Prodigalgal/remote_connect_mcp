@@ -39,7 +39,7 @@ final class JdbcTaskStore {
                    t.cwd, t.environment, t.desktop_action, t.timeout_seconds,
                    t.idempotency_key, t.status, t.lease_until, t.attempt,
                    t.output_bytes, t.output_truncated, t.error_text, t.exit_code, t.created_at,
-                   t.dispatched_at, t.started_at, t.finished_at, t.updated_at,
+                   t.dispatched_at, t.started_at, t.finished_at, t.updated_at, t.execution_contract,
                    NULL::bytea AS output_data, a.bytes AS artifact_bytes, a.mime_type AS artifact_mime,
                    a.sha256 AS artifact_sha256, NULL::bytea AS artifact_data
               FROM rcm_task t
@@ -386,16 +386,17 @@ final class JdbcTaskStore {
         var command = state.command();
         var env = new String(JsonCodec.write(command.env()), StandardCharsets.UTF_8);
         var desktop = command.desktop() == null ? null : new String(JsonCodec.write(command.desktop()), StandardCharsets.UTF_8);
+        var contract = command.contract() == null ? null : new String(JsonCodec.write(command.contract()), StandardCharsets.UTF_8);
         jdbc.update("""
                 INSERT INTO rcm_task (
                     task_id, agent_id, kind, required_capability, command_text, cwd,
                     environment, desktop_action, timeout_seconds, idempotency_key,
                     status, lease_until, attempt, output_bytes, output_truncated,
-                    error_text, created_at, dispatched_at, started_at, finished_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, 0, 0, false, ?, ?, ?, ?, ?, ?)
+                    error_text, created_at, dispatched_at, started_at, finished_at, updated_at, execution_contract
+                ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, 0, 0, false, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb))
                 """, state.id(), state.machineId(), command.kind().wireValue(), command.requiredCapability(), command.command(),
                 command.cwd(), env, desktop, command.timeoutSeconds(), state.idempotencyKey(), state.status(), null,
-                null, timestamp(state.createdAt()), null, null, null, timestamp(state.createdAt()));
+                null, timestamp(state.createdAt()), null, null, null, timestamp(state.createdAt()), contract);
         jdbc.update("INSERT INTO rcm_task_output(task_id, output_data, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", state.id(), new byte[0]);
     }
 
@@ -478,8 +479,11 @@ final class JdbcTaskStore {
         var environment = readEnvironment(rs.getString("environment"));
         var desktopJson = rs.getString("desktop_action");
         var desktop = desktopJson == null || desktopJson.isBlank() ? null : JsonCodec.read(desktopJson.getBytes(StandardCharsets.UTF_8), TaskCommand.DesktopAction.class);
+        var contractJson = rs.getString("execution_contract");
+        var contract = contractJson == null || contractJson.isBlank() ? null
+                : JsonCodec.read(contractJson.getBytes(StandardCharsets.UTF_8), com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract.class);
         var command = new TaskCommand(taskId, kind, rs.getString("required_capability"), rs.getString("command_text"),
-                rs.getString("cwd"), environment, rs.getInt("timeout_seconds"), desktop, instant(rs, "created_at"));
+                rs.getString("cwd"), environment, rs.getInt("timeout_seconds"), desktop, instant(rs, "created_at"), contract);
         var output = rs.getBytes("output_data");
         var artifactBytesValue = rs.getObject("artifact_bytes");
         var artifactBytes = artifactBytesValue instanceof Number number ? number.longValue() : 0L;
@@ -523,7 +527,8 @@ final class JdbcTaskStore {
                 && Objects.equals(left.cwd(), right.cwd())
                 && Objects.equals(left.env(), right.env())
                 && left.timeoutSeconds() == right.timeoutSeconds()
-                && Objects.equals(left.desktop(), right.desktop());
+                && Objects.equals(left.desktop(), right.desktop())
+                && (left.contract() == null ? right.contract() == null : left.contract().sameIntent(right.contract()));
     }
 
     private static boolean validStatus(String status) {

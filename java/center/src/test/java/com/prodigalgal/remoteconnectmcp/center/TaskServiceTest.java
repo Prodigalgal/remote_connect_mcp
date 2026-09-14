@@ -44,6 +44,48 @@ class TaskServiceTest {
         assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), page.data());
         assertEquals(5, page.nextCursor());
         assertEquals(TaskStatus.COMPLETED, tasks.find(created.id()).orElseThrow().status());
+        assertEquals(registration.machineId(), tasks.find(created.id()).orElseThrow().command().contract().machineId());
+        assertEquals("unrestricted", tasks.find(created.id()).orElseThrow().command().contract().scopeMode().wireValue());
+    }
+
+    @Test
+    void createsBoundedContractForWorkspaceAgent() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("workspace-agent", "host-a", "host-a", "linux", "amd64", "dev",
+                "/srv/project", ScopeMode.WORKSPACE, "/srv/project", List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+
+        var task = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "echo scoped", "src", java.util.Map.of(), 30, null, null),
+                "scope-key", "", "", ScopeMode.WORKSPACE, "/srv/project", "session-1", "low", false));
+
+        var state = tasks.find(task.id()).orElseThrow();
+        assertEquals(ScopeMode.WORKSPACE, state.command().contract().scopeMode());
+        assertEquals("/srv/project", state.command().contract().scopeRoot());
+    }
+
+    @Test
+    void rejectsPathContractEscapeEvenWhenAgentIsUnrestricted() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("unrestricted-agent", "host-a", "host-a", "linux", "amd64", "dev",
+                "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+
+        assertThrows(IllegalArgumentException.class, () -> tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "echo blocked", "../etc", java.util.Map.of(), 0, null, null),
+                "path-escape", "", "", ScopeMode.PATH, "/srv/project", "session-1", "low", false)));
+    }
+
+    @Test
+    void doesNotAllowExplicitUnrestrictedTaskOnWorkspaceAgent() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("workspace-agent", "host-a", "host-a", "linux", "amd64", "dev",
+                "/srv/project", ScopeMode.WORKSPACE, "/srv/project", List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+
+        assertThrows(SecurityException.class, () -> tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "echo blocked", "/srv/project", java.util.Map.of(), 0, null, null),
+                "scope-upgrade", "", "", ScopeMode.UNRESTRICTED, "", "session-1", "low", false)));
     }
 
     @Test

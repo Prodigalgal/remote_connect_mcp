@@ -90,16 +90,22 @@ memory adapter 只用于协议测试/开发，不能在生产与 PostgreSQL 并�
 
 ## 4. 范围与项目策略
 
-RCM 保留两种顶层策略：
+RCM 的范围由每个任务携带的 Center-issued execution contract 确定，支持五种模式：
 
-- `unrestricted`：整机运维模式，适合受信任的系统 Agent；
-- `workspace`：Center 做目标平台词法校验，Agent 做真实路径、符号链接和 Junction 校验。
+- `project`：注册项目根目录；
+- `worktree`：注册项目下的一个 Git worktree；
+- `path`：调用方明确提供的绝对根目录；
+- `workspace`：Agent 注册的工作区根目录（兼容旧配置）；
+- `unrestricted`：整机运维模式，必须由调用方显式声明，不能由默认值或模型猜测获得。
+
+Center 持久化任务的 machine/host、项目/worktree、范围根、能力、预算、过期时间、风险和幂等意图；Agent
+在执行前再次校验身份、能力、过期时间和真实路径。范围合同是误操作控制边界，不把 cwd 校验描述成操作系统沙箱。
 
 Project Registry 已作为可选的开发工作流落地：项目由管理员按 Agent 注册，Center 只保存不透明项目 ID、路径元数据和 worktree
 状态；Git `worktree add/remove` 以异步任务在 Agent 上执行，项目 ID 不能绕过 Agent 的根目录策略。对于需要修改代码的任务，优先
 使用 Agent 管理的 Git worktree；原始 checkout 只有在本机显式接受结果后才改变。提交/差异审阅和显式合并仍属于后续阶段。
 
-工作区模式不是 root 级沙箱。需要强隔离时，配合低权限账户、ACL、systemd `ReadWritePaths`、Windows 受限账户、容器或虚拟机；RCM 不会把“cwd 校验”描述成完整安全边界。
+工作区、项目和路径模式不是 root 级沙箱。需要强隔离时，配合低权限账户、ACL、systemd `ReadWritePaths`、Windows 受限账户、容器或虚拟机；RCM 不会把“cwd 校验”描述成完整安全边界。
 
 ## 5. Desktop Agent
 
@@ -170,4 +176,4 @@ Agent 心跳自描述版本、平台、HostID、角色、能力、范围策略�
 6. **专用自动化阶段**：Browser Agent 的 Playwright/Patchright/Comoufox 完整 Worker 协议、会话生命周期和工件策略；桌面输入基础能力已落地，继续补窗口/焦点适配。
 7. **规模化阶段**：在 PostgreSQL + Liquibase 持久化已经成为默认生产路径后，再按多副本需求增加 Center 副本、LISTEN/NOTIFY 唤醒和对象存储扩展，保持 MCP URL 与工具契约不变。
 
-明确不在当前范围：OAuth 2.1 强制化、代理其他 MCP、把 `workspace` 冒充 OS 沙箱、把 ChatGPT 的动作审批策略写入 Center、或一次性暴露海量浏览器/桌面底层工具。
+明确不在当前范围：OAuth 2.1 强制化、代理其他 MCP、把任意范围模式冒充 OS 沙箱、把 ChatGPT 的动作审批策略写入 Center、或一次性暴露海量浏览器/桌面底层工具。

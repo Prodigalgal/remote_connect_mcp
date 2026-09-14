@@ -119,6 +119,9 @@ class PostgresIntegrationTest {
         assertNotNull(worktree.taskId());
         var worktreeTask = projectTasks.poll(agentId, new PollRequest(List.of(), 1, List.of("command"))).task();
         assertEquals(worktree.taskId(), worktreeTask.id());
+        assertEquals("project", worktreeTask.contract().scopeMode().wireValue());
+        assertEquals(project.id(), worktreeTask.contract().projectId());
+        assertEquals(project.rootPath(), worktreeTask.contract().scopeRoot());
         projectTasks.updateState(agentId, worktreeTask.id(), new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
         projectTasks.updateState(agentId, worktreeTask.id(), new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
         var readyWorktree = projectService.find(project.id()).worktrees().stream()

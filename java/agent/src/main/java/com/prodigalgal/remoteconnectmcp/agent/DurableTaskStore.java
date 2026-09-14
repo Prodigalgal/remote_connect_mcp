@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
+import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -69,7 +70,7 @@ final class DurableTaskStore {
         }
         var process = builder.start();
         var record = new Record(task.id(), process.pid(), task.command(), cwd.toString(), task.createdAt(),
-                output.toString(), recordPath.toString(), false, null, null);
+                output.toString(), recordPath.toString(), false, null, null, task.contract());
         try {
             write(recordPath, record);
         } catch (IOException exception) {
@@ -250,7 +251,7 @@ final class DurableTaskStore {
 
     void markCompleted(Record record, int exitCode, String error) throws IOException {
         var completed = new Record(record.taskId(), record.pid(), record.command(), record.cwd(),
-                record.startedAt(), record.outputPath(), record.recordPath(), true, exitCode, error);
+                record.startedAt(), record.outputPath(), record.recordPath(), true, exitCode, error, record.contract());
         write(Path.of(record.recordPath()), completed);
         completionSignals.computeIfAbsent(record.taskId(), ignored -> new CompletableFuture<>()).complete(completed);
     }
@@ -353,10 +354,16 @@ final class DurableTaskStore {
     }
 
     record Record(String taskId, long pid, String command, String cwd, Instant startedAt, String outputPath,
-                  String recordPath, boolean completed, Integer exitCode, String error) {
+                  String recordPath, boolean completed, Integer exitCode, String error, ExecutionContract contract) {
+        /** Compatibility constructor for durable records written before contracts. */
+        Record(String taskId, long pid, String command, String cwd, Instant startedAt, String outputPath,
+               String recordPath, boolean completed, Integer exitCode, String error) {
+            this(taskId, pid, command, cwd, startedAt, outputPath, recordPath, completed, exitCode, error, null);
+        }
+
         TaskCommand taskCommand() {
             return new TaskCommand(taskId, com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND, "command",
-                    command, cwd, java.util.Map.of(), 0, null, startedAt == null ? Instant.EPOCH : startedAt);
+                    command, cwd, java.util.Map.of(), 0, null, startedAt == null ? Instant.EPOCH : startedAt, contract);
         }
     }
 }

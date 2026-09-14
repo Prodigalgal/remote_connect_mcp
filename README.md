@@ -9,7 +9,7 @@ Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统
 
 目标架构和演进边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，异步调用契约见 [`docs/ASYNC_CONTRACT.md`](docs/ASYNC_CONTRACT.md)，详细语言、运行时、原生构建和前端选型见 [`docs/TECH_STACK.md`](docs/TECH_STACK.md)，Java/React 发布门禁见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)，当前实现/生产阻塞见 [`docs/STATUS.md`](docs/STATUS.md)。Java 25 Center/Agent 与 React 控制台已经进入生产路径；Go 组件仅作为离线节点的兼容/回滚基线保留。一个物理终端默认只有一个向 Center 注册的 `command-agent` 身份；桌面能力由同安装包启动的用户会话 `desktop-companion` 提供，浏览器能力由有界的本机 Browser Worker 提供，不增加额外 machine ID 或 Token。确需隔离时才为同一终端显式注册多个 Agent。
 
-项目不代理其他 MCP，也不对命令内容做白名单过滤。Agent 支持两种目录策略：默认的 `unrestricted` 模式保持整机运维能力；`workspace` 模式会在 Center 和 Agent 两侧校验任务工作目录，只允许指定工作区及其子目录。
+项目不代理其他 MCP，也不对命令内容做白名单过滤。任务支持 `project`、`worktree`、`path`、`workspace` 和显式 `unrestricted` 五种范围；默认安装策略是 `workspace`，整机模式必须由调用方明确声明并通过 Agent 的本地校验。
 
 > [!CAUTION]
 > MCP Token、管理 Token、Enrollment Token 和 Agent 凭据都属于高权限秘密。MCP Token 等同于所有已注册机器上的远程代码执行权限。请只通过 HTTPS 使用，将真实值保存在 Secret 或权限为 `0600` 的配置文件中，禁止提交到 Git。
@@ -85,9 +85,11 @@ Agent 默认将单个任务捕获的 stdout/stderr 限制为 64 MiB，所有普�
 | `desktop` | 仅对声明 `desktop` 能力的用户会话 Agent 提供有界截图、屏幕枚举、应用启动、点击、拖拽、按键、文本、剪贴板和窗口聚焦；截图以图片工件返回 |
 | `browser` | 仅对声明 `browser` 能力且配置本机适配器的 Agent 投递一条有界 Worker 请求；快照可返回最多 64 个 `rcm-ref-v1` 元素引用供后续动作复用；不上传 Cookie/CDP 凭据 |
 
-当前核心命令工具集为 6 个，另有项目工作流 `project` 和按能力启用的 `desktop`、`browser` 工具。工具数量不是硬性限制，只有在确有独立用户价值且能保持有界输入/输出时才扩展；Browser Agent 不会把 Playwright/Patchright/Comoufox 的全部底层 API 一次性暴露。机器数量不会扩大 ChatGPT 的工具元数据。每次机器操作都必须显式传入 `machine_id`。目录策略通过机器注册元数据和现有 `cwd` 字段实现，不为每种能力复制一组工具，避免污染 ChatGPT Web 上下文。
+当前核心命令工具集为 6 个，另有项目工作流 `project` 和按能力启用的 `desktop`、`browser` 工具。工具数量不是硬性限制，只有在确有独立用户价值且能保持有界输入/输出时才扩展；Browser Agent 不会把 Playwright/Patchright/Comoufox 的全部底层 API 一次性暴露。机器数量不会扩大 ChatGPT 的工具元数据。每次机器操作都必须显式传入 `machine_id` 和范围；范围由任务 execution contract 统一表达，不为每种能力复制一组工具，避免污染 ChatGPT Web 上下文。
 
 MCP 返回专门的精简视图：`machines_list` 使用分页摘要，`task_wait`/`task_output` 只返回有限输出页，任务状态不会回显提交时的环境变量或令牌；过长命令和错误文本会截断并标记。每个结果只发送一份 JSON 文本，不重复发送结构化副本。需要更多内容时使用 `next_cursor`/`offset` 分页，不会在单次对话中装载整台机器或完整日志。
+
+执行合同中的输出、工件和时长预算只能进一步收紧 Agent 的启动配置；它们不会扩大宿主机的并发、磁盘或进程额度。Agent 在启动命令、桌面或浏览器子进程前再次校验合同，过期、身份不匹配或范围扩大都会失败关闭。
 
 ## 升级兼容契约
 
@@ -175,7 +177,7 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_NAME` | 主机名 | 稳定机器名称；同名重装会复用机器记录并轮换凭据 |
 | `REMOTE_CONNECT_MCP_AGENT_HOST_ID` | 主机名 | 物理终端归组标识；同一终端的多个 Agent 使用同一个值，但不共享 machine ID 或权限 |
 | `REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD` | 启动目录 | 相对工作目录的基准；在 `workspace` 模式下必须位于工作区根目录内 |
-| `REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE` | `unrestricted` | `unrestricted` 保持整机模式；`workspace` 启用工作目录边界 |
+| `REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE` | `workspace` | 支持 `project`、`worktree`、`path`、`workspace`；`unrestricted` 必须显式配置 |
 | `REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT` | 空 | `workspace` 模式的根目录；为空时使用 `DEFAULT_CWD` |
 | `REMOTE_CONNECT_MCP_AGENT_CAPABILITIES` | 内置 `command,durable_tasks` | 可选能力标签，使用逗号分隔；仅用于 Center/控制台展示，不直接授予权限 |
 | `REMOTE_CONNECT_MCP_AGENT_VERSION` | `dev` | 初始上报版本；升级 Helper 成功后写入私有 `STATE_DIR/agent-version`，重启后自动上报新版本 |

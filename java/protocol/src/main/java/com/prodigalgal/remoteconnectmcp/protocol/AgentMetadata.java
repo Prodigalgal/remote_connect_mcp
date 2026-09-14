@@ -16,6 +16,6 @@ public record AgentMetadata(
 
     public AgentMetadata {
         capabilities = capabilities == null ? List.of() : List.copyOf(capabilities);
-        scopeMode = scopeMode == null ? ScopeMode.UNRESTRICTED : scopeMode;
+        scopeMode = scopeMode == null ? ScopeMode.WORKSPACE : scopeMode;
     }
 }

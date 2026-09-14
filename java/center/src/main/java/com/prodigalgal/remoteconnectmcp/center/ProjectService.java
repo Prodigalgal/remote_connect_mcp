@@ -292,6 +292,28 @@ public final class ProjectService {
         return target;
     }
 
+    /** Resolve the immutable root carried by a project/worktree execution contract. */
+    public String resolveScopeRoot(String machineId, String projectId, String worktreeId) {
+        var project = findState(projectId);
+        if (!project.machineId.equals(requiredText(machineId, "machine_id", 128))) {
+            throw new SecurityException("project does not belong to this machine");
+        }
+        var machine = agents.findMachine(machineId, Instant.now())
+                .orElseThrow(() -> new IllegalArgumentException("machine not found"));
+        var base = project.rootPath;
+        if (worktreeId != null && !worktreeId.isBlank()) {
+            var worktree = findWorktree(project.id, worktreeId);
+            var current = refresh(worktree);
+            if (!"create".equals(worktree.operation) || !WorktreeStatus.READY.equals(current.status())) {
+                throw new IllegalArgumentException("worktree is not ready");
+            }
+            base = worktree.path;
+        }
+        WorkspacePolicy.validateRemote(ScopeMode.fromWireValue(machine.scopeMode()), machine.os(),
+                machine.workspaceRoot(), machine.workspaceRoot(), base);
+        return base;
+    }
+
     private void queueOperation(ProjectState project, WorktreeState state, boolean persisted) {
         var machine = agents.findMachine(project.machineId, Instant.now())
                 .orElseThrow(() -> new IllegalArgumentException("machine not found"));
@@ -302,7 +324,8 @@ public final class ProjectService {
             var task = tasks.create(new CreateTaskRequest(project.machineId,
                     new TaskCommand("", TaskKind.COMMAND, "command", commandText, project.rootPath,
                             Map.of(), WORKTREE_TIMEOUT_SECONDS, null, Instant.now()),
-                    "rcm-worktree:" + state.id + ":" + state.operation));
+                    "rcm-worktree:" + state.id + ":" + state.operation,
+                    project.id, null, ScopeMode.PROJECT, project.rootPath, "", "low", false));
             state.taskId = task.id();
             state.status = "queued";
             state.updatedAt = Instant.now();

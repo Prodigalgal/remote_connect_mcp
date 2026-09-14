@@ -23,7 +23,7 @@
 | [ ] | P0-03 | 异步任务全链路恢复 | 已有幂等、租约、Attempt、取消、输出游标和 LISTEN/NOTIFY；仍需完成 Center 重启、Agent 断线、重复重试、长任务和高并发正式演练 | 需补充故障演练报告和重启后任务状态证据 |
 | [x] | P0-04 | PostgreSQL + Liquibase 唯一事实来源 | 生产数据库、Liquibase `001`–`009`、旧 Go 状态导入和迁移 Job 已验证；内存仅用于测试/短期唤醒 | PostgreSQL/Liquibase CI 与生产迁移记录 |
 | [ ] | P0-05 | 任务与工件的持久化边界 | 任务、租约、Attempt、游标和工件元数据需持久化；大日志、截图、下载和升级包不能长期内嵌 `BYTEA`，需完成受控工件存储、保留和 GC | 对象存储适配、迁移/恢复、生命周期测试 |
-| [ ] | P0-06 | 执行范围与权限合同 | 增加 project/worktree/path/workspace/unrestricted 会话模型；unrestricted 必须显式授权；任务持久化 machine、host、scope、capability、预算、过期和 lease；Center 与 Agent 双重校验 | 协议/数据库迁移、绕过测试、MCP 紧凑响应 |
+| [ ] | P0-06 | 执行范围与权限合同 | 已增加 project/worktree/path/workspace/unrestricted 会话模型；unrestricted 必须显式授权；任务持久化 machine、host、scope、capability、预算、过期和 lease；Center 与 Agent 双重校验；合同预算可进一步收紧 Agent 的输出/工件/时长上限 | 仍需 GitHub Actions 编译、数据库迁移、绕过测试和目标机回归 |
 | [ ] | P0-07 | Agent 资源硬限制 | 在现有并发、输出和进程上限之外，补齐 CPU、RSS、磁盘、子进程树、单任务时长和总预算；超限需可取消并收口 | Linux cgroup/Windows Job Object 或等效实现、目标机压测 |
 | [x] | P0-08 | 隐私、密钥和仓库卫生 | 公开仓库使用模板值；真实域名、Token、Secret 和私有 GitOps 留在受保护环境；日志/指标有脱敏约定 | 仓库扫描、CI hygiene、私有部署检查 |
 | [x] | P0-09 | GitHub Actions 构建和可安装包 | Java/Native/React/安装包、SBOM、签名和烟测由 GitHub Actions 完成；开发机不编译 | Java Release workflow、Native smoke、RSS gate |
@@ -81,4 +81,3 @@
 6. 最后进入 P2 的 QUIC、HA、集中日志和旧 Go 退出。
 
 未完成 P0 门禁前，不应宣称“完全替换旧版”；未完成 P1 门禁前，不应宣称“完整生产体验”；P2 是规模化路线，不阻塞单 Center 生产运行。
-

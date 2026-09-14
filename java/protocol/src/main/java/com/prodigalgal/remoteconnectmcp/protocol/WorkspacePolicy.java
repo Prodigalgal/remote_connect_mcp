@@ -16,7 +16,7 @@ public final class WorkspacePolicy {
     /** Validate a requested target cwd against the Agent's advertised policy. */
     public static void validateRemote(ScopeMode mode, String osName, String root,
                                       String defaultCwd, String requested) {
-        if (mode == null || mode == ScopeMode.UNRESTRICTED) return;
+        if (mode == null || !mode.bounded()) return;
         boolean windows = "windows".equalsIgnoreCase(osName);
         String normalizedRoot = normalize(root, windows);
         String normalizedBase = normalize(defaultCwd, windows);

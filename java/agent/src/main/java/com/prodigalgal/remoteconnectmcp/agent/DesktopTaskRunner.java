@@ -54,7 +54,7 @@ final class DesktopTaskRunner implements Runnable {
             var companion = DesktopCompanionClient.discover(config.stateDir());
             if (companion != null) {
                 try {
-                    completeCompanion(companion.call(action, Duration.ofSeconds(task.timeoutSeconds() <= 0 ? 30 : Math.min(task.timeoutSeconds(), 300))));
+                    completeCompanion(companion.call(action, Duration.ofSeconds(Math.min(TaskLimits.timeoutSeconds(task, 30), 300))));
                     return;
                 } catch (IOException exception) {
                     // A stale endpoint may be left while the user session is
@@ -112,7 +112,7 @@ final class DesktopTaskRunner implements Runnable {
                 builder.environment().put("RCM_DESKTOP_SCREENSHOT", file.toString());
             }
             var process = builder.start();
-            var timeout = task.timeoutSeconds() <= 0 ? 30 : Math.min(task.timeoutSeconds(), 300);
+            var timeout = Math.min(TaskLimits.timeoutSeconds(task, 30), 300);
             if (!process.waitFor(timeout, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 throw new IOException("desktop screenshot timed out");
@@ -121,8 +121,9 @@ final class DesktopTaskRunner implements Runnable {
                 throw new IOException("desktop screenshot command exited with code " + process.exitValue());
             }
             var data = Files.readAllBytes(file);
-            if (data.length == 0 || data.length > MAX_SCREENSHOT_BYTES) {
-                throw new IOException("desktop screenshot is empty or exceeds " + MAX_SCREENSHOT_BYTES + " bytes");
+            var maxArtifactBytes = TaskLimits.artifactBytes(task, MAX_SCREENSHOT_BYTES);
+            if (data.length == 0 || data.length > maxArtifactBytes) {
+                throw new IOException("desktop screenshot is empty or exceeds " + maxArtifactBytes + " bytes");
             }
             if (data.length < 8 || data[0] != (byte) 0x89 || data[1] != 0x50 || data[2] != 0x4e || data[3] != 0x47) {
                 throw new IOException("desktop screenshot is not a PNG");
@@ -141,7 +142,8 @@ final class DesktopTaskRunner implements Runnable {
 
     private void completeCompanion(DesktopCompanionClient.Response response) throws IOException, InterruptedException {
         var data = response.data();
-        if (data.length > MAX_SCREENSHOT_BYTES) throw new IOException("desktop companion artifact exceeds 8 MiB");
+        var maxArtifactBytes = TaskLimits.artifactBytes(task, MAX_SCREENSHOT_BYTES);
+        if (data.length > maxArtifactBytes) throw new IOException("desktop companion artifact exceeds " + maxArtifactBytes + " bytes");
         if (data.length > 0) {
             if (!"image/png".equalsIgnoreCase(response.mimeType()) || data.length < 8
                     || data[0] != (byte) 0x89 || data[1] != 0x50 || data[2] != 0x4e || data[3] != 0x47) {
@@ -199,7 +201,7 @@ final class DesktopTaskRunner implements Runnable {
     }
 
     private Path resolveCwd(String requested) throws IOException {
-        return AgentPaths.resolveCwd(config, requested);
+        return AgentPaths.resolveCwd(config, identity.machineId(), task, requested);
     }
 
     private void sendOutput(String text) throws IOException, InterruptedException {

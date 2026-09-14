@@ -26,8 +26,13 @@ public final class ProtocolValidation {
         requireText(metadata.arch(), "arch", 64);
         requireText(metadata.version(), "version", 128);
         requireText(metadata.defaultCwd(), "defaultCwd", MAX_CWD_BYTES);
-        if (metadata.scopeMode() == ScopeMode.WORKSPACE) {
+        if (metadata.scopeMode() != null && metadata.scopeMode().bounded()) {
             requireText(metadata.workspaceRoot(), "workspaceRoot", MAX_CWD_BYTES);
+            // Reject an invalid machine policy at registration time.  Tasks
+            // still receive a separate contract, but a bounded Agent must
+            // never advertise a default cwd outside its own outer root.
+            WorkspacePolicy.validateRemote(metadata.scopeMode(), metadata.os(),
+                    metadata.workspaceRoot(), metadata.defaultCwd(), null);
         }
         if (metadata.capabilities().size() > 64) {
             throw new IllegalArgumentException("too many capabilities");
@@ -48,6 +53,9 @@ public final class ProtocolValidation {
             throw new IllegalArgumentException("timeoutSeconds is outside the allowed range");
         }
         validateEnv(task.env());
+        if (task.contract() != null) {
+            validateContract(task.contract(), task);
+        }
         if (task.kind() == TaskKind.DESKTOP) {
             if (task.desktop() == null || task.desktop().operation() == null || task.desktop().operation().isBlank()) {
                 throw new IllegalArgumentException("desktop action is required for desktop tasks");
@@ -115,6 +123,21 @@ public final class ProtocolValidation {
         }
         if (task.kind() == TaskKind.BROWSER && (task.command() == null || task.command().isBlank())) {
             throw new IllegalArgumentException("browser adapter command is required for browser tasks");
+        }
+    }
+
+    public static void validateContract(ExecutionContract contract, TaskCommand task) {
+        Objects.requireNonNull(contract, "contract");
+        Objects.requireNonNull(task, "task");
+        if (!Objects.equals(contract.capability(), task.requiredCapability())) {
+            throw new IllegalArgumentException("execution contract capability does not match task capability");
+        }
+        if (contract.budget().maxDurationSeconds() > 0
+                && task.timeoutSeconds() > contract.budget().maxDurationSeconds()) {
+            throw new IllegalArgumentException("task timeout exceeds execution contract budget");
+        }
+        if (contract.scopeMode() == ScopeMode.PROJECT && contract.worktreeId() != null) {
+            throw new IllegalArgumentException("project contract cannot carry worktreeId");
         }
     }
 

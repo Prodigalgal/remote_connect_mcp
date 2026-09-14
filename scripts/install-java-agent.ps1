@@ -8,8 +8,8 @@ param(
     [string]$AgentName = $env:COMPUTERNAME,
     [string]$HostId = "",
     [string]$DefaultCwd = "C:\",
-    [ValidateSet("unrestricted", "workspace")]
-    [string]$ScopeMode = "unrestricted",
+        [ValidateSet("unrestricted", "project", "worktree", "path", "workspace")]
+        [string]$ScopeMode = "workspace",
     [string]$WorkspaceRoot = "",
     [string]$Capabilities = "command,durable_tasks",
     [string]$Version = "dev",

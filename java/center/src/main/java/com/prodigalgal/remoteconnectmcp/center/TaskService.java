@@ -10,6 +10,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
+import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
 import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicy;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -43,6 +44,7 @@ public final class TaskService {
     public static final int MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
     public static final int MAX_OUTPUT_PAGE = 64 * 1024;
     static final Duration LEASE_DURATION = Duration.ofMinutes(2);
+    static final Duration DEFAULT_CONTRACT_LIFETIME = Duration.ofDays(30);
     private final AgentRegistry agents;
     private final Map<String, TaskState> tasks = new ConcurrentHashMap<>();
     private final Map<String, String> idempotency = new ConcurrentHashMap<>();
@@ -87,7 +89,6 @@ public final class TaskService {
         var machine = agents.findMachine(request.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
         var original = request.command();
         var kind = original.kind() == null ? TaskKind.COMMAND : original.kind();
-        validateWorkspace(machine, original);
         var capability = requiredCapability(original, kind);
         if (!machine.capabilities().contains(capability)) {
             throw new IllegalArgumentException("machine does not advertise capability: " + capability);
@@ -99,7 +100,9 @@ public final class TaskService {
             throw new IllegalArgumentException("idempotencyKey is too long");
         }
         var id = "task_" + UUID.randomUUID().toString().replace("-", "");
-        var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), Instant.now());
+        var createdAt = Instant.now();
+        var contract = buildContract(request, machine, original, capability, id, createdAt);
+        var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), createdAt, contract);
         ProtocolValidation.validateTask(command);
 
         if (jdbcStore != null) {
@@ -567,12 +570,69 @@ public final class TaskService {
         }
     }
 
-    private static void validateWorkspace(MachineView machine, TaskCommand command) {
-        var mode = ScopeMode.fromWireValue(machine.scopeMode());
-        WorkspacePolicy.validateRemote(mode, machine.os(), machine.workspaceRoot(), machine.defaultCwd(), command.cwd());
-        if (command.desktop() != null) {
-            WorkspacePolicy.validateRemote(mode, machine.os(), machine.workspaceRoot(), machine.defaultCwd(), command.desktop().cwd());
+    private static ExecutionContract buildContract(CreateTaskRequest request, MachineView machine,
+                                                    TaskCommand original, String capability,
+                                                    String taskId, Instant createdAt) {
+        var supplied = original.contract();
+        var mode = request.scopeMode() != null ? request.scopeMode()
+                : supplied != null ? supplied.scopeMode()
+                : (!request.worktreeId().isBlank() ? ScopeMode.WORKTREE
+                : !request.projectId().isBlank() ? ScopeMode.PROJECT
+                : ScopeMode.fromWireValue(machine.scopeMode()));
+        var projectId = firstNonBlank(request.projectId(), supplied == null ? null : supplied.projectId());
+        var worktreeId = firstNonBlank(request.worktreeId(), supplied == null ? null : supplied.worktreeId());
+        var scopeRoot = firstNonBlank(request.scopeRoot(), supplied == null ? null : supplied.scopeRoot());
+        if (scopeRoot == null && mode.bounded()
+                && mode != ScopeMode.PROJECT && mode != ScopeMode.WORKTREE) {
+            scopeRoot = machine.workspaceRoot();
         }
+        var sessionId = firstNonBlank(request.sessionId(), supplied == null ? null : supplied.sessionId());
+        if (sessionId == null) {
+            sessionId = request.idempotencyKey().isBlank()
+                    ? "session_" + taskId.substring(Math.max(0, taskId.length() - 24))
+                    : "session_" + sha256(request.machineId() + ":" + request.idempotencyKey()).substring(0, 32);
+        }
+        var risk = firstNonBlank(request.risk(), supplied == null ? null : supplied.risk());
+        if (risk == null) risk = "low";
+        var budget = supplied == null ? new ExecutionContract.Budget(
+                Math.max(0, original.timeoutSeconds()), MAX_OUTPUT_BYTES, 8L * 1024 * 1024, 32) : supplied.budget();
+        if (supplied != null && (!machine.id().equals(supplied.machineId()) || !machine.hostId().equals(supplied.hostId()))) {
+            throw new SecurityException("execution contract identity does not match the selected machine");
+        }
+        if (mode == ScopeMode.UNRESTRICTED && machine.scopeMode() != null
+                && ScopeMode.fromWireValue(machine.scopeMode()).bounded()) {
+            throw new SecurityException("unrestricted task exceeds the Agent's configured scope");
+        }
+        if (mode.bounded()) {
+            if (scopeRoot == null || scopeRoot.isBlank()) {
+                throw new IllegalArgumentException("bounded task scope_root is required");
+            }
+            // A project/worktree root must itself remain inside a bounded
+            // machine workspace. An unrestricted Agent may explicitly accept
+            // a narrower contract without an outer lexical restriction.
+            var machineMode = ScopeMode.fromWireValue(machine.scopeMode());
+            if (machineMode.bounded()) {
+                WorkspacePolicy.validateRemote(machineMode, machine.os(), machine.workspaceRoot(),
+                        machine.workspaceRoot(), scopeRoot);
+            }
+            WorkspacePolicy.validateRemote(mode, machine.os(), scopeRoot, scopeRoot, original.cwd());
+            if (original.desktop() != null) {
+                WorkspacePolicy.validateRemote(mode, machine.os(), scopeRoot, scopeRoot, original.desktop().cwd());
+            }
+        }
+        var expiresAt = supplied != null && supplied.expiresAt() != null
+                ? supplied.expiresAt() : createdAt.plus(DEFAULT_CONTRACT_LIFETIME);
+        var contract = new ExecutionContract(machine.id(), machine.hostId(), mode, projectId, worktreeId,
+                scopeRoot, sessionId, capability, budget, expiresAt, request.idempotencyKey(), risk,
+                request.elevationRequired(), null);
+        if (contract.expired(createdAt)) throw new IllegalArgumentException("execution contract expires before task creation");
+        return contract;
+    }
+
+    private static String firstNonBlank(String primary, String fallback) {
+        if (primary != null && !primary.isBlank()) return primary.trim();
+        if (fallback != null && !fallback.isBlank()) return fallback.trim();
+        return null;
     }
 
     private List<String> recoverExpiredLeases(Instant now) {
@@ -686,7 +746,8 @@ public final class TaskService {
                 && java.util.Objects.equals(left.cwd(), right.cwd())
                 && java.util.Objects.equals(left.env(), right.env())
                 && left.timeoutSeconds() == right.timeoutSeconds()
-                && java.util.Objects.equals(left.desktop(), right.desktop());
+                && java.util.Objects.equals(left.desktop(), right.desktop())
+                && (left.contract() == null ? right.contract() == null : left.contract().sameIntent(right.contract()));
     }
 
     private static boolean validStatus(String status) {
@@ -724,6 +785,10 @@ public final class TaskService {
         } catch (java.security.NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 is unavailable", exception);
         }
+    }
+
+    private static String sha256(String value) {
+        return sha256(value.getBytes(StandardCharsets.UTF_8));
     }
 
     public record ArtifactData(String mimeType, String sha256, byte[] data) {

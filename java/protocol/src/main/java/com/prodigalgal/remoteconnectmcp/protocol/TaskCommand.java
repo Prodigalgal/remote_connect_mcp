@@ -13,12 +13,23 @@ public record TaskCommand(
         Map<String, String> env,
         int timeoutSeconds,
         DesktopAction desktop,
-        Instant createdAt) {
+        Instant createdAt,
+        ExecutionContract contract) {
+
+    /** Compatibility constructor for the pre-contract wire shape. */
+    public TaskCommand(String id, TaskKind kind, String requiredCapability, String command, String cwd,
+                       Map<String, String> env, int timeoutSeconds, DesktopAction desktop, Instant createdAt) {
+        this(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, null);
+    }
 
     public TaskCommand {
         kind = kind == null ? TaskKind.COMMAND : kind;
         env = env == null ? Map.of() : Map.copyOf(env);
         createdAt = createdAt == null ? Instant.EPOCH : createdAt;
+    }
+
+    public TaskCommand withContract(ExecutionContract value) {
+        return new TaskCommand(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, value);
     }
 
     public record DesktopAction(String operation, String executable, List<String> args, String cwd,

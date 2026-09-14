@@ -60,7 +60,7 @@ final class CommandRunner implements Runnable {
                     }
                 });
             }
-            outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), config.maxOutputBytes(), resourceBudget);
+            outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), TaskLimits.outputBytes(config, task), resourceBudget);
             process = builder.start();
 
             // Reading the child and uploading to Center are separate workers.
@@ -94,9 +94,10 @@ final class CommandRunner implements Runnable {
             sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
 
             int exitCode;
-            if (task.timeoutSeconds() <= 0) {
+            var timeoutSeconds = TaskLimits.timeoutSeconds(task, 0);
+            if (timeoutSeconds <= 0) {
                 exitCode = process.waitFor();
-            } else if (!process.waitFor(task.timeoutSeconds(), TimeUnit.SECONDS)) {
+            } else if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 terminate(process);
                 spool.complete();
                 cancelOutput(outputDrainFuture);
@@ -220,7 +221,7 @@ final class CommandRunner implements Runnable {
     }
 
     private Path resolveCwd(String requested) throws IOException {
-        return AgentPaths.resolveCwd(config, requested);
+        return AgentPaths.resolveCwd(config, identity.machineId(), task, requested);
     }
 
     private static List<String> shellCommand(String command) {

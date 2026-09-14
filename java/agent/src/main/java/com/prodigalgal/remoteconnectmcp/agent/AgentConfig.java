@@ -66,6 +66,10 @@ public record AgentConfig(
             throw new IllegalArgumentException("Agent name and hostId are required");
         }
         capabilities = capabilities == null ? List.of() : List.copyOf(capabilities);
+        scopeMode = scopeMode == null ? ScopeMode.WORKSPACE : scopeMode;
+        if (scopeMode.bounded() && (workspaceRoot == null || workspaceRoot.isBlank())) {
+            workspaceRoot = defaultCwd;
+        }
         pollInterval = pollInterval == null ? Duration.ofSeconds(5) : pollInterval;
         if (pollInterval.isNegative() || pollInterval.isZero()) {
             throw new IllegalArgumentException("pollInterval must be positive");
@@ -129,9 +133,9 @@ public record AgentConfig(
         var name = env("REMOTE_CONNECT_MCP_AGENT_NAME", System.getenv().getOrDefault("COMPUTERNAME", "agent"));
         var hostId = env("REMOTE_CONNECT_MCP_AGENT_HOST_ID", name);
         var cwd = env("REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD", Path.of(".").toAbsolutePath().normalize().toString());
-        var scope = ScopeMode.fromWireValue(env("REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE", "unrestricted"));
+        var scope = ScopeMode.fromWireValue(env("REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE", "workspace"));
         var workspace = System.getenv("REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT");
-        if (scope == ScopeMode.WORKSPACE && (workspace == null || workspace.isBlank())) workspace = cwd;
+        if (scope.bounded() && (workspace == null || workspace.isBlank())) workspace = cwd;
         var desktop = Boolean.parseBoolean(env("REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED", "false"));
         var capabilities = Arrays.stream(System.getenv().getOrDefault("REMOTE_CONNECT_MCP_AGENT_CAPABILITIES", "command,durable_tasks").split(","))
                 .map(String::trim)

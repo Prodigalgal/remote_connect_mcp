@@ -69,7 +69,7 @@ final class BrowserTaskRunner implements Runnable {
             if (adapter == null || adapter.isBlank()) {
                 throw new IOException("browser adapter is not configured; set REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER");
             }
-            var cwd = AgentPaths.resolveCwd(config, task.cwd());
+            var cwd = AgentPaths.resolveCwd(config, identity.machineId(), task, task.cwd());
             Files.createDirectories(config.stateDir());
             requestFile = Files.createTempFile(config.stateDir(), "browser-request-", ".json");
             Files.write(requestFile, JsonCodec.write(task));
@@ -97,8 +97,9 @@ final class BrowserTaskRunner implements Runnable {
             // strings, fragments, cookies, or CDP credentials.
             builder.environment().put("RCM_BROWSER_SESSION_FILE",
                     config.stateDir().toAbsolutePath().normalize().resolve("browser-session.json").toString());
-            builder.environment().put("RCM_BROWSER_TASK_TIMEOUT_SECONDS", Integer.toString(task.timeoutSeconds() <= 0 ? 300 : Math.min(task.timeoutSeconds(), 24 * 60 * 60)));
-            outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), config.maxOutputBytes(), resourceBudget);
+            var timeout = Math.min(TaskLimits.timeoutSeconds(task, 300), 24 * 60 * 60);
+            builder.environment().put("RCM_BROWSER_TASK_TIMEOUT_SECONDS", Integer.toString(timeout));
+            outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), TaskLimits.outputBytes(config, task), resourceBudget);
             process = builder.start();
             outputExecutor = Executors.newVirtualThreadPerTaskExecutor();
             var startedProcess = process;
@@ -123,7 +124,6 @@ final class BrowserTaskRunner implements Runnable {
                 }
             });
             sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
-            var timeout = task.timeoutSeconds() <= 0 ? 300 : Math.min(task.timeoutSeconds(), 24 * 60 * 60);
             if (!process.waitFor(timeout, TimeUnit.SECONDS)) {
                 terminate(process);
                 spool.complete();
@@ -239,8 +239,9 @@ final class BrowserTaskRunner implements Runnable {
             throw new IOException("browser artifact is outside the adapter artifact directory");
         }
         var data = Files.readAllBytes(candidate);
-        if (data.length == 0 || data.length > 8 * 1024 * 1024) {
-            throw new IOException("browser artifact is empty or exceeds 8 MiB");
+        var maxArtifactBytes = TaskLimits.artifactBytes(task, 8L * 1024 * 1024);
+        if (data.length == 0 || data.length > maxArtifactBytes) {
+            throw new IOException("browser artifact is empty or exceeds " + maxArtifactBytes + " bytes");
         }
         final String sha256;
         try {

@@ -19,6 +19,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
+import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeArtifact;
@@ -66,6 +67,8 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         McpSchema.Icon.class, McpSchema.PaginatedRequest.class,
         McpSchema.PaginatedResult.class,
         ArtifactRequest.class, ArtifactResponse.class, AgentMetadata.class,
+        com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract.class,
+        com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract.Budget.class,
         AgentConfigUpdate.class,
         OutputRequest.class, OutputResponse.class, PollRequest.class, PollResponse.class,
         RegisterRequest.class, RegisterResponse.class, TaskCommand.class,
@@ -129,7 +132,7 @@ public class McpConfiguration {
                                     @Value("${rcm.version:dev}") String version) {
         var server = McpServer.async(transport)
                 .serverInfo("remote-connect-mcp-center", version)
-                .instructions("Use machines_list first and always pass an explicit machine_id. Tasks are asynchronous and bounded; report task_id for long work and read output with cursors.")
+                .instructions("Use machines_list first and always pass an explicit machine_id and scope. Prefer project/worktree or workspace/path; unrestricted must be explicit. Tasks are asynchronous and bounded; report task_id for long work and read output with cursors.")
                 .strictToolNameValidation(true)
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
@@ -181,18 +184,48 @@ public class McpConfiguration {
                                 Map.entry("key", string("key name for key operation")),
                                 Map.entry("timeout_seconds", integer("0 means default")),
                                 Map.entry("wait_ms", integer("0-15000")),
-                                Map.entry("idempotency_key", string("stable retry key"))),
-                        List.of("operation")), request -> desktop(agents, tasks, request), scheduler),
+                                Map.entry("idempotency_key", string("stable retry key")),
+                                Map.entry("project_id", string("registered project ID for project/worktree scope")),
+                                Map.entry("worktree_id", string("registered worktree ID for worktree scope")),
+                                Map.entry("scope_mode", string("project, worktree, path, workspace, or explicit unrestricted")),
+                                Map.entry("scope_root", string("absolute root for path/workspace scope")),
+                                Map.entry("session_id", string("optional stable user/session identifier")),
+                                Map.entry("risk", string("low, high, or critical")),
+                                Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
+                        List.of("operation")), request -> desktop(agents, tasks, projects, request), scheduler),
                 tool("browser", "Queue one bounded browser adapter request on an explicitly browser-capable Agent.", schema(
-                        Map.of("machine_id", string("command-agent machine ID with browser capability"), "command", string("adapter request; URL/selector data stays on the Agent"),
-                                "cwd", string("optional adapter working directory"), "timeout_seconds", integer("0 means default"),
-                                "wait_ms", integer("0-15000"), "idempotency_key", string("stable retry key")),
-                        List.of("machine_id", "command")), request -> browser(agents, tasks, request), scheduler),
+                        Map.ofEntries(
+                                Map.entry("machine_id", string("command-agent machine ID with browser capability")),
+                                Map.entry("command", string("adapter request; URL/selector data stays on the Agent")),
+                                Map.entry("cwd", string("optional adapter working directory")),
+                                Map.entry("timeout_seconds", integer("0 means default")),
+                                Map.entry("wait_ms", integer("0-15000")),
+                                Map.entry("idempotency_key", string("stable retry key")),
+                                Map.entry("project_id", string("registered project ID for project/worktree scope")),
+                                Map.entry("worktree_id", string("registered worktree ID for worktree scope")),
+                                Map.entry("scope_mode", string("project, worktree, path, workspace, or explicit unrestricted")),
+                                Map.entry("scope_root", string("absolute root for path/workspace scope")),
+                                Map.entry("session_id", string("optional stable user/session identifier")),
+                                Map.entry("risk", string("low, high, or critical")),
+                                Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
+                        List.of("machine_id", "command")), request -> browser(agents, tasks, projects, request), scheduler),
                 tool("command_start", "Queue a shell command and return immediately with a durable task ID.", schema(
-                        Map.of("machine_id", string("target machine ID"), "command", string("shell command"), "cwd", string("optional working directory"),
-                                "env", object("optional environment map"), "timeout_seconds", integer("0 means unlimited"), "idempotency_key", string("stable retry key")),
+                        Map.ofEntries(
+                                Map.entry("machine_id", string("target machine ID")),
+                                Map.entry("command", string("shell command")),
+                                Map.entry("cwd", string("optional working directory")),
+                                Map.entry("env", object("optional environment map")),
+                                Map.entry("timeout_seconds", integer("0 means unlimited")),
+                                Map.entry("idempotency_key", string("stable retry key")),
+                                Map.entry("project_id", string("registered project ID for project/worktree scope")),
+                                Map.entry("worktree_id", string("registered worktree ID for worktree scope")),
+                                Map.entry("scope_mode", string("project, worktree, path, workspace, or explicit unrestricted")),
+                                Map.entry("scope_root", string("absolute root for path/workspace scope")),
+                                Map.entry("session_id", string("optional stable user/session identifier")),
+                                Map.entry("risk", string("low, high, or critical")),
+                                Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
                         List.of("machine_id", "command")),
-                        request -> commandStart(tasks, request), scheduler),
+                        request -> commandStart(agents, tasks, projects, request), scheduler),
                 tool("task_wait", "Read task state and one bounded output page; optionally wait briefly for a change.", schema(
                         Map.of("task_id", string("task ID"), "cursor", integer("known output cursor"), "wait_ms", integer("0-20000")), List.of("task_id")),
                         request -> taskWait(tasks, request), scheduler),
@@ -297,28 +330,38 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult commandStart(TaskService tasks, McpSchema.CallToolRequest request) {
+    private static McpSchema.CallToolResult commandStart(AgentRegistry agents, TaskService tasks,
+                                                         ProjectService projects, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, CommandArgs.class);
             var timeout = args.timeoutSeconds() == null ? 0 : args.timeoutSeconds();
+            var scope = resolveScope(agents, projects, args.machineId(), args.projectId(), args.worktreeId(),
+                    args.scopeMode(), args.scopeRoot(), args.cwd());
             var command = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand("", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND,
-                    null, args.command(), args.cwd(), args.env(), timeout, null, Instant.now());
-            var task = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey()));
+                    null, args.command(), scope.cwd(), args.env(), timeout, null, Instant.now());
+            var task = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
+                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
+                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())));
             return json(Map.of("task", taskMap(task), "next_action", "use task_wait or task_output with this task_id"));
         } catch (Exception exception) {
             return error(exception);
         }
     }
 
-    private static McpSchema.CallToolResult browser(AgentRegistry agents, TaskService tasks, McpSchema.CallToolRequest request) {
+    private static McpSchema.CallToolResult browser(AgentRegistry agents, TaskService tasks,
+                                                    ProjectService projects, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, BrowserArgs.class);
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             if (!machine.capabilities().contains("browser")) throw new IllegalArgumentException("machine does not advertise browser capability");
             var timeout = args.timeoutSeconds() == null ? 300 : args.timeoutSeconds();
+            var scope = resolveScope(agents, projects, args.machineId(), args.projectId(), args.worktreeId(),
+                    args.scopeMode(), args.scopeRoot(), args.cwd());
             var command = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand("", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.BROWSER,
-                    "browser", args.command(), args.cwd(), Map.of(), timeout, null, Instant.now());
-            var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey()));
+                    "browser", args.command(), scope.cwd(), Map.of(), timeout, null, Instant.now());
+            var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
+                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
+                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())));
             var waitMs = args.waitMs() == null ? 0 : args.waitMs();
             if (waitMs < 0 || waitMs > 15000) throw new IllegalArgumentException("wait_ms must be between 0 and 15000");
             if (waitMs > 0) return taskResult(tasks, tasks.waitForTerminal(created.id(), Duration.ofMillis(waitMs)), 0, 16 * 1024);
@@ -331,7 +374,8 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult desktop(AgentRegistry agents, TaskService tasks, McpSchema.CallToolRequest request) {
+    private static McpSchema.CallToolResult desktop(AgentRegistry agents, TaskService tasks,
+                                                    ProjectService projects, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, DesktopArgs.class);
             var operation = args.operation() == null ? "" : args.operation().trim().toLowerCase();
@@ -358,12 +402,16 @@ public class McpConfiguration {
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             if (!machine.capabilities().contains("desktop")) throw new IllegalArgumentException("machine does not advertise desktop capability");
             var timeout = args.timeoutSeconds() == null ? 30 : args.timeoutSeconds();
+            var scope = resolveScope(agents, projects, args.machineId(), args.projectId(), args.worktreeId(),
+                    args.scopeMode(), args.scopeRoot(), args.cwd());
             var action = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand.DesktopAction(operation,
-                    args.executable(), args.args(), args.cwd(), args.text(), args.x(), args.y(), args.key(),
+                    args.executable(), args.args(), scope.cwd(), args.text(), args.x(), args.y(), args.key(),
                     args.x2(), args.y2(), args.durationMs(), args.screen(), args.windowTitle());
             var command = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand("", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.DESKTOP,
-                    "desktop", null, args.cwd(), Map.of(), timeout, action, Instant.now());
-            var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey()));
+                    "desktop", null, scope.cwd(), Map.of(), timeout, action, Instant.now());
+            var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
+                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
+                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())));
             if (waitMs > 0) {
                 var completed = tasks.waitForTerminal(created.id(), Duration.ofMillis(waitMs));
                 return desktopResult(tasks, completed);
@@ -492,6 +540,16 @@ public class McpConfiguration {
         value.put("artifact_bytes", task.artifactBytes());
         value.put("artifact_mime", task.artifactMime());
         value.put("artifact_sha256", task.artifactSha256());
+        if (task.scopeMode() != null) {
+            var scope = new LinkedHashMap<String, Object>();
+            scope.put("mode", task.scopeMode());
+            scope.put("project_id", task.projectId());
+            scope.put("worktree_id", task.worktreeId());
+            scope.put("root", compact(task.scopeRoot(), 1024));
+            scope.put("risk", task.risk());
+            scope.put("expires_at", task.contractExpiresAt());
+            value.put("execution_scope", scope);
+        }
         return value;
     }
 
@@ -500,6 +558,47 @@ public class McpConfiguration {
             return value;
         }
         return value.substring(0, max);
+    }
+
+    private static ResolvedScope resolveScope(AgentRegistry agents, ProjectService projects, String machineId,
+                                              String projectId, String worktreeId, String rawMode,
+                                              String requestedRoot, String requestedCwd) {
+        var machine = agents.findMachine(machineId, Instant.now())
+                .orElseThrow(() -> new IllegalArgumentException("machine not found"));
+        var normalizedProject = projectId == null ? "" : projectId.trim();
+        var normalizedWorktree = worktreeId == null ? "" : worktreeId.trim();
+        var mode = rawMode == null || rawMode.isBlank() ? null : ScopeMode.fromWireValue(rawMode);
+        if (mode == null) {
+            mode = !normalizedWorktree.isBlank() ? ScopeMode.WORKTREE
+                    : !normalizedProject.isBlank() ? ScopeMode.PROJECT
+                    : ScopeMode.fromWireValue(machine.scopeMode());
+            if (mode == ScopeMode.UNRESTRICTED) {
+                throw new IllegalArgumentException("scope_mode=unrestricted must be explicit");
+            }
+        }
+        if (mode == ScopeMode.PROJECT || mode == ScopeMode.WORKTREE) {
+            if (projects == null) throw new IllegalStateException("project service is unavailable");
+            if (normalizedProject.isBlank()) throw new IllegalArgumentException("project_id is required for project/worktree scope");
+            if (mode == ScopeMode.PROJECT && !normalizedWorktree.isBlank()) {
+                throw new IllegalArgumentException("worktree_id requires worktree scope");
+            }
+            if (mode == ScopeMode.WORKTREE && normalizedWorktree.isBlank()) {
+                throw new IllegalArgumentException("worktree_id is required for worktree scope");
+            }
+            var cwd = projects.resolveCwd(machineId, normalizedProject,
+                    normalizedWorktree, requestedCwd);
+            var root = projects.resolveScopeRoot(machineId, normalizedProject, normalizedWorktree);
+            return new ResolvedScope(cwd, root, mode);
+        }
+        if (!normalizedProject.isBlank() || !normalizedWorktree.isBlank()) {
+            throw new IllegalArgumentException("project_id/worktree_id require project or worktree scope");
+        }
+        if (mode == ScopeMode.PATH && (requestedRoot == null || requestedRoot.isBlank())) {
+            throw new IllegalArgumentException("scope_root is required for path scope");
+        }
+        var root = requestedRoot == null || requestedRoot.isBlank() ? machine.workspaceRoot() : requestedRoot.trim();
+        if (mode == ScopeMode.UNRESTRICTED) root = null;
+        return new ResolvedScope(requestedCwd == null || requestedCwd.isBlank() ? null : requestedCwd.trim(), root, mode);
     }
 
     private static McpSchema.CallToolResult json(Object value) {
@@ -542,7 +641,14 @@ public class McpConfiguration {
                                String cwd,
                                Map<String, String> env,
                                @JsonProperty("timeout_seconds") Integer timeoutSeconds,
-                               @JsonProperty("idempotency_key") String idempotencyKey) {
+                               @JsonProperty("idempotency_key") String idempotencyKey,
+                               @JsonProperty("project_id") String projectId,
+                               @JsonProperty("worktree_id") String worktreeId,
+                               @JsonProperty("scope_mode") String scopeMode,
+                               @JsonProperty("scope_root") String scopeRoot,
+                               @JsonProperty("session_id") String sessionId,
+                               String risk,
+                               @JsonProperty("elevation_required") Boolean elevationRequired) {
     }
 
     record DesktopArgs(String operation,
@@ -562,7 +668,14 @@ public class McpConfiguration {
                                @JsonProperty("window_title") String windowTitle,
                                @JsonProperty("timeout_seconds") Integer timeoutSeconds,
                                @JsonProperty("wait_ms") Integer waitMs,
-                               @JsonProperty("idempotency_key") String idempotencyKey) {
+                               @JsonProperty("idempotency_key") String idempotencyKey,
+                               @JsonProperty("project_id") String projectId,
+                               @JsonProperty("worktree_id") String worktreeId,
+                               @JsonProperty("scope_mode") String scopeMode,
+                               @JsonProperty("scope_root") String scopeRoot,
+                               @JsonProperty("session_id") String sessionId,
+                               String risk,
+                               @JsonProperty("elevation_required") Boolean elevationRequired) {
         DesktopArgs {
             args = args == null ? List.of() : List.copyOf(args);
         }
@@ -573,7 +686,14 @@ public class McpConfiguration {
                                String cwd,
                                @JsonProperty("timeout_seconds") Integer timeoutSeconds,
                                @JsonProperty("wait_ms") Integer waitMs,
-                               @JsonProperty("idempotency_key") String idempotencyKey) {
+                               @JsonProperty("idempotency_key") String idempotencyKey,
+                               @JsonProperty("project_id") String projectId,
+                               @JsonProperty("worktree_id") String worktreeId,
+                               @JsonProperty("scope_mode") String scopeMode,
+                               @JsonProperty("scope_root") String scopeRoot,
+                               @JsonProperty("session_id") String sessionId,
+                               String risk,
+                               @JsonProperty("elevation_required") Boolean elevationRequired) {
     }
 
     record TaskWaitArgs(@JsonProperty("task_id") String taskId,
@@ -585,5 +705,8 @@ public class McpConfiguration {
     }
 
     record TaskCancelArgs(@JsonProperty("task_id") String taskId) {
+    }
+
+    private record ResolvedScope(String cwd, String root, ScopeMode mode) {
     }
 }
