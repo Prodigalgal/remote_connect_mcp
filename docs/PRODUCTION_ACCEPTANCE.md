@@ -128,6 +128,10 @@ Java Agent `v0.1.26` 已通过 GitHub Actions Native Release（构建与签名�
 结论：P1-04 的 Center 后端提交、日志、取消闭环通过；React 浏览器 E2E、无障碍/视觉回归
 和工件页面仍未验收。P1-07 的只读配置合同通过，热更新/回滚不在本轮变更范围内。
 
+补充：生产 WebSocket 路由可达；使用无效 Agent 凭据连接后由服务端以
+`PolicyViolation` 关闭，未形成未授权通道。有效 Agent Token 的 `ready`、断线重连和
+任务 `wake` 仍需在维护窗口内验收，因此 P1-06 继续保持“待验收”。
+
 ## 2026-09-15 P2-03/P2-04 可观测性只读探针
 
 生产 `/metrics` 返回 HTTP 200，Prometheus 文本中可见任务、队列、Agent 在线率、
