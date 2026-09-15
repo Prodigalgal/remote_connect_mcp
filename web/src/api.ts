@@ -520,9 +520,9 @@ function mapRelease(item: Record<string, unknown>): Release {
   }
 }
 
-export async function listReleases(token: string, includePrerelease = true): Promise<ReleaseCatalog> {
+export async function listReleases(token: string, includePrerelease = true, refresh = false): Promise<ReleaseCatalog> {
   const response = await request<Record<string, unknown>>(
-    `/api/v1/admin/releases?limit=50&include_prerelease=${includePrerelease ? 'true' : 'false'}`,
+    `/api/v1/admin/releases?limit=50&include_prerelease=${includePrerelease ? 'true' : 'false'}&refresh=${refresh ? 'true' : 'false'}`,
     token,
   )
   return {

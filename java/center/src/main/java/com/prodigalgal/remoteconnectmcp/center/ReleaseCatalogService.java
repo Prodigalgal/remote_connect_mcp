@@ -51,13 +51,23 @@ public final class ReleaseCatalogService {
     }
 
     public CatalogView list(int limit, boolean includePrerelease) {
+        return list(limit, includePrerelease, false);
+    }
+
+    /**
+     * Read the bounded release catalog, optionally bypassing the short cache.
+     * The normal console refresh path uses the cache so opening several pages
+     * does not spend GitHub API quota; an explicit operator refresh is allowed
+     * to request a new snapshot immediately.
+     */
+    public CatalogView list(int limit, boolean includePrerelease, boolean forceRefresh) {
         var boundedLimit = Math.max(1, Math.min(MAX_API_PAGE, limit));
         var now = Instant.now();
         var current = snapshot;
-        if (current.isFresh(now)) return current.view(boundedLimit, includePrerelease);
+        if (!forceRefresh && current.isFresh(now)) return current.view(boundedLimit, includePrerelease);
         synchronized (refreshLock) {
             current = snapshot;
-            if (!current.isFresh(now)) {
+            if (forceRefresh || !current.isFresh(now)) {
                 try {
                     snapshot = fetch(now);
                 } catch (Exception ignored) {

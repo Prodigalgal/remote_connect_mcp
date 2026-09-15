@@ -87,12 +87,13 @@ function App() {
   const [liveReleases, setLiveReleases] = useState<ReleaseCatalog | null>(null)
   const [apiMessage, setApiMessage] = useState('')
   const [loading, setLoading] = useState(false)
-  const refreshInFlight = useRef<{ token: string; promise: Promise<void> } | null>(null)
+  const refreshInFlight = useRef<{ key: string; promise: Promise<void> } | null>(null)
   const current = nav.find((item) => item.id === page) ?? nav[0]
 
-  const refresh = useCallback((token = adminToken): Promise<void> => {
+  const refresh = useCallback((token = adminToken, forceReleases = false): Promise<void> => {
     const normalizedToken = token.trim()
-    if (refreshInFlight.current?.token === normalizedToken) return refreshInFlight.current.promise
+    const key = `${normalizedToken}\u0000${forceReleases ? 'refresh' : 'cached'}`
+    if (refreshInFlight.current?.key === key) return refreshInFlight.current.promise
     const operation = (async () => {
       if (!normalizedToken) {
         setLiveMachines(null)
@@ -115,7 +116,7 @@ function App() {
           listProjects(normalizedToken).catch(() => []),
           listTasks(normalizedToken),
           listUpgrades(normalizedToken),
-          listReleases(normalizedToken).catch((): ReleaseCatalog => ({ items: [], stale: true, available: false, warning: '版本目录暂不可用' })),
+          listReleases(normalizedToken, true, forceReleases).catch((): ReleaseCatalog => ({ items: [], stale: true, available: false, warning: '版本目录暂不可用' })),
           listAudit(normalizedToken).catch(() => []),
         ])
         setLiveMachines(machines)
@@ -141,7 +142,7 @@ function App() {
     const tracked = operation.finally(() => {
       if (refreshInFlight.current?.promise === tracked) refreshInFlight.current = null
     })
-    refreshInFlight.current = { token: normalizedToken, promise: tracked }
+    refreshInFlight.current = { key, promise: tracked }
     return tracked
   }, [adminToken])
 
@@ -230,7 +231,7 @@ function App() {
           {page === 'tasks' && <Tasks rows={liveTasks} machines={liveMachines ?? []} projects={liveProjects ?? []} adminToken={adminToken} onRefresh={() => void refresh()} query={search} />}
           {page === 'audit' && <Audit rows={liveAudit} machines={liveMachines ?? []} token={adminToken} onRefresh={() => void refresh()} query={search} />}
           {page === 'enrollment' && <Enrollment adminToken={adminToken} />}
-          {page === 'upgrades' && <Upgrades token={adminToken} rows={liveUpgrades} releases={liveReleases} machines={liveMachines ?? []} onRefresh={() => void refresh()} query={search} />}
+          {page === 'upgrades' && <Upgrades token={adminToken} rows={liveUpgrades} releases={liveReleases} machines={liveMachines ?? []} onRefresh={() => void refresh()} onRefreshReleases={() => void refresh(adminToken, true)} query={search} />}
           {page === 'settings' && <Settings token={adminToken} machines={liveMachines ?? []} onTokenChange={setAdminToken} onRefresh={() => void refresh()} />}
         </div>
       </main>
@@ -648,7 +649,7 @@ function Enrollment({ adminToken }: { adminToken: string }) {
   }
   return <><PageIntro kicker="SECURITY" title="注册令牌" action="生成一次性令牌" /><section className="split-grid"><div className="panel form-panel"><span className="section-kicker">ONE-TIME ENROLLMENT</span><h3>为新 Agent 生成令牌</h3><p>令牌与目标 Agent 名称绑定，注册成功一次后立即失效。</p><label>Agent 名称<input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 desktop-lab-02" /></label><label>有效期<select value={lifetime} onChange={(event) => setLifetime(event.target.value)}><option value="3600">1 小时</option><option value="21600">6 小时</option><option value="86400">1 天</option><option value="604800">7 天</option><option value="2592000">30 天</option></select></label><button className="primary full" onClick={() => void generate()} disabled={!adminToken || !name.trim()}>生成令牌</button>{issued && <div className="issued-token"><code>{issued.token}</code><div><button className="secondary" onClick={() => void copy()}>复制</button><button className="secondary" onClick={download}>下载 env</button></div></div>}{message && <p className="form-message">{message}</p>}</div><div className="panel info-panel"><span className="section-kicker">POLICY</span><h3>身份边界</h3><div className="policy-item"><span>⌁</span><div><strong>独立 Agent 身份</strong><p>同一 host_id 下的 command、desktop、browser 不共享 Token。</p></div></div><div className="policy-item"><span>◈</span><div><strong>一次性注册</strong><p>注册成功立即失效，日常通信换用独立 Agent Token。</p></div></div></div></section></>
 }
-function Upgrades({ token, rows, releases, machines, onRefresh, query }: { token: string; rows: UpgradeCampaign[] | null; releases: ReleaseCatalog | null; machines: Machine[]; onRefresh: () => void; query: string }) {
+function Upgrades({ token, rows, releases, machines, onRefresh, onRefreshReleases, query }: { token: string; rows: UpgradeCampaign[] | null; releases: ReleaseCatalog | null; machines: Machine[]; onRefresh: () => void; onRefreshReleases: () => void; query: string }) {
   const [version, setVersion] = useState('')
   const [canary, setCanary] = useState('1')
   const [batch, setBatch] = useState('3')
@@ -693,7 +694,7 @@ function Upgrades({ token, rows, releases, machines, onRefresh, query }: { token
       <PageIntro kicker="OPERATIONS" title="升级编排" action="创建升级活动" onAction={() => document.getElementById('upgrade-composer')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
       <section className="panel task-composer" id="upgrade-composer">
         <div><span className="section-kicker">CANARY RELEASE</span><h3>选择并发布 Agent 版本</h3><p>GitHub Actions 发布的新版本会出现在目录中。Center 按目标机器平台重新校验资产与 SHA-256，先 canary，成功后按批次推进。</p></div>
-        <div className="release-catalog-row"><label>目标 Release<select value={version} onChange={(event) => setVersion(event.target.value)} disabled={!releases?.items.length}><option value="">{releases?.items.length ? '请选择版本' : '等待版本目录'}</option>{releases?.items.map((release) => { const ready = release.assets.filter((asset) => asset.available && asset.checksumAvailable).length; return <option key={release.version} value={release.version}>{release.version}{release.prerelease ? ' · 预发布' : ''} · {ready}/{release.assets.length} 平台资产</option> })}</select></label><button className="secondary release-refresh" onClick={onRefresh} disabled={!token}>刷新目录</button></div>
+        <div className="release-catalog-row"><label>目标 Release<select value={version} onChange={(event) => setVersion(event.target.value)} disabled={!releases?.items.length}><option value="">{releases?.items.length ? '请选择版本' : '等待版本目录'}</option>{releases?.items.map((release) => { const ready = release.assets.filter((asset) => asset.available && asset.checksumAvailable).length; return <option key={release.version} value={release.version}>{release.version}{release.prerelease ? ' · 预发布' : ''} · {ready}/{release.assets.length} 平台资产</option> })}</select></label><button className="secondary release-refresh" onClick={onRefreshReleases} disabled={!token}>刷新目录</button></div>
         <div className="release-catalog-meta">{releases?.refreshedAt && <span>目录刷新：{new Date(releases.refreshedAt).toLocaleString()}</span>}{releases?.stale && <span className="warning">{releases.warning || '目录为缓存数据'}</span>}{releases && !releases.items.length && <span>暂无可选 Java Release；也可以在下方手动填写已知版本。</span>}</div>
         <details className="manual-release"><summary>高级：手动填写版本</summary><input value={version} onChange={(event) => setVersion(event.target.value)} placeholder="例如 v0.1.15" /></details>
         <div className="composer-grid"><label>首批 canary<input type="number" min="1" value={canary} onChange={(event) => setCanary(event.target.value)} /></label><label>后续批次<input type="number" min="1" value={batch} onChange={(event) => setBatch(event.target.value)} /></label></div>

@@ -155,7 +155,7 @@ async function executeOperation(page, command, operation) {
       await page.screenshot({ path: file, type: "png", fullPage: command.full_page === true });
       await assertRegularFile(file);
       return {
-        output: JSON.stringify({ operation, url: safeEventUrl(page.url()), title: await page.title() }),
+        output: JSON.stringify({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()) }),
         artifact: { path: "screenshot.png", mime_type: "image/png" }
       };
     }

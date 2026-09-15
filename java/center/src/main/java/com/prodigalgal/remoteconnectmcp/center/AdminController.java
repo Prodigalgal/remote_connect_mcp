@@ -411,12 +411,13 @@ public final class AdminController {
     public CompletableFuture<ResponseEntity<?>> releases(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestParam(defaultValue = "20") int limit,
-            @RequestParam(defaultValue = "true") boolean includePrerelease) {
+            @RequestParam(defaultValue = "true") boolean includePrerelease,
+            @RequestParam(defaultValue = "false") boolean refresh) {
         return execute(() -> {
             authenticate(authorization);
             if (releases == null) throw new IllegalStateException("release catalog is unavailable");
             return ResponseEntity.ok().header("Cache-Control", "no-store")
-                    .body(releases.list(limit, includePrerelease));
+                    .body(releases.list(limit, includePrerelease, refresh));
         });
     }
 
