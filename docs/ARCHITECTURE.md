@@ -28,6 +28,9 @@ ChatGPT / 其他 MCP 客户端
 一个物理终端默认只有一个向 Center 注册的 `command-agent` 身份。桌面伴侣和浏览器 Worker 是该身份的本机子组件，不注册第二个
 `machine_id`，也不持有 Center Token；`host_id` 仍只用于归组，不授予权限，也不能替代认证。需要强隔离时才为同一终端显式启动多个
 command-agent 实例，并为每个实例使用独立状态目录、一次性注册 Token 和 machine ID。
+每个 `machine_name` 在 Center 中仍是唯一的人类可读身份；同名重装只有在
+`host_id` 也一致时才会复用原 `machine_id` 并旋转日常 Token。另一个
+`host_id` 试图占用同名时会明确失败，避免错误的注册令牌接管已有 Agent。
 
 ## 2. Center、Agent 与能力
 

@@ -214,7 +214,7 @@ Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 C
 
 ### 多 Agent 与桌面/浏览器能力
 
-同一台物理终端默认只注册一个 Java `command-agent` 身份：系统服务负责命令/心跳，`-DesktopEnabled` 在用户登录时启动独立的 `rcm-desktop-companion` 进程，通过本机 IPC 获得截图、启动、点击、按键和文本输入能力，不新增 machine ID 或 Token。伴侣使用单实例锁、最多 4 个并发 IPC 请求和最多 16 个活动启动进程；命令 Agent 使用状态目录锁，防止服务重启重叠产生第二个子进程池；Browser Worker 默认最多 1 个（可显式提高但不超过 8）。若确实需要隔离运行多个物理 Agent，则为每个实例使用不同的 Agent 名称、一次性注册 Token、状态目录和 machine ID，并用相同的 `REMOTE_CONNECT_MCP_AGENT_HOST_ID` 归组；Browser Worker 的 Profile/Cookie 仍只保留在本机。详细边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+同一台物理终端默认只注册一个 Java `command-agent` 身份：系统服务负责命令/心跳，`-DesktopEnabled` 在用户登录时启动独立的 `rcm-desktop-companion` 进程，通过本机 IPC 获得截图、启动、点击、按键和文本输入能力，不新增 machine ID 或 Token。伴侣使用单实例锁、最多 4 个并发 IPC 请求和最多 16 个活动启动进程；命令 Agent 使用状态目录锁，防止服务重启重叠产生第二个子进程池；Browser Worker 默认最多 1 个（可显式提高但不超过 8）。若确实需要隔离运行多个物理 Agent，则为每个实例使用不同的 Agent 名称、一次性注册 Token、状态目录和 machine ID，并用相同的 `REMOTE_CONNECT_MCP_AGENT_HOST_ID` 归组；Center 只允许同名 Agent 在相同 `host_id` 下重装，来自其他 `host_id` 的同名注册会被拒绝，避免误旋转已有 Token；Browser Worker 的 Profile/Cookie 仍只保留在本机。详细边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
 Browser `snapshot` 返回的 `rcm-ref-v1:*` 只是一段有界定位描述（role/name、test-id、placeholder 或 text 加序号），不是跨页面永久句柄；页面结构变化后应重新获取快照。为恢复多次调用之间的页面，给 Agent 服务环境配置独立的 Worker 变量 `RCM_BROWSER_PROFILE_DIR`，Agent 会在自己的状态目录保存不含查询参数和片段的最近页面路径；登录态仍由浏览器 profile 管理，任何一次性 URL 都必须显式再次导航。
 

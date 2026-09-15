@@ -48,6 +48,28 @@ class AgentRegistryTest {
     }
 
     @Test
+    void sameNameFromAnotherHostCannotRotateAnExistingIdentity() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var firstRequest = new RegisterRequest("shared-name", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"));
+        var secondRequest = new RegisterRequest("shared-name", "host-b", "host-b", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"));
+        var first = registry.register(firstRequest, "enroll-test");
+
+        assertThrows(IllegalArgumentException.class, () -> registry.register(secondRequest, "enroll-test"));
+        assertEquals(1, registry.size());
+        registry.poll(first.machineId(), first.token(), new PollRequest(List.of(), 1, List.of("command")));
+    }
+
+    @Test
+    void sameHostCanRunMultipleNamedPhysicalAgents() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var command = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var desktop = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+
+        assertNotEquals(command.machineId(), desktop.machineId());
+        assertEquals(2, registry.size());
+    }
+
+    @Test
     void keepsTheLatestRuntimeDescriptorInTheMachineProjection() {
         var registry = AgentRegistry.forTest("enroll-test");
         var request = new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"));

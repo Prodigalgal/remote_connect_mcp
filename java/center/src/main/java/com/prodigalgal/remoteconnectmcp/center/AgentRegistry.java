@@ -96,8 +96,16 @@ public final class AgentRegistry {
         if (jdbc == null) {
             synchronized (agents) {
                 var existing = agents.entrySet().stream()
-                        .filter(entry -> entry.getValue().metadata().name().equals(metadata.name()))
+                        .filter(entry -> sameIdentity(entry.getValue().metadata(), metadata))
                         .findFirst();
+                if (existing.isEmpty() && agents.values().stream()
+                        .anyMatch(value -> value.metadata().name().equals(metadata.name()))) {
+                    // A machine name is the human-facing stable key in the
+                    // console and is unique in PostgreSQL.  Never let an
+                    // enrollment token from another host rotate the token
+                    // of an existing Agent just because it reused that name.
+                    throw new IllegalArgumentException("machine name is already registered with another host_id; choose a unique name");
+                }
                 var machineId = existing.map(Map.Entry::getKey)
                         .orElseGet(() -> "machine_" + UUID.randomUUID().toString().replace("-", ""));
                 agents.put(machineId, new RegisteredAgent(metadata, tokenHash, now));
@@ -107,9 +115,15 @@ public final class AgentRegistry {
             }
         } else {
             java.util.function.Supplier<String> persist = () -> {
-                var existing = jdbc.query("SELECT agent_id FROM rcm_agent WHERE machine_name = ? ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
-                        ps -> ps.setString(1, metadata.name()), rs -> rs.next() ? rs.getString(1) : null);
+                var existing = jdbc.query("SELECT agent_id FROM rcm_agent WHERE machine_name = ? AND host_id = ? ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
+                        ps -> { ps.setString(1, metadata.name()); ps.setString(2, metadata.hostId()); },
+                        rs -> rs.next() ? rs.getString(1) : null);
                 if (existing == null) {
+                    var nameConflict = jdbc.query("SELECT agent_id FROM rcm_agent WHERE machine_name = ? ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
+                            ps -> ps.setString(1, metadata.name()), rs -> rs.next() ? rs.getString(1) : null);
+                    if (nameConflict != null) {
+                        throw new IllegalArgumentException("machine name is already registered with another host_id; choose a unique name");
+                    }
                     existing = "machine_" + UUID.randomUUID().toString().replace("-", "");
                     insertAgent(existing, metadata, tokenHash, now);
                 } else {
@@ -124,11 +138,21 @@ public final class AgentRegistry {
                 // A unique machine-name index closes the registration race
                 // between two Center instances.  Re-read the committed row
                 // and rotate that identity's daily token instead of exposing
-                // a transient 500 or creating a second machine record.
+                // a transient 500.  Recovery is allowed only when the
+                // committed row belongs to the same host_id; otherwise this
+                // is a genuine same-name conflict and must fail closed.
                 java.util.function.Supplier<String> recover = () -> {
-                    var existing = jdbc.query("SELECT agent_id FROM rcm_agent WHERE machine_name = ? ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
-                            ps -> ps.setString(1, metadata.name()), rs -> rs.next() ? rs.getString(1) : null);
-                    if (existing == null) throw race;
+                    var existing = jdbc.query("SELECT agent_id FROM rcm_agent WHERE machine_name = ? AND host_id = ? ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
+                            ps -> { ps.setString(1, metadata.name()); ps.setString(2, metadata.hostId()); },
+                            rs -> rs.next() ? rs.getString(1) : null);
+                    if (existing == null) {
+                        var conflicting = jdbc.query("SELECT agent_id FROM rcm_agent WHERE machine_name = ? ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
+                                ps -> ps.setString(1, metadata.name()), rs -> rs.next() ? rs.getString(1) : null);
+                        if (conflicting != null) {
+                            throw new IllegalArgumentException("machine name is already registered with another host_id; choose a unique name", race);
+                        }
+                        throw race;
+                    }
                     updateAgent(existing, metadata, tokenHash, now);
                     return existing;
                 };
@@ -259,6 +283,12 @@ public final class AgentRegistry {
             if (page.size() < MACHINE_PAGE_SIZE) return List.copyOf(result);
             offset += page.size();
         }
+    }
+
+    private static boolean sameIdentity(AgentMetadata existing, AgentMetadata requested) {
+        return existing != null && requested != null
+                && existing.name().equals(requested.name())
+                && existing.hostId().equals(requested.hostId());
     }
 
     private static MachineView machineView(java.sql.ResultSet rs, Instant now) throws java.sql.SQLException {
