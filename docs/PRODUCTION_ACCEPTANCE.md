@@ -17,7 +17,7 @@
 | --- | --- | --- | --- |
 | P0 | G1 范围合同 | 通过 | Linux/Windows cwd、环境变量伪造、越界路径和幂等重试均已实机验证 |
 | P0 | G2 重启/重试 | 部分通过 | Agent 停止/启动期间 durable 任务只执行一次；Center 重启与 ChatGPT 重试需维护窗口 |
-| P0 | G3 长任务/工件/资源 | 部分通过 | 128 KiB 分页、超时终态和 durable 完成通过；子进程上限探针暴露错误归类并已修复代码，待 CI/发布后复验；工件及 RSS/CPU 极限仍待 capability/压测条件 |
+| P0 | G3 长任务/工件/资源 | 部分通过 | 128 KiB 分页、超时终态和 durable 完成通过；子进程上限探针暴露错误归类，command/browser 路径已修复代码，待 CI/发布后复验；工件及 RSS/CPU 极限仍待 capability/压测条件 |
 | P0 | G4 固定 `/mcp` 多机路由 | 通过 | 9 台在线 Agent 经同一 MCP 会话完成 `command_start`/`task_wait` |
 | P1 | P1-01 项目注册与 worktree | 通过 | 项目注册、Git 读操作、worktree 创建/删除和清理闭环见下文 |
 | P1 | P1-02 Desktop Companion | 待验收 | 当前在线 Agent 未声明 `desktop`；需 Windows/Linux 会话目标 |
@@ -69,7 +69,7 @@ Java Agent `v0.1.26` 已通过 GitHub Actions Native Release（构建与签名�
 | Agent 命令闭环 | 通过 | 一台在线 Oracle ARM64 Agent（身份已脱敏）执行固定 `printf`，状态 `completed`、Attempt 1、退出码 0、输出 26 字节；通过事件等待得到终态并按字节校验 |
 | 固定 `/mcp` 多机命令路由 | 通过 | 9 台在线 Agent 通过同一 MCP 会话分别执行固定标记命令；9 个任务均 `completed`、Attempt 1、退出码 0，输出标记一致 |
 | 范围合同与环境变量伪造 | 通过 | Linux/Windows path 合同允许目录内 cwd，拒绝 `..` 越界；伪造 `PWD`/默认 cwd 环境变量未改变实际工作目录；相同幂等键重试返回同一任务 |
-| 长输出与超时边界 | 部分通过 | 128 KiB 输出通过有界分页；1 秒合同超时的 `sleep` 任务以失败/退出码 143 收口；子进程上限探针触发了保护但被误归类为 `Stream closed`，代码已改为优先报告资源违规，待 CI/发布后复验；截图、下载和极限 RSS/CPU 压测待具备对应 capability/维护条件 |
+| 长输出与超时边界 | 部分通过 | 128 KiB 输出通过有界分页；1 秒合同超时的 `sleep` 任务以失败/退出码 143 收口；子进程上限探针触发了保护但被误归类为 `Stream closed`，command/browser 路径已改为优先报告资源违规，待 CI/发布后复验；截图、下载和极限 RSS/CPU 压测待具备对应 capability/维护条件 |
 | Console 路由 | 通过 | 生产 Console 首页返回 HTTP 200 |
 | WebSocket 生产握手 | 待验收 | CI smoke 已通过；尚未使用真实 Agent Token 在生产反向代理下做有效握手、断线与重连演练 |
 | Desktop 真实操作 | 待验收 | 当前生产在线 Agent 仅声明 command/durable_tasks，尚无可验收的 Desktop 会话 |
@@ -139,7 +139,7 @@ Java Agent `v0.1.26` 已通过 GitHub Actions Native Release（构建与签名�
 | 项目 | 原因 | 处理与下一步 |
 | --- | --- | --- |
 | P0-G2 重启/重试 | Agent 重启期间 durable 任务已证明只执行一次；Center 重启会影响统一路由，ChatGPT 重试还需要真实 Web 端链路，当前没有可回滚维护窗口 | 保持生产版本不变；安排窗口后先做 Center 单副本重启、事件游标恢复，再做 ChatGPT 重试与重复提交校验 |
-| P0-G3 长任务/工件/资源 | 长输出、超时和 durable 已通过；子进程上限探针确实触发保护，但输出流被强制关闭后 `CommandRunner` 先报告了 `Stream closed`，掩盖了资源违规；生产默认 RSS/CPU 为可选配置且当前未启用，Desktop/Browser 工件能力也不在在线 Agent capability 中 | 已在 `CommandRunner` 调整错误优先级，资源违规优先于输出流异常；仅完成代码修复和 `git diff --check`，不得据此宣称生产已修复；待 GitHub Actions、发布和同样的 64 子进程探针复验，再评估 RSS/CPU profile |
+| P0-G3 长任务/工件/资源 | 长输出、超时和 durable 已通过；子进程上限探针确实触发保护，但输出流被强制关闭后 command/browser runner 先报告了 `Stream closed`，掩盖了资源违规；生产默认 RSS/CPU 为可选配置且当前未启用，Desktop/Browser 工件能力也不在在线 Agent capability 中 | 已在 `CommandRunner` 和 `BrowserTaskRunner` 调整错误优先级，资源违规优先于输出流异常；仅完成代码修复和 `git diff --check`，不得据此宣称生产已修复；待 GitHub Actions、发布和同样的 64 子进程探针复验，再评估 RSS/CPU profile |
 | P1-04 React Console | Center 后端提交、日志、取消已通过；浏览器端 E2E、工件查看和视觉/a11y 需要真实浏览器会话及对应 Desktop/Browser Agent | 不扩大 MCP 工具面；待具备前端发布版本和浏览器 capability 后执行最小 E2E、键盘可达性、错误态和工件下载校验 |
 | P1-05 升级/回滚 | 历史在线 canary 有成功记录；离线领取、安装失败、失败重排队和回滚会改变 Agent 版本/运行状态，不能在无窗口时对生产注入故障 | 先保持现有升级活动只读观察；维护窗口内使用一台非关键 Agent 做离线领取和失败回滚，再扩大到批次策略验收 |
 
@@ -149,7 +149,10 @@ Java Agent `v0.1.26` 已通过 GitHub Actions Native Release（构建与签名�
 
 在 `local-cmcc-debian` 上提交了受限的 64 子进程任务（任务 ID `task_432f…`，合同超时 30 秒）。Agent 仍保持在线，任务未成功执行并返回了通用 `Stream closed`，而运行时描述仍显示 process-tree、最大子进程 32。该结果证明保护动作发生，但错误解释不满足验收要求，因此 P0-G3 保持“部分通过”。
 
-代码修复已将 `CommandRunner` 的判断顺序改为：先读取 `ProcessResourceSupervisor.violation()`，再处理输出泵异常；这样在强制终止导致管道关闭时，Center 能收到 `task process tree exceeded 32 processes` 之类的可解释原因。修复尚未构建、发布或在生产复验，构建必须走 GitHub Actions。
+代码修复已将 `CommandRunner` 与 `BrowserTaskRunner` 的判断顺序改为：先读取
+`ProcessResourceSupervisor.violation()`，再处理输出泵异常；这样在强制终止导致管道关闭时，
+Center 能收到 `task process tree exceeded 32 processes` 之类的可解释原因。修复尚未构建、
+发布或在生产复验，构建必须走 GitHub Actions。
 
 ## 2026-09-15 P2-03/P2-04 可观测性只读探针
 

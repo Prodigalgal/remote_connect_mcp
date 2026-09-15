@@ -165,12 +165,15 @@ final class BrowserTaskRunner implements Runnable {
                 return;
             }
             awaitOutputs(outputDrainFuture, outputUploadFuture);
-            if (outputFailure.get() != null) throw asIOException(outputFailure.get());
             var resourceViolation = resourceSupervisor == null ? null : resourceSupervisor.violation();
             if (resourceViolation != null && !resourceViolation.isBlank()) {
                 sendState(new TaskUpdateRequest("failed", process.exitValue(), resourceViolation, null, Instant.now(), spool.truncated()));
                 return;
             }
+            // Resource enforcement terminates the adapter process tree. That
+            // forced close can race with the output pumps and look like a
+            // generic stream failure; preserve the actionable limit reason.
+            if (outputFailure.get() != null) throw asIOException(outputFailure.get());
             publishResult(resultFile, artifactDir, outputCursor.get());
             var exitCode = process.exitValue();
             sendState(new TaskUpdateRequest(exitCode == 0 ? "completed" : "failed", exitCode,
