@@ -17,6 +17,9 @@ graalvmNative {
     binaries {
         named("main") {
             imageName.set("rcm-agent")
+            // Target the broad x86-64 baseline so older hosts without AVX2
+            // (for example Sandy Bridge) can run the release binary.
+            buildArgs.add("-march=compatibility")
         }
     }
 }
