@@ -261,12 +261,12 @@ try {
     }
     $sourceFiles = @($sourceFiles | Sort-Object Name -Unique)
 
-    # Stop before replacing a loaded executable/DLL. The service is started
-    # again only after registration and the complete bundle are in place.
+    # Stop before replacing a loaded executable/DLL. The startup task is
+    # started again only after registration and the complete bundle are in place.
     $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
     if ($existingService) { Remove-AgentScmService -Name $serviceName }
     # The interactive companion may still hold its Native Image DLLs while a
-    # service upgrade is replacing the sibling bundles. Stop/unregister the
+    # upgrade is replacing the sibling bundles. Stop/unregister the
     # old logon task; it is recreated below when DesktopEnabled is requested.
     Remove-AgentTask -Name $companionTaskName
     Remove-AgentTask -Name $serviceName
