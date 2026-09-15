@@ -25,13 +25,25 @@ public record TaskView(
         Instant leaseUntil,
         long artifactBytes,
         String artifactMime,
-        String artifactSha256) {
+        String artifactSha256,
+        String scopeMode,
+        String projectId,
+        String worktreeId,
+        String scopeRoot,
+        String risk,
+        Instant contractExpiresAt) {
 
     public TaskView(TaskState task) {
         this(task.id(), task.machineId(), task.command().kind().wireValue(), task.command().requiredCapability(),
                 task.command().command(), task.command().cwd(), task.command().timeoutSeconds(), task.status(),
                 task.attempt(), task.exitCode(), task.error(), task.outputBytes(), task.outputTruncated(), task.createdAt(),
                 task.dispatchedAt(), task.startedAt(), task.finishedAt(), task.leaseUntil(), task.artifactBytes(),
-                task.artifactMime(), task.artifactSha256());
+                task.artifactMime(), task.artifactSha256(),
+                task.command().contract() == null ? null : task.command().contract().scopeMode().wireValue(),
+                task.command().contract() == null ? null : task.command().contract().projectId(),
+                task.command().contract() == null ? null : task.command().contract().worktreeId(),
+                task.command().contract() == null ? null : task.command().contract().scopeRoot(),
+                task.command().contract() == null ? null : task.command().contract().risk(),
+                task.command().contract() == null ? null : task.command().contract().expiresAt());
     }
 }

@@ -65,4 +65,72 @@ class ProjectServiceTest {
         assertThrows(IllegalArgumentException.class, () -> projects.register(
                 new ProjectRegistrationRequest(registration.machineId(), "outside", "/srv/demo", "/tmp/repo", "HEAD")));
     }
+
+    @Test
+    void gitOperationsAreScopedAndMutationsRequireIdempotency() {
+        var registry = AgentRegistry.forTest("enrollment");
+        var registration = registry.register(new RegisterRequest("builder", "host-a", "host-a", "linux", "amd64",
+                "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enrollment");
+        var tasks = new TaskService(registry);
+        var projects = new ProjectService(registry, tasks);
+        var project = projects.register(new ProjectRegistrationRequest(registration.machineId(), "demo", "/srv/demo", null, "main"));
+
+        var status = projects.gitOperation(project.id(), "status", new ProjectGitOperationRequest("", "", "", "", ""));
+        assertTrue(status.command().contains("git -C '/srv/demo' status"));
+        assertEquals(ScopeMode.PROJECT.wireValue(), status.scopeMode());
+        assertThrows(IllegalArgumentException.class, () -> projects.gitOperation(project.id(), "commit",
+                new ProjectGitOperationRequest("", "", "message", "", "")));
+
+        var request = new ProjectGitOperationRequest("", "", "message", "", "commit-1");
+        var first = projects.gitOperation(project.id(), "commit", request);
+        var retry = projects.gitOperation(project.id(), "commit", request);
+        assertEquals(first.id(), retry.id(), "commit retries must be idempotent");
+        var abort = projects.gitOperation(project.id(), "merge_abort",
+                new ProjectGitOperationRequest("", "", "", "", "abort-1"));
+        assertTrue(abort.command().contains("git -C '/srv/demo' merge --abort"));
+        assertThrows(IllegalArgumentException.class, () -> projects.gitOperation(project.id(), "merge",
+                new ProjectGitOperationRequest("", "feature/../main", "", "", "merge-1")));
+    }
+
+    @Test
+    void windowsGitPathsRejectDelayedExpansionBeforeQueueing() {
+        var registry = AgentRegistry.forTest("enrollment");
+        var registration = registry.register(new RegisterRequest("builder-win", "host-win", "host-win", "windows", "amd64",
+                "dev", "C:\\", ScopeMode.UNRESTRICTED, null, List.of("command")), "enrollment");
+        var tasks = new TaskService(registry);
+        var projects = new ProjectService(registry, tasks);
+        var project = projects.register(new ProjectRegistrationRequest(registration.machineId(), "demo", "C:\\workspace\\demo!", null, "main"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> projects.gitOperation(project.id(), "status", new ProjectGitOperationRequest("", "", "", "", "")));
+        assertTrue(tasks.list(0, 10).isEmpty(), "unsafe Windows path must not enqueue a Git task");
+    }
+
+    @Test
+    void projectRemovalRequiresInactiveTasksAndExplicitWorktreeCleanup() {
+        var registry = AgentRegistry.forTest("enrollment");
+        var registration = registry.register(new RegisterRequest("builder", "host-a", "host-a", "linux", "amd64",
+                "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enrollment");
+        var tasks = new TaskService(registry);
+        var projects = new ProjectService(registry, tasks);
+        var project = projects.register(new ProjectRegistrationRequest(registration.machineId(), "demo", "/srv/demo", null, "main"));
+        var worktree = projects.createWorktree(project.id(), new ProjectWorktreeRequest("feature/remove", "remove-setup"));
+        assertThrows(IllegalArgumentException.class, () -> projects.remove(project.id()));
+
+        var createTask = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        tasks.updateState(registration.machineId(), createTask.id(), new TaskUpdateRequest("running", null, null, null, null, false));
+        tasks.updateState(registration.machineId(), createTask.id(), new TaskUpdateRequest("completed", 0, null, null, null, false));
+        var ready = projects.find(project.id()).worktrees().stream().filter(value -> value.id().equals(worktree.id())).findFirst().orElseThrow();
+        assertEquals("ready", ready.status());
+        assertThrows(IllegalArgumentException.class, () -> projects.remove(project.id()));
+
+        var remove = projects.removeWorktree(project.id(), worktree.id(), "remove-worktree");
+        var removeTask = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        tasks.updateState(registration.machineId(), removeTask.id(), new TaskUpdateRequest("running", null, null, null, null, false));
+        tasks.updateState(registration.machineId(), removeTask.id(), new TaskUpdateRequest("completed", 0, null, null, null, false));
+        assertEquals("removed", projects.find(project.id()).worktrees().stream()
+                .filter(value -> value.id().equals(remove.id())).findFirst().orElseThrow().status());
+        assertEquals(project.id(), projects.remove(project.id()).id());
+        assertThrows(IllegalArgumentException.class, () -> projects.find(project.id()));
+    }
 }

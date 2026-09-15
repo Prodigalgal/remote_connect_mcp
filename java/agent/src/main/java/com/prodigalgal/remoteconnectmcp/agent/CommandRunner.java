@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -26,18 +27,28 @@ final class CommandRunner implements Runnable {
     private final TaskCommand task;
     private final AgentTransport transport;
     private final AgentResourceBudget resourceBudget;
+    private final AgentProcessBudget processBudget;
 
     CommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task, AgentTransport transport) {
-        this(config, identity, task, transport, new AgentResourceBudget(config.maxAggregateOutputBytes()));
+        this(config, identity, task, transport, new AgentResourceBudget(config.maxAggregateOutputBytes()),
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
     }
 
     CommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
                   AgentTransport transport, AgentResourceBudget resourceBudget) {
+        this(config, identity, task, transport, resourceBudget,
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
+    }
+
+    CommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
+                  AgentTransport transport, AgentResourceBudget resourceBudget,
+                  AgentProcessBudget processBudget) {
         this.config = config;
         this.identity = identity;
         this.task = task;
         this.transport = transport;
         this.resourceBudget = resourceBudget;
+        this.processBudget = processBudget;
     }
 
     @Override
@@ -47,6 +58,7 @@ final class CommandRunner implements Runnable {
         Future<?> outputDrainFuture = null;
         Future<?> outputUploadFuture = null;
         TaskOutputSpool outputSpool = null;
+        ProcessResourceSupervisor resourceSupervisor = null;
         var outputFailure = new AtomicReference<Throwable>();
         try {
             var cwd = resolveCwd(task.cwd());
@@ -60,8 +72,11 @@ final class CommandRunner implements Runnable {
                     }
                 });
             }
-            outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), config.maxOutputBytes(), resourceBudget);
+            outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), TaskLimits.outputBytes(config, task), resourceBudget);
             process = builder.start();
+            var processForSupervisor = process;
+            resourceSupervisor = ProcessResourceSupervisor.start(processForSupervisor, config, task,
+                    () -> terminate(processForSupervisor), processBudget);
 
             // Reading the child and uploading to Center are separate workers.
             // A transient network outage therefore cannot fill the child pipe
@@ -82,7 +97,7 @@ final class CommandRunner implements Runnable {
             outputUploadFuture = outputExecutor.submit(() -> {
                 try {
                     TaskOutputPump.upload(LOG, "task output upload " + task.id(), spool,
-                            (offset, data) -> transport.appendOutput(identity.machineId(), identity.token(), task.id(), offset, data));
+                            (offset, data) -> transport.appendOutput(identity.machineId(), identity.token(), task.id(), task.attempt(), offset, data));
                 } catch (Throwable failure) {
                     outputFailure.compareAndSet(null, failure);
                     terminate(startedProcess);
@@ -94,9 +109,10 @@ final class CommandRunner implements Runnable {
             sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
 
             int exitCode;
-            if (task.timeoutSeconds() <= 0) {
+            var timeoutSeconds = TaskLimits.timeoutSeconds(task, 0);
+            if (timeoutSeconds <= 0) {
                 exitCode = process.waitFor();
-            } else if (!process.waitFor(task.timeoutSeconds(), TimeUnit.SECONDS)) {
+            } else if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 terminate(process);
                 spool.complete();
                 cancelOutput(outputDrainFuture);
@@ -111,6 +127,11 @@ final class CommandRunner implements Runnable {
             var streamFailure = outputFailure.get();
             if (streamFailure != null) {
                 throw asIOException(streamFailure);
+            }
+            var resourceViolation = resourceSupervisor == null ? null : resourceSupervisor.violation();
+            if (resourceViolation != null && !resourceViolation.isBlank()) {
+                sendState(new TaskUpdateRequest("failed", exitCode, resourceViolation, null, Instant.now(), spool.truncated()));
+                return;
             }
             sendState(new TaskUpdateRequest(exitCode == 0 ? "completed" : "failed", exitCode,
                     exitCode == 0 ? null : "command exited with code " + exitCode, null, Instant.now(), spool.truncated()));
@@ -140,6 +161,7 @@ final class CommandRunner implements Runnable {
                 LOG.log(Level.WARNING, "could not report failed task " + task.id(), sendFailure);
             }
         } finally {
+            if (resourceSupervisor != null) resourceSupervisor.close();
             if (outputSpool != null) outputSpool.close();
             if (outputExecutor != null) {
                 outputExecutor.shutdownNow();
@@ -214,13 +236,13 @@ final class CommandRunner implements Runnable {
 
     private void sendState(TaskUpdateRequest update) throws IOException, InterruptedException {
         AgentRetry.call(LOG, "task state upload " + task.id(), () -> {
-            transport.updateState(identity.machineId(), identity.token(), task.id(), update);
+            transport.updateState(identity.machineId(), identity.token(), task.id(), task.attempt(), update);
             return null;
         });
     }
 
     private Path resolveCwd(String requested) throws IOException {
-        return AgentPaths.resolveCwd(config, requested);
+        return AgentPaths.resolveCwd(config, identity.machineId(), task, requested);
     }
 
     private static List<String> shellCommand(String command) {
@@ -236,11 +258,13 @@ final class CommandRunner implements Runnable {
 
     static boolean isSensitive(String key) {
         var upper = key.toUpperCase(java.util.Locale.ROOT);
-        return upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("SECRET");
+        return upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("PASSWD")
+                || upper.contains("SECRET") || upper.contains("COOKIE") || upper.contains("AUTHORIZATION")
+                || upper.contains("API_KEY") || upper.contains("PRIVATE_KEY") || upper.contains("CREDENTIAL");
     }
 
     private static String compactError(String value) {
-        var error = value == null || value.isBlank() ? "command execution failed" : value.trim();
+        var error = value == null || value.isBlank() ? "command execution failed" : SensitiveValueRedactor.redact(value.trim());
         return error.length() <= 4096 ? error : error.substring(0, 4096);
     }
 }

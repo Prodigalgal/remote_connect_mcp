@@ -5,8 +5,10 @@ import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.ProtocolValidation;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
+import com.prodigalgal.remoteconnectmcp.protocol.TransportNegotiation;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ArtifactRequest;
@@ -72,16 +74,23 @@ public final class AgentController {
     public CompletableFuture<ResponseEntity<?>> poll(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                       @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
                                                       @RequestHeader(value = "X-Agent-Metadata", required = false) String metadataHeader,
+                                                      @RequestHeader(value = TransportNegotiation.HEADER_CAPABILITIES, required = false) String transportCapabilities,
+                                                      @RequestHeader(value = TransportNegotiation.HEADER_PREFERRED, required = false) String preferredTransport,
                                                       @RequestBody(required = false) PollRequest request,
                                                       @RequestParam(value = "wait_ms", defaultValue = "0") long waitMs) {
         return execute(() -> {
             var pollRequest = withHeaderMetadata(request, metadataHeader);
             var normalizedWait = normalizeLongPoll(waitMs);
             var response = pollUntilChange(machineId, bearerValue(authorization), pollRequest, normalizedWait);
+            var selectedTransport = TransportNegotiation.select(transportCapabilities, preferredTransport,
+                    java.util.Set.of(TransportNegotiation.HTTPS));
             if (normalizedWait > 0 && wakes != null) {
-                return ResponseEntity.ok().header("X-RCM-Long-Poll", "accepted").body(response);
+                return ResponseEntity.ok().header("X-RCM-Long-Poll", "accepted")
+                        .header(TransportNegotiation.HEADER_CAPABILITIES, TransportNegotiation.SERVER_CAPABILITIES)
+                        .header(TransportNegotiation.HEADER_SELECTED, selectedTransport).body(response);
             }
-            return ResponseEntity.ok(response);
+            return ResponseEntity.ok().header(TransportNegotiation.HEADER_CAPABILITIES, TransportNegotiation.SERVER_CAPABILITIES)
+                    .header(TransportNegotiation.HEADER_SELECTED, selectedTransport).body(response);
         });
     }
 
@@ -190,6 +199,7 @@ public final class AgentController {
     public CompletableFuture<ResponseEntity<?>> taskState(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                           @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
                                                           @RequestHeader(value = "X-Task-Output-Truncated", required = false) String outputTruncated,
+                                                          @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
                                                           @PathVariable String taskId,
                                                           @RequestBody(required = false) TaskUpdateRequest request) {
         return execute(() -> {
@@ -198,13 +208,14 @@ public final class AgentController {
             if (update != null && "1".equals(outputTruncated)) {
                 update = new TaskUpdateRequest(update.status(), update.exitCode(), update.error(), update.startedAt(), update.finishedAt(), true);
             }
-            return ResponseEntity.ok(tasks.updateState(machineId, taskId, update));
+            return ResponseEntity.ok(tasks.updateState(machineId, taskId, update, parseAttempt(attemptHeader)));
         });
     }
 
     @PostMapping("/tasks/{taskId}/output")
     public CompletableFuture<ResponseEntity<?>> taskOutput(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                            @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
+                                                           @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
                                                            @PathVariable String taskId,
                                                            @RequestBody(required = false) OutputRequest request) {
         return execute(() -> {
@@ -216,13 +227,14 @@ public final class AgentController {
                 throw new IllegalArgumentException("output request exceeds 256 KiB");
             }
             var data = Base64.getDecoder().decode(request.data());
-            return ResponseEntity.ok(tasks.appendOutput(machineId, taskId, request.offset(), data));
+            return ResponseEntity.ok(tasks.appendOutput(machineId, taskId, request.offset(), data, parseAttempt(attemptHeader)));
         });
     }
 
     @PostMapping("/tasks/{taskId}/artifact")
     public CompletableFuture<ResponseEntity<?>> taskArtifact(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                              @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
+                                                             @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
                                                              @PathVariable String taskId,
                                                              @RequestBody(required = false) ArtifactRequest request) {
         return execute(() -> {
@@ -234,7 +246,8 @@ public final class AgentController {
                 throw new IllegalArgumentException("artifact request exceeds 12 MiB");
             }
             var data = Base64.getDecoder().decode(request.data());
-            return ResponseEntity.ok(tasks.appendArtifact(machineId, taskId, request.mimeType(), request.sha256(), data));
+            return ResponseEntity.ok(tasks.appendArtifact(machineId, taskId, request.mimeType(), request.sha256(), data,
+                    parseAttempt(attemptHeader)));
         });
     }
 
@@ -256,6 +269,17 @@ public final class AgentController {
         return parts.length == 2 && "Bearer".equalsIgnoreCase(parts[0]) ? parts[1].trim() : "";
     }
 
+    private static Integer parseAttempt(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            var parsed = Integer.parseInt(value.trim());
+            if (parsed < 1) throw new IllegalArgumentException("X-Task-Attempt must be a positive integer");
+            return parsed;
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException("X-Task-Attempt must be a positive integer", exception);
+        }
+    }
+
     private static ResponseEntity<Map<String, String>> error(Throwable exception) {
         if (exception instanceof SecurityException) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(java.util.Map.of("error", message(exception)));
@@ -267,8 +291,9 @@ public final class AgentController {
     }
 
     private static String message(Throwable exception) {
-        return exception == null || exception.getMessage() == null || exception.getMessage().isBlank()
+        var message = exception == null || exception.getMessage() == null || exception.getMessage().isBlank()
                 ? "request failed" : exception.getMessage();
+        return SensitiveValueRedactor.redact(message);
     }
 
     private static Throwable unwrap(Throwable failure) {

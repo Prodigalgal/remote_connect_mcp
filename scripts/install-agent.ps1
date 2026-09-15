@@ -8,8 +8,10 @@ param(
     [string]$AgentName = $env:COMPUTERNAME,
     [string]$HostId = "",
     [string]$DefaultCwd = "C:\",
+    # The legacy Go Agent only understands these two persisted modes.  The
+    # Java Agent installer exposes the richer project/worktree/path contract.
     [ValidateSet("unrestricted", "workspace")]
-    [string]$ScopeMode = "unrestricted",
+    [string]$ScopeMode = "workspace",
     [string]$WorkspaceRoot = "",
     [string]$Capabilities = "command,durable_tasks",
     [string]$Version = "dev",

@@ -5,6 +5,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeArtifact;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -72,6 +73,7 @@ public final class UpgradeService {
     private final TransactionTemplate transactions;
     private final TaskChangeRegistry changes;
     private final AgentWakeRegistry wakes;
+    private final AuditService audit;
     private final Map<String, Campaign> memory = new ConcurrentHashMap<>();
     private final ReentrantLock memoryLock = new ReentrantLock();
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
@@ -82,7 +84,8 @@ public final class UpgradeService {
                            ObjectProvider<JdbcTemplate> jdbcProvider,
                            ObjectProvider<TransactionTemplate> transactionProvider,
                            ObjectProvider<TaskChangeRegistry> changeProvider,
-                           ObjectProvider<AgentWakeRegistry> wakeProvider) {
+                           ObjectProvider<AgentWakeRegistry> wakeProvider,
+                           ObjectProvider<AuditService> auditProvider) {
         this.agents = agents;
         this.tasks = tasks;
         this.config = config;
@@ -90,6 +93,7 @@ public final class UpgradeService {
         this.transactions = transactionProvider.getIfAvailable();
         this.changes = changeProvider == null ? null : changeProvider.getIfAvailable();
         this.wakes = wakeProvider == null ? null : wakeProvider.getIfAvailable();
+        this.audit = auditProvider == null ? null : auditProvider.getIfAvailable();
         if (jdbc != null && transactions == null) {
             throw new IllegalStateException("TransactionTemplate is required when PostgreSQL persistence is enabled");
         }
@@ -103,13 +107,15 @@ public final class UpgradeService {
         this.transactions = null;
         this.changes = null;
         this.wakes = null;
+        this.audit = null;
     }
 
     public UpgradeCampaignView create(CreateUpgradeCampaignRequest request) {
         if (!config.enabled()) throw new IllegalStateException("Agent upgrades are disabled");
         var version = normalizeVersion(request == null ? null : request.version());
-        var machines = agents.listMachines(0, 200, Instant.now());
-        var selected = selectMachines(request == null ? List.of() : request.machineIds(), machines);
+        var machines = agents.listAllMachines(Instant.now());
+        var selected = selectMachines(request == null ? List.of() : request.machineIds(), machines,
+                request == null || request.includeOffline());
         if (selected.isEmpty()) throw new IllegalArgumentException("at least one machine is required");
         var artifacts = resolveArtifacts(version, selected, request == null ? Map.of() : request.artifacts());
         var canary = normalizePositive(request == null ? null : request.canaryCount(), 1, selected.size());
@@ -126,6 +132,7 @@ public final class UpgradeService {
             var result = createJdbc(campaign);
             signalChange();
             signalTargets(result.targets());
+            audit("upgrade.created", "admin", null, result.status(), "campaign=" + result.id() + ",targets=" + result.targets().size());
             return result;
         }
         memoryLock.lock();
@@ -136,6 +143,7 @@ public final class UpgradeService {
             var result = view(campaign);
             signalChange();
             signalTargets(result.targets());
+            audit("upgrade.created", "admin", null, result.status(), "campaign=" + result.id() + ",targets=" + result.targets().size());
             return result;
         } finally {
             memoryLock.unlock();
@@ -154,6 +162,20 @@ public final class UpgradeService {
         try {
             return memory.values().stream().sorted(Comparator.comparing((Campaign value) -> value.createdAt).reversed())
                     .skip(offset).limit(limit).map(UpgradeService::view).toList();
+        } finally {
+            memoryLock.unlock();
+        }
+    }
+
+    /** Total campaign count for the paginated operations view. */
+    public int count() {
+        if (jdbc != null) {
+            var value = jdbc.queryForObject("SELECT COUNT(*) FROM rcm_upgrade_campaign", Long.class);
+            return value == null ? 0 : Math.toIntExact(value);
+        }
+        memoryLock.lock();
+        try {
+            return memory.size();
         } finally {
             memoryLock.unlock();
         }
@@ -187,6 +209,7 @@ public final class UpgradeService {
             var result = transactions.execute(status -> controlJdbc(id, normalizedAction));
             signalChange();
             signalTargets(result.targets());
+            audit("upgrade.control", "admin", null, result.status(), "campaign=" + result.id() + ",action=" + normalizedAction);
             return result;
         }
         memoryLock.lock();
@@ -208,7 +231,7 @@ public final class UpgradeService {
                 }
                 campaign.status = RUNNING;
                 campaign.finishedAt = null;
-                reconcile(campaign, machinesById(agents.listMachines(0, 200, now)), now);
+                reconcile(campaign, machinesById(agents.listAllMachines(now)), now);
             } else if ("cancel".equals(normalizedAction)) {
                 if (!COMPLETED.equals(campaign.status)) {
                     campaign.status = CANCELED;
@@ -221,10 +244,80 @@ public final class UpgradeService {
             var result = view(campaign);
             signalChange();
             signalTargets(result.targets());
+            audit("upgrade.control", "admin", null, result.status(), "campaign=" + result.id() + ",action=" + normalizedAction);
             return result;
         } finally {
             memoryLock.unlock();
         }
+    }
+
+    /**
+     * Re-queue one failed target without resetting successful targets. This
+     * keeps a paused campaign auditable and avoids making an operator replay a
+     * healthy canary merely because one machine had a transient failure.
+     */
+    public UpgradeCampaignView retryTarget(String campaignId, String machineId) {
+        var id = requiredId(campaignId);
+        var targetId = machineId == null ? "" : machineId.trim();
+        if (targetId.isBlank() || !SAFE_COMPONENT.matcher(targetId).matches()) {
+            throw new IllegalArgumentException("machine id is invalid");
+        }
+        if (jdbc != null) {
+            var result = transactions.execute(tx -> retryTargetJdbc(id, targetId));
+            signalChange();
+            signalTargets(result.targets());
+            audit("upgrade.target.retry", "admin", targetId, result.status(),
+                    "campaign=" + result.id());
+            return result;
+        }
+        memoryLock.lock();
+        try {
+            var campaign = requiredMemory(id);
+            if (COMPLETED.equals(campaign.status) || CANCELED.equals(campaign.status)) {
+                throw new IllegalArgumentException("upgrade campaign is already terminal");
+            }
+            var target = target(campaign, targetId);
+            if (target == null) throw new IllegalArgumentException("machine is not part of the upgrade campaign");
+            if (!FAILED.equals(target.status)) throw new IllegalArgumentException("only a failed target can be requeued");
+            var now = Instant.now();
+            target.status = PENDING;
+            target.error = "";
+            target.leaseUntil = null;
+            target.finishedAt = null;
+            target.updatedAt = now;
+            campaign.status = RUNNING;
+            campaign.finishedAt = null;
+            campaign.updatedAt = now;
+            reconcile(campaign, machinesById(agents.listAllMachines(now)), now);
+            var result = view(campaign);
+            signalChange();
+            signalTargets(result.targets());
+            audit("upgrade.target.retry", "admin", targetId, result.status(), "campaign=" + result.id());
+            return result;
+        } finally {
+            memoryLock.unlock();
+        }
+    }
+
+    private UpgradeCampaignView retryTargetJdbc(String campaignId, String machineId) {
+        var campaign = requiredJdbc(campaignId, true);
+        if (COMPLETED.equals(campaign.status) || CANCELED.equals(campaign.status)) {
+            throw new IllegalArgumentException("upgrade campaign is already terminal");
+        }
+        var target = target(campaign, machineId);
+        if (target == null) throw new IllegalArgumentException("machine is not part of the upgrade campaign");
+        if (!FAILED.equals(target.status)) throw new IllegalArgumentException("only a failed target can be requeued");
+        var now = Instant.now();
+        target.status = PENDING;
+        target.error = "";
+        target.leaseUntil = null;
+        target.finishedAt = null;
+        target.updatedAt = now;
+        campaign.status = RUNNING;
+        campaign.finishedAt = null;
+        campaign.updatedAt = now;
+        reconcileJdbc(campaign, now);
+        return view(campaign);
     }
 
     public UpgradeCampaignView updateStatus(String machineId, UpgradeStatusRequest request) {
@@ -235,22 +328,35 @@ public final class UpgradeService {
             throw new IllegalArgumentException("invalid upgrade status: " + status);
         }
         if (jdbc != null) {
-            var result = transactions.execute(tx -> updateStatusJdbc(machineId, id, status, request.error()));
+            var result = transactions.execute(tx -> updateStatusJdbc(machineId, id, status, request.error(), request.attempt()));
             signalChange();
             signalTargets(result.targets());
+            audit("upgrade.status", "agent", machineId, status, "campaign=" + id);
             return result;
         }
         memoryLock.lock();
         try {
             var campaign = requiredMemory(id);
             if (CANCELED.equals(campaign.status)) return view(campaign);
-            var target = campaign.targets.stream().filter(value -> value.machineId.equals(machineId)).findFirst()
+        var target = campaign.targets.stream().filter(value -> value.machineId.equals(machineId)).findFirst()
                     .orElseThrow(() -> new IllegalArgumentException("machine is not part of the upgrade campaign"));
-            applyStatus(campaign, target, status, request.error(), Instant.now());
-            reconcile(campaign, machinesById(agents.listMachines(0, 200, Instant.now())), Instant.now());
+            if ((request.attempt() == null && target.attempts > 1)
+                    || (request.attempt() != null && request.attempt() != target.attempts)) {
+                // A helper from an expired offer may report after a newer offer
+                // has already been issued.  Treat the report as a stale
+                // observation and leave the newer attempt authoritative.  The
+                // legacy wire shape omitted attempt, so it remains compatible
+                // for the first offer only.
+                return view(campaign);
+            }
+            var now = Instant.now();
+            if (!statusMayAdvance(target, status, now)) return view(campaign);
+            applyStatus(campaign, target, status, request.error(), now);
+            reconcile(campaign, machinesById(agents.listAllMachines(now)), now);
             var result = view(campaign);
             signalChange();
             signalTargets(result.targets());
+            audit("upgrade.status", "agent", machineId, status, "campaign=" + id);
             return result;
         } finally {
             memoryLock.unlock();
@@ -270,7 +376,7 @@ public final class UpgradeService {
         memoryLock.lock();
         try {
             var now = Instant.now();
-            var byId = machinesById(agents.listMachines(0, 200, now));
+            var byId = machinesById(agents.listAllMachines(now));
             for (var campaign : memory.values().stream().sorted(Comparator.comparing((Campaign value) -> value.createdAt)).toList()) {
                 if (!RUNNING.equals(campaign.status)) continue;
                 reconcile(campaign, byId, now);
@@ -288,7 +394,10 @@ public final class UpgradeService {
 
     private UpgradePlan offerJdbc(MachineView machine, PollRequest request) {
         var now = Instant.now();
-        var campaign = loadActiveJdbc();
+        // Serialize offer allocation at the campaign row. Without this
+        // lock two Agent polls can observe the same pending target and both
+        // increment its attempt counter, launching two helpers for one host.
+        var campaign = loadActiveJdbc(true);
         if (campaign == null) return null;
         reconcileJdbc(campaign, now);
         var target = target(campaign, machine.id());
@@ -330,7 +439,7 @@ public final class UpgradeService {
         target.updatedAt = now;
         target.leaseUntil = now.plus(OFFER_LEASE);
         campaign.updatedAt = now;
-        return new UpgradePlan(campaign.id, campaign.version, artifact.url(), artifact.sha256());
+        return new UpgradePlan(campaign.id, campaign.version, artifact.url(), artifact.sha256(), target.attempts);
     }
 
     private boolean safeForUpgrade(MachineView machine, PollRequest request) {
@@ -367,7 +476,7 @@ public final class UpgradeService {
     }
 
     private UpgradeCampaignView controlJdbc(String id, String action) {
-        var campaign = requiredJdbc(id);
+        var campaign = requiredJdbc(id, true);
         var now = Instant.now();
         if ("resume".equals(action)) {
             if (COMPLETED.equals(campaign.status) || CANCELED.equals(campaign.status)) throw new IllegalArgumentException("upgrade campaign is already terminal");
@@ -387,8 +496,8 @@ public final class UpgradeService {
         return view(campaign);
     }
 
-    private UpgradeCampaignView updateStatusJdbc(String machineId, String id, String status, String error) {
-        var campaign = requiredJdbc(id);
+    private UpgradeCampaignView updateStatusJdbc(String machineId, String id, String status, String error, Integer attempt) {
+        var campaign = requiredJdbc(id, true);
         // A late status report from an Agent that was already offered an
         // upgrade must not mutate a campaign the operator canceled while the
         // helper was restarting.  Return the authoritative terminal snapshot;
@@ -397,15 +506,21 @@ public final class UpgradeService {
         if (CANCELED.equals(campaign.status)) return view(campaign);
         var target = target(campaign, machineId);
         if (target == null) throw new IllegalArgumentException("machine is not part of the upgrade campaign");
-        applyStatus(campaign, target, status, error, Instant.now());
+        if ((attempt == null && target.attempts > 1)
+                || (attempt != null && attempt != target.attempts)) {
+            return view(campaign);
+        }
+        var now = Instant.now();
+        if (!statusMayAdvance(target, status, now)) return view(campaign);
+        applyStatus(campaign, target, status, error, now);
         updateTargetJdbc(campaign.id, target);
-        reconcileJdbc(campaign, Instant.now());
+        reconcileJdbc(campaign, now);
         updateCampaignJdbc(campaign);
         return view(campaign);
     }
 
     private void reconcileJdbc(Campaign campaign, Instant now) {
-        var machines = machinesById(agents.listMachines(0, 200, now));
+        var machines = machinesById(agents.listAllMachines(now));
         reconcile(campaign, machines, now);
         for (var target : campaign.targets) updateTargetJdbc(campaign.id, target);
         updateCampaignJdbc(campaign);
@@ -443,20 +558,30 @@ public final class UpgradeService {
                 COMPLETED, CANCELED, campaign.status, COMPLETED, CANCELED);
     }
 
-    private Campaign loadActiveJdbc() {
-        var ids = jdbc.query("SELECT campaign_id FROM rcm_upgrade_campaign WHERE status = ? ORDER BY created_at LIMIT 1",
+    private Campaign loadActiveJdbc(boolean forUpdate) {
+        var suffix = forUpdate ? " FOR UPDATE" : "";
+        var ids = jdbc.query("SELECT campaign_id FROM rcm_upgrade_campaign WHERE status = ? ORDER BY created_at LIMIT 1" + suffix,
                 ps -> ps.setString(1, RUNNING), (rs, row) -> rs.getString(1));
-        return ids.isEmpty() ? null : loadJdbc(ids.get(0));
+        return ids.isEmpty() ? null : loadJdbc(ids.get(0), forUpdate);
     }
 
     private Campaign requiredJdbc(String id) {
-        var value = loadJdbc(id);
+        return requiredJdbc(id, false);
+    }
+
+    private Campaign requiredJdbc(String id, boolean forUpdate) {
+        var value = loadJdbc(id, forUpdate);
         if (value == null) throw new IllegalArgumentException("upgrade campaign not found: " + id);
         return value;
     }
 
     private Campaign loadJdbc(String id) {
-        var rows = jdbc.query("SELECT campaign_id, version, status, canary_count, batch_size, active_limit, artifacts, created_at, updated_at, finished_at FROM rcm_upgrade_campaign WHERE campaign_id = ?",
+        return loadJdbc(id, false);
+    }
+
+    private Campaign loadJdbc(String id, boolean forUpdate) {
+        var lock = forUpdate ? " FOR UPDATE" : "";
+        var rows = jdbc.query("SELECT campaign_id, version, status, canary_count, batch_size, active_limit, artifacts, created_at, updated_at, finished_at FROM rcm_upgrade_campaign WHERE campaign_id = ?" + lock,
                 ps -> ps.setString(1, id), (rs, row) -> {
                     var artifacts = readArtifacts(rs.getString("artifacts"));
                     return new Campaign(rs.getString("campaign_id"), rs.getString("version"), rs.getString("status"),
@@ -465,7 +590,7 @@ public final class UpgradeService {
                 });
         if (rows.isEmpty()) return null;
         var campaign = rows.get(0);
-        campaign.targets.addAll(jdbc.query("SELECT agent_id, status, error_text, attempts, updated_at, finished_at, lease_until FROM rcm_upgrade_target WHERE campaign_id = ? ORDER BY target_index",
+        campaign.targets.addAll(jdbc.query("SELECT agent_id, status, error_text, attempts, updated_at, finished_at, lease_until FROM rcm_upgrade_target WHERE campaign_id = ? ORDER BY target_index" + lock,
                 ps -> ps.setString(1, id), (rs, row) -> new Target(rs.getString("agent_id"), rs.getString("status"),
                         rs.getString("error_text"), rs.getInt("attempts"), instant(rs, "updated_at"), instant(rs, "finished_at"), instant(rs, "lease_until"))));
         return campaign;
@@ -492,6 +617,27 @@ public final class UpgradeService {
         }
         target.updatedAt = now;
         campaign.updatedAt = now;
+    }
+
+    /**
+     * Reject out-of-order helper reports. A completed target is immutable for
+     * the current attempt, and an expired offer cannot be resurrected by a
+     * delayed HTTP response; the next poll will receive a fresh attempt.
+     */
+    private static boolean statusMayAdvance(Target target, String status, Instant now) {
+        if (target == null || status == null || now == null) return false;
+        if (COMPLETED.equals(target.status)) return COMPLETED.equals(status);
+        if (FAILED.equals(target.status)) return FAILED.equals(status);
+        if (target.leaseUntil != null && !now.isBefore(target.leaseUntil)) return false;
+        if (Objects.equals(target.status, status)) return true;
+        return switch (target.status) {
+            case OFFERED -> DOWNLOADING.equals(status) || INSTALLING.equals(status)
+                    || COMPLETED.equals(status) || FAILED.equals(status);
+            case DOWNLOADING -> INSTALLING.equals(status) || COMPLETED.equals(status) || FAILED.equals(status);
+            case INSTALLING -> COMPLETED.equals(status) || FAILED.equals(status);
+            case PENDING -> false;
+            default -> false;
+        };
     }
 
     private void reconcile(Campaign campaign, Map<String, MachineView> machines, Instant now) {
@@ -578,8 +724,16 @@ public final class UpgradeService {
         if (!SHA256.matcher(artifact.sha256().trim()).matches()) throw new IllegalArgumentException("artifact SHA-256 for " + key + " is invalid");
     }
 
-    private static List<MachineView> selectMachines(List<String> requested, List<MachineView> machines) {
-        if (requested == null || requested.isEmpty()) return machines.stream().filter(MachineView::online).toList();
+    private static List<MachineView> selectMachines(List<String> requested, List<MachineView> machines,
+                                                    boolean includeOffline) {
+        if (requested == null || requested.isEmpty()) {
+            // Offline Agents are deliberately included in the durable target
+            // set by default.  They cannot receive an offer until their next
+            // heartbeat, but the campaign remains resumable and the target
+            // is not silently lost when a machine is temporarily powered off.
+            return includeOffline ? List.copyOf(machines)
+                    : machines.stream().filter(MachineView::online).toList();
+        }
         var byId = machines.stream().collect(java.util.stream.Collectors.toMap(MachineView::id, value -> value));
         var result = new ArrayList<MachineView>();
         for (var raw : requested) {
@@ -657,12 +811,16 @@ public final class UpgradeService {
     private static java.sql.Timestamp timestamp(Instant value) { return value == null ? null : java.sql.Timestamp.from(value); }
 
     private static String compactError(String value) {
-        var result = value == null || value.isBlank() ? "upgrade failed" : value.trim();
+        var result = value == null || value.isBlank() ? "upgrade failed" : SensitiveValueRedactor.redact(value.trim());
         return result.length() <= 4096 ? result : result.substring(0, 4096);
     }
 
     private void signalChange() {
         if (changes != null) changes.signalGlobal();
+    }
+
+    private void audit(String eventType, String actor, String agentId, String outcome, String detail) {
+        if (audit != null) audit.record(eventType, actor, agentId, null, null, null, outcome, detail);
     }
 
     /** Wake only Agents participating in a campaign; no fleet-wide timer is needed. */

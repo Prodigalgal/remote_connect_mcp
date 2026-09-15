@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -36,6 +37,7 @@ public final class ProjectService {
     private static final int MAX_NAME = 128;
     private static final int MAX_PATH = 2048;
     private static final int MAX_REF = 256;
+    private static final int MAX_COMMIT_MESSAGE = 1024;
     private static final int WORKTREE_TIMEOUT_SECONDS = 300;
 
     private final AgentRegistry agents;
@@ -43,6 +45,7 @@ public final class ProjectService {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final TaskChangeRegistry changes;
+    private final AuditService audit;
     private final Map<String, ProjectState> projects = new ConcurrentHashMap<>();
     private final Map<String, WorktreeState> worktrees = new ConcurrentHashMap<>();
 
@@ -50,26 +53,34 @@ public final class ProjectService {
     public ProjectService(AgentRegistry agents, TaskService tasks,
                            ObjectProvider<JdbcTemplate> jdbcProvider,
                            ObjectProvider<TransactionTemplate> transactionProvider,
-                           ObjectProvider<TaskChangeRegistry> changeProvider) {
+                           ObjectProvider<TaskChangeRegistry> changeProvider,
+                           ObjectProvider<AuditService> auditProvider) {
         this(agents, tasks, jdbcProvider.getIfAvailable(), transactionProvider.getIfAvailable(),
-                changeProvider == null ? null : changeProvider.getIfAvailable());
+                changeProvider == null ? null : changeProvider.getIfAvailable(),
+                auditProvider == null ? null : auditProvider.getIfAvailable());
     }
 
     ProjectService(AgentRegistry agents, TaskService tasks) {
-        this(agents, tasks, (JdbcTemplate) null, (TransactionTemplate) null, null);
+        this(agents, tasks, (JdbcTemplate) null, (TransactionTemplate) null, null, null);
     }
 
     ProjectService(AgentRegistry agents, TaskService tasks, JdbcTemplate jdbc, TransactionTemplate transactions) {
-        this(agents, tasks, jdbc, transactions, null);
+        this(agents, tasks, jdbc, transactions, null, null);
     }
 
     ProjectService(AgentRegistry agents, TaskService tasks, JdbcTemplate jdbc, TransactionTemplate transactions,
                    TaskChangeRegistry changes) {
+        this(agents, tasks, jdbc, transactions, changes, null);
+    }
+
+    ProjectService(AgentRegistry agents, TaskService tasks, JdbcTemplate jdbc, TransactionTemplate transactions,
+                   TaskChangeRegistry changes, AuditService audit) {
         this.agents = agents;
         this.tasks = tasks;
         this.jdbc = jdbc;
         this.transactions = transactions;
         this.changes = changes;
+        this.audit = audit;
     }
 
     public ProjectView register(ProjectRegistrationRequest request) {
@@ -101,6 +112,7 @@ public final class ProjectService {
                 projects.put(state.id, state);
                 var result = view(state);
                 signalChange();
+                audit("project.register", "admin", machineId, state.id, "accepted", "name_registered");
                 return result;
             }
         }
@@ -131,7 +143,10 @@ public final class ProjectService {
             return new ProjectView(id, machineId, name, root, repository, ref, now, now, List.of());
         };
         var result = transactions == null ? persist.get() : transactions.execute(status -> persist.get());
-        if (inserted.get()) signalChange();
+        if (inserted.get()) {
+            signalChange();
+            audit("project.register", "admin", machineId, result.id(), "accepted", "name_registered");
+        }
         return result;
     }
 
@@ -172,6 +187,82 @@ public final class ProjectService {
         }, (rs, rowNum) -> projectView(rs)));
     }
 
+    /** Total project count for console pagination; no repository data is read. */
+    public int count(String machineId) {
+        if (jdbc == null) {
+            var normalized = machineId == null ? "" : machineId.trim();
+            return Math.toIntExact(projects.values().stream()
+                    .filter(value -> normalized.isBlank() || value.machineId.equals(normalized))
+                    .count());
+        }
+        var normalized = machineId == null ? "" : machineId.trim();
+        var value = normalized.isBlank()
+                ? jdbc.queryForObject("SELECT COUNT(*) FROM rcm_project", Long.class)
+                : jdbc.queryForObject("SELECT COUNT(*) FROM rcm_project WHERE agent_id = ?", Long.class, normalized);
+        return value == null ? 0 : Math.toIntExact(value);
+    }
+
+    /**
+     * Remove a project registration without deleting user files.  Worktrees
+     * must have been explicitly removed first and no task may still refer to
+     * the project; this prevents a late Agent result from targeting a deleted
+     * scope.  The target checkout remains untouched because Center never owns
+     * repository contents.
+     */
+    public ProjectView remove(String projectId) {
+        var project = findState(projectId);
+        if (jdbc == null) {
+            synchronized (projects) {
+                synchronized (worktrees) {
+                    assertRemovable(project.id);
+                    var result = view(project);
+                    projects.remove(project.id);
+                    worktrees.values().removeIf(value -> value.projectId.equals(project.id));
+                    signalChange();
+                    audit("project.remove", "admin", project.machineId, project.id, "accepted", "registration_removed");
+                    return result;
+                }
+            }
+        }
+        java.util.function.Supplier<ProjectView> operation = () -> {
+            // Serialize project deletion with concurrent task/worktree
+            // registrations.  Without a row lock, a task could resolve the
+            // project just before this DELETE and leave an execution contract
+            // pointing at a project that no longer exists.
+            var lockedProject = jdbc.query("""
+                    SELECT project_id, agent_id, name, root_path, repository_path, default_ref, created_at, updated_at
+                      FROM rcm_project WHERE project_id = ? FOR UPDATE
+                    """, ps -> ps.setString(1, project.id), (rs, rowNum) -> projectState(rs))
+                    .stream().findFirst().orElseThrow(() -> new IllegalArgumentException("project not found"));
+            var activeTasks = jdbc.queryForObject("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM rcm_task
+                         WHERE execution_contract ->> 'project_id' = ?
+                           AND status NOT IN (?, ?, ?)
+                    )
+                    """, Boolean.class, project.id, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELED);
+            if (Boolean.TRUE.equals(activeTasks)) {
+                throw new IllegalArgumentException("project has active tasks; cancel or finish them first");
+            }
+            var activeWorktrees = jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM rcm_project_worktree
+                     WHERE project_id = ? AND status <> 'removed'
+                    """, Long.class, project.id);
+            if (activeWorktrees != null && activeWorktrees > 0) {
+                throw new IllegalArgumentException("project has active worktrees; remove them first");
+            }
+            var result = view(lockedProject);
+            if (jdbc.update("DELETE FROM rcm_project WHERE project_id = ?", lockedProject.id) != 1) {
+                throw new IllegalArgumentException("project not found");
+            }
+            return result;
+        };
+        var result = transactions == null ? operation.get() : transactions.execute(status -> operation.get());
+        signalChange();
+        audit("project.remove", "admin", project.machineId, project.id, "accepted", "registration_removed");
+        return result;
+    }
+
     /**
      * Queue a deterministic `git worktree add` operation.  The returned path
      * is always below the registered project root; callers cannot choose an
@@ -201,6 +292,7 @@ public final class ProjectService {
                 queueOperation(project, state, false);
                 var result = refresh(state);
                 signalChange();
+                audit("worktree.create", "admin", project.machineId, project.id, "accepted", "worktree=" + state.id);
                 return result;
             }
         }
@@ -222,14 +314,30 @@ public final class ProjectService {
         var state = new WorktreeState(id, project.id, ref,
                 worktreePath(project.rootPath, project.machineId, id), "create", "queued", null,
                 Instant.now(), Instant.now(), idempotency);
-        jdbc.update("""
-                INSERT INTO rcm_project_worktree(worktree_id, project_id, ref, path, operation, status, task_id, idempotency_key, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, state.id, state.projectId, state.ref, state.path, state.operation, state.status,
-                null, nullIfBlank(state.idempotencyKey), java.sql.Timestamp.from(state.createdAt), java.sql.Timestamp.from(state.updatedAt));
+        try {
+            jdbc.update("""
+                    INSERT INTO rcm_project_worktree(worktree_id, project_id, ref, path, operation, status, task_id, idempotency_key, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, state.id, state.projectId, state.ref, state.path, state.operation, state.status,
+                    null, nullIfBlank(state.idempotencyKey), java.sql.Timestamp.from(state.createdAt), java.sql.Timestamp.from(state.updatedAt));
+        } catch (DuplicateKeyException race) {
+            // Two Center replicas may pass the metadata-only pre-check at the
+            // same time.  Let PostgreSQL's unique idempotency/ref indexes be
+            // the final arbiter, then turn the race into the same deterministic
+            // response as a serialized request.
+            var raced = findJdbcByIdempotency(project.id, idempotency);
+            if (raced != null) {
+                if (!raced.ref.equals(ref)) {
+                    throw new IllegalArgumentException("idempotency key is already used with a different ref", race);
+                }
+                return refresh(raced);
+            }
+            throw new IllegalArgumentException("a worktree for this ref already exists", race);
+        }
         queueOperation(project, state, true);
         var result = refresh(state);
         signalChange();
+        audit("worktree.create", "admin", project.machineId, project.id, "accepted", "worktree=" + state.id);
         return result;
     }
 
@@ -256,11 +364,29 @@ public final class ProjectService {
         queueOperation(project, state, jdbc != null);
         var result = refresh(state);
         signalChange();
+        audit("worktree.remove", "admin", project.machineId, project.id, "accepted", "worktree=" + state.id);
         return result;
     }
 
     private void signalChange() {
         if (changes != null) changes.signalGlobal();
+    }
+
+    private void audit(String eventType, String actor, String agentId, String taskId,
+                       String outcome, String detail) {
+        if (audit == null) return;
+        var risk = eventType.startsWith("git.") ? "high" : "medium";
+        audit.record(eventType, actor, agentId, taskId, null, risk, outcome, detail);
+    }
+
+    private void assertRemovable(String projectId) {
+        if (tasks.hasActiveProjectTasks(projectId)) {
+            throw new IllegalArgumentException("project has active tasks; cancel or finish them first");
+        }
+        var active = worktrees.values().stream()
+                .filter(value -> value.projectId.equals(projectId))
+                .anyMatch(value -> !WorktreeStatus.REMOVED.equals(refresh(value).status()));
+        if (active) throw new IllegalArgumentException("project has active worktrees; remove them first");
     }
 
     /** Resolve a project/worktree target for an admin task before enqueueing. */
@@ -292,6 +418,135 @@ public final class ProjectService {
         return target;
     }
 
+    /** Resolve the immutable root carried by a project/worktree execution contract. */
+    public String resolveScopeRoot(String machineId, String projectId, String worktreeId) {
+        var project = findState(projectId);
+        if (!project.machineId.equals(requiredText(machineId, "machine_id", 128))) {
+            throw new SecurityException("project does not belong to this machine");
+        }
+        var machine = agents.findMachine(machineId, Instant.now())
+                .orElseThrow(() -> new IllegalArgumentException("machine not found"));
+        var base = project.rootPath;
+        if (worktreeId != null && !worktreeId.isBlank()) {
+            var worktree = findWorktree(project.id, worktreeId);
+            var current = refresh(worktree);
+            if (!"create".equals(worktree.operation) || !WorktreeStatus.READY.equals(current.status())) {
+                throw new IllegalArgumentException("worktree is not ready");
+            }
+            base = worktree.path;
+        }
+        WorkspacePolicy.validateRemote(ScopeMode.fromWireValue(machine.scopeMode()), machine.os(),
+                machine.workspaceRoot(), machine.workspaceRoot(), base);
+        return base;
+    }
+
+    /**
+     * Queue an explicit Git read or mutation. Repository contents never pass
+     * through Center: the Agent executes the quoted command under the same
+     * project/worktree contract used by ordinary tasks. Mutating operations
+     * require a caller idempotency key so a ChatGPT retry cannot create a
+     * second commit or merge.
+     */
+    public TaskView gitOperation(String projectId, String operation, ProjectGitOperationRequest request) {
+        var project = findState(projectId);
+        var machine = agents.findMachine(project.machineId, Instant.now())
+                .orElseThrow(() -> new IllegalArgumentException("machine not found"));
+        var input = request == null ? new ProjectGitOperationRequest("", "", "", "", "") : request;
+        var normalizedOperation = normalizeGitOperation(operation);
+        var worktreeId = input.worktreeId() == null ? "" : input.worktreeId().trim();
+        var scopeMode = worktreeId.isBlank() ? ScopeMode.PROJECT : ScopeMode.WORKTREE;
+        var target = project.repositoryPath;
+        var scopeRoot = project.rootPath;
+        if (!worktreeId.isBlank()) {
+            var worktree = findWorktree(project.id, worktreeId);
+            var current = refresh(worktree);
+            if (!"create".equals(worktree.operation) || !WorktreeStatus.READY.equals(current.status())) {
+                throw new IllegalArgumentException("worktree is not ready");
+            }
+            target = worktree.path;
+            scopeRoot = worktree.path;
+        }
+        // Reuse the normal Center boundary checks before constructing the
+        // command, then let the Agent perform its real-path check again.
+        target = resolveCwd(project.machineId, project.id, worktreeId, target);
+        var command = buildGitCommand(machine, target, normalizedOperation, input);
+        var mutating = "commit".equals(normalizedOperation) || "merge".equals(normalizedOperation)
+                || "merge_abort".equals(normalizedOperation);
+        var clientKey = normalizeIdempotency(input.idempotencyKey());
+        if (mutating && clientKey.isBlank()) {
+            throw new IllegalArgumentException("mutating Git operations require idempotency_key");
+        }
+        var taskKey = clientKey.isBlank() ? "" : "rcm-git:" + project.id + ":" + normalizedOperation + ":" + clientKey;
+        var timeout = WORKTREE_TIMEOUT_SECONDS;
+        var task = new TaskCommand("", TaskKind.COMMAND, "command", command, target,
+                Map.of("GIT_TERMINAL_PROMPT", "0", "GIT_EDITOR", "true"), timeout, null, Instant.now());
+        var session = "project-git-" + normalizedOperation + "-" + UUID.randomUUID().toString().replace("-", "");
+        var result = tasks.create(new CreateTaskRequest(project.machineId, task, taskKey, project.id, worktreeId,
+                scopeMode, scopeRoot, session, mutating ? "high" : "low", false));
+        audit("git." + normalizedOperation, "admin", project.machineId, project.id, "accepted",
+                "worktree=" + (worktreeId.isBlank() ? "project" : worktreeId));
+        return result;
+    }
+
+    private static String buildGitCommand(MachineView machine, String target, String operation,
+                                          ProjectGitOperationRequest request) {
+        var git = "git -C " + quote(machine, target);
+        return switch (operation) {
+            case "status" -> git + " status --short --branch --no-renames";
+            case "diff" -> {
+                var mode = request.mode() == null || request.mode().isBlank() ? "stat" : request.mode().trim().toLowerCase(Locale.ROOT);
+                if (!("stat".equals(mode) || "patch".equals(mode))) {
+                    throw new IllegalArgumentException("Git diff mode must be stat or patch");
+                }
+                var args = "stat".equals(mode) ? " --stat" : " --binary";
+                var ref = request.ref() == null || request.ref().isBlank() ? "" : normalizeRef(request.ref());
+                yield git + " diff --no-ext-diff" + args + (ref.isBlank() ? "" : " " + gitArgument(machine, ref)) + " --";
+            }
+            case "log" -> git + " log --oneline --decorate -n 50";
+            case "commit" -> git + " add --all && " + git + " commit -m " + gitArgument(machine, requiredCommitMessage(request.message()));
+            case "merge" -> git + " merge --no-edit --no-ff " + gitArgument(machine, requiredRef(request.ref()));
+            case "merge_abort" -> git + " merge --abort";
+            default -> throw new IllegalArgumentException("unsupported Git operation: " + operation);
+        };
+    }
+
+    private static String normalizeGitOperation(String value) {
+        var operation = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+        if (!List.of("status", "diff", "log", "commit", "merge", "merge_abort").contains(operation)) {
+            throw new IllegalArgumentException("unsupported Git operation: " + operation);
+        }
+        return operation;
+    }
+
+    private static String requiredCommitMessage(String value) {
+        if (value == null || value.isBlank()) throw new IllegalArgumentException("commit message is required");
+        var message = value.trim();
+        if (message.length() > MAX_COMMIT_MESSAGE || message.indexOf('\u0000') >= 0
+                || message.indexOf('\r') >= 0 || message.indexOf('\n') >= 0
+                || message.indexOf('"') >= 0 || message.indexOf('%') >= 0
+                || message.indexOf('&') >= 0 || message.indexOf('|') >= 0
+                || message.indexOf('<') >= 0 || message.indexOf('>') >= 0
+                || message.indexOf('^') >= 0 || message.indexOf(';') >= 0) {
+            throw new IllegalArgumentException("commit message contains unsupported shell characters");
+        }
+        return message;
+    }
+
+    private static String requiredRef(String value) {
+        if (value == null || value.isBlank()) throw new IllegalArgumentException("merge ref is required");
+        return normalizeRef(value);
+    }
+
+    private static String gitArgument(MachineView machine, String value) {
+        var normalized = requiredText(value, "git argument", MAX_COMMIT_MESSAGE);
+        return isWindows(machine) ? quoteWindowsArgument(normalized) : quotePosix(normalized);
+    }
+
+    private static String quoteWindowsArgument(String value) {
+        validateWindowsShellValue(value, "Git argument");
+        return "\"" + value + "\"";
+    }
+
     private void queueOperation(ProjectState project, WorktreeState state, boolean persisted) {
         var machine = agents.findMachine(project.machineId, Instant.now())
                 .orElseThrow(() -> new IllegalArgumentException("machine not found"));
@@ -302,7 +557,8 @@ public final class ProjectService {
             var task = tasks.create(new CreateTaskRequest(project.machineId,
                     new TaskCommand("", TaskKind.COMMAND, "command", commandText, project.rootPath,
                             Map.of(), WORKTREE_TIMEOUT_SECONDS, null, Instant.now()),
-                    "rcm-worktree:" + state.id + ":" + state.operation));
+                    "rcm-worktree:" + state.id + ":" + state.operation,
+                    project.id, null, ScopeMode.PROJECT, project.rootPath, "", "low", false));
             state.taskId = task.id();
             state.status = "queued";
             state.updatedAt = Instant.now();
@@ -446,7 +702,26 @@ public final class ProjectService {
     }
 
     private static String quoteWindows(String value) {
+        validateWindowsShellValue(value, "Windows path");
         return "\"" + value + "\"";
+    }
+
+    /**
+     * Values in a Windows command are passed through {@code cmd.exe} by the
+     * Agent.  Quoting protects most separators, but percent expansion and
+     * delayed expansion still happen inside quotes; reject the complete set of
+     * shell metacharacters before constructing a command string.
+     */
+    private static void validateWindowsShellValue(String value, String field) {
+        if (value == null || value.isBlank()
+                || value.indexOf('\u0000') >= 0 || value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0
+                || value.indexOf('"') >= 0 || value.indexOf('%') >= 0 || value.indexOf('!') >= 0
+                || value.indexOf('&') >= 0 || value.indexOf('|') >= 0
+                || value.indexOf('<') >= 0 || value.indexOf('>') >= 0
+                || value.indexOf('^') >= 0 || value.indexOf(';') >= 0
+                || value.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException(field + " contains unsupported shell characters");
+        }
     }
 
     private static String worktreePath(String root, String machineId, String worktreeId) {

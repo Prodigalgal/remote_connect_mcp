@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
+import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -38,6 +39,8 @@ final class DurableTaskStore {
     private final java.util.Set<String> watchedTasks = ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> guardedTasks = ConcurrentHashMap.newKeySet();
     private final java.util.Map<String, CompletableFuture<Record>> completionSignals = new ConcurrentHashMap<>();
+    private final java.util.Map<String, Reservation> outputReservations = new ConcurrentHashMap<>();
+    private final java.util.Map<String, String> guardErrors = new ConcurrentHashMap<>();
 
     DurableTaskStore(Path stateDir) throws IOException {
         this.directory = stateDir.toAbsolutePath().normalize().resolve("durable-tasks");
@@ -50,6 +53,10 @@ final class DurableTaskStore {
     }
 
     Started start(TaskCommand task, Path cwd, long maxOutputBytes) throws IOException {
+        return start(task, cwd, maxOutputBytes, null);
+    }
+
+    Started start(TaskCommand task, Path cwd, long maxOutputBytes, AgentResourceBudget budget) throws IOException {
         if (maxOutputBytes < 1) throw new IllegalArgumentException("maxOutputBytes must be positive");
         var safeId = safe(task.id());
         var output = directory.resolve(safeId + ".log");
@@ -69,7 +76,7 @@ final class DurableTaskStore {
         }
         var process = builder.start();
         var record = new Record(task.id(), process.pid(), task.command(), cwd.toString(), task.createdAt(),
-                output.toString(), recordPath.toString(), false, null, null);
+                output.toString(), recordPath.toString(), false, null, null, task.contract(), task.attempt());
         try {
             write(recordPath, record);
         } catch (IOException exception) {
@@ -77,14 +84,19 @@ final class DurableTaskStore {
             throw exception;
         }
         watchCompletion(record, process);
-        startOutputGuard(record, maxOutputBytes);
+        startOutputGuard(record, maxOutputBytes, budget);
         return new Started(process, record);
     }
 
     /** Start a size guard for a recovered process as well as a new process. */
     void guard(Record record, long maxOutputBytes) {
+        guard(record, maxOutputBytes, null);
+    }
+
+    /** Start a size and Agent-wide aggregate guard for a recovered process. */
+    void guard(Record record, long maxOutputBytes, AgentResourceBudget budget) {
         if (record == null || maxOutputBytes < 1) return;
-        startOutputGuard(record, maxOutputBytes);
+        startOutputGuard(record, maxOutputBytes, budget);
     }
 
     /**
@@ -139,19 +151,20 @@ final class DurableTaskStore {
         });
     }
 
-    private void startOutputGuard(Record record, long maxOutputBytes) {
+    private void startOutputGuard(Record record, long maxOutputBytes, AgentResourceBudget budget) {
         if (record == null || !guardedTasks.add(record.taskId())) return;
         Thread.startVirtualThread(() -> {
             WatchService watcher = null;
             try {
                 var output = Path.of(record.outputPath()).toAbsolutePath().normalize();
+                if (checkOutputLimit(output, record, maxOutputBytes, budget)) return;
                 watcher = openWatcher(output);
                 if (watcher == null) {
                     // Filesystems without a WatchService still get a final
                     // size check when the process exits; no fixed timer is
                     // introduced just for this optional safety guard.
                     var process = ProcessHandle.of(record.pid()).orElse(null);
-                    if (process != null) process.onExit().thenRun(() -> checkOutputLimit(output, record, maxOutputBytes));
+                    if (process != null) process.onExit().thenRun(() -> checkOutputLimit(output, record, maxOutputBytes, budget));
                     return;
                 }
                 var key = watcher;
@@ -173,7 +186,7 @@ final class DurableTaskStore {
                         if (context instanceof Path path && path.getFileName().equals(output.getFileName())) relevant = true;
                     }
                     if (!changed.reset()) return;
-                    if (relevant && checkOutputLimit(output, record, maxOutputBytes)) return;
+                    if (relevant && checkOutputLimit(output, record, maxOutputBytes, budget)) return;
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -188,11 +201,32 @@ final class DurableTaskStore {
         });
     }
 
-    private static boolean checkOutputLimit(Path output, Record record, long maxOutputBytes) {
+    private boolean checkOutputLimit(Path output, Record record, long maxOutputBytes, AgentResourceBudget budget) {
         try {
-            if (Files.isRegularFile(output) && Files.size(output) > maxOutputBytes) {
+            if (!Files.isRegularFile(output)) return false;
+            var size = Files.size(output);
+            if (size > maxOutputBytes) {
+                guardErrors.put(record.taskId(), "durable command output exceeded " + maxOutputBytes + " bytes");
                 ProcessHandle.of(record.pid()).ifPresent(DurableTaskStore::terminateTree);
                 return true;
+            }
+            if (budget != null) {
+                var reservation = outputReservations.get(record.taskId());
+                var reserved = reservation == null ? 0L : reservation.bytes();
+                if (size > reserved) {
+                    var delta = size - reserved;
+                    var granted = budget.tryReserve(delta);
+                    if (granted < delta) {
+                        if (granted > 0) budget.release(granted);
+                        guardErrors.put(record.taskId(), "durable command aggregate output budget exceeded " + budget.maxBytes() + " bytes");
+                        ProcessHandle.of(record.pid()).ifPresent(DurableTaskStore::terminateTree);
+                        return true;
+                    }
+                    outputReservations.put(record.taskId(), new Reservation(budget, size));
+                } else if (size < reserved && reservation != null) {
+                    reservation.release(reserved - size);
+                    outputReservations.put(record.taskId(), new Reservation(budget, size));
+                }
             }
         } catch (Exception ignored) {
             // The runner/next startup reports missing or corrupt state.
@@ -250,7 +284,7 @@ final class DurableTaskStore {
 
     void markCompleted(Record record, int exitCode, String error) throws IOException {
         var completed = new Record(record.taskId(), record.pid(), record.command(), record.cwd(),
-                record.startedAt(), record.outputPath(), record.recordPath(), true, exitCode, error);
+                record.startedAt(), record.outputPath(), record.recordPath(), true, exitCode, error, record.contract(), record.attempt());
         write(Path.of(record.recordPath()), completed);
         completionSignals.computeIfAbsent(record.taskId(), ignored -> new CompletableFuture<>()).complete(completed);
     }
@@ -259,6 +293,9 @@ final class DurableTaskStore {
         watchedTasks.remove(record.taskId());
         guardedTasks.remove(record.taskId());
         completionSignals.remove(record.taskId());
+        var reservation = outputReservations.remove(record.taskId());
+        if (reservation != null) reservation.release();
+        guardErrors.remove(record.taskId());
         deleteEventually(Path.of(record.outputPath()));
         deleteEventually(Path.of(record.recordPath()));
     }
@@ -349,14 +386,41 @@ final class DurableTaskStore {
         }
     }
 
+    private record Reservation(AgentResourceBudget budget, long bytes) {
+        private void release() {
+            budget.release(bytes);
+        }
+
+        private void release(long amount) {
+            budget.release(amount);
+        }
+    }
+
     record Started(Process process, Record record) {
     }
 
     record Record(String taskId, long pid, String command, String cwd, Instant startedAt, String outputPath,
-                  String recordPath, boolean completed, Integer exitCode, String error) {
+                  String recordPath, boolean completed, Integer exitCode, String error, ExecutionContract contract,
+                  int attempt) {
+        /** Compatibility constructor for durable records written before contracts. */
+        Record(String taskId, long pid, String command, String cwd, Instant startedAt, String outputPath,
+               String recordPath, boolean completed, Integer exitCode, String error) {
+            this(taskId, pid, command, cwd, startedAt, outputPath, recordPath, completed, exitCode, error, null, 0);
+        }
+
+        /** Compatibility constructor for records that persisted a contract but no attempt. */
+        Record(String taskId, long pid, String command, String cwd, Instant startedAt, String outputPath,
+               String recordPath, boolean completed, Integer exitCode, String error, ExecutionContract contract) {
+            this(taskId, pid, command, cwd, startedAt, outputPath, recordPath, completed, exitCode, error, contract, 0);
+        }
+
         TaskCommand taskCommand() {
             return new TaskCommand(taskId, com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND, "command",
-                    command, cwd, java.util.Map.of(), 0, null, startedAt == null ? Instant.EPOCH : startedAt);
+                    command, cwd, java.util.Map.of(), 0, null, startedAt == null ? Instant.EPOCH : startedAt, contract, attempt);
         }
+    }
+
+    String guardError(String taskId) {
+        return taskId == null ? null : guardErrors.get(taskId);
     }
 }

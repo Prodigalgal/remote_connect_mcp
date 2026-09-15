@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: remote-connect-mcp-java-artifacts
+  namespace: remote-connect-mcp
+  labels:
+    app.kubernetes.io/name: remote-connect-mcp-java-artifacts
+    app.kubernetes.io/part-of: remote-connect-mcp
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

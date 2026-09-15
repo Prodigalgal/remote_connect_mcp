@@ -1,6 +1,6 @@
 # RCM 异步执行契约
 
-RCM 的“异步”是端到端契约，不只是把命令丢到一个线程池：请求、排队、派发、执行、输出上传和状态收口都有独立生命周期。任何一次 HTTP 超时或客户端重试都不能隐式再执行一遍命令。
+RCM 的“异步”是端到端契约，不只是把命令丢到一个线程池：请求、排队、派发、执行、输出上传和状态收口都有独立生命周期。任何一次 HTTP 超时或客户端重试都不能隐式再执行一遍命令。产品目标和非目标见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)。
 
 ## 心跳配置热更新
 
@@ -12,9 +12,17 @@ Agent 的 `/agent/v1/poll` 响应可以携带可选 `config` 对象：
 
 `generation` 由 Center 单调递增，Agent 只接受更高版本，并把不含密钥的配置
 原子写入 `STATE_DIR/runtime-config.json`；当前进程立即使用新的心跳间隔和并发槽位，
-重启后继续沿用最后一次成功配置。输出上限、工作区范围和 Token 仍是启动时配置，
+重启后继续沿用最后一次成功配置。输出上限、Agent 工作区范围和 Token 仍是启动时配置，
 不会通过热更新绕过本机安全边界。管理端接口为
 `GET/PUT /api/v1/admin/machines/{machineId}/config`。
+
+每个新任务还携带 Center 签发的 execution contract，其中包含 machine/host 身份、project/worktree/path
+范围、所需能力、预算、过期时间、风险和幂等意图。Agent 在真正启动子进程前再次校验该合同；合同缺失、过期、
+身份不匹配或范围扩大时直接 fail-closed。合同预算只能收紧 Agent 启动时的输出、工件和操作时长上限，
+不会通过任务请求放大宿主机资源额度；Center 会把请求预算进一步收窄到最近一次 Agent runtime
+descriptor 宣告的输出、子进程、CPU/RSS 和时长上限。runtime descriptor 使用版本号，当前只接受
+schema 1；旧 Agent 缺少该字段时按有界默认值处理，未来 schema 在 Center 明确支持前会返回兼容性错误，
+不会猜测新字段的语义。
 
 ## 调用方语义
 
@@ -35,6 +43,7 @@ Agent 的 `/agent/v1/poll` 响应可以携带可选 `config` 对象：
 - Agent/Admin Servlet 控制器返回 `CompletableFuture<ResponseEntity<?>>`。JDBC 是阻塞集成，但只运行在 Center 虚拟线程，不占住 Tomcat 容器载体线程。
 - PostgreSQL 写入以单事务完成状态、租约、游标和工件更新；数据库断线不会创建第二个任务。任务创建/取消/状态变更会 best-effort 发布 `pg_notify`：一条通道唤醒其他 Center 副本上的 Agent，另一条通道唤醒 `task_wait`。高频输出/工件增量使用带任务摘要的 task-local 通知，跨副本也只唤醒等待同一任务的请求，不把每个 chunk 广播到所有 Admin/Agent；通知丢失时由长轮询截止时间和下一次显式读取补偿，不启动固定查询循环。
 - `queued -> dispatching` 使用租约和 `SKIP LOCKED`；新任务、取消和升级会按机器发送唤醒提示，租约过期后由下一次正常派发请求按机器范围修复：无超时任务重新排队并允许原 Agent 带任务 ID 恢复，定时任务转为明确失败。修复产生的任务 ID 在事务提交后精准唤醒 `task_wait`，不运行 Center 侧定时扫描。
+- Center 每次派发都会递增并把 `attempt` 放入任务响应；新 Java Agent 在状态、输出和工件请求中携带 `X-Task-Attempt`，Center 对已回收的旧 attempt fail-closed。旧 Go/协议客户端省略该标头时仅保留首次派发兼容路径；任务发生重新租约后，缺少 attempt 的迟到写入也会被拒绝。
 
 ## Agent
 
@@ -46,12 +55,12 @@ Agent 的 `/agent/v1/poll` 响应可以携带可选 `config` 对象：
 
 ## 前端
 
-React 控制台只请求分页摘要；Admin Token 仅保存在内存。验证 Token 后挂起一个 Admin 事件长连接，只有收到变更才重新读取分页摘要；传输故障才使用带退避的重连，AbortController 在请求截止时取消失联请求。旧 Go 控制台也使用同一类 `/api/v1/events` 长连接。
+React 控制台只请求分页摘要；Admin API 同时返回 `offset`、`limit`、`total` 和 `has_more`，列表不会因为机器或任务数量增长而一次性加载无界数据。Admin Token 仅保存在内存。验证 Token 后挂起一个 Admin 事件长连接，只有收到变更才重新读取分页摘要；传输故障才使用带退避的重连，AbortController 在请求截止时取消失联请求。旧 Go 控制台也使用同一类 `/api/v1/events` 长连接。
 
 ## 无稳态轮询门禁
 
-- Agent 空闲时保持一次有界 HTTPS 长轮询；任务、取消、配置和升级事件通过条件变量、WebSocket 唤醒或 PostgreSQL `LISTEN/NOTIFY` 返回，不使用固定间隔请求。
-- Center 的 PostgreSQL 监听使用 `PGConnection.getNotifications(0)` 阻塞在数据库 socket；无参的非阻塞 API 不得用于监听循环。
+- Agent 空闲时保持一次有界 HTTPS 长轮询；任务、取消、配置和升级事件通过条件变量、带单调序列号的 WebSocket 唤醒或 PostgreSQL `LISTEN/NOTIFY` 返回，不使用固定间隔请求。Agent 对旧版无序列号提示以及重复/乱序提示保持兼容并去重。
+- Center 的 PostgreSQL 监听使用带正超时的 `PGConnection.getNotifications(30000)` 阻塞在数据库 socket；无参或零超时的非阻塞 API 不得用于监听循环。通知会立即返回，30 秒超时只用于连接存活检查。
 - 进程输出/完成由 `fsnotify`、`WatchService`、`ProcessHandle.onExit`、Linux pidfd 或 Windows 进程句柄驱动；不通过固定间隔读取文件或探测 PID。
 - 定时器仅允许用于请求截止时间、网络失败指数退避、关闭/终止宽限期和桌面拖拽动画。旧协议兼容、极旧内核/ACL 不具备事件能力时的低频回退必须保持显式、受界且不成为默认路径。
 - `scripts/check-event-driven.sh` 在 Go/Java/React 生产路径上执行静态回归门禁：禁止固定间隔调度器和 pgjdbc 非阻塞通知 API；唯一允许的 `5s` ticker 是旧 Linux 内核/Windows ACL 无法取得进程等待句柄时的显式兼容回退。任何新增例外都必须先更新契约和门禁说明。

@@ -1,6 +1,8 @@
 # Remote Connect MCP 技术选型
 
-本文记录 RCM 的 Java 25/React 迁移实现与生产选型。Java/React 代码已进入本仓库；当前生产流量仍由 Go 基线承载。所有构建和验证统一由 GitHub Actions 执行，Native Image、数据库、路由和切换门禁全部通过前不会宣称 Java/React 已上线。
+需求上游基线：[`docs/REQUIREMENTS.md`](REQUIREMENTS.md)。本文只记录为满足该基线所选择的技术和运行时边界，不把技术选型本身当作产品需求。
+
+本文记录 RCM 的 Java 25/React 迁移实现与生产选型。Java/React 代码已进入生产路径，Go 仅作为离线节点的兼容/回滚基线保留。所有构建和验证统一由 GitHub Actions 执行；Native Image、数据库、路由和切换事实以发布验收和生产探针为准。
 
 ## 1. 目标和边界
 
@@ -19,10 +21,10 @@
 
 - 已建立 `java/` Gradle 多模块实现：`protocol`、`center`、`agent`、`desktop`、`browser`；后三个 Agent 目标分别产出 command-agent、desktop-companion、browser-agent Native Image；协议记录、边界校验、异步 MCP、健康/版本探针和注册/长轮询兼容接口均可测试，并已锁定 Liquibase/PostgreSQL 依赖；
 - Center 注册表与任务队列已支持内存和 PostgreSQL 两种适配路径：`postgres` 模式通过独立 Liquibase changelog 管理 Agent、任务、输出游标和有界工件；一个进程只选择其中一种，生产只允许 PostgreSQL，内存适配器仅用于协议回归和开发。
-- Java command-agent 已有可执行自包含 JAR、原子身份文件、一次性注册换取日常 Token、断线指数退避、401 自动重新注册、虚拟线程命令执行、有界磁盘 spool/异步上传与无超时进程恢复、用户会话 Desktop IPC 客户端和 Browser Agent 监管；desktop/browser 目标分别隔离 AWT 和浏览器适配器生命周期；
+- Java command-agent 已有可执行自包含 JAR、原子身份文件、一次性注册换取日常 Token、断线指数退避、401 自动重新注册、虚拟线程命令执行、有界磁盘 spool/异步上传与无超时进程恢复、用户会话 Desktop IPC 客户端和 Browser Agent 监管；desktop/browser 目标分别隔离 AWT 和浏览器适配器生命周期；同一 Agent 内的 command/desktop/browser 任务共享有界进程总预算，避免提高并发或桌面遗留进程后无界堆积；
 - 已建立 `web/` React/Vite 控制台并接入 Admin API 的机器/任务分页读取、取消和真实升级活动，Admin Token 只驻留当前 React 内存；
-- Java Center/Agent v0.1.15 已替换生产 Center，并已完成首批云上 Agent 迁移；Go Center 已缩容为 0，Go Agent 仅作为兼容/回滚基线保留。Java 已实现注册、心跳、异步任务、工件、项目/worktree 和 Center 控制的升级编排；升级活动在 PostgreSQL 模式通过 Liquibase `005-upgrades`、`006-agent-config` 和 `007-projects-worktrees` 持久化，`008-agent-name-unique` 约束并发注册的同名身份；Agent 侧普通任务输出还受单任务与聚合 spool 双重上限保护；
-- Agent 配置已支持带 generation 的长轮询等待时间、兼容退避间隔和并发槽位热更新；配置原子写入状态目录，输出上限、Token 和工作区边界仍保持启动时约束；
+- Java Center/Agent v0.1.21 已替换生产 Center，四台在线 Oracle Agent 已完成迁移；Go Center 已缩容为 0，Go Agent 仅作为离线节点的兼容/回滚基线保留。Java 已实现注册、心跳、异步任务、工件、项目/worktree 和 Center 控制的升级编排；升级活动在 PostgreSQL 模式通过 Liquibase `005-upgrades`、`006-agent-config` 和 `007-projects-worktrees` 持久化，`008-agent-name-unique` 约束并发注册的同名身份；Agent 侧普通任务输出还受单任务与聚合 spool 双重上限保护；
+- Agent 配置已支持带 generation 的长轮询等待时间、兼容退避间隔和并发槽位热更新；心跳 runtime descriptor 同时公布单任务与 Agent 级总进程预算，旧 descriptor 缺失新增字段时按有界默认值兼容；配置原子写入状态目录，输出上限、Token 和工作区边界仍保持启动时约束；
 - JVM 测试、Center/Agent JAR 构建、React 生产构建，以及 Linux amd64/arm64、Windows amd64 的 Center/Agent/desktop/browser Native Image 和 MCP 烟测已由 GitHub Actions `34795775084` 重新验证；当前不在开发机执行构建或测试。正式 tag 的签名、Release 资产和目标机安装/升级回归仍由发布门禁负责。
 
 ## 2. 选型总表
@@ -35,7 +37,7 @@
 | Center 数据访问 | Spring JDBC `JdbcClient` + 明确 SQL | 队列、租约、幂等、CAS 更新都需要可见 SQL 和事务边界；避免 ORM 隐式行为 | JPA/Hibernate 作为核心队列存储 |
 | Center 数据库 | PostgreSQL（版本锁定在部署清单） | 事务、行锁、JSONB、LISTEN/NOTIFY 和运维工具成熟 | 生产继续依赖单个 JSON/PVC 文件 |
 | 数据迁移 | Liquibase | 版本化 changelog、上下文/前置条件、SQL 预览和回滚审计完整 | 启动时无条件自动改表 |
-| 工件存储 | S3 兼容对象存储；本地文件仅开发 | 图片、日志、升级包可独立生命周期和校验 | 将大工件塞进任务 JSON |
+| 工件存储 | `ArtifactStore` 抽象；当前生产实现为独立持久卷上的原子文件对象，S3 兼容适配器保留扩展位 | 图片、日志、升级包与 PostgreSQL 元数据分离，按 key、大小和 SHA-256 校验 | 将大工件塞进任务 JSON 或 PostgreSQL `BYTEA` |
 | Agent 语言 | Java 25 模块化 JDK 应用 | 不带 Spring，原生镜像小、启动快、跨平台边界清晰 | Agent 引入完整 Spring 容器 |
 | Agent 通道 | JDK `HttpClient` 25 秒长轮询 + 原始 WebSocket 唤醒；旧端退避回退 | 无额外网络栈依赖，HTTPS/TLS 和断线重试可控，健康路径不刷固定请求 | 首版直接绑定 QUIC |
 
@@ -78,7 +80,8 @@ MCP 层使用官方 Java SDK 的 Streamable HTTP 传输，固定挂载 `/mcp`。
 - 任务创建、幂等键、租约领取、Attempt、状态机和输出游标全部由 PostgreSQL 事务保证；
 - 使用 `SELECT ... FOR UPDATE SKIP LOCKED` 或等价 CAS 语句实现多 Agent 领取，Center 副本增加前不引入额外消息队列；
 - `LISTEN/NOTIFY` 只作为唤醒提示，不能替代数据库状态，断线后仍能靠版本/游标补偿；
-- 输出、截图、升级包使用对象存储 key + SHA-256 + 大小 + MIME 元数据，数据库不保存大块 Base64；
+- 输出、截图、升级包使用对象存储 key + SHA-256 + 大小 + MIME 元数据；当前 Center 通过独立持久卷文件对象落盘，数据库不再写入新的大块 `BYTEA`，旧 `artifact_data` 只作为迁移兼容列；
+- `RCM_CENTER_ARTIFACT_STORE=filesystem` 时使用同一 PVC/专用数据卷，写入采用临时文件加原子替换，读取再次校验大小与 SHA-256；`RCM_CENTER_ARTIFACT_STORE=http` 时通过 HTTPS 内部对象网关读写同一套 opaque key，网关 Token 只经 Secret/env 注入；任一后端接入 `ArtifactStore` 后都不改变任务或 Agent 协议；
 - Liquibase changelog 使用 Git 管理的 master YAML + 版本化 YAML/SQL 变更集，必须可回放、可 `update-sql` dry-run，并为 PostgreSQL 集成测试提供 Testcontainers 夹具；
 - 生产由独立 Kubernetes migration Job 执行 `validate/update`，应用只校验已安装的 schema 版本；禁止多个 Center Pod 同时在启动阶段抢迁移锁；
 - 每个变更集设置唯一 `id/author`、`labels/contexts` 和必要的 preconditions，危险 DDL 先在影子数据库执行 rollback 演练；
@@ -102,7 +105,7 @@ Center 或显式禁用时才退避回退。当前已加入只传递 wake 提示�
 
 ### 3.4 可观测性
 
-指标只记录计数、延迟、连接、任务状态、版本和错误类别；命令、路径、环境变量、Token、Cookie、截图内容不进指标标签。日志使用 JSON，默认脱敏；审计记录 actor、machine/agent ID、task ID、结果和时间线，命令正文按策略摘要化。
+指标只记录计数、延迟、连接、任务状态、版本和错误类别；命令、路径、环境变量、Token、Cookie、截图内容不进指标标签。日志使用 JSON，默认脱敏；审计记录 actor（例如 `mcp`、`console`、`agent`）、machine/agent ID、task ID、结果和时间线，命令正文按策略摘要化。
 
 ## 4. Agent 详细设计
 
@@ -247,8 +250,8 @@ Cookie 或显式短期会话，不把 Admin Token 放在 localStorage，也不�
 ### 阶段 C：控制台和传输
 
 1. React 控制台先只读接入，再接入任务、令牌、升级和审计写操作；
-2. WebSocket wake-only 已在原生 Windows Center 上验证连接、ping/pong、任务 wake 和 HTTPS 回退；下一步在真实反向代理/多副本环境验证断线、重连、序列号和幂等；
-3. QUIC 只在有真实网络收益和可维护实现时加入，不改变任何 MCP 工具和任务模型。
+2. WebSocket wake-only 已在原生 Windows Center 上验证连接、ping/pong、任务 wake 和 HTTPS 回退；当前只要求单 Center 生产路径继续完成断线、重连、序列号和幂等验收；
+3. QUIC 先使用 `docs/TRANSPORT.md` 中的一次性基准和显式回退，只有真实收益和可维护 provider 均成立时才加入，不改变任何 MCP 工具和任务模型。
 
 ### 发布闸门
 

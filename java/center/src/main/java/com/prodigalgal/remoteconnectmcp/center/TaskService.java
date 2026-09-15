@@ -10,7 +10,9 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
+import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
 import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicy;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -41,8 +43,12 @@ import org.springframework.stereotype.Service;
 @Service
 public final class TaskService {
     public static final int MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+    private static final long MAX_ARTIFACT_BYTES = 8L * 1024 * 1024;
+    private static final int MAX_CHILD_PROCESSES = 32;
+    static final int MAX_OUTPUT_CHUNK_BYTES = 256 * 1024;
     public static final int MAX_OUTPUT_PAGE = 64 * 1024;
     static final Duration LEASE_DURATION = Duration.ofMinutes(2);
+    static final Duration DEFAULT_CONTRACT_LIFETIME = Duration.ofDays(30);
     private final AgentRegistry agents;
     private final Map<String, TaskState> tasks = new ConcurrentHashMap<>();
     private final Map<String, String> idempotency = new ConcurrentHashMap<>();
@@ -52,17 +58,23 @@ public final class TaskService {
     private final JdbcTaskStore jdbcStore;
     private final AgentWakeRegistry wakes;
     private final TaskChangeRegistry taskChanges;
+    private final AuditService audit;
 
     @Autowired
     public TaskService(AgentRegistry agents, ObjectProvider<JdbcTemplate> jdbcProvider,
                        ObjectProvider<TransactionTemplate> transactionProvider,
                        ObjectProvider<AgentWakeRegistry> wakeProvider,
-                       ObjectProvider<TaskChangeRegistry> taskChangeProvider) {
+                       ObjectProvider<TaskChangeRegistry> taskChangeProvider,
+                       ObjectProvider<ArtifactStore> artifactProvider,
+                       ObjectProvider<AuditService> auditProvider) {
         this.agents = agents;
         var jdbc = jdbcProvider.getIfAvailable();
-        this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactionProvider.getIfAvailable());
+        var artifactStore = artifactProvider.getIfAvailable();
+        this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactionProvider.getIfAvailable(),
+                artifactStore == null ? new InMemoryArtifactStore() : artifactStore);
         this.wakes = wakeProvider.getIfAvailable();
         this.taskChanges = taskChangeProvider.getIfAvailable();
+        this.audit = auditProvider == null ? null : auditProvider.getIfAvailable();
     }
 
     TaskService(AgentRegistry agents) {
@@ -70,24 +82,37 @@ public final class TaskService {
         this.jdbcStore = null;
         this.wakes = null;
         this.taskChanges = null;
+        this.audit = null;
     }
 
     /** Package-private constructor used by the PostgreSQL contract tests. */
     TaskService(AgentRegistry agents, JdbcTemplate jdbc, TransactionTemplate transactions) {
         this.agents = agents;
-        this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactions);
+        this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactions, new InMemoryArtifactStore());
         this.wakes = null;
         this.taskChanges = null;
+        this.audit = null;
     }
 
+    /**
+     * Enqueue a task using the legacy/admin audit source.  Callers that know
+     * the request channel should use {@link #create(CreateTaskRequest, String)}
+     * so the audit timeline can distinguish MCP/model requests from console
+     * actions without storing command text or credentials.
+     */
     public TaskView create(CreateTaskRequest request) {
+        return create(request, "admin");
+    }
+
+    /** Enqueue a task and retain only a bounded, normalized audit source. */
+    public TaskView create(CreateTaskRequest request, String auditActor) {
+        var actor = normalizeAuditActor(auditActor);
         if (request == null || request.machineId().isBlank()) {
             throw new IllegalArgumentException("machineId is required");
         }
         var machine = agents.findMachine(request.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
         var original = request.command();
         var kind = original.kind() == null ? TaskKind.COMMAND : original.kind();
-        validateWorkspace(machine, original);
         var capability = requiredCapability(original, kind);
         if (!machine.capabilities().contains(capability)) {
             throw new IllegalArgumentException("machine does not advertise capability: " + capability);
@@ -98,14 +123,28 @@ public final class TaskService {
         if (request.idempotencyKey().length() > 256) {
             throw new IllegalArgumentException("idempotencyKey is too long");
         }
+        // Environment values are persisted in the task command so a durable
+        // Agent can receive them after a Center restart.  Never let a caller
+        // put a credential-shaped value into that durable record: the Agent
+        // also strips these names before spawning a child, so dropping them at
+        // the Center boundary preserves execution semantics while preventing
+        // accidental token/password persistence or MCP echoing.
+        var safeEnvironment = sanitizeEnvironment(original.env());
+        original = new TaskCommand(original.id(), original.kind(), original.requiredCapability(), original.command(),
+                original.cwd(), safeEnvironment, original.timeoutSeconds(), original.desktop(), original.createdAt(),
+                original.contract(), original.attempt());
         var id = "task_" + UUID.randomUUID().toString().replace("-", "");
-        var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), Instant.now());
+        var createdAt = Instant.now();
+        var contract = buildContract(request, machine, original, capability, id, createdAt);
+        var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), createdAt, contract);
         ProtocolValidation.validateTask(command);
 
         if (jdbcStore != null) {
             var created = jdbcStore.create(id, request.machineId(), command, request.idempotencyKey(), command.createdAt());
             signalChanged(id);
             signalWake(request.machineId());
+            audit("task.created", actor, request.machineId(), created.id(), command, "accepted",
+                    "attempt=0,elevation=" + command.contract().elevationRequired());
             return created;
         }
 
@@ -128,6 +167,8 @@ public final class TaskService {
             signalChanged();
             var created = new TaskView(state);
             signalWake(request.machineId());
+            audit("task.created", actor, request.machineId(), created.id(), command, "accepted",
+                    "attempt=0,elevation=" + command.contract().elevationRequired());
             return created;
         } finally {
             lock.unlock();
@@ -168,6 +209,37 @@ public final class TaskService {
         return all.subList(offset, Math.min(all.size(), offset + limit)).stream().map(TaskView::new).toList();
     }
 
+    private static String normalizeAuditActor(String value) {
+        if (value == null || value.isBlank()) return "system";
+        var normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+        if (normalized.length() > 32 || !normalized.matches("[a-z0-9][a-z0-9._:-]*")) {
+            return "system";
+        }
+        return normalized;
+    }
+
+    /**
+     * Project lifecycle guard.  Deleting a project while one of its tasks is
+     * still queued/running would leave an execution contract pointing at a
+     * removed identity.  Keep the query metadata-only so large output blobs
+     * are never loaded just to decide whether deletion is safe.
+     */
+    boolean hasActiveProjectTasks(String projectId) {
+        if (projectId == null || projectId.isBlank()) return false;
+        var normalized = projectId.trim();
+        if (jdbcStore != null) return jdbcStore.hasActiveProjectTasks(normalized);
+        lock.lock();
+        try {
+            return tasks.values().stream().anyMatch(task -> {
+                var contract = task.command().contract();
+                return contract != null && normalized.equals(contract.projectId())
+                        && !TaskStatus.terminal(task.status());
+            });
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /** Return status counters only; never materialize commands or output. */
     public Map<String, Long> statusCounts() {
         if (jdbcStore != null) return jdbcStore.taskStatusCounts();
@@ -192,11 +264,79 @@ public final class TaskService {
         }
     }
 
+    /**
+     * Return a bounded, low-cardinality task SLO projection.  The projection
+     * is calculated on demand for a metrics scrape; it never loads command
+     * text, environment values, output or artifact bytes.  PostgreSQL remains
+     * the sole source of truth when the JDBC adapter is active.
+     */
+    public TaskSloMetrics sloMetrics(Instant now) {
+        var reference = now == null ? Instant.now() : now;
+        if (jdbcStore != null) return jdbcStore.sloMetrics(reference);
+        lock.lock();
+        try {
+            var queued = 0L;
+            var active = 0L;
+            var terminal = 0L;
+            var completed = 0L;
+            var failed = 0L;
+            var canceled = 0L;
+            var expiredLeases = 0L;
+            var oldestQueued = 0L;
+            for (var task : tasks.values()) {
+                switch (task.status()) {
+                    case TaskStatus.QUEUED -> {
+                        queued++;
+                        oldestQueued = Math.max(oldestQueued, ageSeconds(reference, task.createdAt()));
+                    }
+                    case TaskStatus.DISPATCHING, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED -> {
+                        active++;
+                        if (task.leaseUntil() != null && !reference.isBefore(task.leaseUntil())) expiredLeases++;
+                    }
+                    case TaskStatus.COMPLETED -> {
+                        terminal++;
+                        completed++;
+                    }
+                    case TaskStatus.FAILED -> {
+                        terminal++;
+                        failed++;
+                    }
+                    case TaskStatus.CANCELED -> {
+                        terminal++;
+                        canceled++;
+                    }
+                    default -> {
+                        // Unknown legacy states are intentionally excluded
+                        // from SLO ratios rather than guessed.
+                    }
+                }
+            }
+            var artifacts = tasks.values().stream().mapToLong(TaskState::artifactBytes).sum();
+            return new TaskSloMetrics(queued, active, terminal, completed, failed, canceled,
+                    oldestQueued, expiredLeases, tasks.values().stream().mapToLong(TaskState::outputBytes).sum(),
+                    tasks.values().stream().filter(value -> value.artifactBytes() > 0).count(), artifacts);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private static long ageSeconds(Instant now, Instant createdAt) {
+        if (createdAt == null || now == null || now.isBefore(createdAt)) return 0L;
+        return Math.max(0L, Duration.between(createdAt, now).toSeconds());
+    }
+
+    /** Low-cardinality task and artifact values used by the metrics endpoint. */
+    public record TaskSloMetrics(long queued, long active, long terminal, long completed, long failed,
+                                 long canceled, long oldestQueuedAgeSeconds, long expiredLeases,
+                                 long outputBytes, long artifactObjects, long artifactBytes) {
+    }
+
     public TaskView cancel(String taskId) {
         if (jdbcStore != null) {
             var view = jdbcStore.cancel(taskId);
             signalChanged(taskId);
             signalWake(view.machineId());
+            audit("task.cancel", "admin", view.machineId(), view, view.status(), null);
             return view;
         }
         lock.lock();
@@ -213,6 +353,7 @@ public final class TaskService {
             signalChanged();
             var view = new TaskView(task);
             signalWake(view.machineId());
+            audit("task.cancel", "admin", view.machineId(), view.id(), task.command(), view.status(), null);
             return view;
         } finally {
             lock.unlock();
@@ -262,7 +403,10 @@ public final class TaskService {
                     selected.attempt(selected.attempt() + 1);
                     selected.dispatchedAt(now);
                     selected.leaseUntil(now.plus(LEASE_DURATION));
-                    task = selected.command();
+                    // Carry the monotonically increasing lease attempt on the
+                    // wire. Agent state/output delivery can then be fenced if
+                    // a stale process wakes after its lease was reclaimed.
+                    task = selected.command().withAttempt(selected.attempt());
                     signalChanged();
                 }
             }
@@ -273,18 +417,31 @@ public final class TaskService {
     }
 
     public TaskView updateState(String machineId, String taskId, TaskUpdateRequest update) {
+        return updateState(machineId, taskId, update, null);
+    }
+
+    /**
+     * Apply a state update with an optional dispatch-attempt fence. A zero or
+     * absent attempt preserves first-dispatch compatibility with older Go
+     * Agents; after a lease retry the Center requires the fence so a stale
+     * process cannot complete or append output to a reissued task.
+     */
+    public TaskView updateState(String machineId, String taskId, TaskUpdateRequest update, Integer attempt) {
         if (update == null || update.status() == null || update.status().isBlank()) {
             throw new IllegalArgumentException("status is required");
         }
         if (jdbcStore != null) {
-            var view = jdbcStore.updateState(machineId, taskId, update);
+            var view = jdbcStore.updateState(machineId, taskId, update, attempt);
             signalChanged(taskId);
+            audit("task.state", "agent", machineId, view, view.status(),
+                    "attempt=" + (attempt == null ? "legacy" : attempt));
             return view;
         }
         lock.lock();
         try {
             var task = required(taskId);
             assertMachine(task, machineId);
+            assertAttempt(task, attempt);
             var status = update.status().trim().toLowerCase();
             if (!validStatus(status)) {
                 throw new IllegalArgumentException("unsupported task status: " + status);
@@ -314,6 +471,8 @@ public final class TaskService {
                 task.leaseUntil(null);
             }
             signalChanged();
+            audit("task.state", "agent", machineId, taskId, task.command(), task.status(),
+                    "attempt=" + (attempt == null ? "legacy" : attempt));
             return new TaskView(task);
         } finally {
             lock.unlock();
@@ -321,11 +480,16 @@ public final class TaskService {
     }
 
     public OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data) {
-        if (offset < 0 || data == null) {
-            throw new IllegalArgumentException("offset and data are required");
+        return appendOutput(machineId, taskId, offset, data, null);
+    }
+
+    /** Append output while fencing a stale dispatch attempt when supplied. */
+    public OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data, Integer attempt) {
+        if (offset < 0 || data == null || data.length > MAX_OUTPUT_CHUNK_BYTES) {
+            throw new IllegalArgumentException("offset and data are required; output chunks are limited to 256 KiB");
         }
         if (jdbcStore != null) {
-            var response = jdbcStore.appendOutput(machineId, taskId, offset, data);
+            var response = jdbcStore.appendOutput(machineId, taskId, offset, data, attempt);
             signalOutputChanged(taskId);
             return response;
         }
@@ -333,6 +497,7 @@ public final class TaskService {
         try {
             var task = required(taskId);
             assertMachine(task, machineId);
+            assertAttempt(task, attempt);
             var current = task.output().toByteArray();
             if (offset > current.length) {
                 throw new IllegalArgumentException("output offset is ahead of the confirmed cursor");
@@ -344,8 +509,9 @@ public final class TaskService {
                 }
             }
             var appendFrom = overlap;
-            var remaining = Math.max(0, MAX_OUTPUT_BYTES - current.length);
-            var appendLength = Math.min(data.length - appendFrom, remaining);
+            var maxOutputBytes = outputLimit(task);
+            var remaining = Math.max(0L, maxOutputBytes - current.length);
+            var appendLength = (int) Math.min((long) data.length - appendFrom, remaining);
             if (appendLength > 0) {
                 task.output().write(data, appendFrom, appendLength);
             }
@@ -389,26 +555,38 @@ public final class TaskService {
     }
 
     public ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256, byte[] data) {
+        return appendArtifact(machineId, taskId, mimeType, sha256, data, null);
+    }
+
+    /** Append an artifact while fencing a stale dispatch attempt when supplied. */
+    public ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256,
+                                           byte[] data, Integer attempt) {
         var normalizedMime = normalizeMimeType(mimeType);
         if (data == null || data.length == 0) {
             throw new IllegalArgumentException("artifact mimeType and data are required");
         }
-        if (data.length > 8 * 1024 * 1024) {
-            throw new IllegalArgumentException("artifact exceeds 8388608 bytes");
+        if (data.length > MAX_ARTIFACT_BYTES) {
+            throw new IllegalArgumentException("artifact exceeds " + MAX_ARTIFACT_BYTES + " bytes");
         }
         var digest = sha256(data);
         if (sha256 == null || !digest.equalsIgnoreCase(sha256.trim())) {
             throw new IllegalArgumentException("artifact sha256 does not match data");
         }
         if (jdbcStore != null) {
-            var response = jdbcStore.appendArtifact(machineId, taskId, normalizedMime, digest, data);
+            var response = jdbcStore.appendArtifact(machineId, taskId, normalizedMime, digest, data, attempt);
             signalOutputChanged(taskId);
+            find(taskId).map(TaskView::new).ifPresent(view -> audit("task.artifact", "agent", machineId, view,
+                    "accepted", "bytes=" + data.length + ",sha256=" + digest));
             return response;
         }
         lock.lock();
         try {
             var task = required(taskId);
             assertMachine(task, machineId);
+            assertAttempt(task, attempt);
+            if (data.length > artifactLimit(task)) {
+                throw new IllegalArgumentException("artifact exceeds the execution contract limit of " + artifactLimit(task) + " bytes");
+            }
             if (task.artifactData() != null && task.artifactData().length > 0 && !digest.equals(task.artifactSha256())) {
                 throw new IllegalArgumentException("task already has a different artifact");
             }
@@ -417,6 +595,8 @@ public final class TaskService {
             task.artifactMime(normalizedMime);
             task.artifactSha256(digest);
             signalOutputChanged(taskId);
+            audit("task.artifact", "agent", machineId, taskId, task.command(), "accepted",
+                    "bytes=" + data.length + ",sha256=" + digest);
             return new ArtifactResponse(data.length, digest);
         } finally {
             lock.unlock();
@@ -433,6 +613,16 @@ public final class TaskService {
             throw new IllegalArgumentException("artifact mimeType is invalid");
         }
         return normalized;
+    }
+
+    static long outputLimit(TaskState task) {
+        if (task == null || task.command() == null || task.command().contract() == null) return MAX_OUTPUT_BYTES;
+        return Math.min(MAX_OUTPUT_BYTES, task.command().contract().budget().maxOutputBytes());
+    }
+
+    static long artifactLimit(TaskState task) {
+        if (task == null || task.command() == null || task.command().contract() == null) return MAX_ARTIFACT_BYTES;
+        return Math.min(MAX_ARTIFACT_BYTES, task.command().contract().budget().maxArtifactBytes());
     }
 
     public Optional<ArtifactData> readArtifact(String taskId) {
@@ -567,12 +757,163 @@ public final class TaskService {
         }
     }
 
-    private static void validateWorkspace(MachineView machine, TaskCommand command) {
-        var mode = ScopeMode.fromWireValue(machine.scopeMode());
-        WorkspacePolicy.validateRemote(mode, machine.os(), machine.workspaceRoot(), machine.defaultCwd(), command.cwd());
-        if (command.desktop() != null) {
-            WorkspacePolicy.validateRemote(mode, machine.os(), machine.workspaceRoot(), machine.defaultCwd(), command.desktop().cwd());
+    private static ExecutionContract buildContract(CreateTaskRequest request, MachineView machine,
+                                                    TaskCommand original, String capability,
+                                                    String taskId, Instant createdAt) {
+        var supplied = original.contract();
+        var mode = request.scopeMode() != null ? request.scopeMode()
+                : supplied != null ? supplied.scopeMode()
+                : (!request.worktreeId().isBlank() ? ScopeMode.WORKTREE
+                : !request.projectId().isBlank() ? ScopeMode.PROJECT
+                : ScopeMode.fromWireValue(machine.scopeMode()));
+        var projectId = firstNonBlank(request.projectId(), supplied == null ? null : supplied.projectId());
+        var worktreeId = firstNonBlank(request.worktreeId(), supplied == null ? null : supplied.worktreeId());
+        var scopeRoot = firstNonBlank(request.scopeRoot(), supplied == null ? null : supplied.scopeRoot());
+        if (scopeRoot == null && mode.bounded()
+                && mode != ScopeMode.PROJECT && mode != ScopeMode.WORKTREE) {
+            scopeRoot = machine.workspaceRoot();
         }
+        var sessionId = firstNonBlank(request.sessionId(), supplied == null ? null : supplied.sessionId());
+        if (sessionId == null) {
+            sessionId = request.idempotencyKey().isBlank()
+                    ? "session_" + taskId.substring(Math.max(0, taskId.length() - 24))
+                    : "session_" + sha256(request.machineId() + ":" + request.idempotencyKey()).substring(0, 32);
+        }
+        var risk = firstNonBlank(request.risk(), supplied == null ? null : supplied.risk());
+        if (risk == null) risk = "low";
+        // The execution contract is issued by Center, not trusted caller
+        // input.  A nested Admin payload may carry a syntactically valid
+        // contract-shaped object, but it must never enlarge the Center's
+        // outer output/artifact/process ceilings.  Agent configuration may
+        // narrow these values again; it can never widen them.
+        var budget = boundedBudget(supplied == null ? new ExecutionContract.Budget(
+                Math.max(0, original.timeoutSeconds()), MAX_OUTPUT_BYTES, MAX_ARTIFACT_BYTES,
+                MAX_CHILD_PROCESSES) : supplied.budget(), machine.runtime());
+        if (supplied != null && (!machine.id().equals(supplied.machineId()) || !machine.hostId().equals(supplied.hostId()))) {
+            throw new SecurityException("execution contract identity does not match the selected machine");
+        }
+        if (mode == ScopeMode.UNRESTRICTED && machine.scopeMode() != null
+                && ScopeMode.fromWireValue(machine.scopeMode()).bounded()) {
+            throw new SecurityException("unrestricted task exceeds the Agent's configured scope");
+        }
+        if (mode.bounded()) {
+            if (scopeRoot == null || scopeRoot.isBlank()) {
+                throw new IllegalArgumentException("bounded task scope_root is required");
+            }
+            // A project/worktree root must itself remain inside a bounded
+            // machine workspace. An unrestricted Agent may explicitly accept
+            // a narrower contract without an outer lexical restriction.
+            var machineMode = ScopeMode.fromWireValue(machine.scopeMode());
+            if (machineMode.bounded()) {
+                WorkspacePolicy.validateRemote(machineMode, machine.os(), machine.workspaceRoot(),
+                        machine.workspaceRoot(), scopeRoot);
+            }
+            WorkspacePolicy.validateRemote(mode, machine.os(), scopeRoot, scopeRoot, original.cwd());
+            if (original.desktop() != null) {
+                WorkspacePolicy.validateRemote(mode, machine.os(), scopeRoot, scopeRoot, original.desktop().cwd());
+            }
+        }
+        var maximumExpiry = createdAt.plus(DEFAULT_CONTRACT_LIFETIME);
+        var requestedExpiry = supplied != null && supplied.expiresAt() != null
+                ? supplied.expiresAt() : maximumExpiry;
+        var expiresAt = requestedExpiry.isAfter(maximumExpiry) ? maximumExpiry : requestedExpiry;
+        var contract = new ExecutionContract(machine.id(), machine.hostId(), mode, projectId, worktreeId,
+                scopeRoot, sessionId, capability, budget, expiresAt, request.idempotencyKey(), risk,
+                request.elevationRequired(), null);
+        if (contract.expired(createdAt)) throw new IllegalArgumentException("execution contract expires before task creation");
+        return contract;
+    }
+
+    /**
+     * Keep a Center-issued contract no wider than both the platform hard
+     * ceiling and the last runtime descriptor advertised by the selected
+     * Agent.  The Agent repeats the check locally, but carrying the narrower
+     * values in the durable task makes the boundary visible after a retry or
+     * Center restart.  A zero runtime limit means "not configured" and does
+     * not turn an otherwise durable task into a timed contract.
+     */
+    private static ExecutionContract.Budget boundedBudget(ExecutionContract.Budget value,
+                                                            com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor runtime) {
+        if (value == null) return ExecutionContract.Budget.defaults();
+        var descriptor = runtime == null
+                ? com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor.defaults() : runtime;
+        var duration = minPositive(value.maxDurationSeconds(), descriptor.maxTaskDurationSeconds());
+        var rss = minPositive(value.maxRssBytes(), descriptor.maxRssBytes());
+        var cpu = minPositive(value.maxCpuSeconds(), descriptor.maxCpuSeconds());
+        return new ExecutionContract.Budget(
+                Math.toIntExact(Math.min(duration, (long) ProtocolValidation.MAX_TIMEOUT_SECONDS)),
+                Math.min(value.maxOutputBytes(), Math.min(MAX_OUTPUT_BYTES, descriptor.maxOutputBytes())),
+                Math.min(value.maxArtifactBytes(), MAX_ARTIFACT_BYTES),
+                Math.min(value.maxChildProcesses(), Math.min(MAX_CHILD_PROCESSES, descriptor.maxChildProcesses())),
+                rss, cpu);
+    }
+
+    private static long minPositive(long requested, long outer) {
+        if (requested <= 0 || outer <= 0) return Math.max(0L, requested);
+        return Math.min(requested, outer);
+    }
+
+    private static void assertAttempt(TaskState task, Integer attempt) {
+        if (attempt == null) {
+            // Legacy Go/Agent clients did not send the fence header.  Keep
+            // their first dispatch compatible, but fail closed once the
+            // Center has re-leased the task: a late legacy process must not
+            // overwrite the newer attempt.
+            if (task.attempt() > 1) throw new SecurityException("task dispatch attempt is required after a retry");
+            return;
+        }
+        if (attempt > 0 && task.attempt() != attempt) {
+            throw new SecurityException("stale task dispatch attempt");
+        }
+    }
+
+    /** Total task count used by bounded, paginated console projections. */
+    public int totalCount() {
+        if (jdbcStore != null) return Math.toIntExact(jdbcStore.taskCount());
+        lock.lock();
+        try {
+            return tasks.size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void audit(String eventType, String actor, String machineId, String taskId,
+                       TaskCommand command, String outcome, String detail) {
+        if (audit == null) return;
+        var contract = command == null ? null : command.contract();
+        audit.record(eventType, actor, machineId, taskId,
+                contract == null ? null : contract.scopeMode().wireValue(),
+                contract == null ? null : contract.risk(), outcome, detail);
+    }
+
+    private void audit(String eventType, String actor, String machineId, TaskView view,
+                       String outcome, String detail) {
+        if (audit == null || view == null) return;
+        audit.record(eventType, actor, machineId, view.id(), view.scopeMode(), view.risk(), outcome, detail);
+    }
+
+    private static String firstNonBlank(String primary, String fallback) {
+        if (primary != null && !primary.isBlank()) return primary.trim();
+        if (fallback != null && !fallback.isBlank()) return fallback.trim();
+        return null;
+    }
+
+    /** Remove credential-shaped environment entries before durable storage. */
+    private static Map<String, String> sanitizeEnvironment(Map<String, String> environment) {
+        if (environment == null || environment.isEmpty()) return Map.of();
+        var safe = new java.util.LinkedHashMap<String, String>();
+        environment.forEach((key, value) -> {
+            if (key == null || value == null) return;
+            var upper = key.toUpperCase(java.util.Locale.ROOT);
+            if (upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("PASSWD")
+                    || upper.contains("SECRET") || upper.contains("COOKIE") || upper.contains("AUTHORIZATION")
+                    || upper.contains("API_KEY") || upper.contains("PRIVATE_KEY") || upper.contains("CREDENTIAL")) {
+                return;
+            }
+            safe.put(key, value);
+        });
+        return Map.copyOf(safe);
     }
 
     private List<String> recoverExpiredLeases(Instant now) {
@@ -666,7 +1007,19 @@ public final class TaskService {
 
     private static String requiredCapability(TaskCommand command, TaskKind kind) {
         if (command.requiredCapability() != null && !command.requiredCapability().isBlank()) {
-            return command.requiredCapability().trim();
+            var requested = command.requiredCapability().trim().toLowerCase(java.util.Locale.ROOT);
+            if (kind == TaskKind.DESKTOP && !AgentCapability.DESKTOP.wireValue().equals(requested)) {
+                throw new IllegalArgumentException("desktop tasks require the desktop capability");
+            }
+            if (kind == TaskKind.BROWSER && !AgentCapability.BROWSER.wireValue().equals(requested)) {
+                throw new IllegalArgumentException("browser tasks require the browser capability");
+            }
+            if (kind == TaskKind.COMMAND
+                    && !AgentCapability.COMMAND.wireValue().equals(requested)
+                    && !AgentCapability.DURABLE_TASKS.wireValue().equals(requested)) {
+                throw new IllegalArgumentException("command tasks require command or durable_tasks capability");
+            }
+            return requested;
         }
         return switch (kind) {
             case DESKTOP -> AgentCapability.DESKTOP.wireValue();
@@ -686,7 +1039,8 @@ public final class TaskService {
                 && java.util.Objects.equals(left.cwd(), right.cwd())
                 && java.util.Objects.equals(left.env(), right.env())
                 && left.timeoutSeconds() == right.timeoutSeconds()
-                && java.util.Objects.equals(left.desktop(), right.desktop());
+                && java.util.Objects.equals(left.desktop(), right.desktop())
+                && (left.contract() == null ? right.contract() == null : left.contract().sameIntent(right.contract()));
     }
 
     private static boolean validStatus(String status) {
@@ -714,7 +1068,7 @@ public final class TaskService {
     }
 
     private static String compactError(String error) {
-        var value = error.trim();
+        var value = SensitiveValueRedactor.redact(error.trim());
         return value.length() <= 4096 ? value : value.substring(0, 4096);
     }
 
@@ -726,9 +1080,29 @@ public final class TaskService {
         }
     }
 
+    /** Explicit, bounded retention operation; never runs on a fixed timer. */
+    public ArtifactGcResult gcArtifacts(int retentionDays, int limit) {
+        if (retentionDays < 1 || retentionDays > 3650) {
+            throw new IllegalArgumentException("retentionDays must be between 1 and 3650");
+        }
+        if (limit < 1 || limit > 500) {
+            throw new IllegalArgumentException("limit must be between 1 and 500");
+        }
+        var cutoff = Instant.now().minus(Duration.ofDays(retentionDays));
+        if (jdbcStore != null) return jdbcStore.gcArtifacts(cutoff, limit);
+        return new ArtifactGcResult(0, 0, 0);
+    }
+
+    private static String sha256(String value) {
+        return sha256(value.getBytes(StandardCharsets.UTF_8));
+    }
+
     public record ArtifactData(String mimeType, String sha256, byte[] data) {
         public ArtifactData {
             data = data == null ? new byte[0] : data.clone();
         }
+    }
+
+    public record ArtifactGcResult(int metadataRows, int objectFiles, int deleteFailures) {
     }
 }

@@ -1,6 +1,9 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
 import com.zaxxer.hikari.HikariDataSource;
+import java.net.URI;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.util.function.Supplier;
 import javax.sql.DataSource;
 import liquibase.integration.spring.SpringLiquibase;
@@ -40,7 +43,22 @@ public final class DatabaseRuntimeInitializer
         var password = setting(environment, "RCM_CENTER_DATABASE_PASSWORD", null, "");
         var liquibaseEnabled = Boolean.parseBoolean(setting(environment,
                 "RCM_CENTER_LIQUIBASE_ENABLED", null, "true"));
-
+        var artifactBackend = setting(environment, "RCM_CENTER_ARTIFACT_STORE", "rcm.artifact.store", "filesystem").trim();
+        if ("filesystem".equalsIgnoreCase(artifactBackend)) {
+            var artifactRoot = setting(environment, "RCM_CENTER_ARTIFACT_ROOT", null, defaultArtifactRoot()).trim();
+            if (artifactRoot.isEmpty()) throw new IllegalStateException("RCM_CENTER_ARTIFACT_ROOT is required in postgres mode");
+            register(registry, "artifactStore", FileSystemArtifactStore.class,
+                    () -> new FileSystemArtifactStore(Path.of(artifactRoot)), null);
+        } else if ("http".equalsIgnoreCase(artifactBackend)) {
+            var baseUrl = requiredSetting(environment, "RCM_CENTER_ARTIFACT_HTTP_BASE_URL", "rcm.artifact.http.base-url");
+            var token = setting(environment, "RCM_CENTER_ARTIFACT_HTTP_TOKEN", "rcm.artifact.http.token", "");
+            var timeout = parseDurationSeconds(setting(environment, "RCM_CENTER_ARTIFACT_HTTP_TIMEOUT_SECONDS",
+                    "rcm.artifact.http.timeout-seconds", "30"));
+            register(registry, "artifactStore", HttpArtifactStore.class,
+                    () -> new HttpArtifactStore(URI.create(baseUrl), token, timeout), null);
+        } else {
+            throw new IllegalStateException("RCM_CENTER_ARTIFACT_STORE must be filesystem or http");
+        }
         register(registry, "dataSource", HikariDataSource.class,
                 () -> DatabaseConfiguration.dataSource(url, username, password), "close");
         register(registry, "jdbcTemplate", JdbcTemplate.class,
@@ -74,5 +92,21 @@ public final class DatabaseRuntimeInitializer
         if (value == null) value = System.getProperty(envKey);
         if (value == null) value = System.getenv(envKey);
         return value == null ? defaultValue : value;
+    }
+
+    private static Duration parseDurationSeconds(String value) {
+        try {
+            var seconds = Long.parseLong(value == null || value.isBlank() ? "30" : value.trim());
+            if (seconds < 1 || seconds > 120) throw new IllegalStateException("RCM_CENTER_ARTIFACT_HTTP_TIMEOUT_SECONDS must be between 1 and 120");
+            return Duration.ofSeconds(seconds);
+        } catch (NumberFormatException exception) {
+            throw new IllegalStateException("RCM_CENTER_ARTIFACT_HTTP_TIMEOUT_SECONDS must be an integer", exception);
+        }
+    }
+
+    private static String defaultArtifactRoot() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win")
+                ? Path.of(System.getenv().getOrDefault("ProgramData", "."), "remote-connect-mcp-center", "artifacts").toString()
+                : "/var/lib/remote-connect-mcp-center/artifacts";
     }
 }

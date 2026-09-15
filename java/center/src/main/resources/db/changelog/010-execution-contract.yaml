@@ -1,0 +1,22 @@
+databaseChangeLog:
+  - changeSet:
+      id: 010-execution-contract
+      author: remote-connect-mcp
+      labels: tasks
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: execution_contract
+                  type: jsonb
+                  remarks: Center-issued task scope, identity, budget and expiry contract
+      rollback:
+        - dropColumn:
+            tableName: rcm_task
+            columnName: execution_contract

@@ -54,23 +54,45 @@ public final class AgentRuntime {
         TaskOutputSpool.cleanupOrphans(config.stateDir(), Duration.ofDays(7));
         var durableStore = new DurableTaskStore(config.stateDir());
         var identity = loadOrRegister();
-        // Metadata is immutable for the lifetime of this process. Cache it
-        // instead of rereading the version marker and rebuilding JSON on every
-        // long-poll request; a successful self-upgrade restarts the Agent and
-        // refreshes the marker in the new process.
-        var metadata = config.metadata();
+        if (config.desktopEnabled()) {
+            try {
+                // Publish a non-secret machine policy for the user-session
+                // companion.  The command Agent remains the authority, while
+                // the companion adds a second cwd/expiry check before GUI I/O.
+                DesktopCompanionServer.writePolicy(config.stateDir(), config.scopeMode(), config.workspaceRoot());
+            } catch (IOException failure) {
+                LOG.log(Level.WARNING, "could not publish desktop companion scope policy", failure);
+            }
+        }
+        // Runtime metadata is rebuilt at each poll so hot configuration
+        // generations and desktop/browser session availability are visible
+        // without a restart.  It is a fixed-size, non-secret projection and
+        // does not include task output or environment values.
         var settings = new AgentRuntimeSettings(config);
         var backoff = settings.pollInterval();
         var resourceBudget = new AgentResourceBudget(config.maxAggregateOutputBytes());
-        var desktopProcessBudget = new DesktopProcessBudget();
+        var processBudget = new AgentProcessBudget(config.maxTotalChildProcesses());
+        var desktopProcessBudget = new DesktopProcessBudget(processBudget);
         var maxBrowserWorkers = config.maxBrowserWorkers();
         var browserRunning = new AtomicInteger();
         var wakeSignal = new AgentWakeSignal();
         var wakeClient = AgentWakeClient.startIfEnabled(config, identity, wakeSignal::signal);
         var executor = Executors.newVirtualThreadPerTaskExecutor();
+        var desktopCleanupHook = new Thread(desktopProcessBudget::close, "rcm-desktop-budget-cleanup");
+        var shutdownHookInstalled = false;
         try {
+            try {
+                Runtime.getRuntime().addShutdownHook(desktopCleanupHook);
+                shutdownHookInstalled = true;
+            } catch (IllegalStateException | SecurityException hookFailure) {
+                // A shutdown already in progress (or a restricted runtime)
+                // still reaches the normal finally path in ordinary service
+                // exits; do not make task dispatch fail solely because the
+                // best-effort emergency hook could not be registered.
+                LOG.log(Level.FINE, "could not install desktop cleanup shutdown hook", hookFailure);
+            }
             reportPendingUpgradeResult(identity);
-            recoverDurable(identity, durableStore, executor, settings);
+            recoverDurable(identity, durableStore, executor, settings, resourceBudget, processBudget);
             while (!Thread.currentThread().isInterrupted() && !stopRequested.get()) {
                 try {
                     var availableSlots = upgrading.get() ? 0 : Math.max(0, settings.maxConcurrency() - running.size());
@@ -81,6 +103,7 @@ public final class AgentRuntime {
                     // unbounded number of browser workers in the Agent.
                     var availableCapabilities = availableCapabilities(config.capabilities(),
                             browserRunning.get(), maxBrowserWorkers);
+                    var metadata = config.metadata(settings.generation(), settings.maxConcurrency());
                     var poll = transport.poll(identity.machineId(), identity.token(),
                             new PollRequest(runningTaskIds, availableSlots, availableCapabilities, metadata,
                                     settings.generation()));
@@ -123,10 +146,11 @@ public final class AgentRuntime {
                         var runner = switch (task.kind()) {
                             case COMMAND -> task.timeoutSeconds() <= 0
                                     ? new DurableCommandRunner(config, taskIdentity,
-                                    durableRecord == null ? task : durableRecord.taskCommand(), transport, durableStore, durableRecord)
-                                    : new CommandRunner(config, taskIdentity, task, transport, resourceBudget);
-                            case DESKTOP -> new DesktopTaskRunner(config, taskIdentity, task, transport, desktopProcessBudget);
-                            case BROWSER -> new BrowserTaskRunner(config, taskIdentity, task, transport, resourceBudget);
+                                    durableRecord == null ? task : durableRecord.taskCommand(), transport, durableStore, durableRecord,
+                                    resourceBudget, processBudget)
+                                    : new CommandRunner(config, taskIdentity, task, transport, resourceBudget, processBudget);
+                            case DESKTOP -> new DesktopTaskRunner(config, taskIdentity, task, transport, desktopProcessBudget, processBudget);
+                            case BROWSER -> new BrowserTaskRunner(config, taskIdentity, task, transport, resourceBudget, processBudget);
                         };
                         // FutureTask removes itself from the running map in its
                         // completion callback; no second waiter thread is needed
@@ -145,7 +169,16 @@ public final class AgentRuntime {
                                 }
                             }
                         };
-                        running.put(task.id(), future);
+                        if (!registerTaskIfAbsent(running, task.id(), future)) {
+                            // A lost response/retry must never replace an
+                            // already-running Future.  The Center lease is
+                            // still owned by the existing runner, so simply
+                            // drop this duplicate response and keep the
+                            // browser slot available for a real task.
+                            LOG.warning(() -> "Center returned duplicate task " + task.id() + "; keeping the existing runner");
+                            if (browserSlotAcquired) browserRunning.decrementAndGet();
+                            continue;
+                        }
                         if (runner instanceof DurableCommandRunner durable) {
                             durableRunning.put(task.id(), durable);
                         }
@@ -208,6 +241,14 @@ public final class AgentRuntime {
                 }
             }
         } finally {
+            if (shutdownHookInstalled) {
+                try {
+                    Runtime.getRuntime().removeShutdownHook(desktopCleanupHook);
+                } catch (IllegalStateException | SecurityException ignored) {
+                    // JVM shutdown is already executing; the hook itself is
+                    // responsible for the final desktop-process cleanup.
+                }
+            }
             if (wakeClient != null) wakeClient.close();
             // Do not use ExecutorService.close() here: it waits indefinitely for
             // an unattended command. Interrupt the command/output virtual
@@ -220,6 +261,10 @@ public final class AgentRuntime {
                 Thread.currentThread().interrupt();
             }
             running.clear();
+            // A headless desktop launch may deliberately outlive its task.
+            // Reap it with the Agent so upgrades/restarts cannot leave an
+            // unbounded set of GUI processes behind.
+            desktopProcessBudget.close();
         }
     }
 
@@ -230,18 +275,31 @@ public final class AgentRuntime {
         return configured.stream().filter(value -> !"browser".equals(value)).toList();
     }
 
+    /**
+     * Install a task Future without replacing a runner that won a previous
+     * poll response.  This method is package-visible for a focused
+     * concurrency test and keeps the dispatch fence next to the loop that
+     * owns the running-task map.
+     */
+    static boolean registerTaskIfAbsent(Map<String, Future<?>> running, String taskId, Future<?> future) {
+        if (running == null || taskId == null || taskId.isBlank() || future == null) return false;
+        return running.putIfAbsent(taskId, future) == null;
+    }
+
     private void recoverDurable(AgentIdentity identity, DurableTaskStore store, ExecutorService executor,
-                                AgentRuntimeSettings settings) {
+                                AgentRuntimeSettings settings, AgentResourceBudget resourceBudget,
+                                AgentProcessBudget processBudget) {
         for (var record : store.load()) {
             if (running.size() >= settings.maxConcurrency()) {
                 LOG.warning("durable task recovery reached the configured concurrency limit");
                 return;
             }
-            if (running.containsKey(record.taskId()) || !config.capabilities().contains("command")) {
+            if (!config.capabilities().contains("command")) {
                 continue;
             }
             var task = record.taskCommand();
-            var runner = new DurableCommandRunner(config, identity, task, transport, store, record);
+            var runner = new DurableCommandRunner(config, identity, task, transport, store, record,
+                    resourceBudget, processBudget);
             var future = new FutureTask<Void>(() -> {
                 runner.run();
                 return null;
@@ -252,7 +310,9 @@ public final class AgentRuntime {
                     durableRunning.remove(task.id(), runner);
                 }
             };
-            running.put(task.id(), future);
+            if (!registerTaskIfAbsent(running, task.id(), future)) {
+                continue;
+            }
             durableRunning.put(task.id(), runner);
             executor.execute(future);
             LOG.info(() -> "recovered durable task " + task.id());
@@ -311,7 +371,7 @@ public final class AgentRuntime {
             var result = JsonCodec.read(Files.readAllBytes(resultFile), AgentUpgradeHelper.Result.class);
             AgentRetry.call(LOG, "upgrade result " + result.campaignId(), () -> {
                 transport.reportUpgrade(identity.machineId(), identity.token(),
-                        new UpgradeStatusRequest(result.campaignId(), result.status(), result.error()));
+                        new UpgradeStatusRequest(result.campaignId(), result.status(), result.error(), result.attempt()));
                 return null;
             });
             Files.deleteIfExists(resultFile);

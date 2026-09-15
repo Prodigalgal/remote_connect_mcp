@@ -3,6 +3,7 @@ package com.prodigalgal.remoteconnectmcp.center;
 import com.prodigalgal.remoteconnectmcp.protocol.AgentConfigUpdate;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.ObjectProvider;
@@ -21,10 +22,12 @@ import org.springframework.transaction.support.TransactionTemplate;
 final class AgentConfigurationService {
     static final long DEFAULT_POLL_INTERVAL_MS = 5000L;
     static final int DEFAULT_MAX_CONCURRENCY = 1;
+    private static final int MAX_HISTORY = 16;
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final Map<String, AgentConfigUpdate> memory = new ConcurrentHashMap<>();
+    private final Map<String, ArrayDeque<AgentConfigUpdate>> memoryHistory = new ConcurrentHashMap<>();
 
     @Autowired
     AgentConfigurationService(ObjectProvider<JdbcTemplate> jdbcProvider,
@@ -61,10 +64,14 @@ final class AgentConfigurationService {
         if (request == null) request = new AgentConfigUpdateRequest(null, null);
         if (jdbc == null) {
             final var requested = request;
-            return memory.compute(normalized, (ignored, previous) -> next(previous, requested));
+            return memory.compute(normalized, (ignored, previous) -> {
+                assertExpectedGeneration(requested, previous == null ? 0L : previous.generation());
+                remember(normalized, previous);
+                return next(previous, requested);
+            });
         }
         final var requested = request;
-        return transactions.execute(status -> {
+        java.util.function.Supplier<AgentConfigUpdate> operation = () -> {
             var current = jdbc.query("SELECT config_generation, runtime_config FROM rcm_agent WHERE agent_id = ? FOR UPDATE",
                     ps -> ps.setString(1, normalized), rs -> {
                         if (!rs.next()) return null;
@@ -76,15 +83,100 @@ final class AgentConfigurationService {
                             catch (RuntimeException ignored) { }
                         }
                         return decoded == null || decoded.generation() != generation
-                                ? new AgentConfigUpdate(Math.max(0L, generation), 0, 0) : decoded;
+                                ? fallbackConfig(generation) : decoded;
                     });
             if (current == null) throw new IllegalArgumentException("machine not found");
+            assertExpectedGeneration(requested, current.generation());
+            rememberJdbc(normalized, current);
             var next = next(current, requested);
             var json = new String(JsonCodec.write(next), StandardCharsets.UTF_8);
             jdbc.update("UPDATE rcm_agent SET config_generation = ?, runtime_config = CAST(? AS jsonb), updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?",
                     next.generation(), json, normalized);
             return next;
-        });
+        };
+        return transactions == null ? operation.get() : transactions.execute(status -> operation.get());
+    }
+
+    /**
+     * Publish the previous runtime configuration as a new generation.  The
+     * Agent only accepts monotonically increasing generations, so rollback is
+     * safe while an older heartbeat is in flight and does not require a
+     * restart or a second control channel.
+     */
+    AgentConfigUpdate rollback(String machineId) {
+        if (machineId == null || machineId.isBlank()) throw new IllegalArgumentException("machineId is required");
+        var normalized = machineId.trim();
+        if (jdbc == null) {
+            return memory.compute(normalized, (ignored, current) -> {
+                if (current == null) throw new IllegalArgumentException("machine has no runtime configuration");
+                var history = memoryHistory.get(normalized);
+                if (history == null || history.isEmpty()) throw new IllegalArgumentException("machine has no previous runtime configuration");
+                var previous = history.removeLast();
+                return new AgentConfigUpdate(current.generation() + 1, previous.pollIntervalMs(), previous.maxConcurrency());
+            });
+        }
+        java.util.function.Supplier<AgentConfigUpdate> operation = () -> {
+            var current = currentForUpdate(normalized);
+            if (current == null) throw new IllegalArgumentException("machine not found");
+            var previous = jdbc.query("""
+                    SELECT config_generation, poll_interval_ms, max_concurrency
+                      FROM rcm_agent_config_history
+                     WHERE agent_id = ? ORDER BY config_generation DESC LIMIT 1
+                     FOR UPDATE
+                    """, ps -> ps.setString(1, normalized), rs -> {
+                if (!rs.next()) return null;
+                return new HistoryEntry(rs.getLong("config_generation"), rs.getLong("poll_interval_ms"), rs.getInt("max_concurrency"));
+            });
+            if (previous == null) throw new IllegalArgumentException("machine has no previous runtime configuration");
+            jdbc.update("DELETE FROM rcm_agent_config_history WHERE agent_id = ? AND config_generation = ?",
+                    normalized, previous.generation());
+            var next = new AgentConfigUpdate(current.generation() + 1, previous.pollIntervalMs(), previous.maxConcurrency());
+            var json = new String(JsonCodec.write(next), StandardCharsets.UTF_8);
+            jdbc.update("UPDATE rcm_agent SET config_generation = ?, runtime_config = CAST(? AS jsonb), updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?",
+                    next.generation(), json, normalized);
+            return next;
+        };
+        return transactions == null ? operation.get() : transactions.execute(status -> operation.get());
+    }
+
+    private void remember(String machineId, AgentConfigUpdate previous) {
+        if (previous == null || previous.generation() <= 0) return;
+        var history = memoryHistory.computeIfAbsent(machineId, ignored -> new ArrayDeque<>());
+        synchronized (history) {
+            history.addLast(previous);
+            while (history.size() > MAX_HISTORY) history.removeFirst();
+        }
+    }
+
+    private void rememberJdbc(String machineId, AgentConfigUpdate previous) {
+        if (previous == null || previous.generation() <= 0) return;
+        jdbc.update("""
+                INSERT INTO rcm_agent_config_history(agent_id, config_generation, poll_interval_ms, max_concurrency)
+                VALUES (?, ?, ?, ?) ON CONFLICT (agent_id, config_generation) DO NOTHING
+                """, machineId, previous.generation(), previous.pollIntervalMs(), previous.maxConcurrency());
+        jdbc.update("""
+                DELETE FROM rcm_agent_config_history
+                 WHERE agent_id = ? AND config_generation < ?
+                """, machineId, Math.max(0L, previous.generation() - MAX_HISTORY + 1));
+    }
+
+    private AgentConfigUpdate currentForUpdate(String machineId) {
+        return jdbc.query("SELECT config_generation, runtime_config FROM rcm_agent WHERE agent_id = ? FOR UPDATE",
+                ps -> ps.setString(1, machineId), rs -> {
+                    if (!rs.next()) return null;
+                    var generation = rs.getLong("config_generation");
+                    var json = rs.getString("runtime_config");
+                    if (json == null || json.isBlank() || "{}".equals(json.trim())) {
+                        return fallbackConfig(generation);
+                    }
+                    try {
+                        var decoded = JsonCodec.read(json.getBytes(StandardCharsets.UTF_8), AgentConfigUpdate.class);
+                        return decoded.generation() == generation ? decoded
+                                : fallbackConfig(generation);
+                    } catch (RuntimeException ignored) {
+                        return fallbackConfig(generation);
+                    }
+                });
     }
 
     private static AgentConfigUpdate next(AgentConfigUpdate previous, AgentConfigUpdateRequest request) {
@@ -96,5 +188,23 @@ final class AgentConfigurationService {
                 : request.maxConcurrency();
         var generation = previous == null ? 1L : Math.max(0L, previous.generation()) + 1L;
         return new AgentConfigUpdate(generation, poll, concurrency);
+    }
+
+    private static AgentConfigUpdate fallbackConfig(long generation) {
+        var normalized = Math.max(0L, generation);
+        return normalized == 0L
+                ? AgentConfigUpdate.defaults()
+                : new AgentConfigUpdate(normalized, DEFAULT_POLL_INTERVAL_MS, DEFAULT_MAX_CONCURRENCY);
+    }
+
+    private static void assertExpectedGeneration(AgentConfigUpdateRequest request, long currentGeneration) {
+        if (request != null && request.expectedGeneration() != null
+                && request.expectedGeneration() != currentGeneration) {
+            throw new IllegalArgumentException("configuration changed; expected_generation="
+                    + request.expectedGeneration() + ", current_generation=" + currentGeneration);
+        }
+    }
+
+    private record HistoryEntry(long generation, long pollIntervalMs, int maxConcurrency) {
     }
 }

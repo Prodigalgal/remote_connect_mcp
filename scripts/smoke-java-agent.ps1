@@ -253,6 +253,8 @@ try {
             env = @{}
             timeout_seconds = 30
         }
+        scope_mode = 'workspace'
+        scope_root = $root
     }
     $created = Invoke-Json 'POST' '/api/v1/admin/tasks' $adminToken $payload
     $taskId = [string]$created.id

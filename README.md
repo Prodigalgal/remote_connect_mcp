@@ -5,9 +5,11 @@
 
 Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统。ChatGPT 只连接一个 MCP Gateway；每台目标机器运行一个主动连接 Center 的 Agent。Center 同时提供机器注册、持久化异步任务、断线续传、Web 控制台和 Agent 集群升级编排。
 
-目标架构和演进边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，异步调用契约见 [`docs/ASYNC_CONTRACT.md`](docs/ASYNC_CONTRACT.md)，详细语言、运行时、原生构建和前端选型见 [`docs/TECH_STACK.md`](docs/TECH_STACK.md)，Java/React 发布门禁见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)，当前实现/生产阻塞见 [`docs/STATUS.md`](docs/STATUS.md)。Java 25 Center/Agent 与 React 控制台已建立可独立验收的实现；现有 Go Center/Agent 在全部生产门禁通过前仍作为兼容基线，不会被未验证的 Java 构建替换。一个物理终端默认只有一个向 Center 注册的 `command-agent` 身份；桌面能力由同安装包启动的用户会话 `desktop-companion` 提供，浏览器能力由有界的本机 Browser Worker 提供，不增加额外 machine ID 或 Token。确需隔离时才为同一终端显式注册多个 Agent。
+产品需求基线见 [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md)，分级任务清单见 [`docs/TASKS.md`](docs/TASKS.md)。本文档说明使用和部署；需求基线、任务、架构、异步契约和实现状态分别维护，规划中的能力不会自动视为已上线。
 
-项目不代理其他 MCP，也不对命令内容做白名单过滤。Agent 支持两种目录策略：默认的 `unrestricted` 模式保持整机运维能力；`workspace` 模式会在 Center 和 Agent 两侧校验任务工作目录，只允许指定工作区及其子目录。
+目标架构和演进边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，异步调用契约见 [`docs/ASYNC_CONTRACT.md`](docs/ASYNC_CONTRACT.md)，详细语言、运行时、原生构建和前端选型见 [`docs/TECH_STACK.md`](docs/TECH_STACK.md)，Java/React 发布门禁见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)，当前实现/生产阻塞见 [`docs/STATUS.md`](docs/STATUS.md)，SLO/告警见 [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)，传输评估见 [`docs/TRANSPORT.md`](docs/TRANSPORT.md)，HTTP 工件网关接口见 [`docs/ARTIFACT_GATEWAY.md`](docs/ARTIFACT_GATEWAY.md)。Java 25 Center/Agent 与 React 控制台已经进入生产路径；Go 组件仅作为离线节点的兼容/回滚基线保留。一个物理终端默认只有一个向 Center 注册的 `command-agent` 身份；桌面能力由同安装包启动的用户会话 `desktop-companion` 提供，浏览器能力由有界的本机 Browser Worker 提供，不增加额外 machine ID 或 Token。确需隔离时才为同一终端显式注册多个 Agent。
+
+项目不代理其他 MCP，也不对命令内容做白名单过滤。任务支持 `project`、`worktree`、`path`、`workspace` 和显式 `unrestricted` 五种范围；默认安装策略是 `workspace`，整机模式必须由调用方明确声明并通过 Agent 的本地校验。
 
 > [!CAUTION]
 > MCP Token、管理 Token、Enrollment Token 和 Agent 凭据都属于高权限秘密。MCP Token 等同于所有已注册机器上的远程代码执行权限。请只通过 HTTPS 使用，将真实值保存在 Secret 或权限为 `0600` 的配置文件中，禁止提交到 Git。
@@ -16,7 +18,7 @@ Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统
 
 完整的目标架构、Desktop/Browser Agent、项目注册、worktree、长连接和热更新边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
-Java/React 迁移已完成 Center/Console 的 v0.1.15 生产切换，并正在分批替换存量 Agent：`java/` 提供 Java 25 多模块 Center、command-agent、desktop-companion 和 browser-agent 三个 Native 构建目标，异步 MCP、事务任务/输出/工件适配和本机能力桥接；`web/` 提供独立 React/Vite 控制台并可用 Admin Token 读取 Center API。Java Center 的持久化路线固定为 PostgreSQL + Liquibase，不使用 Flyway；Go Center 已缩容为 0，Go Agent 仅作为尚未上线节点的兼容/回滚基线保留。
+Java/React 迁移已完成 Center/Console 的 v0.1.21 生产切换，四台在线 Oracle Agent 已升级到 v0.1.21，离线节点保留旧版兼容路径：`java/` 提供 Java 25 多模块 Center、command-agent、desktop-companion 和 browser-agent 三个 Native 构建目标，异步 MCP、事务任务/输出/工件适配和本机能力桥接；`web/` 提供独立 React/Vite 控制台并可用 Admin Token 读取 Center API。Java Center 的持久化路线固定为 PostgreSQL + Liquibase，不使用 Flyway；Go Center 已缩容为 0，Go Agent 仅作为尚未上线节点的兼容/回滚基线保留。
 
 ```text
 ChatGPT Web
@@ -83,9 +85,11 @@ Agent 默认将单个任务捕获的 stdout/stderr 限制为 64 MiB，所有普�
 | `desktop` | 仅对声明 `desktop` 能力的用户会话 Agent 提供有界截图、屏幕枚举、应用启动、点击、拖拽、按键、文本、剪贴板和窗口聚焦；截图以图片工件返回 |
 | `browser` | 仅对声明 `browser` 能力且配置本机适配器的 Agent 投递一条有界 Worker 请求；快照可返回最多 64 个 `rcm-ref-v1` 元素引用供后续动作复用；不上传 Cookie/CDP 凭据 |
 
-当前核心命令工具集为 6 个，另有项目工作流 `project` 和按能力启用的 `desktop`、`browser` 工具。工具数量不是硬性限制，只有在确有独立用户价值且能保持有界输入/输出时才扩展；Browser Agent 不会把 Playwright/Patchright/Comoufox 的全部底层 API 一次性暴露。机器数量不会扩大 ChatGPT 的工具元数据。每次机器操作都必须显式传入 `machine_id`。目录策略通过机器注册元数据和现有 `cwd` 字段实现，不为每种能力复制一组工具，避免污染 ChatGPT Web 上下文。
+当前核心命令工具集为 6 个，另有项目工作流 `project` 和按能力启用的 `desktop`、`browser` 工具。工具数量不是硬性限制，只有在确有独立用户价值且能保持有界输入/输出时才扩展；Browser Agent 不会把 Playwright/Patchright/Comoufox 的全部底层 API 一次性暴露。机器数量不会扩大 ChatGPT 的工具元数据。每次机器操作都必须显式传入 `machine_id` 和范围；范围由任务 execution contract 统一表达，不为每种能力复制一组工具，避免污染 ChatGPT Web 上下文。
 
 MCP 返回专门的精简视图：`machines_list` 使用分页摘要，`task_wait`/`task_output` 只返回有限输出页，任务状态不会回显提交时的环境变量或令牌；过长命令和错误文本会截断并标记。每个结果只发送一份 JSON 文本，不重复发送结构化副本。需要更多内容时使用 `next_cursor`/`offset` 分页，不会在单次对话中装载整台机器或完整日志。
+
+执行合同中的输出、工件和时长预算只能进一步收紧 Agent 的启动配置；它们不会扩大宿主机的并发、磁盘或进程额度。Agent 在启动命令、桌面或浏览器子进程前再次校验合同，过期、身份不匹配或范围扩大都会失败关闭。
 
 ## 升级兼容契约
 
@@ -117,12 +121,13 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 控制台使用独立的 Center Admin Token，支持：
 
 - 查看机器在线状态、平台、Agent 版本和最后心跳；
-- 创建命令任务并指定机器、工作目录和超时；
-- 注册 Agent 本地项目并创建/移除 Git worktree，任务可选择已就绪的 project/worktree cwd；
+- 创建 command、desktop 或 browser 任务，并指定机器、项目/worktree/path/unrestricted 范围、工作目录、风险、会话和超时；
+- 注册 Agent 本地项目并创建/移除 Git worktree，任务可选择已就绪的 project/worktree cwd；项目卡片还支持带确认和幂等键的 Git status/diff/log/commit/merge/merge-abort；
 - 查看最近任务、执行状态和完整输出；
 - 取消排队或运行中的任务；
 - 手动刷新机器、任务和当前输出；长输出按 cursor 分页读取，不阻塞页面。
 - 查看升级活动、canary/批次进度，并暂停、恢复或取消发布；升级资产必须通过 HTTPS 和 SHA-256 校验。
+- 查看有界脱敏审计事件；需要时可在审计页显式清理一年以前的记录，不会自动启动定时清理线程。
 - 查看 GitHub Release 版本目录（稳定版/预发布、发布时间和三平台 Agent 资产覆盖），从下拉框选择升级目标；目录短缓存，GitHub 暂时不可达时显示最近一次成功结果。
 
 管理 Token 只保存在 React 当前标签页内存，刷新或关闭页面后消失，不写入 `localStorage`、`sessionStorage` 或静态构建产物。
@@ -144,13 +149,19 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 | `RCM_CENTER_RELEASES_API_URL`（兼容 `REMOTE_CONNECT_MCP_CENTER_RELEASES_API_URL`） | `https://api.github.com/repos/Prodigalgal/remote_connect_mcp/releases` | 控制台版本目录的 GitHub Releases API；只读取公开元数据，不保存 GitHub 凭据 |
 | `RCM_CENTER_PERSISTENCE_MODE` | `memory` | Java Center 使用 `postgres` 才启用 PostgreSQL 任务/机器/工件存储 |
 | `RCM_CENTER_REQUIRE_DURABLE_STORAGE` | `false` | 设为 `true` 时，除 PostgreSQL 外的模式不会通过 `/api/v1/readyz`；生产必须开启 |
+| `RCM_CENTER_ARTIFACT_STORE` | `filesystem` | PostgreSQL 模式的工件字节存储；支持 `filesystem` 或 `http`（内部对象网关），生产不得使用测试内存实现 |
+| `RCM_CENTER_ARTIFACT_ROOT` | Linux `/var/lib/remote-connect-mcp-center/artifacts`；Windows `%ProgramData%\\remote-connect-mcp-center\\artifacts` | 工件对象根目录；必须位于持久卷/专用数据盘并由 Center 进程可写 |
+| `RCM_CENTER_ARTIFACT_HTTP_BASE_URL` | 空 | `http` 后端的 HTTPS 对象网关基址；HTTP 仅允许 loopback 开发环境 |
+| `RCM_CENTER_ARTIFACT_HTTP_TOKEN` | 空 | 对象网关 Bearer Token；只通过 Secret/env 注入，不写入 PostgreSQL 或日志 |
+| `RCM_CENTER_ARTIFACT_HTTP_TIMEOUT_SECONDS` | `30` | 对象网关单次请求超时，范围 1–120 秒 |
+| `RCM_CENTER_STRUCTURED_AUDIT_LOG` | `false` | 设为 `true` 时，将已脱敏的审计事件以 `rcm.audit {JSON}` 单行写入 stdout/journal，供 Loki/OTel 等采集器接收 |
 | `RCM_CENTER_LIQUIBASE_ENABLED` | `true` | Java Center 是否在当前进程执行 Liquibase；生产 Pod 设为 `false`，由独立 migration Job 执行 |
 | `RCM_CENTER_DATABASE_URL` | 空 | PostgreSQL JDBC URL（postgres 模式必填） |
 | `RCM_CENTER_DATABASE_USERNAME` | 空 | PostgreSQL 用户名（postgres 模式必填） |
 | `RCM_CENTER_DATABASE_PASSWORD` | 空 | PostgreSQL 密码（仅通过 Secret/env 注入） |
 | `RCM_CENTER_ALLOW_SHARED_ENROLLMENT` | `false` | 仅应急兼容旧部署；生产默认关闭，新增 Agent 通过 Admin API 生成一次性 Token |
 
-Java Center 生产使用 PostgreSQL 事务存储和单副本 `Recreate` Deployment，不再依赖旧 Go Center 的 RWO 状态 PVC；Pod 只挂载受限的临时 `/tmp`。任务创建、状态变化和升级变化会立即持久化；内存只保存可丢失的唤醒/等待状态和必要的短期快照，任何缓存失效都从 PostgreSQL 重建。`RCM_CENTER_REQUIRE_DURABLE_STORAGE=true` 会让误用 memory 模式的实例保持未就绪，避免无意接收生产流量。
+Java Center 生产使用 PostgreSQL 事务存储和单副本 `Recreate` Deployment；任务元数据使用数据库，工件字节使用单独挂载的受限持久卷，不再把大块内容写入 PostgreSQL `BYTEA`。任务创建、状态变化和升级变化会立即持久化；内存只保存可丢失的唤醒/等待状态和必要的短期快照，任何缓存失效都从 PostgreSQL 重建。`RCM_CENTER_REQUIRE_DURABLE_STORAGE=true` 会让误用 memory 模式或缺少持久工件卷的实例保持未就绪，避免无意接收生产流量。
 
 旧 Go Center 切换到 Java/PostgreSQL 时，先备份并停止旧 Center，运行 Liquibase 迁移后使用 `rcm-center --import-go <旧状态目录或 state.json>` 导入机器、Agent 摘要、任务、输出和工件。导入不读取 MCP/Admin Token 明文；旧升级活动需暂停并在新 Center 重新创建。
 
@@ -173,7 +184,7 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_NAME` | 主机名 | 稳定机器名称；同名重装会复用机器记录并轮换凭据 |
 | `REMOTE_CONNECT_MCP_AGENT_HOST_ID` | 主机名 | 物理终端归组标识；同一终端的多个 Agent 使用同一个值，但不共享 machine ID 或权限 |
 | `REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD` | 启动目录 | 相对工作目录的基准；在 `workspace` 模式下必须位于工作区根目录内 |
-| `REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE` | `unrestricted` | `unrestricted` 保持整机模式；`workspace` 启用工作目录边界 |
+| `REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE` | `workspace` | 支持 `project`、`worktree`、`path`、`workspace`；`unrestricted` 必须显式配置 |
 | `REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT` | 空 | `workspace` 模式的根目录；为空时使用 `DEFAULT_CWD` |
 | `REMOTE_CONNECT_MCP_AGENT_CAPABILITIES` | 内置 `command,durable_tasks` | 可选能力标签，使用逗号分隔；仅用于 Center/控制台展示，不直接授予权限 |
 | `REMOTE_CONNECT_MCP_AGENT_VERSION` | `dev` | 初始上报版本；升级 Helper 成功后写入私有 `STATE_DIR/agent-version`，重启后自动上报新版本 |
@@ -182,6 +193,13 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` | `1`（默认不超过 2，且不超过总并发） | Browser Worker 独立上限，范围 1–8；达到上限时 Agent 暂不向 Center 声明 `browser` 能力 |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES` | `67108864` | 单任务 stdout/stderr 捕获上限，范围 1 MiB–1 GiB |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES` | `67108864`（并发提高时默认最多 256 MiB） | 所有普通任务磁盘 spool 的聚合上限；必须不小于单任务上限，范围单任务上限–4 GiB；达到后任务继续运行但后续输出标记为截断 |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS` | `0` | 单任务墙钟上限；0 表示不额外收紧任务/合同（范围 0–2592000） |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES` | `32` | 单任务进程树上限（含根进程，范围 1–256），超限会终止整棵树 |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES` | `min(256, max(32, MAX_CONCURRENCY×32))` | command、desktop 直启和 browser 共享的 Agent 级进程总预算，范围 1–4096；耗尽时新任务 fail-closed，退出后自动释放 |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES` | `0` | 单任务 RSS 上限；Linux 通过 `/proc` 执行，0 或不支持的平台表示关闭（最多 16 GiB） |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS` | `0` | 单任务累计 CPU 时间上限（范围 0–2592000） |
+| `REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS` | `1000` | 资源监督的任务级采样间隔（250–10000 ms）；只在任务运行时启用，不产生空闲 Agent 轮询 |
+| `REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH` | 空 | Linux 可选的预创建 cgroup v2 目录；任务启动时加入该 cgroup，目录不可用则任务 fail-closed；留空使用 JDK 进程树监督 |
 | `REMOTE_CONNECT_MCP_AGENT_POLL_INTERVAL_MS` | `5000` | 仅用于旧 Center/长轮询关闭时的兼容退避；范围 250–60000 ms，断线时自动指数退避 |
 | `REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS` | `25` | Agent 单次 HTTPS 长轮询等待秒数（0–25）；事件/取消/配置到达即返回，0 仅用于旧 Center 兼容 |
 | `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT` | `poll` | 设置为 `websocket` 时启用额外的 Agent WebSocket 唤醒提示；任务数据和认证仍走 HTTPS，连接失败自动退避 |
@@ -190,13 +208,17 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED` | `false` | 显式启用桌面伴侣；必须以用户会话运行，系统服务本身不链接 AWT |
 | `REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER` | 空 | Browser Agent 本机 Playwright/Patchright/Comoufox Worker 命令；设置后才可执行 browser 任务，任务 JSON 通过临时请求文件传入，截图/下载通过受目录约束的结果清单回传；仓库参考 Worker 为 `scripts/browser-worker.mjs` |
 | `REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY` | 同目录 `rcm-browser-agent` | 可选的独立 Browser Agent Native 二进制；未配置时自动查找 command-agent 同目录的 `rcm-browser-agent`，找不到则兼容地直接执行适配器命令 |
+| `REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR` | 空 | 可选的目标机持久浏览器 Profile 目录；只由 Browser Worker 使用，不上传 Cookie、扩展或 CDP 凭据 |
+| `REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE` | `playwright` | 本机适配器引擎：`playwright`、`patchright` 或 `comoufox`；不由 Center/模型远程选择 |
+| `REMOTE_CONNECT_MCP_AGENT_BROWSER` | `chromium` | 本机浏览器类型：`chromium`、`firefox` 或 `webkit` |
+| `REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS` | `1` | Browser Worker 是否无头运行；仅影响目标机本地会话，不改变 Center 权限 |
 | `REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES` | `16` | 没有用户会话 companion 时，命令 Agent 的桌面启动回退上限（1–64）；伴侣进程有独立上限 |
 
-Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 Center，原始值以 `0600` 权限保存在 Agent 状态目录。注册时会同时上报 `host_id`、`scope_mode` 和 `workspace_root`，控制台的机器详情可据此区分同一终端上的多个物理 Agent。若身份被吊销或丢失，请在 Center 重新生成一次性 Token，更新目标 Agent 的配置并重启；正常的 Center 重启和新建 Enrollment Token 不会影响已注册 Agent。
+Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 Center，原始值以 `0600` 权限保存在 Agent 状态目录。注册时会同时上报 `host_id`、`scope_mode` 和 `workspace_root`，控制台的机器详情可据此区分同一终端上的多个物理 Agent。注册后的机器名称和 `host_id` 属于不可变身份字段，心跳只更新平台、版本、能力和运行时自描述；若身份被吊销或丢失，请在 Center 重新生成一次性 Token，更新目标 Agent 的配置并重启；正常的 Center 重启和新建 Enrollment Token 不会影响已注册 Agent。
 
 ### 多 Agent 与桌面/浏览器能力
 
-同一台物理终端默认只注册一个 Java `command-agent` 身份：系统服务负责命令/心跳，`-DesktopEnabled` 在用户登录时启动独立的 `rcm-desktop-companion` 进程，通过本机 IPC 获得截图、启动、点击、按键和文本输入能力，不新增 machine ID 或 Token。伴侣使用单实例锁、最多 4 个并发 IPC 请求和最多 16 个活动启动进程；命令 Agent 使用状态目录锁，防止服务重启重叠产生第二个子进程池；Browser Worker 默认最多 1 个（可显式提高但不超过 8）。若确实需要隔离运行多个物理 Agent，则为每个实例使用不同的 Agent 名称、一次性注册 Token、状态目录和 machine ID，并用相同的 `REMOTE_CONNECT_MCP_AGENT_HOST_ID` 归组；Browser Worker 的 Profile/Cookie 仍只保留在本机。详细边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+同一台物理终端默认只注册一个 Java `command-agent` 身份：系统服务负责命令/心跳，`-DesktopEnabled` 在用户登录时启动独立的 `rcm-desktop-companion` 进程，通过本机 IPC 获得截图、启动、点击、按键和文本输入能力，不新增 machine ID 或 Token。伴侣使用单实例锁、最多 4 个并发 IPC 请求和最多 16 个活动启动进程；命令 Agent 使用状态目录锁，防止服务重启重叠产生第二个子进程池；Browser Worker 默认最多 1 个（可显式提高但不超过 8）。若确实需要隔离运行多个物理 Agent，则为每个实例使用不同的 Agent 名称、一次性注册 Token、状态目录和 machine ID，并用相同的 `REMOTE_CONNECT_MCP_AGENT_HOST_ID` 归组；Center 只允许同名 Agent 在相同 `host_id` 下重装，来自其他 `host_id` 的同名注册会被拒绝，避免误旋转已有 Token；Browser Worker 的 Profile/Cookie 仍只保留在本机。详细边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
 Browser `snapshot` 返回的 `rcm-ref-v1:*` 只是一段有界定位描述（role/name、test-id、placeholder 或 text 加序号），不是跨页面永久句柄；页面结构变化后应重新获取快照。为恢复多次调用之间的页面，给 Agent 服务环境配置独立的 Worker 变量 `RCM_BROWSER_PROFILE_DIR`，Agent 会在自己的状态目录保存不含查询参数和片段的最近页面路径；登录态仍由浏览器 profile 管理，任何一次性 URL 都必须显式再次导航。
 

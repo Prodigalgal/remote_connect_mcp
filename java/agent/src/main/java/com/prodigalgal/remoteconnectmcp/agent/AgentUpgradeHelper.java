@@ -35,7 +35,7 @@ final class AgentUpgradeHelper {
             apply(config);
             startRuntime(config);
             cleanupAfterSuccess(config);
-            writeResult(Path.of(config.stateDir()), new Result(config.campaignId(), "completed", null, Instant.now()));
+            writeResult(Path.of(config.stateDir()), new Result(config.campaignId(), "completed", null, Instant.now(), config.attempt()));
             return 0;
         } catch (Exception exception) {
             var message = compactError(exception.getMessage());
@@ -43,7 +43,7 @@ final class AgentUpgradeHelper {
                 if (config != null) {
                     rollback(config);
                     startRuntime(config);
-                    writeResult(Path.of(config.stateDir()), new Result(config.campaignId(), "failed", message, Instant.now()));
+                    writeResult(Path.of(config.stateDir()), new Result(config.campaignId(), "failed", message, Instant.now(), config.attempt()));
                 }
             } catch (Exception ignored) {
                 // Preserve the original failure for the next Agent heartbeat.
@@ -481,13 +481,21 @@ final class AgentUpgradeHelper {
     }
 
     record Config(String campaignId, String version, String staged, String target, String stateDir,
-                  String serviceName, long parentPid, boolean archive) {
+                  String serviceName, long parentPid, boolean archive, Integer attempt) {
+        Config(String campaignId, String version, String staged, String target, String stateDir,
+               String serviceName, long parentPid, boolean archive) {
+            this(campaignId, version, staged, target, stateDir, serviceName, parentPid, archive, null);
+        }
+
         Config(String campaignId, String version, String staged, String target, String stateDir,
                String serviceName, long parentPid) {
-            this(campaignId, version, staged, target, stateDir, serviceName, parentPid, false);
+            this(campaignId, version, staged, target, stateDir, serviceName, parentPid, false, null);
         }
     }
 
-    record Result(String campaignId, String status, String error, Instant updatedAt) {
+    record Result(String campaignId, String status, String error, Instant updatedAt, Integer attempt) {
+        Result(String campaignId, String status, String error, Instant updatedAt) {
+            this(campaignId, status, error, updatedAt, null);
+        }
     }
 }

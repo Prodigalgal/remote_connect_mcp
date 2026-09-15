@@ -1,0 +1,69 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: remote-connect-mcp-slo
+  namespace: remote-connect-mcp
+  labels:
+    app.kubernetes.io/name: remote-connect-mcp-center
+    app.kubernetes.io/part-of: remote-connect-mcp
+spec:
+  groups:
+    - name: remote-connect-mcp.slo
+      rules:
+        - alert: RCMTaskFailureRatioHigh
+          expr: remote_connect_mcp_tasks_terminal >= 10
+            and remote_connect_mcp_tasks_failure_ratio > 0.20
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: RCM task failure ratio is high
+            description: More than 20% of terminal tasks have failed while at least 10 terminal tasks are present.
+
+        - alert: RCMTaskQueueStalled
+          expr: remote_connect_mcp_tasks_queue_depth > 0
+            and remote_connect_mcp_tasks_oldest_queued_age_seconds > 300
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: RCM task queue is stalled
+            description: A queued task has waited for more than five minutes.
+
+        - alert: RCMTaskLeaseExpired
+          expr: remote_connect_mcp_tasks_expired_leases > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: RCM has expired task leases
+            description: One or more active tasks have passed their lease deadline and require recovery inspection.
+
+        - alert: RCMAgentAvailabilityLow
+          expr: remote_connect_mcp_machines_total > 0
+            and remote_connect_mcp_machines_online_ratio < 0.80
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: RCM Agent availability is low
+            description: Fewer than 80% of registered Agents have a fresh heartbeat.
+
+        - alert: RCMUpgradeFailure
+          expr: remote_connect_mcp_upgrades_failure_ratio > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: RCM upgrade campaign has failed targets
+            description: At least one terminal upgrade campaign is marked failed; inspect the campaign before retrying.
+
+        - alert: RCMAuditBackpressure
+          expr: remote_connect_mcp_audit_queue_depth > 1000
+            or increase(remote_connect_mcp_audit_events_dropped_total[10m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: RCM audit sink is under backpressure
+            description: The bounded audit writer queue is filling or has dropped events; task execution remains independent.

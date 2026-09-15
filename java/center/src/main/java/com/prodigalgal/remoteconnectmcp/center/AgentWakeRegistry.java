@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Condition;
@@ -22,6 +23,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.CloseStatus;
 
 /**
  * Low-cost wake-up fan-out for the connected Agent sessions. The local map
@@ -35,6 +37,12 @@ import org.springframework.web.socket.WebSocketSession;
 public final class AgentWakeRegistry implements AutoCloseable {
     private static final String CHANNEL = "rcm_agent_wake";
     private static final Logger LOG = Logger.getLogger(AgentWakeRegistry.class.getName());
+    private static final int MAX_TOTAL_SESSIONS = 1024;
+    private static final int MAX_SESSIONS_PER_MACHINE = 8;
+    // pgjdbc's zero-timeout notification overload is a non-blocking probe,
+    // not an infinite wait. A bounded socket wait avoids an idle hot loop
+    // while still letting the reconnect path notice a broken connection.
+    private static final int NOTIFICATION_WAIT_MILLIS = 30_000;
     private final Map<String, Set<WebSocketSession>> sessions = new ConcurrentHashMap<>();
     private final Map<String, WaitState> waitStates = new ConcurrentHashMap<>();
     private final ExecutorService sender = Executors.newVirtualThreadPerTaskExecutor();
@@ -42,6 +50,7 @@ public final class AgentWakeRegistry implements AutoCloseable {
     private final DataSource dataSource;
     private final String instanceId = UUID.randomUUID().toString();
     private final Set<String> pendingDatabaseSignals = ConcurrentHashMap.newKeySet();
+    private final AtomicInteger sessionCount = new AtomicInteger();
     private final AtomicReference<Connection> listenerConnection = new AtomicReference<>();
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -52,9 +61,23 @@ public final class AgentWakeRegistry implements AutoCloseable {
         }
     }
 
-    public void register(String machineId, WebSocketSession session) {
-        if (machineId == null || machineId.isBlank() || session == null) return;
-        sessions.computeIfAbsent(machineId.trim(), ignored -> ConcurrentHashMap.newKeySet()).add(session);
+    public boolean register(String machineId, WebSocketSession session) {
+        if (closed.get() || machineId == null || machineId.isBlank() || session == null) return false;
+        var normalized = machineId.trim();
+        var connected = sessions.computeIfAbsent(normalized, ignored -> ConcurrentHashMap.newKeySet());
+        synchronized (connected) {
+            if (connected.contains(session)) return true;
+            if (connected.size() >= MAX_SESSIONS_PER_MACHINE || !reserveSession()) {
+                if (connected.isEmpty()) sessions.remove(normalized, connected);
+                rejectSession(session);
+                return false;
+            }
+            if (!connected.add(session)) {
+                releaseSession();
+                return false;
+            }
+            return true;
+        }
     }
 
     public void unregister(String machineId, WebSocketSession session) {
@@ -62,7 +85,7 @@ public final class AgentWakeRegistry implements AutoCloseable {
         var normalized = machineId.trim();
         var connected = sessions.get(normalized);
         if (connected == null) return;
-        connected.remove(session);
+        if (connected.remove(session)) sessionCount.updateAndGet(value -> Math.max(0, value - 1));
         if (connected.isEmpty()) {
             sessions.remove(normalized, connected);
             waitStates.computeIfPresent(normalized, (ignored, state) ->
@@ -129,9 +152,10 @@ public final class AgentWakeRegistry implements AutoCloseable {
         var normalized = machineId == null ? "" : machineId.trim();
         if (normalized.isBlank()) return;
         var state = waitStates.computeIfAbsent(normalized, ignored -> new WaitState());
+        long sequence;
         state.lock.lock();
         try {
-            state.sequence.incrementAndGet();
+            sequence = state.sequence.incrementAndGet();
             state.changed.signalAll();
         } finally {
             state.lock.unlock();
@@ -139,7 +163,8 @@ public final class AgentWakeRegistry implements AutoCloseable {
         var connected = sessions.get(normalized);
         if (connected != null && !connected.isEmpty()) {
             for (var session : Set.copyOf(connected)) {
-                sender.execute(() -> send(normalized, session));
+                var hintSequence = sequence;
+                sender.execute(() -> send(normalized, session, hintSequence));
             }
         }
         // A control event may arrive for a machine with no active HTTP or
@@ -154,14 +179,16 @@ public final class AgentWakeRegistry implements AutoCloseable {
         return connected != null && !connected.isEmpty();
     }
 
-    private void send(String machineId, WebSocketSession session) {
+    private void send(String machineId, WebSocketSession session, long sequence) {
         if (!session.isOpen()) {
             unregister(machineId, session);
             return;
         }
         try {
             synchronized (session) {
-                if (session.isOpen()) session.sendMessage(new TextMessage("{\"type\":\"wake\"}"));
+                if (session.isOpen()) {
+                    session.sendMessage(new TextMessage("{\"type\":\"wake\",\"sequence\":" + sequence + "}"));
+                }
             }
         } catch (IOException | RuntimeException exception) {
             LOG.log(Level.FINE, "could not send Agent wake hint", exception);
@@ -194,13 +221,11 @@ public final class AgentWakeRegistry implements AutoCloseable {
                 listenerConnection.set(connection);
                 delayMillis = 1000L;
                 while (!closed.get() && !Thread.currentThread().isInterrupted()) {
-                    // Block on the PostgreSQL socket until a notification is
-                    // available instead of waking every second on every
-                    // Center replica.
-                    // The no-argument driver API is non-blocking.  The zero
-                    // timeout overload blocks forever until a notification or
-                    // socket error, so idle replicas consume no wake cycles.
-                    var notifications = postgres.getNotifications(0);
+                    // Wait in the driver on the PostgreSQL socket. A
+                    // notification returns immediately; the bounded timeout
+                    // is only a liveness check for a dead socket and is not a
+                    // fleet/task polling interval.
+                    var notifications = postgres.getNotifications(NOTIFICATION_WAIT_MILLIS);
                     if (notifications == null) continue;
                     for (var notification : notifications) {
                         dispatchNotification(notification.getParameter());
@@ -257,7 +282,29 @@ public final class AgentWakeRegistry implements AutoCloseable {
         database.shutdownNow();
         sender.shutdownNow();
         sessions.clear();
+        sessionCount.set(0);
         waitStates.clear();
+    }
+
+    private static void rejectSession(WebSocketSession session) {
+        try {
+            if (session.isOpen()) session.close(CloseStatus.POLICY_VIOLATION);
+        } catch (IOException | RuntimeException ignored) {
+            // The peer may already have disconnected; the bounded admission
+            // decision is still complete and no retry is needed.
+        }
+    }
+
+    private boolean reserveSession() {
+        while (true) {
+            var current = sessionCount.get();
+            if (current >= MAX_TOTAL_SESSIONS) return false;
+            if (sessionCount.compareAndSet(current, current + 1)) return true;
+        }
+    }
+
+    private void releaseSession() {
+        sessionCount.updateAndGet(value -> Math.max(0, value - 1));
     }
 
     private static final class WaitState {

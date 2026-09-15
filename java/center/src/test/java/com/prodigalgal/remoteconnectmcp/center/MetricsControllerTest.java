@@ -23,8 +23,8 @@ class MetricsControllerTest {
         tasks.appendOutput(registration.machineId(), task.id(), 0, "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8));
         var upgrades = new UpgradeService(registry, tasks, new UpgradeConfig(true, ""));
         var async = new CenterAsyncExecutor();
-        try {
-            var controller = new MetricsController(new AdminTokens(), registry, tasks, upgrades, async);
+        try (var audit = new AuditService(null)) {
+            var controller = new MetricsController(new AdminTokens(), registry, tasks, upgrades, audit, async);
             var unauthorized = controller.metrics("Bearer wrong").join();
             assertEquals(401, unauthorized.getStatusCode().value());
             var authorized = controller.metrics("Bearer admin").join();
@@ -36,6 +36,9 @@ class MetricsControllerTest {
             assertTrue(!body.contains("secret-command"));
             assertTrue(!body.contains("/private/path"));
             assertTrue(!body.contains("hidden"));
+            assertTrue(body.contains("remote_connect_mcp_tasks_success_ratio 0.0"));
+            assertTrue(body.contains("remote_connect_mcp_tasks_queue_depth 1"));
+            assertTrue(body.contains("remote_connect_mcp_audit_queue_depth"));
         } finally {
             async.close();
         }

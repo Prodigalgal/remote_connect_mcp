@@ -26,8 +26,13 @@ public final class ProtocolValidation {
         requireText(metadata.arch(), "arch", 64);
         requireText(metadata.version(), "version", 128);
         requireText(metadata.defaultCwd(), "defaultCwd", MAX_CWD_BYTES);
-        if (metadata.scopeMode() == ScopeMode.WORKSPACE) {
+        if (metadata.scopeMode() != null && metadata.scopeMode().bounded()) {
             requireText(metadata.workspaceRoot(), "workspaceRoot", MAX_CWD_BYTES);
+            // Reject an invalid machine policy at registration time.  Tasks
+            // still receive a separate contract, but a bounded Agent must
+            // never advertise a default cwd outside its own outer root.
+            WorkspacePolicy.validateRemote(metadata.scopeMode(), metadata.os(),
+                    metadata.workspaceRoot(), metadata.defaultCwd(), null);
         }
         if (metadata.capabilities().size() > 64) {
             throw new IllegalArgumentException("too many capabilities");
@@ -48,6 +53,24 @@ public final class ProtocolValidation {
             throw new IllegalArgumentException("timeoutSeconds is outside the allowed range");
         }
         validateEnv(task.env());
+        if (task.contract() != null) {
+            validateContract(task.contract(), task);
+        }
+        if (task.kind() != TaskKind.DESKTOP && task.desktop() != null) {
+            throw new IllegalArgumentException("desktop action is only valid for desktop tasks");
+        }
+        if (task.kind() == TaskKind.DESKTOP && !AgentCapability.DESKTOP.wireValue().equalsIgnoreCase(task.requiredCapability())) {
+            throw new IllegalArgumentException("desktop tasks require the desktop capability");
+        }
+        if (task.kind() == TaskKind.BROWSER && !AgentCapability.BROWSER.wireValue().equalsIgnoreCase(task.requiredCapability())) {
+            throw new IllegalArgumentException("browser tasks require the browser capability");
+        }
+        if (task.kind() == TaskKind.COMMAND && task.requiredCapability() != null
+                && !task.requiredCapability().isBlank()
+                && !AgentCapability.COMMAND.wireValue().equalsIgnoreCase(task.requiredCapability())
+                && !AgentCapability.DURABLE_TASKS.wireValue().equalsIgnoreCase(task.requiredCapability())) {
+            throw new IllegalArgumentException("command tasks require command or durable_tasks capability");
+        }
         if (task.kind() == TaskKind.DESKTOP) {
             if (task.desktop() == null || task.desktop().operation() == null || task.desktop().operation().isBlank()) {
                 throw new IllegalArgumentException("desktop action is required for desktop tasks");
@@ -55,7 +78,9 @@ public final class ProtocolValidation {
             requireText(task.desktop().operation(), "desktop operation", 64);
             var operation = task.desktop().operation().trim().toLowerCase(java.util.Locale.ROOT);
             if (!operation.equals("screenshot") && !operation.equals("screens") && !operation.equals("launch")
-                    && !operation.equals("click") && !operation.equals("drag") && !operation.equals("key")
+                    && !operation.equals("click") && !operation.equals("double_click")
+                    && !operation.equals("right_click") && !operation.equals("move")
+                    && !operation.equals("screenshot_region") && !operation.equals("drag") && !operation.equals("key")
                     && !operation.equals("type") && !operation.equals("clipboard_read")
                     && !operation.equals("clipboard_write") && !operation.equals("focus")) {
                 throw new IllegalArgumentException("unsupported desktop operation: " + operation);
@@ -66,10 +91,21 @@ public final class ProtocolValidation {
             if (operation.equals("launch") && (task.desktop().executable() == null || task.desktop().executable().isBlank())) {
                 throw new IllegalArgumentException("launch executable is required");
             }
-            if (operation.equals("click") && (task.desktop().x() == null || task.desktop().y() == null
+            if ((operation.equals("click") || operation.equals("double_click") || operation.equals("right_click")
+                    || operation.equals("move")) && (task.desktop().x() == null || task.desktop().y() == null
                     || task.desktop().x() < -100000 || task.desktop().x() > 100000
                     || task.desktop().y() < -100000 || task.desktop().y() > 100000)) {
-                throw new IllegalArgumentException("click requires x/y between -100000 and 100000");
+                throw new IllegalArgumentException(operation + " requires x/y between -100000 and 100000");
+            }
+            if (operation.equals("screenshot_region") && (task.desktop().x() == null || task.desktop().y() == null
+                    || task.desktop().x2() == null || task.desktop().y2() == null
+                    || task.desktop().x() < -100000 || task.desktop().x() > 100000
+                    || task.desktop().y() < -100000 || task.desktop().y() > 100000
+                    || task.desktop().x2() <= task.desktop().x() || task.desktop().x2() > 100000
+                    || task.desktop().y2() <= task.desktop().y() || task.desktop().y2() > 100000
+                    || ((long) task.desktop().x2() - task.desktop().x()) > 16000
+                    || ((long) task.desktop().y2() - task.desktop().y()) > 16000)) {
+                throw new IllegalArgumentException("screenshot_region requires ordered x/y/x2/y2 within a 16000x16000 region");
             }
             if (operation.equals("drag") && (task.desktop().x() == null || task.desktop().y() == null
                     || task.desktop().x2() == null || task.desktop().y2() == null
@@ -115,6 +151,21 @@ public final class ProtocolValidation {
         }
         if (task.kind() == TaskKind.BROWSER && (task.command() == null || task.command().isBlank())) {
             throw new IllegalArgumentException("browser adapter command is required for browser tasks");
+        }
+    }
+
+    public static void validateContract(ExecutionContract contract, TaskCommand task) {
+        Objects.requireNonNull(contract, "contract");
+        Objects.requireNonNull(task, "task");
+        if (!Objects.equals(contract.capability(), task.requiredCapability())) {
+            throw new IllegalArgumentException("execution contract capability does not match task capability");
+        }
+        if (contract.budget().maxDurationSeconds() > 0
+                && task.timeoutSeconds() > contract.budget().maxDurationSeconds()) {
+            throw new IllegalArgumentException("task timeout exceeds execution contract budget");
+        }
+        if (contract.scopeMode() == ScopeMode.PROJECT && contract.worktreeId() != null) {
+            throw new IllegalArgumentException("project contract cannot carry worktreeId");
         }
     }
 

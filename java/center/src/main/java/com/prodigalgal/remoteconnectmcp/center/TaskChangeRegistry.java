@@ -39,6 +39,10 @@ import org.springframework.stereotype.Component;
 public final class TaskChangeRegistry implements AutoCloseable {
     private static final String CHANNEL = "rcm_task_change";
     private static final Logger LOG = Logger.getLogger(TaskChangeRegistry.class.getName());
+    // pgjdbc's zero-timeout notification overload is a non-blocking probe.
+    // Use a bounded socket wait so an idle Center replica does not spin while
+    // still detecting a dead database connection without a task polling timer.
+    private static final int NOTIFICATION_WAIT_MILLIS = 30_000;
 
     private final DataSource dataSource;
     private final ExecutorService database = Executors.newVirtualThreadPerTaskExecutor();
@@ -217,11 +221,11 @@ public final class TaskChangeRegistry implements AutoCloseable {
                 listenerConnection.set(connection);
                 delayMillis = 1000L;
                 while (!closed.get() && !Thread.currentThread().isInterrupted()) {
-                    // The no-argument driver API is non-blocking.  Use the
-                    // timeout overload with zero to block forever on the
-                    // PostgreSQL socket and avoid a hot loop on every Center
-                    // replica while the channel is idle.
-                    var notifications = postgres.getNotifications(0);
+                    // Wait in the driver on the PostgreSQL socket. A
+                    // notification returns immediately; the bounded timeout
+                    // is only a liveness check and is not a task polling
+                    // interval.
+                    var notifications = postgres.getNotifications(NOTIFICATION_WAIT_MILLIS);
                     if (notifications == null) continue;
                     for (var notification : notifications) dispatchNotification(notification.getParameter());
                 }

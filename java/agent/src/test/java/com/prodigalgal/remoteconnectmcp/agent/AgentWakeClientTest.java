@@ -7,6 +7,7 @@ import java.net.URI;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
 class AgentWakeClientTest {
@@ -28,5 +29,15 @@ class AgentWakeClientTest {
         var client = AgentWakeClient.forTest(config, new AgentIdentity("machine", "token"), () -> { },
                 java.net.http.HttpClient.newHttpClient());
         client.close();
+    }
+
+    @Test
+    void wakeSequencesAreMonotonicButLegacyHintsRemainCompatible() {
+        var last = new AtomicLong();
+        org.junit.jupiter.api.Assertions.assertTrue(AgentWakeClient.acceptWakeSequence(last, 4));
+        org.junit.jupiter.api.Assertions.assertFalse(AgentWakeClient.acceptWakeSequence(last, 4));
+        org.junit.jupiter.api.Assertions.assertFalse(AgentWakeClient.acceptWakeSequence(last, 3));
+        org.junit.jupiter.api.Assertions.assertTrue(AgentWakeClient.acceptWakeSequence(last, 5));
+        org.junit.jupiter.api.Assertions.assertTrue(AgentWakeClient.acceptWakeSequence(last, 0));
     }
 }

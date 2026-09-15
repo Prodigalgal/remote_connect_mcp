@@ -3,6 +3,8 @@ package com.prodigalgal.remoteconnectmcp.center;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
+import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
@@ -39,6 +41,7 @@ public final class AdminController {
     private final ProjectService projects;
     private final TaskChangeRegistry changes;
     private final ReleaseCatalogService releases;
+    private final AuditService audit;
 
     @org.springframework.beans.factory.annotation.Autowired
     public AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
@@ -47,7 +50,8 @@ public final class AdminController {
                            ObjectProvider<AgentWakeRegistry> wakeProvider,
                            ProjectService projects,
                            ObjectProvider<TaskChangeRegistry> changeProvider,
-                           ObjectProvider<ReleaseCatalogService> releaseProvider) {
+                           ObjectProvider<ReleaseCatalogService> releaseProvider,
+                           ObjectProvider<AuditService> auditProvider) {
         this.tokens = tokens;
         this.agents = agents;
         this.tasks = tasks;
@@ -59,13 +63,14 @@ public final class AdminController {
         this.projects = projects;
         this.changes = changeProvider == null ? null : changeProvider.getIfAvailable();
         this.releases = releaseProvider == null ? null : releaseProvider.getIfAvailable();
+        this.audit = auditProvider == null ? null : auditProvider.getIfAvailable();
     }
 
     /** Compatibility constructor for direct protocol/controller tests. */
     AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                     EnrollmentTokenService enrollments, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
-        this(tokens, agents, tasks, enrollments, upgrades, configurations, async, null, null, null, null);
+        this(tokens, agents, tasks, enrollments, upgrades, configurations, async, null, null, null, null, null);
     }
 
     /**
@@ -105,7 +110,46 @@ public final class AdminController {
                                                          @RequestParam(defaultValue = "50") int limit) {
         return execute(() -> {
             authenticate(authorization);
-            return ResponseEntity.ok(Map.of("items", agents.listMachines(offset, limit, java.time.Instant.now()), "offset", offset, "limit", limit));
+            var items = agents.listMachines(offset, limit, java.time.Instant.now());
+            var total = agents.totalCount();
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
+        });
+    }
+
+    /** Bounded, redacted audit projection for the console; MCP never exposes this feed. */
+    @GetMapping("/audit")
+    public CompletableFuture<ResponseEntity<?>> audit(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(value = "event_type", required = false) String eventType,
+            @RequestParam(value = "agent_id", required = false) String agentId,
+            @RequestParam(value = "task_id", required = false) String taskId,
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestParam(defaultValue = "50") int limit) {
+        return execute(() -> {
+            authenticate(authorization);
+            var items = audit == null ? java.util.List.<AuditEventView>of()
+                    : audit.list(eventType, agentId, taskId, offset, limit);
+            var total = audit == null ? 0 : audit.count(eventType, agentId, taskId);
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
+        });
+    }
+
+    /** Explicit, bounded audit retention; never runs from a timer. */
+    @PostMapping("/audit/gc")
+    public CompletableFuture<ResponseEntity<?>> garbageCollectAudit(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "365") int retentionDays,
+            @RequestParam(defaultValue = "500") int limit) {
+        return execute(() -> {
+            authenticate(authorization);
+            var deleted = audit == null ? 0 : audit.purge(retentionDays, limit);
+            if (audit != null) {
+                audit.record("audit.gc", "admin", null, null, null, "medium", "accepted",
+                        "deleted=" + deleted + ",retention_days=" + retentionDays);
+            }
+            return ResponseEntity.ok(Map.of("deleted", deleted, "retention_days", retentionDays, "limit", limit));
         });
     }
 
@@ -115,7 +159,10 @@ public final class AdminController {
                                                          @RequestParam(defaultValue = "50") int limit) {
         return execute(() -> {
             authenticate(authorization);
-            return ResponseEntity.ok(Map.of("items", tasks.list(offset, limit), "offset", offset, "limit", limit));
+            var items = tasks.list(offset, limit);
+            var total = tasks.totalCount();
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
         });
     }
 
@@ -152,7 +199,25 @@ public final class AdminController {
             // the new generation over the authoritative HTTPS poll path.
             if (wakes != null) wakes.signal(machineId);
             signalChange();
+            if (audit != null) audit.record("agent.config.update", "admin", machineId, null, null, "medium", "accepted",
+                    "generation=" + updated.generation());
             return ResponseEntity.ok(updated);
+        });
+    }
+
+    @PostMapping("/machines/{machineId}/config/rollback")
+    public CompletableFuture<ResponseEntity<?>> rollbackMachineConfig(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String machineId) {
+        return execute(() -> {
+            authenticate(authorization);
+            agents.findMachine(machineId, java.time.Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
+            var rolledBack = configurations.rollback(machineId);
+            if (wakes != null) wakes.signal(machineId);
+            signalChange();
+            if (audit != null) audit.record("agent.config.rollback", "admin", machineId, null, null, "medium", "accepted",
+                    "generation=" + rolledBack.generation());
+            return ResponseEntity.ok(rolledBack);
         });
     }
 
@@ -205,23 +270,41 @@ public final class AdminController {
             authenticate(authorization);
             var decoded = decodeTaskRequest(request);
             var internal = decoded.internal();
+            // A bounded machine may safely inherit its registered workspace
+            // for legacy admin payloads.  An unrestricted machine may not:
+            // whole-host authority must be visible in the request so a UI,
+            // retry handler, or model cannot obtain it by omission.
+            if (!decoded.scopeExplicit() && decoded.projectId().isBlank()) {
+                var machine = agents.findMachine(internal.machineId(), java.time.Instant.now())
+                        .orElseThrow(() -> new IllegalArgumentException("machine not found"));
+                if (ScopeMode.fromWireValue(machine.scopeMode()) == ScopeMode.UNRESTRICTED) {
+                    throw new IllegalArgumentException("scope_mode=unrestricted must be explicit");
+                }
+            }
             if (!decoded.projectId().isBlank()) {
                 if (projects == null) throw new IllegalStateException("project service is unavailable");
                 var cwd = projects.resolveCwd(internal.machineId(), decoded.projectId(), decoded.worktreeId(), decoded.requestedCwd());
+                var scopeRoot = projects.resolveScopeRoot(internal.machineId(), decoded.projectId(), decoded.worktreeId());
                 var original = internal.command();
                 var scoped = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand(
                         "", original.kind(), original.requiredCapability(), original.command(), cwd,
-                        original.env(), original.timeoutSeconds(), original.desktop(), original.createdAt());
-                internal = new CreateTaskRequest(internal.machineId(), scoped, internal.idempotencyKey());
+                        original.env(), original.timeoutSeconds(), original.desktop(), original.createdAt(), original.contract());
+                var mode = internal.scopeMode() == null
+                        ? (decoded.worktreeId().isBlank() ? ScopeMode.PROJECT : ScopeMode.WORKTREE)
+                        : internal.scopeMode();
+                internal = new CreateTaskRequest(internal.machineId(), scoped, internal.idempotencyKey(),
+                        decoded.projectId(), decoded.worktreeId(), mode, scopeRoot, internal.sessionId(),
+                        internal.risk(), internal.elevationRequired());
             }
-            return ResponseEntity.status(HttpStatus.CREATED).body(tasks.create(internal));
+            return ResponseEntity.status(HttpStatus.CREATED).body(tasks.create(internal, "console"));
         });
     }
 
     /** Accept the flat console contract while keeping the old nested request compatible. */
     private static DecodedTaskRequest decodeTaskRequest(Object value) {
         if (value instanceof AdminCreateTaskRequest request) {
-            return new DecodedTaskRequest(request.toInternal(), request.projectId(), request.worktreeId(), request.cwd());
+            return new DecodedTaskRequest(request.toInternal(), request.projectId(), request.worktreeId(), request.cwd(),
+                    !request.scopeMode().isBlank());
         }
         if (!(value instanceof Map<?, ?> raw)) throw new IllegalArgumentException("task request is required");
         var commandValue = raw.get("command");
@@ -229,13 +312,26 @@ public final class AdminController {
             var flat = new AdminCreateTaskRequest(
                     text(raw.get("machine_id")), text(raw.get("command")), text(raw.get("cwd")),
                     stringMap(raw.get("env")), integer(raw.get("timeout_seconds")), text(raw.get("idempotency_key")),
-                    text(raw.get("project_id")), text(raw.get("worktree_id")));
-            return new DecodedTaskRequest(flat.toInternal(), flat.projectId(), flat.worktreeId(), flat.cwd());
+                    text(raw.get("project_id")), text(raw.get("worktree_id")), text(raw.get("scope_mode")),
+                    text(raw.get("scope_root")), text(raw.get("session_id")), text(raw.get("risk")),
+                    bool(raw.get("elevation_required")));
+            return new DecodedTaskRequest(flat.toInternal(), flat.projectId(), flat.worktreeId(), flat.cwd(),
+                    !flat.scopeMode().isBlank());
         }
         try {
             var command = JsonCodec.read(JsonCodec.write(commandValue), TaskCommand.class);
-            var internal = new CreateTaskRequest(text(raw.get("machine_id")), command, text(raw.get("idempotency_key")));
-            return new DecodedTaskRequest(internal, "", "", command.cwd());
+            if (command.contract() != null) {
+                throw new IllegalArgumentException("execution contract is managed by Center and cannot be supplied by the caller");
+            }
+            var scopeMode = text(raw.get("scope_mode"));
+            var projectId = text(raw.get("project_id"));
+            var worktreeId = text(raw.get("worktree_id"));
+            var internal = new CreateTaskRequest(text(raw.get("machine_id")), command,
+                    text(raw.get("idempotency_key")), projectId, worktreeId,
+                    scopeMode.isBlank() ? null : ScopeMode.fromWireValue(scopeMode),
+                    text(raw.get("scope_root")), text(raw.get("session_id")), text(raw.get("risk")),
+                    bool(raw.get("elevation_required")));
+            return new DecodedTaskRequest(internal, projectId, worktreeId, command.cwd(), !scopeMode.isBlank());
         } catch (IllegalArgumentException exception) {
             throw new IllegalArgumentException("command must be a string or a valid task command object", exception);
         }
@@ -252,6 +348,23 @@ public final class AdminController {
         catch (NumberFormatException exception) { throw new IllegalArgumentException("timeout_seconds must be an integer", exception); }
     }
 
+    @PostMapping("/artifacts/gc")
+    public CompletableFuture<ResponseEntity<?>> garbageCollectArtifacts(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "30") int retentionDays,
+            @RequestParam(defaultValue = "100") int limit) {
+        return execute(() -> {
+            authenticate(authorization);
+            return ResponseEntity.ok(tasks.gcArtifacts(retentionDays, limit));
+        });
+    }
+
+    private static Boolean bool(Object value) {
+        if (value == null) return Boolean.FALSE;
+        if (value instanceof Boolean flag) return flag;
+        return Boolean.parseBoolean(String.valueOf(value));
+    }
+
     private static Map<String, String> stringMap(Object value) {
         if (value == null) return Map.of();
         if (!(value instanceof Map<?, ?> raw)) throw new IllegalArgumentException("env must be an object");
@@ -263,7 +376,8 @@ public final class AdminController {
         return Map.copyOf(result);
     }
 
-    private record DecodedTaskRequest(CreateTaskRequest internal, String projectId, String worktreeId, String requestedCwd) {
+    private record DecodedTaskRequest(CreateTaskRequest internal, String projectId, String worktreeId,
+                                      String requestedCwd, boolean scopeExplicit) {
     }
 
     @PostMapping("/tasks/{taskId}/cancel")
@@ -281,7 +395,10 @@ public final class AdminController {
                                                           @RequestParam(defaultValue = "20") int limit) {
         return execute(() -> {
             authenticate(authorization);
-            return ResponseEntity.ok(Map.of("items", upgrades.list(offset, limit), "offset", offset, "limit", limit));
+            var items = upgrades.list(offset, limit);
+            var total = upgrades.count();
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
         });
     }
 
@@ -294,12 +411,13 @@ public final class AdminController {
     public CompletableFuture<ResponseEntity<?>> releases(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestParam(defaultValue = "20") int limit,
-            @RequestParam(defaultValue = "true") boolean includePrerelease) {
+            @RequestParam(defaultValue = "true") boolean includePrerelease,
+            @RequestParam(defaultValue = "false") boolean refresh) {
         return execute(() -> {
             authenticate(authorization);
             if (releases == null) throw new IllegalStateException("release catalog is unavailable");
             return ResponseEntity.ok().header("Cache-Control", "no-store")
-                    .body(releases.list(limit, includePrerelease));
+                    .body(releases.list(limit, includePrerelease, refresh));
         });
     }
 
@@ -322,6 +440,19 @@ public final class AdminController {
         });
     }
 
+    @PostMapping("/upgrades/{campaignId}/targets/{machineId}/retry")
+    public CompletableFuture<ResponseEntity<?>> retryUpgradeTarget(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String campaignId,
+            @PathVariable String machineId) {
+        return execute(() -> {
+            authenticate(authorization);
+            var result = upgrades.retryTarget(campaignId, machineId);
+            signalChange();
+            return ResponseEntity.ok(result);
+        });
+    }
+
     @PostMapping("/enrollment-tokens")
     public CompletableFuture<ResponseEntity<?>> issueEnrollment(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                                 @RequestBody(required = false) IssueEnrollmentRequest request) {
@@ -331,6 +462,14 @@ public final class AdminController {
             var seconds = body.expiresInSeconds() == null ? 24 * 60 * 60L : body.expiresInSeconds();
             var issued = enrollments.issue(body.requestedName(), Duration.ofSeconds(seconds));
             signalChange();
+            if (audit != null) {
+                // Never put the plaintext enrollment credential (or the
+                // requested machine name) into audit storage.  The token is
+                // returned once in the response and only its lifecycle event
+                // is retained here.
+                audit.record("enrollment.issue", "admin", null, null, null, "medium", "accepted",
+                        "token_issued=true,expires_at=" + issued.expiresAt());
+            }
             // The plaintext token is returned exactly once by this response;
             // database rows only contain the SHA-256 digest.
             return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
@@ -346,6 +485,10 @@ public final class AdminController {
             authenticate(authorization);
             var revoked = enrollments.revoke(tokenId) > 0;
             if (revoked) signalChange();
+            if (audit != null) {
+                audit.record("enrollment.revoke", "admin", null, null, null, "medium",
+                        revoked ? "accepted" : "not_found", "token_id_present=" + !tokenId.isBlank());
+            }
             return ResponseEntity.ok(Map.of("token_id", tokenId, "revoked", revoked));
         });
     }
@@ -381,8 +524,13 @@ public final class AdminController {
     }
 
     private static String message(Throwable exception) {
-        return exception == null || exception.getMessage() == null || exception.getMessage().isBlank()
+        var message = exception == null || exception.getMessage() == null || exception.getMessage().isBlank()
                 ? "request failed" : exception.getMessage();
+        return SensitiveValueRedactor.redact(message);
+    }
+
+    private static boolean hasMore(int offset, int size, int total) {
+        return offset >= 0 && size > 0 && offset < total - size;
     }
 
     private static Throwable unwrap(Throwable failure) {

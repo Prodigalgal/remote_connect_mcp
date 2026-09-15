@@ -34,10 +34,16 @@ final class GoStateImporter {
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final ArtifactStore artifactStore;
 
     GoStateImporter(JdbcTemplate jdbc, TransactionTemplate transactions) {
+        this(jdbc, transactions, new InMemoryArtifactStore());
+    }
+
+    GoStateImporter(JdbcTemplate jdbc, TransactionTemplate transactions, ArtifactStore artifactStore) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.transactions = Objects.requireNonNull(transactions, "transactions");
+        this.artifactStore = Objects.requireNonNull(artifactStore, "artifactStore");
     }
 
     ImportSummary importState(Path input) throws IOException {
@@ -216,13 +222,15 @@ final class GoStateImporter {
             var digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
             var expected = requiredHash(text(value.get("artifact_sha256")), "task " + taskId + " artifact_sha256");
             if (!digest.equalsIgnoreCase(expected)) throw new IllegalStateException("artifact SHA-256 mismatch for " + taskId);
+            var objectKey = artifactStore.put(taskId, digest, data);
             jdbc.update("""
-                    INSERT INTO rcm_task_artifact(task_id, mime_type, object_key, bytes, sha256, artifact_data, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO rcm_task_artifact(task_id, mime_type, storage_backend, object_key, bytes, sha256, artifact_data, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
                     ON CONFLICT (task_id) DO UPDATE SET mime_type = EXCLUDED.mime_type,
-                        object_key = EXCLUDED.object_key, bytes = EXCLUDED.bytes, sha256 = EXCLUDED.sha256,
-                        artifact_data = EXCLUDED.artifact_data, created_at = EXCLUDED.created_at
-                    """, taskId, mime, "inline:" + taskId, data.length, digest, data, timestamp(now));
+                        storage_backend = EXCLUDED.storage_backend, object_key = EXCLUDED.object_key,
+                        bytes = EXCLUDED.bytes, sha256 = EXCLUDED.sha256, artifact_data = NULL,
+                        created_at = EXCLUDED.created_at
+                    """, taskId, mime, artifactStore.backend(), objectKey, data.length, digest, timestamp(now));
             return true;
         } catch (IOException exception) {
             throw new IllegalStateException("cannot import Go artifact " + taskId, exception);

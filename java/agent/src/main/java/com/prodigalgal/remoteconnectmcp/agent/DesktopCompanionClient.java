@@ -12,8 +12,10 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Base64;
 
 /** Client for the optional user-session desktop companion on loopback. */
@@ -31,7 +33,7 @@ final class DesktopCompanionClient {
     static DesktopCompanionClient discover(Path stateDir) {
         try {
             var file = stateDir.toAbsolutePath().normalize().resolve(COMPANION_DIR).resolve(ENDPOINT_NAME);
-            if (!Files.isRegularFile(file)) return null;
+            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) return null;
             var bytes = Files.readAllBytes(file);
             if (bytes.length > 4096) return null;
             var endpoint = JsonCodec.read(bytes, Endpoint.class);
@@ -43,9 +45,18 @@ final class DesktopCompanionClient {
     }
 
     Response call(TaskCommand.DesktopAction action, Duration timeout) throws IOException {
+        return call(action, null, timeout);
+    }
+
+    Response call(TaskCommand.DesktopAction action,
+                  com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract contract,
+                  Duration timeout) throws IOException {
         var request = new Request(endpoint.token(), action.operation(), action.executable(), action.args(),
                 action.cwd(), action.text(), action.x(), action.y(), action.key(), action.x2(), action.y2(),
-                action.durationMs(), action.screen(), action.windowTitle());
+                action.durationMs(), action.screen(), action.windowTitle(),
+                contract == null ? null : contract.scopeMode().wireValue(),
+                contract == null ? null : contract.scopeRoot(),
+                contract == null ? null : contract.expiresAt());
         var payload = JsonCodec.write(request);
         if (payload.length > 128 * 1024) throw new IOException("desktop companion request is too large");
         var timeoutMillis = Math.max(1000, Math.min(300_000, timeout.toMillis()));
@@ -73,7 +84,10 @@ final class DesktopCompanionClient {
     record Request(String token, String operation, String executable, java.util.List<String> args, String cwd,
                    String text, Integer x, Integer y, String key, Integer x2, Integer y2,
                    @JsonProperty("duration_ms") Integer durationMs, Integer screen,
-                   @JsonProperty("window_title") String windowTitle) {
+                   @JsonProperty("window_title") String windowTitle,
+                   @JsonProperty("scope_mode") String scopeMode,
+                   @JsonProperty("scope_root") String scopeRoot,
+                   @JsonProperty("contract_expires_at") Instant contractExpiresAt) {
     }
 
     record Response(boolean ok, String output, @JsonProperty("mime_type") String mimeType,

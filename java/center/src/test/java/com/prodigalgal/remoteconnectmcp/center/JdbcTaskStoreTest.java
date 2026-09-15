@@ -31,8 +31,8 @@ class JdbcTaskStoreTest {
 
         assertEquals("task_1", view.id());
         assertEquals(2, jdbc.calls.size());
-        assertEquals(18, jdbc.calls.get(0).arguments.length,
-                "rcm_task has 21 columns: 18 parameters plus three literal defaults");
+        assertEquals(19, jdbc.calls.get(0).arguments.length,
+                "rcm_task has 22 columns: 19 parameters plus three literal defaults");
         assertTrue(jdbc.calls.get(0).sql.contains("INSERT INTO rcm_task"));
         assertTrue(jdbc.calls.get(1).sql.contains("rcm_task_output"));
     }

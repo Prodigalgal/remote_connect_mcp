@@ -17,3 +17,13 @@ databaseChangeLog:
       file: db/changelog/008-agent-name-unique.yaml
   - include:
       file: db/changelog/009-task-lease-index.yaml
+  - include:
+      file: db/changelog/010-execution-contract.yaml
+  - include:
+      file: db/changelog/011-artifact-storage.yaml
+  - include:
+      file: db/changelog/012-audit-events.yaml
+  - include:
+      file: db/changelog/013-agent-runtime-descriptor.yaml
+  - include:
+      file: db/changelog/014-agent-config-history.yaml

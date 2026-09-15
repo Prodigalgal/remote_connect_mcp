@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,18 +28,28 @@ final class DesktopTaskRunner implements Runnable {
     private final TaskCommand task;
     private final AgentTransport transport;
     private final DesktopProcessBudget directLaunchBudget;
+    private final AgentProcessBudget processBudget;
 
     DesktopTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task, AgentTransport transport) {
-        this(config, identity, task, transport, new DesktopProcessBudget());
+        this(config, identity, task, transport, new DesktopProcessBudget(),
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
     }
 
     DesktopTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
                       AgentTransport transport, DesktopProcessBudget directLaunchBudget) {
+        this(config, identity, task, transport, directLaunchBudget,
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
+    }
+
+    DesktopTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
+                      AgentTransport transport, DesktopProcessBudget directLaunchBudget,
+                      AgentProcessBudget processBudget) {
         this.config = config;
         this.identity = identity;
         this.task = task;
         this.transport = transport;
         this.directLaunchBudget = directLaunchBudget;
+        this.processBudget = processBudget;
     }
 
     @Override
@@ -51,10 +62,18 @@ final class DesktopTaskRunner implements Runnable {
             validate(action);
             sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
             var operation = action.operation().trim().toLowerCase(Locale.ROOT);
+            // Validate the contract before entering the user-session IPC.
+            // The companion is intentionally a small loopback process and
+            // must not become a second scope authority.  In particular,
+            // launch requests cannot smuggle an arbitrary cwd through the
+            // companion JSON after the command Agent has accepted the task.
+            var resolvedCwd = resolveCwd(action.cwd());
+            var scopedAction = withCwd(action, resolvedCwd.toString());
             var companion = DesktopCompanionClient.discover(config.stateDir());
             if (companion != null) {
                 try {
-                    completeCompanion(companion.call(action, Duration.ofSeconds(task.timeoutSeconds() <= 0 ? 30 : Math.min(task.timeoutSeconds(), 300))));
+                    completeCompanion(companion.call(scopedAction, task.contract(),
+                            Duration.ofSeconds(Math.min(TaskLimits.timeoutSeconds(task, 30), 300))));
                     return;
                 } catch (IOException exception) {
                     // A stale endpoint may be left while the user session is
@@ -68,7 +87,7 @@ final class DesktopTaskRunner implements Runnable {
                 throw new IOException("desktop user-session companion is not available for input actions");
             }
             if ("launch".equals(operation)) {
-                launch(action);
+                launch(scopedAction);
             } else if ("screenshot".equals(operation)) {
                 screenshot(action);
             } else {
@@ -112,24 +131,35 @@ final class DesktopTaskRunner implements Runnable {
                 builder.environment().put("RCM_DESKTOP_SCREENSHOT", file.toString());
             }
             var process = builder.start();
-            var timeout = task.timeoutSeconds() <= 0 ? 30 : Math.min(task.timeoutSeconds(), 300);
-            if (!process.waitFor(timeout, TimeUnit.SECONDS)) {
-                process.destroyForcibly();
-                throw new IOException("desktop screenshot timed out");
-            }
-            if (process.exitValue() != 0) {
-                throw new IOException("desktop screenshot command exited with code " + process.exitValue());
+            var resourceSupervisor = ProcessResourceSupervisor.start(process, config, task,
+                    () -> terminate(process), processBudget);
+            try {
+                var timeout = Math.min(TaskLimits.timeoutSeconds(task, 30), 300);
+                if (!process.waitFor(timeout, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    throw new IOException("desktop screenshot timed out");
+                }
+                var resourceViolation = resourceSupervisor == null ? null : resourceSupervisor.violation();
+                if (resourceViolation != null && !resourceViolation.isBlank()) {
+                    throw new IOException(resourceViolation);
+                }
+                if (process.exitValue() != 0) {
+                    throw new IOException("desktop screenshot command exited with code " + process.exitValue());
+                }
+            } finally {
+                if (resourceSupervisor != null) resourceSupervisor.close();
             }
             var data = Files.readAllBytes(file);
-            if (data.length == 0 || data.length > MAX_SCREENSHOT_BYTES) {
-                throw new IOException("desktop screenshot is empty or exceeds " + MAX_SCREENSHOT_BYTES + " bytes");
+            var maxArtifactBytes = TaskLimits.artifactBytes(task, MAX_SCREENSHOT_BYTES);
+            if (data.length == 0 || data.length > maxArtifactBytes) {
+                throw new IOException("desktop screenshot is empty or exceeds " + maxArtifactBytes + " bytes");
             }
             if (data.length < 8 || data[0] != (byte) 0x89 || data[1] != 0x50 || data[2] != 0x4e || data[3] != 0x47) {
                 throw new IOException("desktop screenshot is not a PNG");
             }
             var digest = sha256(data);
             AgentRetry.call(LOG, "desktop artifact upload " + task.id(), () -> {
-                transport.appendArtifact(identity.machineId(), identity.token(), task.id(), "image/png", digest, data);
+                transport.appendArtifact(identity.machineId(), identity.token(), task.id(), task.attempt(), "image/png", digest, data);
                 return null;
             });
             sendOutput("screenshot captured (" + data.length + " bytes)" + System.lineSeparator());
@@ -141,7 +171,8 @@ final class DesktopTaskRunner implements Runnable {
 
     private void completeCompanion(DesktopCompanionClient.Response response) throws IOException, InterruptedException {
         var data = response.data();
-        if (data.length > MAX_SCREENSHOT_BYTES) throw new IOException("desktop companion artifact exceeds 8 MiB");
+        var maxArtifactBytes = TaskLimits.artifactBytes(task, MAX_SCREENSHOT_BYTES);
+        if (data.length > maxArtifactBytes) throw new IOException("desktop companion artifact exceeds " + maxArtifactBytes + " bytes");
         if (data.length > 0) {
             if (!"image/png".equalsIgnoreCase(response.mimeType()) || data.length < 8
                     || data[0] != (byte) 0x89 || data[1] != 0x50 || data[2] != 0x4e || data[3] != 0x47) {
@@ -149,7 +180,7 @@ final class DesktopTaskRunner implements Runnable {
             }
             var digest = sha256(data);
             AgentRetry.call(LOG, "desktop companion artifact upload " + task.id(), () -> {
-                transport.appendArtifact(identity.machineId(), identity.token(), task.id(), "image/png", digest, data);
+                transport.appendArtifact(identity.machineId(), identity.token(), task.id(), task.attempt(), "image/png", digest, data);
                 return null;
             });
         }
@@ -199,20 +230,26 @@ final class DesktopTaskRunner implements Runnable {
     }
 
     private Path resolveCwd(String requested) throws IOException {
-        return AgentPaths.resolveCwd(config, requested);
+        return AgentPaths.resolveCwd(config, identity.machineId(), task, requested);
+    }
+
+    private static TaskCommand.DesktopAction withCwd(TaskCommand.DesktopAction action, String cwd) {
+        return new TaskCommand.DesktopAction(action.operation(), action.executable(), action.args(), cwd,
+                action.text(), action.x(), action.y(), action.key(), action.x2(), action.y2(),
+                action.durationMs(), action.screen(), action.windowTitle());
     }
 
     private void sendOutput(String text) throws IOException, InterruptedException {
         var data = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         AgentRetry.call(LOG, "desktop output upload " + task.id(), () -> {
-            transport.appendOutput(identity.machineId(), identity.token(), task.id(), 0, data);
+            transport.appendOutput(identity.machineId(), identity.token(), task.id(), task.attempt(), 0, data);
             return null;
         });
     }
 
     private void sendState(TaskUpdateRequest state) throws IOException, InterruptedException {
         AgentRetry.call(LOG, "desktop state upload " + task.id(), () -> {
-            transport.updateState(identity.machineId(), identity.token(), task.id(), state);
+            transport.updateState(identity.machineId(), identity.token(), task.id(), task.attempt(), state);
             return null;
         });
     }
@@ -220,8 +257,10 @@ final class DesktopTaskRunner implements Runnable {
     private static void validate(TaskCommand.DesktopAction action) {
         if (action == null || action.operation() == null || action.operation().isBlank()) throw new IllegalArgumentException("desktop action is required");
         var operation = action.operation().trim().toLowerCase(Locale.ROOT);
-        if (!operation.equals("launch") && !operation.equals("screenshot") && !operation.equals("screens")
-                && !operation.equals("click") && !operation.equals("drag") && !operation.equals("key")
+            if (!operation.equals("launch") && !operation.equals("screenshot") && !operation.equals("screens")
+                && !operation.equals("click") && !operation.equals("double_click")
+                && !operation.equals("right_click") && !operation.equals("move")
+                && !operation.equals("screenshot_region") && !operation.equals("drag") && !operation.equals("key")
                 && !operation.equals("type") && !operation.equals("clipboard_read")
                 && !operation.equals("clipboard_write") && !operation.equals("focus")) {
             throw new IllegalArgumentException("unsupported desktop operation: " + operation);
@@ -232,15 +271,21 @@ final class DesktopTaskRunner implements Runnable {
             if (value == null || value.indexOf('\u0000') >= 0 || value.length() > MAX_ARG_CHARS) throw new IllegalArgumentException("desktop argument is invalid");
         });
         if (operation.equals("launch") && (action.executable() == null || action.executable().isBlank())) throw new IllegalArgumentException("launch executable is required");
-        if ((operation.equals("screenshot") || operation.equals("screens") || operation.equals("clipboard_read")
+        if ((operation.equals("screenshot") || operation.equals("screenshot_region") || operation.equals("screens") || operation.equals("clipboard_read")
                 || operation.equals("clipboard_write") || operation.equals("drag") || operation.equals("click")
+                || operation.equals("double_click") || operation.equals("right_click") || operation.equals("move")
                 || operation.equals("key") || operation.equals("type") || operation.equals("focus"))
                 && (action.executable() != null || !action.args().isEmpty())) {
             throw new IllegalArgumentException("executable and args are allowed only for launch");
         }
-        if (operation.equals("click") && (action.x() == null || action.y() == null)) throw new IllegalArgumentException("click requires x/y");
+        if ((operation.equals("click") || operation.equals("double_click") || operation.equals("right_click") || operation.equals("move"))
+                && (action.x() == null || action.y() == null)) throw new IllegalArgumentException(operation + " requires x/y");
         if (operation.equals("drag") && (action.x() == null || action.y() == null || action.x2() == null || action.y2() == null)) {
             throw new IllegalArgumentException("drag requires x/y/x2/y2");
+        }
+        if (operation.equals("screenshot_region") && (action.x() == null || action.y() == null
+                || action.x2() == null || action.y2() == null || action.x2() <= action.x() || action.y2() <= action.y())) {
+            throw new IllegalArgumentException("screenshot_region requires ordered x/y/x2/y2");
         }
         if (operation.equals("key") && (action.key() == null || action.key().isBlank())) throw new IllegalArgumentException("key requires key name");
         if (operation.equals("type") && (action.text() == null || action.text().isEmpty() || action.text().length() > 16384)) throw new IllegalArgumentException("type requires text up to 16384 characters");
@@ -257,10 +302,7 @@ final class DesktopTaskRunner implements Runnable {
     }
 
     private static void cleanSensitiveEnvironment(java.util.Map<String, String> environment) {
-        environment.keySet().removeIf(key -> {
-            var upper = key.toUpperCase(Locale.ROOT);
-            return upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("SECRET");
-        });
+        environment.keySet().removeIf(CommandRunner::isSensitive);
     }
 
     private static String sha256(byte[] data) {
@@ -272,7 +314,25 @@ final class DesktopTaskRunner implements Runnable {
     }
 
     private static String compactError(String value) {
-        var error = value == null || value.isBlank() ? "desktop task failed" : value.trim();
+        var error = value == null || value.isBlank() ? "desktop task failed" : SensitiveValueRedactor.redact(value.trim());
         return error.length() <= 4096 ? error : error.substring(0, 4096);
+    }
+
+    private static void terminate(Process process) {
+        if (process == null) return;
+        try {
+            var descendants = process.descendants().toList();
+            for (var index = descendants.size() - 1; index >= 0; index--) descendants.get(index).destroy();
+            process.destroy();
+            if (!process.waitFor(2, TimeUnit.SECONDS) && process.isAlive()) process.destroyForcibly();
+            for (var index = descendants.size() - 1; index >= 0; index--) {
+                if (descendants.get(index).isAlive()) descendants.get(index).destroyForcibly();
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+        } catch (RuntimeException ignored) {
+            process.destroyForcibly();
+        }
     }
 }

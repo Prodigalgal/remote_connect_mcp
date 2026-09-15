@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
+import com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import java.util.ArrayList;
@@ -43,6 +45,72 @@ class AgentRegistryTest {
         assertNotEquals(first.token(), second.token());
         assertThrows(SecurityException.class, () -> registry.poll(first.machineId(), first.token(), new PollRequest(List.of(), 1, List.of("command"))));
         registry.poll(second.machineId(), second.token(), new PollRequest(List.of(), 1, List.of("command")));
+    }
+
+    @Test
+    void sameNameFromAnotherHostCannotRotateAnExistingIdentity() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var firstRequest = new RegisterRequest("shared-name", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"));
+        var secondRequest = new RegisterRequest("shared-name", "host-b", "host-b", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"));
+        var first = registry.register(firstRequest, "enroll-test");
+
+        assertThrows(IllegalArgumentException.class, () -> registry.register(secondRequest, "enroll-test"));
+        assertEquals(1, registry.size());
+        registry.poll(first.machineId(), first.token(), new PollRequest(List.of(), 1, List.of("command")));
+    }
+
+    @Test
+    void sameHostCanRunMultipleNamedPhysicalAgents() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var command = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var desktop = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+
+        assertNotEquals(command.machineId(), desktop.machineId());
+        assertEquals(2, registry.size());
+    }
+
+    @Test
+    void heartbeatCannotRenameOrRegroupAnAgentIdentity() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var request = new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"));
+        var response = registry.register(request, "enroll-test");
+        var renamed = new AgentMetadata("other-name", "host-b", "host-b", "linux", "amd64", "v2", "/srv",
+                ScopeMode.UNRESTRICTED, null, List.of("command"));
+
+        assertThrows(SecurityException.class, () -> registry.poll(response.machineId(), response.token(),
+                new PollRequest(List.of(), 1, List.of("command"), renamed)));
+        assertEquals("command-agent", registry.findMachine(response.machineId(), java.time.Instant.now()).orElseThrow().name());
+    }
+
+    @Test
+    void keepsTheLatestRuntimeDescriptorInTheMachineProjection() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var request = new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"));
+        var response = registry.register(request, "enroll-test");
+        var runtime = new AgentRuntimeDescriptor(1, 3, 2, 1,
+                16L * 1024 * 1024, 64L * 1024 * 1024, 8, 600, 0, 0, false, true);
+        var metadata = new AgentMetadata("command-agent", "host-a", "host-a", "linux", "amd64", "v2", "/srv",
+                ScopeMode.UNRESTRICTED, null, List.of("command", "browser"), runtime);
+
+        registry.poll(response.machineId(), response.token(), new PollRequest(List.of(), 2,
+                List.of("command", "browser"), metadata));
+
+        var view = registry.findMachine(response.machineId(), java.time.Instant.now()).orElseThrow();
+        assertEquals(3, view.runtime().configGeneration());
+        assertEquals(2, view.runtime().maxConcurrency());
+        assertTrue(view.runtime().browserAdapterConfigured());
+    }
+
+    @Test
+    void canBuildACompleteBoundedSnapshotBeyondOneAdminPage() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        for (var index = 0; index < 201; index++) {
+            var name = "machine-" + index;
+            registry.register(new RegisterRequest(name, name, name, "linux", "amd64", "dev", "/srv",
+                    ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        }
+
+        assertEquals(201, registry.listAllMachines(java.time.Instant.now()).size());
     }
 
     @Test

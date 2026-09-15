@@ -1,5 +1,6 @@
 package com.prodigalgal.remoteconnectmcp.browser;
 
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
@@ -30,7 +31,7 @@ public final class BrowserAgentApplication {
         Process worker = null;
         try {
             var builder = new ProcessBuilder(shell(adapter.trim())).redirectErrorStream(true);
-            cleanSensitiveEnvironment(builder.environment());
+        cleanSensitiveEnvironment(builder.environment());
             worker = builder.start();
             var startedWorker = worker;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> terminate(startedWorker),
@@ -62,7 +63,9 @@ public final class BrowserAgentApplication {
     private static void cleanSensitiveEnvironment(java.util.Map<String, String> environment) {
         environment.keySet().removeIf(key -> {
             var upper = key.toUpperCase(Locale.ROOT);
-            return upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("SECRET") || upper.contains("COOKIE");
+            return upper.contains("TOKEN") || upper.contains("PASSWORD") || upper.contains("PASSWD")
+                    || upper.contains("SECRET") || upper.contains("COOKIE") || upper.contains("AUTHORIZATION")
+                    || upper.contains("API_KEY") || upper.contains("PRIVATE_KEY") || upper.contains("CREDENTIAL");
         });
     }
 
@@ -85,7 +88,7 @@ public final class BrowserAgentApplication {
     }
 
     private static String compactError(String value) {
-        var message = value == null || value.isBlank() ? "browser adapter failed" : value.trim();
+        var message = value == null || value.isBlank() ? "browser adapter failed" : SensitiveValueRedactor.redact(value.trim());
         return message.length() <= 4096 ? message : message.substring(0, 4096);
     }
 }

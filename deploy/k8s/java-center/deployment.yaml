@@ -39,6 +39,10 @@ spec:
               value: postgres
             - name: RCM_CENTER_REQUIRE_DURABLE_STORAGE
               value: "true"
+            - name: RCM_CENTER_ARTIFACT_STORE
+              value: filesystem
+            - name: RCM_CENTER_ARTIFACT_ROOT
+              value: /var/lib/remote-connect-mcp-center/artifacts
             - name: RCM_CENTER_LIQUIBASE_ENABLED
               value: "false"
             - name: RCM_CENTER_VERSION
@@ -105,7 +109,12 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: artifacts
+              mountPath: /var/lib/remote-connect-mcp-center/artifacts
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 512Mi
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: remote-connect-mcp-java-artifacts

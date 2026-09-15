@@ -29,7 +29,13 @@ public final class GoStateImportApplication {
             try (var dataSource = new HikariDataSource(config)) {
                 var jdbc = new JdbcTemplate(dataSource);
                 var transactions = new TransactionTemplate(new JdbcTransactionManager(dataSource));
-                var summary = new GoStateImporter(jdbc, transactions).importState(statePath);
+                var artifactBackend = setting("RCM_CENTER_ARTIFACT_STORE", "filesystem").trim();
+                if (!"filesystem".equalsIgnoreCase(artifactBackend)) {
+                    throw new IllegalStateException("RCM_CENTER_ARTIFACT_STORE must be filesystem for Go state import");
+                }
+                var artifactRoot = setting("RCM_CENTER_ARTIFACT_ROOT", defaultArtifactRoot()).trim();
+                var artifactStore = new FileSystemArtifactStore(Path.of(artifactRoot));
+                var summary = new GoStateImporter(jdbc, transactions, artifactStore).importState(statePath);
                 System.out.printf("Imported Go state: machines=%d enrollments=%d tasks=%d output_bytes=%d artifacts=%d%n",
                         summary.machines(), summary.enrollments(), summary.tasks(), summary.outputBytes(), summary.artifacts());
             }
@@ -53,5 +59,11 @@ public final class GoStateImportApplication {
         if (property != null && !property.isBlank()) return property;
         var environment = System.getenv(key);
         return environment == null ? defaultValue : environment;
+    }
+
+    private static String defaultArtifactRoot() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win")
+                ? Path.of(System.getenv().getOrDefault("ProgramData", "."), "remote-connect-mcp-center", "artifacts").toString()
+                : "/var/lib/remote-connect-mcp-center/artifacts";
     }
 }

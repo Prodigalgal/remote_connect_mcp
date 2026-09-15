@@ -3,6 +3,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -48,21 +49,38 @@ final class DurableCommandRunner implements Runnable {
     private final AgentTransport transport;
     private final DurableTaskStore store;
     private final DurableTaskStore.Record recovered;
+    private final AgentResourceBudget resourceBudget;
+    private final AgentProcessBudget processBudget;
     private volatile boolean cancelRequested;
 
     DurableCommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
                          AgentTransport transport, DurableTaskStore store) {
-        this(config, identity, task, transport, store, null);
+        this(config, identity, task, transport, store, null, null);
     }
 
     DurableCommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
                          AgentTransport transport, DurableTaskStore store, DurableTaskStore.Record recovered) {
+        this(config, identity, task, transport, store, recovered, null);
+    }
+
+    DurableCommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
+                         AgentTransport transport, DurableTaskStore store, DurableTaskStore.Record recovered,
+                         AgentResourceBudget resourceBudget) {
+        this(config, identity, task, transport, store, recovered, resourceBudget,
+                new AgentProcessBudget(config.maxTotalChildProcesses()));
+    }
+
+    DurableCommandRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
+                         AgentTransport transport, DurableTaskStore store, DurableTaskStore.Record recovered,
+                         AgentResourceBudget resourceBudget, AgentProcessBudget processBudget) {
         this.config = config;
         this.identity = identity;
         this.task = task;
         this.transport = transport;
         this.store = store;
         this.recovered = recovered;
+        this.resourceBudget = resourceBudget;
+        this.processBudget = processBudget;
     }
 
     void requestCancel() {
@@ -73,10 +91,11 @@ final class DurableCommandRunner implements Runnable {
     public void run() {
         DurableTaskStore.Record record = recovered;
         Process process = null;
+        ProcessResourceSupervisor resourceSupervisor = null;
         try {
             if (record == null) {
-                var cwd = AgentPaths.resolveCwd(config, task.cwd());
-                var started = store.start(task, cwd, config.maxOutputBytes());
+                var cwd = AgentPaths.resolveCwd(config, identity.machineId(), task, task.cwd());
+                var started = store.start(task, cwd, TaskLimits.outputBytes(config, task), resourceBudget);
                 process = started.process();
                 record = started.record();
             }
@@ -87,7 +106,10 @@ final class DurableCommandRunner implements Runnable {
             if (process == null && !record.completed()) {
                 store.watchRecoveredCompletion(record, handle);
             }
-            store.guard(record, config.maxOutputBytes());
+            var handleForSupervisor = handle;
+            resourceSupervisor = ProcessResourceSupervisor.start(handleForSupervisor, config, task,
+                    () -> terminate(handleForSupervisor), processBudget);
+            store.guard(record, TaskLimits.outputBytes(config, task), resourceBudget);
 
             if (!record.completed()) {
                 sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
@@ -113,7 +135,14 @@ final class DurableCommandRunner implements Runnable {
                 }
                 store.markCompleted(record, exitCode, error);
             }
-            var finalError = relay.error() == null || relay.error().isBlank() ? error : relay.error();
+            var resourceViolation = resourceSupervisor == null ? null : resourceSupervisor.violation();
+            if (resourceViolation != null && !resourceViolation.isBlank()) {
+                error = resourceViolation;
+                if (exitCode == 0) exitCode = -1;
+            }
+            var guardError = store.guardError(record.taskId());
+            var finalError = relay.error() == null || relay.error().isBlank()
+                    ? (guardError == null || guardError.isBlank() ? error : guardError) : relay.error();
             var status = exitCode == 0 && (finalError == null || finalError.isBlank()) ? "completed" : "failed";
             sendState(new TaskUpdateRequest(status, exitCode, finalError, null, Instant.now(), relay.truncated()));
             store.remove(record);
@@ -144,6 +173,8 @@ final class DurableCommandRunner implements Runnable {
                     LOG.log(Level.WARNING, "could not report durable task failure " + task.id(), reportFailure);
                 }
             }
+        } finally {
+            if (resourceSupervisor != null) resourceSupervisor.close();
         }
     }
 
@@ -151,6 +182,7 @@ final class DurableCommandRunner implements Runnable {
         if (!java.nio.file.Files.isRegularFile(outputPath)) {
             throw new IOException("durable output file is missing");
         }
+        var outputLimit = TaskLimits.outputBytes(config, task);
         var truncated = false;
         var limitExceeded = false;
         var centerTruncated = false;
@@ -171,7 +203,7 @@ final class DurableCommandRunner implements Runnable {
             }
             while (true) {
                 var fileSize = channel.size();
-                var boundedSize = Math.min(fileSize, config.maxOutputBytes());
+                var boundedSize = Math.min(fileSize, outputLimit);
                 while (offset < boundedSize) {
                     var length = (int) Math.min(CHUNK_SIZE, boundedSize - offset);
                     var data = new byte[length];
@@ -182,7 +214,7 @@ final class DurableCommandRunner implements Runnable {
                     }
                     var uploadOffset = offset;
                     OutputResponse response = AgentRetry.call(LOG, "durable output upload " + task.id(),
-                            () -> transport.appendOutput(identity.machineId(), identity.token(), task.id(), uploadOffset, data));
+                            () -> transport.appendOutput(identity.machineId(), identity.token(), task.id(), task.attempt(), uploadOffset, data));
                     var next = response.nextOffset();
                     if (next < uploadOffset || next > uploadOffset + data.length) {
                         throw new IOException("Center returned an invalid output cursor: " + next);
@@ -197,9 +229,9 @@ final class DurableCommandRunner implements Runnable {
                     }
                     offset = Math.max(uploadOffset + data.length, next);
                     fileSize = channel.size();
-                    boundedSize = Math.min(fileSize, config.maxOutputBytes());
+                    boundedSize = Math.min(fileSize, outputLimit);
                 }
-                if (fileSize > config.maxOutputBytes()) {
+                if (fileSize > outputLimit) {
                     truncated = true;
                     if (!limitExceeded) {
                         // Redirect.to(...) is deliberately used so a durable
@@ -220,18 +252,18 @@ final class DurableCommandRunner implements Runnable {
                     // the process completion future, not a timer loop.
                     awaitProcessExit(process, 0);
                     return new RelayResult(true,
-                            limitExceeded ? "durable command output exceeded " + config.maxOutputBytes() + " bytes" : null);
+                            limitExceeded ? "durable command output exceeded " + outputLimit + " bytes" : null);
                 }
-                if (completion.isDone() && offset >= Math.min(channel.size(), config.maxOutputBytes())) {
+                if (completion.isDone() && offset >= Math.min(channel.size(), outputLimit)) {
                     return new RelayResult(truncated,
-                            limitExceeded ? "durable command output exceeded " + config.maxOutputBytes() + " bytes" : null);
+                            limitExceeded ? "durable command output exceeded " + outputLimit + " bytes" : null);
                 }
                 if (completion.isDone()) {
                     // Completion is already observed and the final drain above
                     // found no remaining bytes. Returning here avoids a tight
                     // post-exit retry if the filesystem emitted no extra event.
                     return new RelayResult(truncated,
-                            limitExceeded ? "durable command output exceeded " + config.maxOutputBytes() + " bytes" : null);
+                            limitExceeded ? "durable command output exceeded " + outputLimit + " bytes" : null);
                 }
                 if (watcher == null) {
                     // A filesystem without WatchService support cannot stream
@@ -319,7 +351,7 @@ final class DurableCommandRunner implements Runnable {
 
     private void sendState(TaskUpdateRequest update) throws IOException, InterruptedException {
         AgentRetry.call(LOG, "durable state upload " + task.id(), () -> {
-            transport.updateState(identity.machineId(), identity.token(), task.id(), update);
+            transport.updateState(identity.machineId(), identity.token(), task.id(), task.attempt(), update);
             return null;
         });
     }
@@ -384,7 +416,7 @@ final class DurableCommandRunner implements Runnable {
     }
 
     private static String compactError(String value) {
-        var error = value == null || value.isBlank() ? "durable command failed" : value.trim();
+        var error = value == null || value.isBlank() ? "durable command failed" : SensitiveValueRedactor.redact(value.trim());
         return error.length() <= 4096 ? error : error.substring(0, 4096);
     }
 }

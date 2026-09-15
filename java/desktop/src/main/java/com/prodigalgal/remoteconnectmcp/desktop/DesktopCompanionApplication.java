@@ -1,6 +1,7 @@
 package com.prodigalgal.remoteconnectmcp.desktop;
 
 import com.prodigalgal.remoteconnectmcp.agent.DesktopCompanionServer;
+import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.nio.file.Path;
 import java.util.Locale;
 
@@ -29,7 +30,7 @@ public final class DesktopCompanionApplication {
     }
 
     private static String compactError(String value) {
-        var message = value == null || value.isBlank() ? "unknown error" : value.trim();
+        var message = value == null || value.isBlank() ? "unknown error" : SensitiveValueRedactor.redact(value.trim());
         return message.length() <= 4096 ? message : message.substring(0, 4096);
     }
 }

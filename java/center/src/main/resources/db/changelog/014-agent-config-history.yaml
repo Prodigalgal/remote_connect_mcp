@@ -1,0 +1,24 @@
+databaseChangeLog:
+  - changeSet:
+      id: 014-agent-config-history
+      author: remote-connect-mcp
+      changes:
+        - sql:
+            splitStatements: false
+            sql: |
+              CREATE TABLE IF NOT EXISTS rcm_agent_config_history (
+                agent_id VARCHAR(180) NOT NULL REFERENCES rcm_agent(agent_id) ON DELETE CASCADE,
+                config_generation BIGINT NOT NULL,
+                poll_interval_ms BIGINT NOT NULL,
+                max_concurrency INTEGER NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (agent_id, config_generation)
+              );
+              CREATE INDEX IF NOT EXISTS rcm_agent_config_history_created_idx
+                ON rcm_agent_config_history(agent_id, created_at DESC);
+      rollback:
+        - sql:
+            splitStatements: false
+            sql: |
+              DROP INDEX IF EXISTS rcm_agent_config_history_created_idx;
+              DROP TABLE IF EXISTS rcm_agent_config_history;

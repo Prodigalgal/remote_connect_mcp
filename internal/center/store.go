@@ -612,6 +612,9 @@ func (s *Store) registerLocked(req protocol.RegisterRequest, now time.Time) (pro
 	var machine *Machine
 	for _, candidate := range s.state.Machines {
 		if strings.EqualFold(candidate.Name, name) {
+			if !strings.EqualFold(strings.TrimSpace(candidate.HostID), hostID) {
+				return protocol.RegisterResponse{}, errors.New("machine name is already registered with another host_id; choose a unique name")
+			}
 			machine = candidate
 			break
 		}
@@ -1102,6 +1105,9 @@ func (s *Store) Poll(machineID string, req protocol.PollRequest, metadata ...pro
 	}
 	metadataChanged := false
 	if len(metadata) > 0 {
+		if err := validateHeartbeatIdentity(machine, metadata[0]); err != nil {
+			return protocol.PollResponse{}, err
+		}
 		metadataChanged = updateMachineMetadata(machine, metadata[0])
 	}
 	machine.LastSeen = now
@@ -1356,12 +1362,6 @@ func updateMachineMetadata(machine *Machine, metadata protocol.AgentMetadata) bo
 			changed = true
 		}
 	}
-	if value := strings.TrimSpace(metadata.Name); value != "" {
-		if machine.Name != value {
-			machine.Name = value
-			changed = true
-		}
-	}
 	if value := strings.TrimSpace(metadata.Hostname); value != "" {
 		if machine.Hostname != value {
 			machine.Hostname = value
@@ -1413,6 +1413,19 @@ func updateMachineMetadata(machine *Machine, metadata protocol.AgentMetadata) bo
 		}
 	}
 	return changed
+}
+
+func validateHeartbeatIdentity(machine *Machine, metadata protocol.AgentMetadata) error {
+	if machine == nil {
+		return errors.New("agent identity is not registered")
+	}
+	if value := strings.TrimSpace(metadata.Name); value != "" && !strings.EqualFold(value, machine.Name) {
+		return errors.New("agent identity metadata does not match registration")
+	}
+	if value := strings.TrimSpace(metadata.HostID); value != "" && machine.HostID != "" && !strings.EqualFold(value, machine.HostID) {
+		return errors.New("agent identity metadata does not match registration")
+	}
+	return nil
 }
 
 func equalStrings(left, right []string) bool {

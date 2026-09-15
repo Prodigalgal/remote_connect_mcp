@@ -6,9 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
+import com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
@@ -108,6 +109,18 @@ class PostgresIntegrationTest {
         assertTrue(restartedRegistry.findMachine(agentId, Instant.now()).isPresent());
         assertTrue(restartedRegistry.acceptsAgent(agentId, registration.token()));
 
+        var runtime = new AgentRuntimeDescriptor(1, 7, 2, 1,
+                32L * 1024 * 1024, 96L * 1024 * 1024, 12, 900, 0, 0, false, true);
+        var heartbeat = new AgentMetadata(request.name(), request.hostId(),
+                "postgres-it-host", "linux", "amd64", "integration-2", "/tmp",
+                ScopeMode.UNRESTRICTED, null, List.of("command", "browser"), runtime);
+        registry.poll(agentId, registration.token(), new PollRequest(List.of(), 1,
+                List.of("command", "browser"), heartbeat));
+        var persistedRuntime = restartedRegistry.findMachine(agentId, Instant.now()).orElseThrow().runtime();
+        assertEquals(7, persistedRuntime.configGeneration());
+        assertEquals(2, persistedRuntime.maxConcurrency());
+        assertTrue(persistedRuntime.browserAdapterConfigured());
+
         // Project/worktree rows use the same Agent-local task contract.  The
         // Center never opens the repository; completion of the generated Git
         // task is the only transition that makes a worktree selectable as a
@@ -119,6 +132,9 @@ class PostgresIntegrationTest {
         assertNotNull(worktree.taskId());
         var worktreeTask = projectTasks.poll(agentId, new PollRequest(List.of(), 1, List.of("command"))).task();
         assertEquals(worktree.taskId(), worktreeTask.id());
+        assertEquals("project", worktreeTask.contract().scopeMode().wireValue());
+        assertEquals(project.id(), worktreeTask.contract().projectId());
+        assertEquals(project.rootPath(), worktreeTask.contract().scopeRoot());
         projectTasks.updateState(agentId, worktreeTask.id(), new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
         projectTasks.updateState(agentId, worktreeTask.id(), new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
         var readyWorktree = projectService.find(project.id()).worktrees().stream()
@@ -158,6 +174,9 @@ class PostgresIntegrationTest {
         var artifact = "artifact-data".getBytes(StandardCharsets.UTF_8);
         var digest = sha256(artifact);
         assertEquals(artifact.length, store.appendArtifact(agentId, taskId, "text/plain", digest, artifact).bytes());
+        assertEquals("filesystem", jdbc.queryForObject("SELECT storage_backend FROM rcm_task_artifact WHERE task_id = ?", String.class, taskId));
+        assertNull(jdbc.queryForObject("SELECT artifact_data FROM rcm_task_artifact WHERE task_id = ?", byte[].class, taskId),
+                "new artifacts must not be written into PostgreSQL bytea");
         assertTrue(store.readArtifact(taskId).isPresent());
         store.updateState(agentId, taskId, new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
         assertEquals(TaskStatus.COMPLETED, store.find(taskId).orElseThrow().status());

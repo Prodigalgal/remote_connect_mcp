@@ -91,3 +91,38 @@ func TestMultipleAgentsCanShareHostIDWithoutSharingIdentity(t *testing.T) {
 		t.Fatalf("host grouping = %+v", machines)
 	}
 }
+
+func TestSameNameFromAnotherHostCannotRotateIdentity(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Register(protocol.RegisterRequest{Name: "shared-name", HostID: "host-a", OS: "linux", Arch: "amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Register(protocol.RegisterRequest{Name: "shared-name", HostID: "host-b", OS: "linux", Arch: "amd64"}); err == nil {
+		t.Fatal("same-name registration from another host was accepted")
+	}
+	if !store.AuthenticateAgent(first.MachineID, first.Token) {
+		t.Fatal("original Agent token was rotated by a conflicting registration")
+	}
+}
+
+func TestHeartbeatCannotRenameOrRegroupIdentity(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := store.Register(protocol.RegisterRequest{Name: "stable-name", HostID: "host-a", OS: "linux", Arch: "amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Poll(registered.MachineID, protocol.PollRequest{}, protocol.AgentMetadata{Name: "renamed", HostID: "host-b"}); err == nil {
+		t.Fatal("heartbeat identity drift was accepted")
+	}
+	machine, ok := store.GetMachine(registered.MachineID, time.Now().UTC())
+	if !ok || machine.Name != "stable-name" || machine.HostID != "host-a" {
+		t.Fatalf("identity changed after rejected heartbeat: %+v", machine)
+	}
+}

@@ -1,13 +1,44 @@
 package com.prodigalgal.remoteconnectmcp.protocol;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class ProtocolValidationTest {
+    @Test
+    void registrationCarriesInitialRuntimeDescriptor() {
+        var runtime = new AgentRuntimeDescriptor(1, 7, 2, 1,
+                2L * 1024 * 1024, 8L * 1024 * 1024, 8, 60, 0, 0,
+                false, true);
+        var request = new RegisterRequest("agent", "host", "node", "linux", "amd64", "v1",
+                "/srv", ScopeMode.WORKSPACE, "/srv", List.of("command", "browser"), runtime);
+        assertEquals(runtime, request.metadata().runtime());
+    }
+
+    @Test
+    void validatesExplicitWorktreeExecutionContract() {
+        var contract = new ExecutionContract("machine-1", "host-1", ScopeMode.WORKTREE,
+                "project-1", "worktree-1", "/srv/project/.rcm-worktrees/wt-1", "session-1",
+                "command", new ExecutionContract.Budget(300, 64L * 1024 * 1024, 8L * 1024 * 1024, 32),
+                Instant.now().plusSeconds(300), "retry-1", "low", false, null);
+        var task = new TaskCommand("task-contract", TaskKind.COMMAND, "command", "echo ok",
+                "/srv/project/.rcm-worktrees/wt-1", Map.of(), 30, null, Instant.now(), contract);
+
+        assertDoesNotThrow(() -> ProtocolValidation.validateTask(task));
+    }
+
+    @Test
+    void rejectsUnrestrictedContractWithAPathRoot() {
+        assertThrows(IllegalArgumentException.class, () -> new ExecutionContract("machine-1", "host-1",
+                ScopeMode.UNRESTRICTED, null, null, "/srv/project", "session-1", "command",
+                ExecutionContract.Budget.defaults(), Instant.now().plusSeconds(60), "", "low", false, null));
+    }
+
     @Test
     void acceptsBoundedCommand() {
         var task = new TaskCommand("task-1", TaskKind.COMMAND, "command", "echo ok", "work", Map.of("LANG", "C"), 30, null, Instant.now());
@@ -23,6 +54,13 @@ class ProtocolValidationTest {
     @Test
     void rejectsWorkspaceMetadataWithoutRoot() {
         var metadata = new AgentMetadata("agent", "host", "host", "linux", "amd64", "dev", "/tmp", ScopeMode.WORKSPACE, null, java.util.List.of("command"));
+        assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateMetadata(metadata));
+    }
+
+    @Test
+    void rejectsWorkspaceMetadataWithDefaultOutsideRoot() {
+        var metadata = new AgentMetadata("agent", "host", "host", "linux", "amd64", "dev",
+                "/srv/other", ScopeMode.WORKSPACE, "/srv/project", java.util.List.of("command"));
         assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateMetadata(metadata));
     }
 
@@ -53,9 +91,34 @@ class ProtocolValidationTest {
     }
 
     @Test
+    void acceptsPointerAndRegionDesktopActions() {
+        for (var operation : java.util.List.of("double_click", "right_click", "move")) {
+            var action = new TaskCommand.DesktopAction(operation, null, java.util.List.of(), null,
+                    null, 100, 200, null);
+            assertDoesNotThrow(() -> ProtocolValidation.validateTask(new TaskCommand(
+                    "task-" + operation, TaskKind.DESKTOP, "desktop", null, null, Map.of(), 30, action, Instant.now())));
+        }
+        var region = new TaskCommand.DesktopAction("screenshot_region", null, java.util.List.of(), null,
+                null, 10, 20, null, 640, 480, null, null, null);
+        assertDoesNotThrow(() -> ProtocolValidation.validateTask(new TaskCommand(
+                "task-region", TaskKind.DESKTOP, "desktop", null, null, Map.of(), 30, region, Instant.now())));
+    }
+
+    @Test
     void rejectsDesktopExecutableForNonLaunchAction() {
         var task = new TaskCommand("task-screen", TaskKind.DESKTOP, "desktop", null, null, Map.of(), 30,
                 new TaskCommand.DesktopAction("screens", "powershell.exe", java.util.List.of(), null), Instant.now());
         assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateTask(task));
+    }
+
+    @Test
+    void rejectsCapabilityKindConfusion() {
+        var desktopAsCommand = new TaskCommand("task-confused", TaskKind.COMMAND, "desktop", "echo blocked",
+                "/srv", Map.of(), 30, null, Instant.now());
+        var browserAsDesktop = new TaskCommand("task-confused-desktop", TaskKind.DESKTOP, "browser", null,
+                "/srv", Map.of(), 30,
+                new TaskCommand.DesktopAction("screens", null, List.of(), null), Instant.now());
+        assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateTask(desktopAsCommand));
+        assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateTask(browserAsDesktop));
     }
 }
