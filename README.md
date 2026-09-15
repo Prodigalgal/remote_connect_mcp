@@ -149,8 +149,11 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 | `RCM_CENTER_RELEASES_API_URL`（兼容 `REMOTE_CONNECT_MCP_CENTER_RELEASES_API_URL`） | `https://api.github.com/repos/Prodigalgal/remote_connect_mcp/releases` | 控制台版本目录的 GitHub Releases API；只读取公开元数据，不保存 GitHub 凭据 |
 | `RCM_CENTER_PERSISTENCE_MODE` | `memory` | Java Center 使用 `postgres` 才启用 PostgreSQL 任务/机器/工件存储 |
 | `RCM_CENTER_REQUIRE_DURABLE_STORAGE` | `false` | 设为 `true` 时，除 PostgreSQL 外的模式不会通过 `/api/v1/readyz`；生产必须开启 |
-| `RCM_CENTER_ARTIFACT_STORE` | `filesystem` | PostgreSQL 模式的工件字节存储；当前支持独立持久卷文件对象，生产不得使用测试内存实现 |
+| `RCM_CENTER_ARTIFACT_STORE` | `filesystem` | PostgreSQL 模式的工件字节存储；支持 `filesystem` 或 `http`（内部对象网关），生产不得使用测试内存实现 |
 | `RCM_CENTER_ARTIFACT_ROOT` | Linux `/var/lib/remote-connect-mcp-center/artifacts`；Windows `%ProgramData%\\remote-connect-mcp-center\\artifacts` | 工件对象根目录；必须位于持久卷/专用数据盘并由 Center 进程可写 |
+| `RCM_CENTER_ARTIFACT_HTTP_BASE_URL` | 空 | `http` 后端的 HTTPS 对象网关基址；HTTP 仅允许 loopback 开发环境 |
+| `RCM_CENTER_ARTIFACT_HTTP_TOKEN` | 空 | 对象网关 Bearer Token；只通过 Secret/env 注入，不写入 PostgreSQL 或日志 |
+| `RCM_CENTER_ARTIFACT_HTTP_TIMEOUT_SECONDS` | `30` | 对象网关单次请求超时，范围 1–120 秒 |
 | `RCM_CENTER_LIQUIBASE_ENABLED` | `true` | Java Center 是否在当前进程执行 Liquibase；生产 Pod 设为 `false`，由独立 migration Job 执行 |
 | `RCM_CENTER_DATABASE_URL` | 空 | PostgreSQL JDBC URL（postgres 模式必填） |
 | `RCM_CENTER_DATABASE_USERNAME` | 空 | PostgreSQL 用户名（postgres 模式必填） |

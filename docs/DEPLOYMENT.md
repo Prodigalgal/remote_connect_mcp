@@ -119,8 +119,10 @@ Remove-Item Env:PGPASSWORD
 脚本在发布备份前会用 `pg_restore --list` 校验归档索引，并生成同名 `.sha256` 和不含凭据的
 `.json` 元数据。恢复时先创建隔离目标库，再使用 `pg_restore --exit-on-error --no-owner --no-acl`，
 执行 `rcm-center --migrate`/`liquibase validate` 后检查 `rcm_agent`、`rcm_task`、输出游标和工件
-表；确认应用读写和 Agent 心跳后才允许切换生产路由。生产 Center 还必须挂载独立持久卷并设置
-`RCM_CENTER_ARTIFACT_STORE=filesystem`、`RCM_CENTER_ARTIFACT_ROOT`；`/api/v1/readyz` 会拒绝
+表；确认应用读写和 Agent 心跳后才允许切换生产路由。生产 Center 可挂载独立持久卷并设置
+`RCM_CENTER_ARTIFACT_STORE=filesystem`、`RCM_CENTER_ARTIFACT_ROOT`，或设置
+`RCM_CENTER_ARTIFACT_STORE=http`、`RCM_CENTER_ARTIFACT_HTTP_BASE_URL`（必要时再注入
+`RCM_CENTER_ARTIFACT_HTTP_TOKEN`）接入内部 HTTPS 对象网关；`/api/v1/readyz` 会拒绝
 缺少持久工件存储的 PostgreSQL 实例。备份目录已加入 `.gitignore`，对象文件还应由卷/对象
 存储策略设置加密、保留期和访问审计。
 
@@ -141,7 +143,8 @@ rcm-center --migrate
 Java Center 的 memory 模式只用于协议回归/开发。生产必须同时设置
 `RCM_CENTER_PERSISTENCE_MODE=postgres` 和
 `RCM_CENTER_REQUIRE_DURABLE_STORAGE=true`，并设置
-`RCM_CENTER_ARTIFACT_STORE=filesystem`、`RCM_CENTER_ARTIFACT_ROOT` 指向持久卷；后者会让 `/api/v1/readyz` 在模式或工件存储错误时返回
+`RCM_CENTER_ARTIFACT_STORE=filesystem`、`RCM_CENTER_ARTIFACT_ROOT` 指向持久卷，或配置
+`http` 后端的 HTTPS 对象网关；后者会让 `/api/v1/readyz` 在模式或工件存储错误时返回
 503，即使进程本身仍能响应 `/api/v1/healthz`，从而阻止错误实例被 Service 接收流量。
 
 审计记录默认只通过有界异步队列写入 PostgreSQL。保留清理由管理员或外部

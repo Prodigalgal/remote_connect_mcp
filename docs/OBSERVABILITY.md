@@ -32,7 +32,7 @@ RCM 的业务请求、Agent 通道和工件路径仍然是异步的。Center 不
 
 Center/Agent 继续把日志写到 stdout/stderr 或 systemd journal，由宿主机或 K8s 日志采集器转发到 Loki、OpenTelemetry Collector 等集中日志系统。应用边界会先做敏感值脱敏；采集器配置和保留周期不放入公开仓库。
 
-任务工件由 `ArtifactStore` 抽象承载，PostgreSQL 只保留 key、大小、MIME 和 SHA-256 元数据；当前默认后端是受持久卷保护的 filesystem。GC 通过显式维护入口执行并有并发写入宽限期，后续可在不改变任务协议的情况下替换为对象存储适配器。
+任务工件由 `ArtifactStore` 抽象承载，PostgreSQL 只保留 key、大小、MIME 和 SHA-256 元数据；默认后端是受持久卷保护的 filesystem，也可通过 `RCM_CENTER_ARTIFACT_STORE=http` 接入内部 HTTPS 对象网关。filesystem 的 GC 通过显式维护入口执行并有并发写入宽限期；远程网关由网关侧负责枚举和生命周期，Center 不做无界扫描。
 
 ## 验收顺序
 

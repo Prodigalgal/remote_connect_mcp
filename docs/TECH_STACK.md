@@ -81,7 +81,7 @@ MCP 层使用官方 Java SDK 的 Streamable HTTP 传输，固定挂载 `/mcp`。
 - 使用 `SELECT ... FOR UPDATE SKIP LOCKED` 或等价 CAS 语句实现多 Agent 领取，Center 副本增加前不引入额外消息队列；
 - `LISTEN/NOTIFY` 只作为唤醒提示，不能替代数据库状态，断线后仍能靠版本/游标补偿；
 - 输出、截图、升级包使用对象存储 key + SHA-256 + 大小 + MIME 元数据；当前 Center 通过独立持久卷文件对象落盘，数据库不再写入新的大块 `BYTEA`，旧 `artifact_data` 只作为迁移兼容列；
-- `RCM_CENTER_ARTIFACT_STORE=filesystem` 时使用同一 PVC/专用数据卷，写入采用临时文件加原子替换，读取再次校验大小与 SHA-256；S3 兼容实现接入 `ArtifactStore` 后不改变任务或 Agent 协议；
+- `RCM_CENTER_ARTIFACT_STORE=filesystem` 时使用同一 PVC/专用数据卷，写入采用临时文件加原子替换，读取再次校验大小与 SHA-256；`RCM_CENTER_ARTIFACT_STORE=http` 时通过 HTTPS 内部对象网关读写同一套 opaque key，网关 Token 只经 Secret/env 注入；任一后端接入 `ArtifactStore` 后都不改变任务或 Agent 协议；
 - Liquibase changelog 使用 Git 管理的 master YAML + 版本化 YAML/SQL 变更集，必须可回放、可 `update-sql` dry-run，并为 PostgreSQL 集成测试提供 Testcontainers 夹具；
 - 生产由独立 Kubernetes migration Job 执行 `validate/update`，应用只校验已安装的 schema 版本；禁止多个 Center Pod 同时在启动阶段抢迁移锁；
 - 每个变更集设置唯一 `id/author`、`labels/contexts` 和必要的 preconditions，危险 DDL 先在影子数据库执行 rollback 演练；
