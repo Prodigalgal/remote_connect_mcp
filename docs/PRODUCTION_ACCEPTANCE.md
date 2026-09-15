@@ -128,6 +128,17 @@ Java Agent `v0.1.26` 已通过 GitHub Actions Native Release（构建与签名�
 结论：P1-04 的 Center 后端提交、日志、取消闭环通过；React 浏览器 E2E、无障碍/视觉回归
 和工件页面仍未验收。P1-07 的只读配置合同通过，热更新/回滚不在本轮变更范围内。
 
+## 2026-09-15 P2-03/P2-04 可观测性只读探针
+
+生产 `/metrics` 返回 HTTP 200，Prometheus 文本中可见任务、队列、Agent 在线率、
+工件容量、审计背压和升级失败率等指标（例如 `remote_connect_mcp_tasks_queue_depth`、
+`remote_connect_mcp_machines_online_ratio`、`remote_connect_mcp_artifact_bytes`）。
+同一 Admin Token 调用事件等待端点返回 HTTP 200，`changed=true`，说明事件游标可被
+唤醒；响应未发现凭据字段。
+
+结论：P2-04 的指标和事件唤醒生产探针通过，但通知出口、SLO 面板和告警演练仍待执行；
+P2-03 的代码路径已存在，生产日志采集器、对象生命周期和成本压测仍待执行。
+
 ## 代码与 CI 回归证据
 
 合并提交 `8e4839f`、稳定 tag `java-v0.1.22` 已在 GitHub Actions 完成大规模回归：
