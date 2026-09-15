@@ -88,6 +88,12 @@ function Remove-AgentTask {
     $task = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
     if (-not $task) { return }
     if ($task.State -eq 'Running') { Stop-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue }
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $current = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
+        if (-not $current -or $current.State -ne 'Running') { break }
+        Start-Sleep -Milliseconds 250
+    }
     Unregister-ScheduledTask -TaskName $Name -Confirm:$false -ErrorAction SilentlyContinue
 }
 
