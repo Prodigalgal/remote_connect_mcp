@@ -11,6 +11,31 @@
 - 任务闭环只使用固定 `printf` 输出，不读取文件、不修改配置、不启动额外服务。
 - WebSocket、升级、Desktop/Browser 和故障演练若缺少安全的目标条件，记录为“待验收”，不使用 CI 结果替代。
 
+## 本轮 P0/P1/P2 逐项结论（生产证据，不等同于代码状态）
+
+| 优先级 | 项目/门禁 | 结论 | 当前证据或未决条件 |
+| --- | --- | --- | --- |
+| P0 | G1 范围合同 | 通过 | Linux/Windows cwd、环境变量伪造、越界路径和幂等重试均已实机验证 |
+| P0 | G2 重启/重试 | 部分通过 | Agent 停止/启动期间 durable 任务只执行一次；Center 重启与 ChatGPT 重试需维护窗口 |
+| P0 | G3 长任务/工件/资源 | 部分通过 | 128 KiB 分页、超时终态和 durable 完成通过；工件及 RSS/CPU 极限待 capability/压测条件 |
+| P0 | G4 固定 `/mcp` 多机路由 | 通过 | 9 台在线 Agent 经同一 MCP 会话完成 `command_start`/`task_wait` |
+| P1 | P1-01 项目注册与 worktree | 通过 | 项目注册、Git 读操作、worktree 创建/删除和清理闭环见下文 |
+| P1 | P1-02 Desktop Companion | 待验收 | 当前在线 Agent 未声明 `desktop`；需 Windows/Linux 会话目标 |
+| P1 | P1-03 Browser Agent | 待验收 | 当前在线 Agent 未声明 `browser`；需浏览器运行时目标 |
+| P1 | P1-04 React Console | 部分通过 | Center 后端提交/日志/取消通过；React E2E、工件页面、a11y/视觉待验收 |
+| P1 | P1-05 升级与回滚 | 部分通过 | 历史 canary/在线批次有成功记录；离线领取、启动失败和回滚未演练 |
+| P1 | P1-06 WebSocket/唤醒 | 待验收 | CI smoke 已通过；生产反向代理握手、断线和 Center 重启待窗口 |
+| P1 | P1-07 配置/心跳自描述 | 部分通过 | 配置读取和 runtime descriptor 通过；热更新 CAS 与回滚未演练 |
+| P1 | P1-08 生命周期/子 Agent | 待验收 | 现有目标只有 command/durable_tasks；多物理 Agent 隔离/崩溃拉起待目标 |
+| P1 | P1-09 审计/错误解释 | 部分通过 | 3 条任务审计事件及脱敏抽样通过；真实故障报告待演练 |
+| P2 | P2-01 QUIC/HTTP3 | 待验收 | 当前生产仍为 HTTPS/WebSocket；无真实 QUIC provider 灰度 |
+| P2 | P2-02 Center HA | 不做 | 需求决策保持单副本稳定路径 |
+| P2 | P2-03 日志/对象存储 | 待验收 | 代码与 CI 具备；生产采集器、生命周期和成本压测未执行 |
+| P2 | P2-04 SLO/告警 | 待验收 | 指标与 PrometheusRule 存在；通知出口和告警演练未执行 |
+| P2 | P2-05 多租户 | 不做 | 需求决策保持单管理域 |
+| P2 | P2-06 桌面/浏览器增强 | 待验收 | 依赖 P1-02/P1-03 真实平台目标 |
+| P2 | P2-07 Go 路径退出 | 待验收 | Java 已为生产路径；Go 兼容清理仍需独立生产变更 |
+
 ## 2026-09-15 Agent v0.1.26 五机滚动验收
 
 Java Agent `v0.1.26` 已通过 GitHub Actions Native Release（构建与签名均在 GitHub Actions 完成），并重新安装到本批次的五台目标终端。Center 仍保持现有 Java 生产版本；本次只更新 Agent，不改变 ChatGPT/MCP 连接器地址。
@@ -42,16 +67,66 @@ Java Agent `v0.1.26` 已通过 GitHub Actions Native Release（构建与签名�
 | Metrics | 通过 | Admin 鉴权、Prometheus 文本格式和机器计数器可用；响应未发现 Token、密码、Secret 或私钥字段 |
 | 事件唤醒 | 通过 | `/api/v1/admin/events` 的有界等待正常返回，实测约 621 ms；未使用固定间隔轮询 |
 | Agent 命令闭环 | 通过 | 一台在线 Oracle ARM64 Agent（身份已脱敏）执行固定 `printf`，状态 `completed`、Attempt 1、退出码 0、输出 26 字节；通过事件等待得到终态并按字节校验 |
+| 固定 `/mcp` 多机命令路由 | 通过 | 9 台在线 Agent 通过同一 MCP 会话分别执行固定标记命令；9 个任务均 `completed`、Attempt 1、退出码 0，输出标记一致 |
+| 范围合同与环境变量伪造 | 通过 | Linux/Windows path 合同允许目录内 cwd，拒绝 `..` 越界；伪造 `PWD`/默认 cwd 环境变量未改变实际工作目录；相同幂等键重试返回同一任务 |
+| 长输出与超时边界 | 部分通过 | 128 KiB 输出通过有界分页；1 秒合同超时的 `sleep` 任务以失败/退出码 143 收口；截图、下载和极限 RSS/CPU 压测待具备对应 capability/维护条件 |
 | Console 路由 | 通过 | 生产 Console 首页返回 HTTP 200 |
 | WebSocket 生产握手 | 待验收 | CI smoke 已通过；尚未使用真实 Agent Token 在生产反向代理下做有效握手、断线与重连演练 |
 | Desktop 真实操作 | 待验收 | 当前生产在线 Agent 仅声明 command/durable_tasks，尚无可验收的 Desktop 会话 |
 | Browser 真实操作 | 待验收 | 当前生产在线 Agent 未声明 browser capability，未执行真实浏览器任务 |
-| 范围合同绕过 | 待验收 | 代码/CI 已覆盖；仍需目标机上对 project/worktree/path/workspace/unrestricted 和符号链接边界做正式演练 |
-| Center/Agent 重启恢复 | 待验收 | 不能在本批次无窗口重启生产组件；需安排可回滚演练窗口 |
+| 范围合同绕过 | 通过 | Linux/Windows path 合同、cwd 越界、环境变量伪造和幂等重试已完成目标机演练；project/worktree 与符号链接边界仍需项目目标补充 |
+| Center/Agent 重启恢复 | 部分通过 | Agent 停止/启动期间 durable 任务只执行一次并恢复在线；Center 重启和 ChatGPT 重试仍需可回滚维护窗口 |
 | 升级在线/离线/失败回滚 | 部分通过 | `v0.1.22` 活动以 1 台 canary、批次 2 启动；4 台在线 Agent 全部完成、失败 0，5 台离线目标保持 pending，待重连自动领取；失败重排队/回滚仍待专门演练 |
 | 对象网关、日志采集和保留策略 | 待验收 | 代码与 CI 已具备；生产采集器、对象生命周期和成本压测尚未执行 |
 | SLO 告警通知 | 待验收 | PrometheusRule 模板和指标已存在；通知出口与演练尚未执行 |
 | QUIC/HTTP3 | 待验收 | 当前只启用 HTTPS/WebSocket 能力协商与回退；真实 provider/灰度未启用 |
+
+## 2026-09-15 P1-01 项目注册与 Git worktree 验收
+
+在 `local-cmcc-debian` 上创建了仅用于验收的临时 Git 仓库，并通过同一条
+`/mcp` 会话执行完整项目闭环。测试目录为 Agent 上的 `/tmp/rcm-p1-project`，
+验收结束后已通过 Agent 任务删除；Center 项目登记也已删除，没有留下生产项目。
+
+| 步骤 | 结果 | 证据 |
+| --- | --- | --- |
+| MCP `project register` / `project list` | 通过 | 登记返回项目并在机器过滤列表中可见；项目 ID `project_c8bb…` |
+| 项目级 `git_status` | 通过 | 任务 `task_d125…`、`task_db14…`、`task_d77e…` 均 Attempt 1、退出码 0 |
+| 项目级 `git_diff(stat)` | 通过 | 任务 `task_2e3b…`、`task_287a…` 均完成，未把仓库内容传回 Center |
+| 项目级 `git_log` | 通过 | 任务 `task_e13d…`、`task_a609…` 完成，输出仅为有界文本 |
+| `worktree_create(HEAD)` | 通过 | worktree `worktree_0882…`，Agent 任务 `task_bf8b…` 完成，状态变为 `ready` |
+| worktree 范围内 `git_status` | 通过 | 任务 `task_a58c…`，工作目录解析到 `.rcm-worktrees/worktree_0882…`，退出码 0 |
+| `worktree_remove` | 通过 | 任务 `task_b907…` 完成，状态变为 `removed` |
+| 项目删除与临时目录清理 | 通过 | Center 登记删除；清理任务 `task_d5ac…` 完成、退出码 0 |
+
+结论：P1-01 的注册、列表、项目/worktree 范围解析、Git 读操作、worktree
+创建/删除、异步终态和清理闭环通过生产验收。提交/merge/冲突恢复属于独立的
+有副作用演练，未在真实仓库执行。
+
+## 2026-09-15 P1-09 审计与脱敏抽样
+
+通过 Admin API 提交了一条固定的 `printf rcm-audit-probe` 任务（路径范围为
+`/tmp`），任务完成且退出码为 0。按任务 ID 查询到 3 条审计事件（创建与状态
+变化），事件类型和来源字段完整；对返回的审计投影执行敏感词扫描，未发现
+`Bearer`、Token、密码、Secret 或私钥字段。该抽样不读取生产文件，也不改变
+配置。
+
+| 能力 | 结果 | 证据 |
+| --- | --- | --- |
+| 任务创建/状态审计关联 | 通过 | `task_7d11…`，3 条事件，`task.created`/`task.state` |
+| 审计投影脱敏 | 通过 | 返回字段扫描结果为 clean |
+| 故障解释字段 | 部分通过 | P0 越界与超时任务已有可读错误/退出码；真实故障报告模板演练待维护窗口 |
+
+## 2026-09-15 P1-04/P1-07 控制台后端与配置读取验收
+
+| 能力 | 结果 | 证据 |
+| --- | --- | --- |
+| 控制台任务提交/日志/取消后端链路 | 通过 | `task_5559…` 先进入 queued；日志端点 HTTP 200；取消返回 `cancel_requested`，终态为 `canceled` |
+| 控制台工件查看 | 待验收 | 本次使用 command 任务，按合同不产生工件；需要 Desktop/Browser 任务完成后再验收工件下载与 SHA-256 |
+| Agent 配置读取/自描述 | 部分通过 | 3 台在线 Agent 的配置端点均 HTTP 200，generation=0；机器 runtime descriptor 可读且不含密钥 |
+| 配置热更新/回滚 | 待验收 | 需要目标机回滚演练和维护窗口；本轮不写生产配置 |
+
+结论：P1-04 的 Center 后端提交、日志、取消闭环通过；React 浏览器 E2E、无障碍/视觉回归
+和工件页面仍未验收。P1-07 的只读配置合同通过，热更新/回滚不在本轮变更范围内。
 
 ## 代码与 CI 回归证据
 
