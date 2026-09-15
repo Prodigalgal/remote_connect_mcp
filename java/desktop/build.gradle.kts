@@ -21,6 +21,7 @@ graalvmNative {
     binaries {
         named("main") {
             imageName.set("rcm-desktop-companion")
+            buildArgs.add("-march=compatibility")
         }
     }
 }

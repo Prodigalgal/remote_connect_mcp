@@ -15,6 +15,7 @@ graalvmNative {
     binaries {
         named("main") {
             imageName.set("rcm-browser-agent")
+            buildArgs.add("-march=compatibility")
         }
     }
 }

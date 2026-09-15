@@ -30,6 +30,7 @@ graalvmNative {
     binaries {
         named("main") {
             imageName.set("rcm-center")
+            buildArgs.add("-march=compatibility")
         }
     }
 }
