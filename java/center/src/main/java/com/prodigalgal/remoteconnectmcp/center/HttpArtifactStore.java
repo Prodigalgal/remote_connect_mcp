@@ -58,10 +58,12 @@ public final class HttpArtifactStore implements ArtifactStore {
         var request = request("PUT", key).header("Content-Type", "application/octet-stream")
                 .header("X-RCM-SHA256", digest).PUT(HttpRequest.BodyPublishers.ofByteArray(data)).build();
         var response = send(request);
-        try (var ignored = response.body()) {
+        try {
             if (response.statusCode() != 200 && response.statusCode() != 201 && response.statusCode() != 204) {
                 throw failure("put", response.statusCode());
             }
+        } finally {
+            closeQuietly(response.body());
         }
         return key;
     }
@@ -91,11 +93,13 @@ public final class HttpArtifactStore implements ArtifactStore {
     public void delete(String objectKey) {
         var key = normalizeKey(objectKey);
         var response = send(request("DELETE", key).DELETE().build());
-        try (var ignored = response.body()) {
+        try {
             if (response.statusCode() != 200 && response.statusCode() != 202
                     && response.statusCode() != 204 && response.statusCode() != 404) {
                 throw failure("delete", response.statusCode());
             }
+        } finally {
+            closeQuietly(response.body());
         }
     }
 
@@ -163,6 +167,17 @@ public final class HttpArtifactStore implements ArtifactStore {
 
     private static ArtifactStore.StorageException failure(String operation, int status) {
         return new ArtifactStore.StorageException("artifact HTTP " + operation + " returned status " + status);
+    }
+
+    private static void closeQuietly(InputStream body) {
+        if (body == null) return;
+        try {
+            body.close();
+        } catch (IOException ignored) {
+            // The response status already determines PUT/DELETE success. A
+            // close failure must not turn a completed object operation into a
+            // retry that could duplicate a write.
+        }
     }
 
     private static boolean isLoopback(String host) {
