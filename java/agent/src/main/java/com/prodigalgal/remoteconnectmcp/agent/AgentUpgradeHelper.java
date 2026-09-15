@@ -344,8 +344,17 @@ final class AgentUpgradeHelper {
         // systemctl command itself returns.  systemd has no --wait option for
         // stop, so wait for ActiveState=inactive before replacing the bundle.
         if (isWindows()) {
-            runServiceCommand(List.of("sc.exe", "stop", service), false);
-            waitWindowsServiceStopped(service);
+            // GraalVM Native Image binaries are console executables and do not
+            // implement the Windows ServiceMain/control dispatcher.  New
+            // installers supervise them with Task Scheduler.  Keep the SCM
+            // path as a compatibility fallback for older wrapper installs.
+            if (windowsTaskExists(service)) {
+                runServiceCommand(List.of("schtasks.exe", "/End", "/TN", service), false);
+                waitWindowsTaskStopped(service);
+            } else {
+                runServiceCommand(List.of("sc.exe", "stop", service), false);
+                waitWindowsServiceStopped(service);
+            }
         } else {
             runServiceCommand(List.of("systemctl", "stop", service), false);
             waitUnixServiceState(service, "inactive");
@@ -356,8 +365,13 @@ final class AgentUpgradeHelper {
         var service = config.serviceName();
         if (service != null && !service.isBlank()) {
             if (isWindows()) {
-                runServiceCommand(List.of("sc.exe", "start", service), true);
-                waitWindowsServiceRunning(service);
+                if (windowsTaskExists(service)) {
+                    runServiceCommand(List.of("schtasks.exe", "/Run", "/TN", service), true);
+                    waitWindowsTaskRunning(service);
+                } else {
+                    runServiceCommand(List.of("sc.exe", "start", service), true);
+                    waitWindowsServiceRunning(service);
+                }
             } else {
                 runServiceCommand(List.of("systemctl", "start", service), true);
                 waitUnixServiceState(service, "active");
@@ -386,6 +400,54 @@ final class AgentUpgradeHelper {
             throw new IOException("service command timed out");
         }
         if (mustSucceed && process.exitValue() != 0) throw new IOException("service command failed with code " + process.exitValue());
+    }
+
+    private static boolean windowsTaskExists(String task) throws IOException, InterruptedException {
+        var process = new ProcessBuilder("schtasks.exe", "/Query", "/TN", task)
+                .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+        if (!process.waitFor(10, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            process.waitFor(5, TimeUnit.SECONDS);
+            return false;
+        }
+        return process.exitValue() == 0;
+    }
+
+    private static boolean windowsTaskRunning(String task) throws IOException, InterruptedException {
+        var process = new ProcessBuilder("schtasks.exe", "/Query", "/TN", task, "/XML")
+                .redirectErrorStream(true).start();
+        if (!process.waitFor(10, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            process.waitFor(5, TimeUnit.SECONDS);
+            return false;
+        }
+        var output = decodeWindowsOutput(process.getInputStream().readAllBytes());
+        return process.exitValue() == 0 && output.toLowerCase(Locale.ROOT).contains("<state>running</state>");
+    }
+
+    private static String decodeWindowsOutput(byte[] bytes) {
+        if (bytes.length >= 2 && (bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xfe) {
+            return new String(bytes, StandardCharsets.UTF_16LE);
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    private static void waitWindowsTaskStopped(String task) throws IOException, InterruptedException {
+        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
+        while (true) {
+            if (!windowsTaskExists(task) || !windowsTaskRunning(task)) return;
+            if (System.nanoTime() >= deadline) throw new IOException("task " + task + " did not become stopped");
+            Thread.sleep(250L);
+        }
+    }
+
+    private static void waitWindowsTaskRunning(String task) throws IOException, InterruptedException {
+        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
+        while (true) {
+            if (windowsTaskRunning(task)) return;
+            if (System.nanoTime() >= deadline) throw new IOException("task " + task + " did not become running");
+            Thread.sleep(250L);
+        }
     }
 
     private static void waitUnixServiceState(String service, String expected) throws IOException, InterruptedException {

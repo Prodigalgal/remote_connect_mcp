@@ -169,7 +169,7 @@ final class AgentUpgradeRunner implements Runnable {
                     java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
                     java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE));
         } catch (Exception ignored) {
-            // Windows ACLs are applied by the service installer.
+            // Windows ACLs are applied by the Agent installer/startup task.
         }
     }
 

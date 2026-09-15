@@ -55,6 +55,73 @@ $ErrorActionPreference = "Stop"
 $serviceName = "RemoteConnectMCPAgent"
 $companionTaskName = "RemoteConnectMCPDesktopCompanion"
 
+function ConvertTo-PowerShellLiteral {
+    param([AllowEmptyString()][string]$Value)
+    # Single-quoted PowerShell literals only need an embedded quote doubled.
+    # This keeps paths/URLs/capability lists out of a command-line string and
+    # prevents metacharacters in a custom installation path from becoming
+    # executable code in the launcher.
+    return "'" + ([string]$Value).Replace("'", "''") + "'"
+}
+
+function Remove-AgentScmService {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $service) { return }
+    if ($service.Status -ne "Stopped") {
+        Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue
+        try { $service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30)) } catch { }
+    }
+    & sc.exe delete $Name | Out-Null
+    # Delete is asynchronous in SCM.  Do not create a task with the same
+    # display/name until the stale service record has disappeared.
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (-not (Get-Service -Name $Name -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    throw "Windows SCM service '$Name' could not be removed."
+}
+
+function Remove-AgentTask {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $task = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
+    if (-not $task) { return }
+    if ($task.State -eq 'Running') { Stop-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue }
+    Unregister-ScheduledTask -TaskName $Name -Confirm:$false -ErrorAction SilentlyContinue
+}
+
+function Register-AgentTask {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$LauncherPath
+    )
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $action = New-ScheduledTaskAction -Execute $windowsPowerShell -Argument (
+        '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $LauncherPath)
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Seconds 15) `
+        -ExecutionTimeLimit ([TimeSpan]::Zero)
+    Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger -Principal $principal `
+        -Settings $settings -Description 'Remote Connect MCP Java Agent (system startup task)' -Force | Out-Null
+}
+
+function Start-AgentTaskAndWait {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    Start-ScheduledTask -TaskName $Name
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $task = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
+        if ($task -and $task.State -eq 'Running') { return }
+        Start-Sleep -Milliseconds 250
+    }
+    $info = Get-ScheduledTaskInfo -TaskName $Name -ErrorAction SilentlyContinue
+    $result = if ($info) { $info.LastTaskResult } else { 'unknown' }
+    throw "Remote Connect MCP Java Agent task did not enter Running state (last result: $result)."
+}
+
 if ($MaxTotalChildProcesses -eq 0) {
     $MaxTotalChildProcesses = [Math]::Min(256, [Math]::Max(32, $MaxConcurrency * 32))
 }
@@ -119,16 +186,12 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 if ($Uninstall) {
-    Unregister-ScheduledTask -TaskName $companionTaskName -Confirm:$false -ErrorAction SilentlyContinue
-    $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-    if ($service) {
-        if ($service.Status -ne "Stopped") { Stop-Service -Name $serviceName -Force }
-        & sc.exe delete $serviceName | Out-Null
-        Start-Sleep -Milliseconds 500
-    }
+    Remove-AgentTask -Name $serviceName
+    Remove-AgentTask -Name $companionTaskName
+    Remove-AgentScmService -Name $serviceName
     if (Test-Path -LiteralPath $InstallRoot) { Remove-Item -LiteralPath $InstallRoot -Recurse -Force }
     if ($PurgeState -and (Test-Path -LiteralPath $StateDir)) { Remove-Item -LiteralPath $StateDir -Recurse -Force }
-    Write-Host "Remote Connect MCP Java Agent service removed."
+    Write-Host "Remote Connect MCP Java Agent task removed."
     return
 }
 
@@ -199,18 +262,12 @@ try {
     # Stop before replacing a loaded executable/DLL. The service is started
     # again only after registration and the complete bundle are in place.
     $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-    if ($existingService -and $existingService.Status -ne 'Stopped') {
-        Stop-Service -Name $serviceName -Force
-        $existingService.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
-    }
+    if ($existingService) { Remove-AgentScmService -Name $serviceName }
     # The interactive companion may still hold its Native Image DLLs while a
     # service upgrade is replacing the sibling bundles. Stop/unregister the
     # old logon task; it is recreated below when DesktopEnabled is requested.
-    $existingCompanionTask = Get-ScheduledTask -TaskName $companionTaskName -ErrorAction SilentlyContinue
-    if ($existingCompanionTask) {
-        Stop-ScheduledTask -TaskName $companionTaskName -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $companionTaskName -Confirm:$false -ErrorAction SilentlyContinue
-    }
+    Remove-AgentTask -Name $companionTaskName
+    Remove-AgentTask -Name $serviceName
 
     New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
@@ -303,15 +360,6 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
     $registration.Dispose()
 }
 
-$service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-$quotedBinary = '"{0}"' -f $destination
-if (-not $service) {
-    New-Service -Name $serviceName -BinaryPathName $quotedBinary -DisplayName "Remote Connect MCP Java Agent" -Description "Java Native Image Agent for the Remote Connect MCP control plane" -StartupType Automatic | Out-Null
-} else {
-    & sc.exe config $serviceName binPath= $quotedBinary start= auto | Out-Null
-}
-
-$serviceRegistry = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
 $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_CENTER_URL=$($CenterUrl.TrimEnd('/'))",
     "REMOTE_CONNECT_MCP_AGENT_NAME=$($AgentName.Trim())",
@@ -345,13 +393,24 @@ $environment = [string[]]@(
 )
 if ($desktopDestination) { $environment += "REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY=$desktopDestination" }
 if ($browserDestination) { $environment += "REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=$browserDestination" }
-New-ItemProperty -Path $serviceRegistry -Name Environment -PropertyType MultiString -Value $environment -Force | Out-Null
-& sc.exe description $serviceName "Java Native Image Agent for the Remote Connect MCP control plane" | Out-Null
-& sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/15000/restart/30000 | Out-Null
-& sc.exe failureflag $serviceName 1 | Out-Null
+$launcherPath = Join-Path $InstallRoot 'run-agent.ps1'
+$launcherLines = [System.Collections.Generic.List[string]]::new()
+$launcherLines.Add('$ErrorActionPreference = "Stop"')
+$launcherLines.Add('$ProgressPreference = "SilentlyContinue"')
+foreach ($entry in $environment) {
+    $parts = $entry.Split('=', 2)
+    if ($parts.Count -eq 2) {
+        $launcherLines.Add("[Environment]::SetEnvironmentVariable($(ConvertTo-PowerShellLiteral $parts[0]), $(ConvertTo-PowerShellLiteral $parts[1]), 'Process')")
+    }
+}
+$launcherLines.Add('$binary = Join-Path $PSScriptRoot ''rcm-agent.exe''')
+$launcherLines.Add('& $binary --run')
+$launcherLines.Add('exit $LASTEXITCODE')
+Set-Content -LiteralPath $launcherPath -Value $launcherLines -Encoding UTF8 -Force
+& icacls.exe $launcherPath /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
 & icacls.exe $StateDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
 if ($DesktopEnabled) {
-    # The SCM service remains the single Center identity. A per-logon task
+    # The startup task remains the single Center identity. A per-logon task
     # hosts the independent companion binary in the interactive session so
     # AWT/User32 can see the desktop; it communicates through the protected
     # state/desktop loopback endpoint and never registers another Agent.
@@ -370,11 +429,11 @@ if ($DesktopEnabled) {
     Unregister-ScheduledTask -TaskName $companionTaskName -Confirm:$false -ErrorAction SilentlyContinue
 }
 
-Start-Service -Name $serviceName
-(Get-Service -Name $serviceName).WaitForStatus("Running", [TimeSpan]::FromSeconds(30))
+Register-AgentTask -Name $serviceName -LauncherPath $launcherPath
+Start-AgentTaskAndWait -Name $serviceName
 [pscustomobject]@{
-    Service = $serviceName
-    Status = (Get-Service -Name $serviceName).Status
+    Task = $serviceName
+    Status = (Get-ScheduledTask -TaskName $serviceName).State
     AgentName = $AgentName
     EnrollmentTokenStoredInService = $false
     Binary = $destination
@@ -386,4 +445,5 @@ Start-Service -Name $serviceName
     BrowserBinary = $browserDestination
     MaxAggregateOutputBytes = $MaxAggregateOutputBytes
     CgroupPath = $CgroupPath
+    Launcher = $launcherPath
 }
