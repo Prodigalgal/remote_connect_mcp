@@ -124,14 +124,20 @@ final class CommandRunner implements Runnable {
                 exitCode = process.exitValue();
             }
             awaitOutputs(outputDrainFuture, outputUploadFuture);
-            var streamFailure = outputFailure.get();
-            if (streamFailure != null) {
-                throw asIOException(streamFailure);
-            }
             var resourceViolation = resourceSupervisor == null ? null : resourceSupervisor.violation();
             if (resourceViolation != null && !resourceViolation.isBlank()) {
                 sendState(new TaskUpdateRequest("failed", exitCode, resourceViolation, null, Instant.now(), spool.truncated()));
                 return;
+            }
+            // A resource supervisor terminates the process tree when a limit is
+            // exceeded. The forced close of stdout/stderr can race with the
+            // output pumps and surface as a generic "Stream closed" failure.
+            // Prefer the actionable resource violation so callers can explain
+            // and account for the enforced limit instead of reporting a
+            // misleading transport error.
+            var streamFailure = outputFailure.get();
+            if (streamFailure != null) {
+                throw asIOException(streamFailure);
             }
             sendState(new TaskUpdateRequest(exitCode == 0 ? "completed" : "failed", exitCode,
                     exitCode == 0 ? null : "command exited with code " + exitCode, null, Instant.now(), spool.truncated()));
