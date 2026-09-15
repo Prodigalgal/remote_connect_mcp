@@ -109,7 +109,7 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 2. Center 在控制台加载或用户点击刷新时读取 GitHub Release 目录，管理员直接选择目标版本，设置金丝雀数量和后续批次大小；
 3. Center 按目标机器的 OS/架构解析 Release 资产和 `.sha256`（也支持 Admin API 直接提交已校验的 HTTPS 资产），再向金丝雀 Agent 下发 HTTPS 下载地址和 SHA-256；
 4. Agent 在没有附着（有超时）命令时接收升级；无超时可恢复任务可以继续运行，校验下载包后启动独立升级 Helper；
-5. Helper 停止服务、原子替换二进制（Windows 同时替换 ZIP 内 DLL）、重新启动并要求服务管理器返回成功；启动失败会恢复 `.previous` 版本；
+5. Helper 停止 systemd/Windows 启动任务、原子替换二进制（Windows 同时替换 ZIP 内 DLL）、重新启动并要求服务管理器返回成功；启动失败会恢复 `.previous` 版本；
 6. Center 根据 Agent 心跳中的实际版本确认成功，再自动放行下一批；失败目标在租约过期后重新排队，任意机器明确失败都会暂停整个活动，管理员确认后可重试或取消。
 
 升级活动及逐机状态在 Java Center 内存模式下用于协议回归，在 PostgreSQL 模式下由 Liquibase 管理的 `rcm_upgrade_campaign`/`rcm_upgrade_target` 表持久化。Center Pod 重启后会继续未完成批次。升级只改变 Agent 二进制，不改变机器身份、每机凭据、服务配置或 ChatGPT MCP 工具；React 页面调用真实 `/api/v1/admin/upgrades` API。
@@ -204,7 +204,7 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS` | `25` | Agent 单次 HTTPS 长轮询等待秒数（0–25）；事件/取消/配置到达即返回，0 仅用于旧 Center 兼容 |
 | `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT` | `poll` | 设置为 `websocket` 时启用额外的 Agent WebSocket 唤醒提示；任务数据和认证仍走 HTTPS，连接失败自动退避 |
 | `REMOTE_CONNECT_MCP_AGENT_BINARY_PATH` | 空 | Center 自升级时当前 Agent 二进制的稳定绝对路径；未配置则拒绝自升级 |
-| `REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME` | 空 | 升级 Helper 停止/启动的 systemd 或 Windows SCM 服务名；无服务名时只做进程级替换 |
+| `REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME` | 空 | 升级 Helper 停止/启动的 systemd 服务或 Windows 启动任务名；无名称时只做进程级替换 |
 | `REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED` | `false` | 显式启用桌面伴侣；必须以用户会话运行，系统服务本身不链接 AWT |
 | `REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER` | 空 | Browser Agent 本机 Playwright/Patchright/Comoufox Worker 命令；设置后才可执行 browser 任务，任务 JSON 通过临时请求文件传入，截图/下载通过受目录约束的结果清单回传；仓库参考 Worker 为 `scripts/browser-worker.mjs` |
 | `REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY` | 同目录 `rcm-browser-agent` | 可选的独立 Browser Agent Native 二进制；未配置时自动查找 command-agent 同目录的 `rcm-browser-agent`，找不到则兼容地直接执行适配器命令 |
@@ -252,14 +252,14 @@ Center 管理端可以通过 `GET/PUT /api/v1/admin/machines/{machineId}/config`
 `git worktree add --detach`；任务完成前该 Worktree 不能作为任务 cwd。删除同样通过异步 `git worktree remove --force` 执行，
 请求可使用 `idempotency_key` 安全重试。项目边界校验在 Center 和 Agent 各执行一次，原始 checkout 不会被自动修改。
 
-工作区策略限制的是任务启动目录，不是操作系统级沙箱。命令仍以 Agent 服务账户运行，Shell 可以自行读取或写入其他路径。若需要强隔离，请再配合独立低权限账户、ACL、systemd `ReadWritePaths`、Windows 受限服务账户或容器/沙箱；不要把 `workspace` 模式当作 root 级安全边界。
+工作区策略限制的是任务启动目录，不是操作系统级沙箱。命令仍以 Agent 运行账户运行，Shell 可以自行读取或写入其他路径。若需要强隔离，请再配合独立低权限账户、ACL、systemd `ReadWritePaths`、Windows 受限账户或容器/沙箱；不要把 `workspace` 模式当作 root 级安全边界。
 
-Linux systemd 模板和 Java 安装脚本位于 [`deploy/systemd`](deploy/systemd)、[`scripts/install-java-agent.sh`](scripts/install-java-agent.sh) 与 [`scripts/install-java-agent.ps1`](scripts/install-java-agent.ps1)。安装器先完成一次注册，再创建不含 Enrollment Token 的长期服务配置。模板使用 `KillMode=process`，让无超时可恢复任务在 Agent 服务升级/重启时继续运行；有超时的附着任务由 Agent 自己清理。systemd 设置文件描述符、任务数、CPU 和内存高低水位；Agent 自身还通过并发槽位、有界 spool、Browser/桌面子进程上限控制资源。Agent 不监听端口，不需要域名、Cloudflare Tunnel 或入站防火墙规则。
+Linux systemd 模板和 Java 安装脚本位于 [`deploy/systemd`](deploy/systemd)、[`scripts/install-java-agent.sh`](scripts/install-java-agent.sh) 与 [`scripts/install-java-agent.ps1`](scripts/install-java-agent.ps1)。安装器先完成一次注册，再创建不含 Enrollment Token 的长期运行配置。模板使用 `KillMode=process`，让无超时可恢复任务在 Agent 重启时继续运行；有超时的附着任务由 Agent 自己清理。systemd 设置文件描述符、任务数、CPU 和内存高低水位；Agent 自身还通过并发槽位、有界 spool、Browser/桌面子进程上限控制资源。Agent 不监听端口，不需要域名、Cloudflare Tunnel 或入站防火墙规则。
 
-### Windows 服务
+### Windows 启动任务
 
-Windows amd64 使用 Native Image Agent 并以原生 Windows SCM 服务运行；Windows ARM64 暂使用
-JVM/Go 兼容包，但安装参数和服务管理方式相同。请在管理员 PowerShell 7 中执行：
+Windows amd64 使用 Native Image Agent，并由内置 Windows Task Scheduler 以 SYSTEM 身份在系统启动时运行。Native Image 是控制台程序，不能直接注册成 SCM ServiceMain；启动任务还配置失败重启，因此不会出现 SCM 7000/7009 超时。Windows ARM64 暂使用
+兼容包，但安装参数和启动任务管理方式相同。请在管理员 PowerShell 7 中执行：
 
 ```powershell
 ./scripts/install-java-agent.ps1 `
@@ -274,15 +274,16 @@ JVM/Go 兼容包，但安装参数和服务管理方式相同。请在管理员 
   -BrowserBinaryPath ./remote-connect-mcp-browser-vX.Y.Z-windows-amd64.zip
 ```
 
-服务名为 `RemoteConnectMCPAgent`，默认自动启动，异常退出按 5/15/30 秒重启。状态、进程和日志：
+任务名为 `RemoteConnectMCPAgent`，默认开机启动，异常退出按 1 分钟间隔最多重试 3 次（Windows Task Scheduler 的最小重试间隔）。状态、进程和日志：
 
 ```powershell
-Get-Service RemoteConnectMCPAgent
-Get-CimInstance Win32_Service -Filter "Name='RemoteConnectMCPAgent'"
+Get-ScheduledTask -TaskName RemoteConnectMCPAgent
+Get-ScheduledTaskInfo -TaskName RemoteConnectMCPAgent
+Get-Process rcm-agent -ErrorAction SilentlyContinue
 Get-Content "$env:ProgramData\RemoteConnectMCPAgent\agent.log" -Tail 100
 ```
 
-`-BinaryPath` 可以指向 Release 的平铺 command-agent ZIP（推荐，内含 `rcm-agent.exe` 及同一构建生成的全部 DLL），`-DesktopBinaryPath` / `-BrowserBinaryPath` 分别安装两个独立的 Native companion ZIP；它们被放在隔离子目录，避免同名运行库覆盖。安装器会先停止旧服务和桌面计划任务，复制完整运行时并清理旧 DLL，再完成注册和启动；不会把校验文件或 README 放进服务目录。安装器把 Center 配置写入服务专属注册表环境，状态和日志目录 ACL 仅允许 SYSTEM 与本机管理员访问。卸载时默认保留机器身份；需要同时清除身份时增加 `-PurgeState`：
+`-BinaryPath` 可以指向 Release 的平铺 command-agent ZIP（推荐，内含 `rcm-agent.exe` 及同一构建生成的全部 DLL），`-DesktopBinaryPath` / `-BrowserBinaryPath` 分别安装两个独立的 Native companion ZIP；它们被放在隔离子目录，避免同名运行库覆盖。安装器会先停止并移除旧 SCM 服务/启动任务和桌面计划任务，复制完整运行时并清理旧 DLL，再完成注册和启动；不会把校验文件或 README 放进运行目录。Center 配置写入受 ACL 保护的启动脚本（不含 Enrollment Token），状态目录 ACL 仅允许 SYSTEM 与本机管理员访问。卸载时默认保留机器身份；需要同时清除身份时增加 `-PurgeState`：
 
 ```powershell
 ./scripts/install-java-agent.ps1 -Uninstall

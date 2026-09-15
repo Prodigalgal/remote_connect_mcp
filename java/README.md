@@ -8,7 +8,7 @@
 - `desktop`：独立的 `rcm-desktop-companion` Java Native Image，仅在用户会话中提供 AWT/Robot 截图与输入能力，不向 Center 注册第二个身份。
 - `browser`：独立的 `rcm-browser-agent` Java Native Image，按 browser 任务编排本机 Playwright/Patchright/Comoufox 适配器，不向 Center 注册第二个身份。
 
-根目录 Go Center/Agent 仍作为兼容基线保留，Java 组件可独立进行协议验收。`--check-config` 只校验配置；`--register-once` 注册并把 Center 返回的日常身份写入 `STATE_DIR/identity.json`；`--run`（或无参数，供 Windows 服务/Linux systemd 使用）启动注册、心跳和异步任务循环，支持并发槽位、输出游标、超时、取消、桌面工件、Browser Worker 和 Center 控制的 canary 自升级。命令输出先落入有界本机 spool，再由独立虚拟线程上传；单任务和 Agent 级聚合输出上限同时生效，达到聚合上限时普通任务仍继续执行并仅截断后续输出；Center 暂时不可达时不会终止子进程，但 durable 日志达到上限会由看门器终止并标记失败。
+根目录 Go Center/Agent 仍作为兼容基线保留，Java 组件可独立进行协议验收。`--check-config` 只校验配置；`--register-once` 注册并把 Center 返回的日常身份写入 `STATE_DIR/identity.json`；`--run`（或无参数，供 Windows 启动任务/Linux systemd 使用）启动注册、心跳和异步任务循环，支持并发槽位、输出游标、超时、取消、桌面工件、Browser Worker 和 Center 控制的 canary 自升级。命令输出先落入有界本机 spool，再由独立虚拟线程上传；单任务和 Agent 级聚合输出上限同时生效，达到聚合上限时普通任务仍继续执行并仅截断后续输出；Center 暂时不可达时不会终止子进程，但 durable 日志达到上限会由看门器终止并标记失败。
 
 ## 构建与烟测
 
@@ -31,8 +31,8 @@ java -jar .\agent\build\libs\agent-0.1.0-SNAPSHOT.jar --run
 ```
 
 `install-java-agent.ps1` / `install-java-agent.sh` 会先用一次性 Enrollment Token 调用
-`--register-once`，确认 `identity.json` 写入成功后再创建服务，并且不把 Enrollment
-Token 写入长期服务环境；日常通信只使用 `identity.json` 中的每机 Token。Java Agent 默认使用
+`--register-once`，确认 `identity.json` 写入成功后再创建长期运行配置，并且不把 Enrollment
+Token 写入启动任务环境；日常通信只使用 `identity.json` 中的每机 Token。Java Agent 默认使用
 25 秒 HTTP 长轮询，在任务、取消、配置、升级事件或服务端 deadline 时才返回；设置
 `REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS=0` 才恢复旧版固定间隔兼容模式。不要把该文件
 或环境变量提交到 Git。
@@ -40,7 +40,7 @@ Token 写入长期服务环境；日常通信只使用 `identity.json` 中的每
 Windows 开启 `-DesktopEnabled` 时，安装器还会注册一个当前用户登录触发的
 `rcm-desktop-companion --desktop-companion` 任务（旧安装若仍调用 Agent 的兼容入口，会由它转发到同目录伴侣）。伴侣进程只绑定 `127.0.0.1`，在
 `STATE_DIR/desktop/desktop-companion.json` 发布本机端点；Windows 计划任务会显式传入同一
-`STATE_DIR`，服务 Agent 通过该端点请求
+`STATE_DIR`，command-agent 通过该端点请求
 截图、区域截图、屏幕枚举、启动、单击/双击/右击、移动指针、拖拽、组合按键、剪贴板、窗口聚焦和文本输入，不会新增 Center 身份。若用户会话未登录，Desktop
 任务会明确返回不可用，而不会让 SYSTEM 会话伪装成桌面。
 
@@ -56,7 +56,7 @@ Native Agent 烟测可设置 `RCM_SMOKE_RESOURCE_REPORT=/tmp/rcm-agent-resource.
 不应提交到仓库或作为运行时限制依据。
 
 资源回收约束：command-agent 在 `STATE_DIR/agent.lock` 上单实例运行；Browser Worker 达到
-`REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` 后不会再领取 browser 任务，超时/取消会终止整个子进程树并删除临时文件；Desktop companion 在 `STATE_DIR/desktop/desktop-companion.lock` 上单实例运行，最多 4 个 IPC 请求和 16 个活动启动进程，已退出的进程通过 `ProcessHandle.onExit()` 自动释放名额。没有用户会话时，command-agent 的桌面启动回退同样受 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES`（1–64）限制。`REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`（默认按并发计算、封顶 256；可配置 1–4096）还会在 command、desktop 直启和 browser 任务之间共享一个 Agent 级进程预算。任务监督器观察到新的子进程时占用预算，任务终止/正常退出和桌面进程 `onExit()` 会释放预算；Agent 关闭、重启或升级时，直启预算会停止接受新进程、终止仍登记的 GUI 进程并释放名额；预算耗尽的任务 fail-closed 并回传可解释错误。Windows 服务和 Linux systemd 仍应配置服务管理器的重启/资源上限，不能用无限制的 `maxConcurrency` 代替容量规划。
+`REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` 后不会再领取 browser 任务，超时/取消会终止整个子进程树并删除临时文件；Desktop companion 在 `STATE_DIR/desktop/desktop-companion.lock` 上单实例运行，最多 4 个 IPC 请求和 16 个活动启动进程，已退出的进程通过 `ProcessHandle.onExit()` 自动释放名额。没有用户会话时，command-agent 的桌面启动回退同样受 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES`（1–64）限制。`REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`（默认按并发计算、封顶 256；可配置 1–4096）还会在 command、desktop 直启和 browser 任务之间共享一个 Agent 级进程预算。任务监督器观察到新的子进程时占用预算，任务终止/正常退出和桌面进程 `onExit()` 会释放预算；Agent 关闭、重启或升级时，直启预算会停止接受新进程、终止仍登记的 GUI 进程并释放名额；预算耗尽的任务 fail-closed 并回传可解释错误。Windows 启动任务和 Linux systemd 仍应配置运行管理器的重启/资源上限，不能用无限制的 `maxConcurrency` 代替容量规划。
 
 Center 持久化统一使用 PostgreSQL + Liquibase，不使用 Flyway。默认 `RCM_CENTER_PERSISTENCE_MODE=memory` 只用于无数据库协议回归；生产设置 `RCM_CENTER_PERSISTENCE_MODE=postgres`、`RCM_CENTER_DATABASE_URL`、`RCM_CENTER_DATABASE_USERNAME` 和 `RCM_CENTER_DATABASE_PASSWORD`。任务、输出游标和有界截图工件均写入事务存储。生产通过 `rcm-center --migrate` 或 `deploy/k8s/java-center/migration-job.yaml` 单独执行 Liquibase，Center Pod 设置 `RCM_CENTER_LIQUIBASE_ENABLED=false`。
 

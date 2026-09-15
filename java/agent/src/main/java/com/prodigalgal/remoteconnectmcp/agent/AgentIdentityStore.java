@@ -66,7 +66,7 @@ public final class AgentIdentityStore {
         try {
             Files.setPosixFilePermissions(file, EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
         } catch (UnsupportedOperationException ignored) {
-            // Windows ACLs are applied by the service installer; POSIX hosts get
+            // Windows ACLs are applied by the installer; POSIX hosts get
             // an explicit 0600 file when the filesystem supports it.
         }
     }

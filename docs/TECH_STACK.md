@@ -121,7 +121,7 @@ agent/
   agent-desktop     # 用户会话截图、应用启动、窗口/输入扩展点
   agent-browser     # Browser Agent supervisor、profile 生命周期、工件上传
   agent-updater     # 下载、SHA-256/签名、原子替换、回滚
-  agent-platform    # systemd、Windows SCM wrapper、ACL 和路径实现
+  agent-platform    # systemd、Windows Task Scheduler、ACL 和路径实现
 ```
 
 Agent 以 Java record/不可变配置表示协议对象，使用显式 JSON Schema 生成或校验模型。动态反射、脚本化配置和任意类加载不放入核心路径，以减少 Native Image reachability metadata。
@@ -195,7 +195,7 @@ Image 并单独完成服务安装、升级和回滚验收。
 ### 5.3 服务安装
 
 - Linux：systemd 直接运行 Agent/Center 二进制，状态目录和 Token 文件使用 `0600`；
-- Windows：命令 Agent 由 SCM/轻量服务 wrapper 承担服务控制语义，Agent 本体仍是 Java Native Image；Desktop companion 由用户会话启动独立的 `rcm-desktop-companion` Native Image，并与 command-agent 共用同一状态目录下的受保护 IPC 端点和单一 Center 身份；
+- Windows：命令 Agent 由内置 Task Scheduler 以 SYSTEM 身份承担开机启动、失败重启和升级控制语义，Agent 本体仍是 Java Native Image（控制台程序不直接伪装 SCM ServiceMain）；Desktop companion 由用户会话启动独立的 `rcm-desktop-companion` Native Image，并与 command-agent 共用同一状态目录下的受保护 IPC 端点和单一 Center 身份；
 - 安装脚本只负责下载、校验、写入配置和注册服务，不把令牌打印到普通日志；
 - Center 的 Agent 升级按平台、架构和 capability 分批，不改变 `machine_id`、`agent_id` 或 ChatGPT MCP 连接器。
 
