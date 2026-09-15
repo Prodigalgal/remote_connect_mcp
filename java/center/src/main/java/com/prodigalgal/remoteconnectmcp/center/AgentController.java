@@ -86,9 +86,11 @@ public final class AgentController {
                     java.util.Set.of(TransportNegotiation.HTTPS));
             if (normalizedWait > 0 && wakes != null) {
                 return ResponseEntity.ok().header("X-RCM-Long-Poll", "accepted")
+                        .header(TransportNegotiation.HEADER_CAPABILITIES, TransportNegotiation.SERVER_CAPABILITIES)
                         .header(TransportNegotiation.HEADER_SELECTED, selectedTransport).body(response);
             }
-            return ResponseEntity.ok().header(TransportNegotiation.HEADER_SELECTED, selectedTransport).body(response);
+            return ResponseEntity.ok().header(TransportNegotiation.HEADER_CAPABILITIES, TransportNegotiation.SERVER_CAPABILITIES)
+                    .header(TransportNegotiation.HEADER_SELECTED, selectedTransport).body(response);
         });
     }
 
