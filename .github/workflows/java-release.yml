@@ -181,20 +181,26 @@ jobs:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
+          native_march="x86-64-v2"
+          if [[ "${TARGET_ARCH}" == "arm64" ]]; then native_march="armv8-a"; fi
           sudo apt-get update
           sudo apt-get install -y zip
           mkdir -p "out/${TARGET_ARCH}"
           docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
             --build-arg RCM_CI_BUILD=true \
+            --build-arg RCM_NATIVE_MARCH="${native_march}" \
             --file java/Dockerfile.center.native --output "type=local,dest=out/center-${TARGET_ARCH}" java
           docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
             --build-arg RCM_CI_BUILD=true \
+            --build-arg RCM_NATIVE_MARCH="${native_march}" \
             --file java/Dockerfile.agent.native --output "type=local,dest=out/agent-${TARGET_ARCH}" java
           docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
             --build-arg RCM_CI_BUILD=true \
+            --build-arg RCM_NATIVE_MARCH="${native_march}" \
             --file java/Dockerfile.desktop.native --output "type=local,dest=out/desktop-${TARGET_ARCH}" java
           docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
             --build-arg RCM_CI_BUILD=true \
+            --build-arg RCM_NATIVE_MARCH="${native_march}" \
             --file java/Dockerfile.browser.native --output "type=local,dest=out/browser-${TARGET_ARCH}" java
           center="$(find "out/center-${TARGET_ARCH}" -type f -name rcm-center -print -quit)"
           agent="$(find "out/agent-${TARGET_ARCH}" -type f -name rcm-agent -print -quit)"
@@ -331,7 +337,7 @@ jobs:
         shell: pwsh
         # Native Image can consume several GiB per image. Serialize the four
         # images so the Windows hosted runner does not page/OOM.
-        run: .\gradlew.bat :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
+        run: .\gradlew.bat -PnativeMarch=x86-64-v2 :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
       - name: Native MCP and Agent smoke tests
         shell: pwsh
         run: |

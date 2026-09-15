@@ -3,6 +3,10 @@ plugins {
     application
 }
 
+// The release workflow selects an explicit baseline per architecture.  Keep
+// the compatibility alias as the default for other CI callers.
+val nativeMarch = providers.gradleProperty("nativeMarch").orElse("compatibility").get()
+
 dependencies {
     implementation(project(":protocol"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.13.4")
@@ -19,7 +23,7 @@ graalvmNative {
             imageName.set("rcm-agent")
             // Target the broad x86-64 baseline so older hosts without AVX2
             // (for example Sandy Bridge) can run the release binary.
-            buildArgs.add("-march=compatibility")
+            buildArgs.add("-march=$nativeMarch")
         }
     }
 }
