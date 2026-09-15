@@ -207,6 +207,16 @@ jobs:
           desktop="$(find "out/desktop-${TARGET_ARCH}" -type f -name rcm-desktop-companion -print -quit)"
           browser="$(find "out/browser-${TARGET_ARCH}" -type f -name rcm-browser-agent -print -quit)"
           test -n "${center}" && test -n "${agent}" && test -n "${desktop}" && test -n "${browser}"
+          # GraalVM may preserve the build runner's x86 ISA-needed note even
+          # when -march=x86-64-v2 was selected. Normalize only that note before
+          # packaging; the checked-in parser leaves all other ELF properties
+          # untouched and fails the build if a v3/v4 marker remains.
+          if [[ "${TARGET_ARCH}" == "amd64" ]]; then
+            python3 scripts/normalize-native-isa.py --normalize \
+              "${center}" "${agent}" "${desktop}" "${browser}"
+          fi
+          python3 scripts/normalize-native-isa.py --check \
+            "${center}" "${agent}" "${desktop}" "${browser}"
           center_bundle="out/${TARGET_ARCH}/center"
           agent_bundle="out/${TARGET_ARCH}/agent"
           desktop_bundle="out/${TARGET_ARCH}/desktop"
