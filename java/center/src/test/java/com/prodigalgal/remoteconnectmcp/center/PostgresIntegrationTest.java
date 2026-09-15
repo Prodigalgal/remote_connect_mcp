@@ -111,7 +111,7 @@ class PostgresIntegrationTest {
 
         var runtime = new AgentRuntimeDescriptor(1, 7, 2, 1,
                 32L * 1024 * 1024, 96L * 1024 * 1024, 12, 900, 0, 0, false, true);
-        var heartbeat = new AgentMetadata("postgres-it-agent-" + agentId, "postgres-it-host",
+        var heartbeat = new AgentMetadata(request.name(), request.hostId(),
                 "postgres-it-host", "linux", "amd64", "integration-2", "/tmp",
                 ScopeMode.UNRESTRICTED, null, List.of("command", "browser"), runtime);
         registry.poll(agentId, registration.token(), new PollRequest(List.of(), 1,
