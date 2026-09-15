@@ -5,6 +5,8 @@ plugins {
     application
 }
 
+val nativeMarch = providers.gradleProperty("nativeMarch").orElse("compatibility").get()
+
 dependencies {
     implementation(project(":protocol"))
     implementation("org.springframework.boot:spring-boot-starter-web")
@@ -30,7 +32,7 @@ graalvmNative {
     binaries {
         named("main") {
             imageName.set("rcm-center")
-            buildArgs.add("-march=compatibility")
+            buildArgs.add("-march=$nativeMarch")
         }
     }
 }

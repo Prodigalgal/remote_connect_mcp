@@ -3,6 +3,8 @@ plugins {
     application
 }
 
+val nativeMarch = providers.gradleProperty("nativeMarch").orElse("compatibility").get()
+
 dependencies {
     implementation(project(":protocol"))
 }
@@ -15,7 +17,7 @@ graalvmNative {
     binaries {
         named("main") {
             imageName.set("rcm-browser-agent")
-            buildArgs.add("-march=compatibility")
+            buildArgs.add("-march=$nativeMarch")
         }
     }
 }

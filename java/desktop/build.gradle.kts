@@ -3,6 +3,8 @@ plugins {
     application
 }
 
+val nativeMarch = providers.gradleProperty("nativeMarch").orElse("compatibility").get()
+
 dependencies {
     // The AWT implementation remains reachable only from this executable.
     // The command Agent can still share the protocol/client classes without
@@ -21,7 +23,7 @@ graalvmNative {
     binaries {
         named("main") {
             imageName.set("rcm-desktop-companion")
-            buildArgs.add("-march=compatibility")
+            buildArgs.add("-march=$nativeMarch")
         }
     }
 }
