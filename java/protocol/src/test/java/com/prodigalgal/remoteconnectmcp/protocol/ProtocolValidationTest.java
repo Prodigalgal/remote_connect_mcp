@@ -91,6 +91,20 @@ class ProtocolValidationTest {
     }
 
     @Test
+    void acceptsPointerAndRegionDesktopActions() {
+        for (var operation : java.util.List.of("double_click", "right_click", "move")) {
+            var action = new TaskCommand.DesktopAction(operation, null, java.util.List.of(), null,
+                    null, 100, 200, null);
+            assertDoesNotThrow(() -> ProtocolValidation.validateTask(new TaskCommand(
+                    "task-" + operation, TaskKind.DESKTOP, "desktop", null, null, Map.of(), 30, action, Instant.now())));
+        }
+        var region = new TaskCommand.DesktopAction("screenshot_region", null, java.util.List.of(), null,
+                null, 10, 20, null, 640, 480, null, null, null);
+        assertDoesNotThrow(() -> ProtocolValidation.validateTask(new TaskCommand(
+                "task-region", TaskKind.DESKTOP, "desktop", null, null, Map.of(), 30, region, Instant.now())));
+    }
+
+    @Test
     void rejectsDesktopExecutableForNonLaunchAction() {
         var task = new TaskCommand("task-screen", TaskKind.DESKTOP, "desktop", null, null, Map.of(), 30,
                 new TaskCommand.DesktopAction("screens", "powershell.exe", java.util.List.of(), null), Instant.now());

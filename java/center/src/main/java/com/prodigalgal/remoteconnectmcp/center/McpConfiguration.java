@@ -178,19 +178,19 @@ public class McpConfiguration {
                                 Map.entry("limit", integer("project list page size, at most 50")),
                                 Map.entry("idempotency_key", string("stable retry key"))),
                         List.of("operation")), request -> project(projects, request), scheduler),
-                tool("desktop", "Queue a bounded screenshot, screen listing, launch, click, drag, key, text, clipboard, or window-focus action on an explicitly desktop-capable user-session Agent.", schema(
+                tool("desktop", "Queue a bounded screenshot, screen listing, launch, pointer, drag, key, text, clipboard, or window-focus action on an explicitly desktop-capable user-session Agent.", schema(
                         Map.ofEntries(
-                                Map.entry("operation", string("screenshot, screens, launch, click, drag, key, type, clipboard_read, clipboard_write, focus, or result")),
+                                Map.entry("operation", string("screenshot, screenshot_region, screens, launch, click, double_click, right_click, move, drag, key, type, clipboard_read, clipboard_write, focus, or result")),
                                 Map.entry("machine_id", string("command-agent machine ID with desktop capability")),
                                 Map.entry("task_id", string("existing desktop task for result")),
                                 Map.entry("executable", string("literal application for launch")),
                                 Map.entry("args", objectArray("literal launch arguments")),
                                 Map.entry("cwd", string("optional working directory")),
                                 Map.entry("text", string("text for type")),
-                                Map.entry("x", integer("screen x for click")),
-                                Map.entry("y", integer("screen y for click")),
-                                Map.entry("x2", integer("screen x endpoint for drag")),
-                                Map.entry("y2", integer("screen y endpoint for drag")),
+                                Map.entry("x", integer("screen x or region left")),
+                                Map.entry("y", integer("screen y or region top")),
+                                Map.entry("x2", integer("screen x endpoint or region right")),
+                                Map.entry("y2", integer("screen y endpoint or region bottom")),
                                 Map.entry("duration_ms", integer("drag duration, 0-10000")),
                                 Map.entry("screen", integer("monitor index for screenshot, 0-32")),
                                 Map.entry("window_title", string("partial window title for focus")),
@@ -430,11 +430,12 @@ public class McpConfiguration {
                 }
                 return desktopResult(tasks, task);
             }
-            if (!"screenshot".equals(operation) && !"screens".equals(operation) && !"launch".equals(operation)
-                    && !"click".equals(operation) && !"drag".equals(operation) && !"key".equals(operation)
+            if (!"screenshot".equals(operation) && !"screenshot_region".equals(operation) && !"screens".equals(operation) && !"launch".equals(operation)
+                    && !"click".equals(operation) && !"double_click".equals(operation) && !"right_click".equals(operation)
+                    && !"move".equals(operation) && !"drag".equals(operation) && !"key".equals(operation)
                     && !"type".equals(operation) && !"clipboard_read".equals(operation)
                     && !"clipboard_write".equals(operation) && !"focus".equals(operation)) {
-                throw new IllegalArgumentException("operation must be screenshot, screens, launch, click, drag, key, type, clipboard_read, clipboard_write, focus, or result");
+                throw new IllegalArgumentException("operation must be screenshot, screenshot_region, screens, launch, click, double_click, right_click, move, drag, key, type, clipboard_read, clipboard_write, focus, or result");
             }
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             if (!machine.capabilities().contains("desktop")) throw new IllegalArgumentException("machine does not advertise desktop capability");

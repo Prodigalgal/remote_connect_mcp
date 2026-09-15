@@ -13,6 +13,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
@@ -38,6 +39,8 @@ public final class AuditService implements AutoCloseable {
     private final CopyOnWriteArrayList<AuditEventView> memory = new CopyOnWriteArrayList<>();
     private final ExecutorService writer = Executors.newVirtualThreadPerTaskExecutor();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final LongAdder droppedEvents = new LongAdder();
+    private final LongAdder persistFailures = new LongAdder();
 
     public AuditService(ObjectProvider<JdbcTemplate> jdbcProvider) {
         this.jdbc = jdbcProvider == null ? null : jdbcProvider.getIfAvailable();
@@ -58,8 +61,24 @@ public final class AuditService implements AutoCloseable {
             // row is observable through the metric/log, while task execution
             // remains independent from audit backpressure.
             queue.poll();
+            droppedEvents.increment();
             if (!queue.offer(event)) LOG.warning("audit queue is full; dropping one event");
         }
+    }
+
+    /** Current queue depth for low-cardinality operational metrics. */
+    public int queueDepth() {
+        return queue.size();
+    }
+
+    /** Number of audit events dropped because the bounded queue was full. */
+    public long droppedEvents() {
+        return droppedEvents.sum();
+    }
+
+    /** Number of PostgreSQL writes which failed after the event was queued. */
+    public long persistFailures() {
+        return persistFailures.sum();
     }
 
     public List<AuditEventView> list(String eventType, String agentId, String taskId, int offset, int limit) {
@@ -166,6 +185,7 @@ public final class AuditService implements AutoCloseable {
                                 view.scopeMode(), view.risk(), view.outcome(), view.detail(),
                                 java.sql.Timestamp.from(view.createdAt()));
                     } catch (RuntimeException failure) {
+                        persistFailures.increment();
                         LOG.log(Level.WARNING, "could not persist audit event " + view.eventType(), failure);
                     }
                 }

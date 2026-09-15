@@ -250,8 +250,8 @@ Cookie 或显式短期会话，不把 Admin Token 放在 localStorage，也不�
 ### 阶段 C：控制台和传输
 
 1. React 控制台先只读接入，再接入任务、令牌、升级和审计写操作；
-2. WebSocket wake-only 已在原生 Windows Center 上验证连接、ping/pong、任务 wake 和 HTTPS 回退；下一步在真实反向代理/多副本环境验证断线、重连、序列号和幂等；
-3. QUIC 只在有真实网络收益和可维护实现时加入，不改变任何 MCP 工具和任务模型。
+2. WebSocket wake-only 已在原生 Windows Center 上验证连接、ping/pong、任务 wake 和 HTTPS 回退；当前只要求单 Center 生产路径继续完成断线、重连、序列号和幂等验收；
+3. QUIC 先使用 `docs/TRANSPORT.md` 中的一次性基准和显式回退，只有真实收益和可维护 provider 均成立时才加入，不改变任何 MCP 工具和任务模型。
 
 ### 发布闸门
 

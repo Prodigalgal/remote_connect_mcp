@@ -131,15 +131,54 @@ async function executeOperation(page, command, operation) {
       await locator(page, command.selector).click();
       return { output: JSON.stringify({ operation, selector: command.selector }) };
     }
+    case "hover": {
+      await locator(page, command.selector).hover();
+      return { output: JSON.stringify({ operation, selector: command.selector }) };
+    }
     case "fill": {
       const value = boundedText(command.value ?? command.text, MAX_TEXT_BYTES, "value");
       await locator(page, command.selector).fill(value);
       return { output: JSON.stringify({ operation, selector: command.selector }) };
     }
+    case "check": {
+      await locator(page, command.selector).check();
+      return { output: JSON.stringify({ operation, selector: command.selector }) };
+    }
+    case "uncheck": {
+      await locator(page, command.selector).uncheck();
+      return { output: JSON.stringify({ operation, selector: command.selector }) };
+    }
+    case "select": {
+      const values = boundedValues(command.values ?? command.value, "values");
+      await locator(page, command.selector).selectOption(values);
+      return { output: JSON.stringify({ operation, selector: command.selector, values }) };
+    }
     case "press": {
       const key = boundedText(command.key, 128, "key");
       await locator(page, command.selector).press(key);
       return { output: JSON.stringify({ operation, selector: command.selector, key }) };
+    }
+    case "wait_for_selector": {
+      const state = command.state === undefined ? "visible" : boundedText(command.state, 32, "state").toLowerCase();
+      if (!['attached', 'detached', 'visible', 'hidden'].includes(state)) throw new Error("state must be attached, detached, visible, or hidden");
+      await locator(page, command.selector).waitFor({ state, timeout: timeoutMs });
+      return { output: JSON.stringify({ operation, selector: command.selector, state }) };
+    }
+    case "reload": {
+      await page.reload({ waitUntil: "domcontentloaded", timeout: timeoutMs });
+      return { output: JSON.stringify({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()) }) };
+    }
+    case "back": {
+      await page.goBack({ waitUntil: "domcontentloaded", timeout: timeoutMs });
+      return { output: JSON.stringify({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()) }) };
+    }
+    case "forward": {
+      await page.goForward({ waitUntil: "domcontentloaded", timeout: timeoutMs });
+      return { output: JSON.stringify({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()) }) };
+    }
+    case "text": {
+      const value = await locator(page, command.selector).innerText();
+      return { output: limitText(JSON.stringify({ operation, selector: command.selector, text: boundedText(value, MAX_TEXT_BYTES, "text") }), MAX_OUTPUT_BYTES) };
     }
     case "wait": {
       const waitMs = boundedInteger(command.wait_ms, 0, 0, MAX_WAIT_MS);
@@ -474,6 +513,14 @@ function locator(page, value) {
     return page.getByTestId(boundedText(value.test_id, MAX_SELECTOR_LENGTH, "test_id")).first();
   }
   throw new Error("structured locator requires css, role, label, placeholder, text, or test_id");
+}
+
+function boundedValues(value, field) {
+  if (Array.isArray(value)) {
+    if (value.length < 1 || value.length > 32) throw new Error(field + " must contain 1-32 values");
+    return value.map((item) => boundedText(item, 2048, field + " item"));
+  }
+  return [boundedText(value, 2048, field)];
 }
 
 async function loadEngine(name) {

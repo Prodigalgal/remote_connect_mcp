@@ -78,7 +78,9 @@ public final class ProtocolValidation {
             requireText(task.desktop().operation(), "desktop operation", 64);
             var operation = task.desktop().operation().trim().toLowerCase(java.util.Locale.ROOT);
             if (!operation.equals("screenshot") && !operation.equals("screens") && !operation.equals("launch")
-                    && !operation.equals("click") && !operation.equals("drag") && !operation.equals("key")
+                    && !operation.equals("click") && !operation.equals("double_click")
+                    && !operation.equals("right_click") && !operation.equals("move")
+                    && !operation.equals("screenshot_region") && !operation.equals("drag") && !operation.equals("key")
                     && !operation.equals("type") && !operation.equals("clipboard_read")
                     && !operation.equals("clipboard_write") && !operation.equals("focus")) {
                 throw new IllegalArgumentException("unsupported desktop operation: " + operation);
@@ -89,10 +91,21 @@ public final class ProtocolValidation {
             if (operation.equals("launch") && (task.desktop().executable() == null || task.desktop().executable().isBlank())) {
                 throw new IllegalArgumentException("launch executable is required");
             }
-            if (operation.equals("click") && (task.desktop().x() == null || task.desktop().y() == null
+            if ((operation.equals("click") || operation.equals("double_click") || operation.equals("right_click")
+                    || operation.equals("move")) && (task.desktop().x() == null || task.desktop().y() == null
                     || task.desktop().x() < -100000 || task.desktop().x() > 100000
                     || task.desktop().y() < -100000 || task.desktop().y() > 100000)) {
-                throw new IllegalArgumentException("click requires x/y between -100000 and 100000");
+                throw new IllegalArgumentException(operation + " requires x/y between -100000 and 100000");
+            }
+            if (operation.equals("screenshot_region") && (task.desktop().x() == null || task.desktop().y() == null
+                    || task.desktop().x2() == null || task.desktop().y2() == null
+                    || task.desktop().x() < -100000 || task.desktop().x() > 100000
+                    || task.desktop().y() < -100000 || task.desktop().y() > 100000
+                    || task.desktop().x2() <= task.desktop().x() || task.desktop().x2() > 100000
+                    || task.desktop().y2() <= task.desktop().y() || task.desktop().y2() > 100000
+                    || ((long) task.desktop().x2() - task.desktop().x()) > 16000
+                    || ((long) task.desktop().y2() - task.desktop().y()) > 16000)) {
+                throw new IllegalArgumentException("screenshot_region requires ordered x/y/x2/y2 within a 16000x16000 region");
             }
             if (operation.equals("drag") && (task.desktop().x() == null || task.desktop().y() == null
                     || task.desktop().x2() == null || task.desktop().y2() == null

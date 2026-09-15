@@ -139,6 +139,43 @@ final class JdbcTaskStore {
         return value == null ? 0L : value;
     }
 
+    TaskService.TaskSloMetrics sloMetrics(Instant now) {
+        var counts = new java.util.HashMap<String, Long>();
+        jdbc.query("SELECT status, COUNT(*) AS count FROM rcm_task GROUP BY status", (rs, rowNum) -> {
+            counts.put(rs.getString("status"), rs.getLong("count"));
+            return null;
+        });
+        var queued = counts.getOrDefault(TaskStatus.QUEUED, 0L);
+        var active = counts.getOrDefault(TaskStatus.DISPATCHING, 0L)
+                + counts.getOrDefault(TaskStatus.RUNNING, 0L)
+                + counts.getOrDefault(TaskStatus.CANCEL_REQUESTED, 0L);
+        var terminal = counts.getOrDefault(TaskStatus.COMPLETED, 0L)
+                + counts.getOrDefault(TaskStatus.FAILED, 0L)
+                + counts.getOrDefault(TaskStatus.CANCELED, 0L);
+        var oldestQueued = jdbc.queryForObject("""
+                SELECT COALESCE(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - MIN(created_at))), 0)
+                  FROM rcm_task WHERE status = ?
+                """, Double.class, TaskStatus.QUEUED);
+        var expiredLeases = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM rcm_task
+                 WHERE status IN (?, ?, ?) AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
+                """, Long.class, TaskStatus.DISPATCHING, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED);
+        var outputBytes = jdbc.queryForObject("SELECT COALESCE(SUM(output_bytes), 0) FROM rcm_task", Long.class);
+        var artifact = jdbc.query("""
+                SELECT COUNT(*) AS objects, COALESCE(SUM(bytes), 0) AS bytes
+                  FROM rcm_task_artifact
+                """, rs -> rs.next() ? new long[]{rs.getLong("objects"), rs.getLong("bytes")} : new long[]{0L, 0L});
+        var artifactObjects = artifact == null ? 0L : artifact[0];
+        var artifactBytes = artifact == null ? 0L : artifact[1];
+        return new TaskService.TaskSloMetrics(queued, active, terminal,
+                counts.getOrDefault(TaskStatus.COMPLETED, 0L),
+                counts.getOrDefault(TaskStatus.FAILED, 0L),
+                counts.getOrDefault(TaskStatus.CANCELED, 0L),
+                oldestQueued == null ? 0L : Math.max(0L, Math.round(oldestQueued)),
+                expiredLeases == null ? 0L : expiredLeases,
+                outputBytes == null ? 0L : outputBytes, artifactObjects, artifactBytes);
+    }
+
     long taskCount() {
         var value = jdbc.queryForObject("SELECT COUNT(*) FROM rcm_task", Long.class);
         return value == null ? 0L : value;

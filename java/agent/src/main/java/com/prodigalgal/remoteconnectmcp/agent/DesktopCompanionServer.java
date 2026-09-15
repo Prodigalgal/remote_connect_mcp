@@ -265,6 +265,10 @@ public final class DesktopCompanionServer {
             case "screens" -> screens();
             case "launch" -> launch(request);
             case "click" -> click(request);
+            case "double_click" -> click(request, InputEvent.BUTTON1_DOWN_MASK, 2);
+            case "right_click" -> click(request, InputEvent.BUTTON3_DOWN_MASK, 1);
+            case "move" -> move(request);
+            case "screenshot_region" -> screenshotRegion(request);
             case "drag" -> drag(request);
             case "key" -> key(request);
             case "type" -> type(request);
@@ -278,12 +282,21 @@ public final class DesktopCompanionServer {
     private DesktopCompanionClient.Response screenshot(DesktopCompanionClient.Request request) throws Exception {
         ensureDisplay();
         var bounds = virtualBounds(request.screen());
-        var image = new Robot().createScreenCapture(bounds);
+        return encodeScreenshot(new Robot().createScreenCapture(bounds), "screenshot captured");
+    }
+
+    private DesktopCompanionClient.Response screenshotRegion(DesktopCompanionClient.Request request) throws Exception {
+        ensureDisplay();
+        var bounds = new Rectangle(request.x(), request.y(), request.x2() - request.x(), request.y2() - request.y());
+        return encodeScreenshot(new Robot().createScreenCapture(bounds), "region screenshot captured");
+    }
+
+    private DesktopCompanionClient.Response encodeScreenshot(BufferedImage image, String description) throws IOException {
         var output = new java.io.ByteArrayOutputStream();
         if (!ImageIO.write(image, "png", output)) throw new IOException("PNG encoder is unavailable");
         var data = output.toByteArray();
         if (data.length == 0 || data.length > MAX_SCREENSHOT_BYTES) throw new IOException("screenshot exceeds 8 MiB");
-        return new DesktopCompanionClient.Response(true, "screenshot captured (" + data.length + " bytes)",
+        return new DesktopCompanionClient.Response(true, description + " (" + data.length + " bytes)",
                 "image/png", Base64.getEncoder().encodeToString(data), null);
     }
 
@@ -335,12 +348,26 @@ public final class DesktopCompanionServer {
     }
 
     private DesktopCompanionClient.Response click(DesktopCompanionClient.Request request) throws AWTException {
+        return click(request, InputEvent.BUTTON1_DOWN_MASK, 1);
+    }
+
+    private DesktopCompanionClient.Response click(DesktopCompanionClient.Request request, int button, int count) throws AWTException {
         ensureDisplay();
         var robot = new Robot();
         robot.mouseMove(request.x(), request.y());
-        robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
-        robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
-        return new DesktopCompanionClient.Response(true, "clicked " + request.x() + "," + request.y(), null, null, null);
+        for (var index = 0; index < count; index++) {
+            robot.mousePress(button);
+            robot.mouseRelease(button);
+            if (count > 1 && index + 1 < count) robot.delay(60);
+        }
+        var label = button == InputEvent.BUTTON3_DOWN_MASK ? "right-clicked" : count > 1 ? "double-clicked" : "clicked";
+        return new DesktopCompanionClient.Response(true, label + " " + request.x() + "," + request.y(), null, null, null);
+    }
+
+    private DesktopCompanionClient.Response move(DesktopCompanionClient.Request request) throws AWTException {
+        ensureDisplay();
+        new Robot().mouseMove(request.x(), request.y());
+        return new DesktopCompanionClient.Response(true, "moved pointer to " + request.x() + "," + request.y(), null, null, null);
     }
 
     private DesktopCompanionClient.Response drag(DesktopCompanionClient.Request request) throws AWTException, InterruptedException {
@@ -502,8 +529,14 @@ public final class DesktopCompanionServer {
     private static void validate(DesktopCompanionClient.Request request, String operation) {
         if (request.operation() == null || request.operation().isBlank()) throw new IllegalArgumentException("desktop operation is required");
         if (operation.equals("launch") && (request.executable() == null || request.executable().isBlank())) throw new IllegalArgumentException("launch executable is required");
-        if (operation.equals("click") && (request.x() == null || request.y() == null)) throw new IllegalArgumentException("click requires x/y");
+        if ((operation.equals("click") || operation.equals("double_click") || operation.equals("right_click") || operation.equals("move"))
+                && (request.x() == null || request.y() == null)) throw new IllegalArgumentException(operation + " requires x/y");
         if (operation.equals("drag") && (request.x() == null || request.y() == null || request.x2() == null || request.y2() == null)) throw new IllegalArgumentException("drag requires x/y/x2/y2");
+        if (operation.equals("screenshot_region") && (request.x() == null || request.y() == null
+                || request.x2() == null || request.y2() == null || request.x2() <= request.x() || request.y2() <= request.y()
+                || ((long) request.x2() - request.x()) > 16000 || ((long) request.y2() - request.y()) > 16000)) {
+            throw new IllegalArgumentException("screenshot_region requires ordered x/y/x2/y2 within a 16000x16000 region");
+        }
         if (operation.equals("key") && (request.key() == null || request.key().isBlank())) throw new IllegalArgumentException("key requires key name");
         if (operation.equals("type") && (request.text() == null || request.text().isEmpty() || request.text().length() > 16384)) throw new IllegalArgumentException("type requires text up to 16384 characters");
         if (operation.equals("clipboard_write") && (request.text() == null || request.text().length() > 65536)) throw new IllegalArgumentException("clipboard_write requires text up to 65536 characters");

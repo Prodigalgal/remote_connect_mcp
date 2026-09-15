@@ -30,11 +30,11 @@ public final class AgentTransportClient implements AgentTransport {
     private final AtomicBoolean longPollHonored = new AtomicBoolean();
 
     public AgentTransportClient(URI centerUrl) {
-        this(centerUrl, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build(), Duration.ofSeconds(30), 0L);
+        this(centerUrl, defaultHttpClient(), Duration.ofSeconds(30), 0L);
     }
 
     public AgentTransportClient(URI centerUrl, long longPollSeconds) {
-        this(centerUrl, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build(), Duration.ofSeconds(30), longPollSeconds);
+        this(centerUrl, defaultHttpClient(), Duration.ofSeconds(30), longPollSeconds);
     }
 
     AgentTransportClient(URI centerUrl, HttpClient http, Duration requestTimeout) {
@@ -229,5 +229,18 @@ public final class AgentTransportClient implements AgentTransport {
     private static URI stripTrailingSlash(URI uri) {
         var value = uri.toString().replaceAll("/+$", "");
         return URI.create(value + "/");
+    }
+
+    /**
+     * Prefer HTTP/2 for the long-lived HTTPS path while retaining the JDK's
+     * negotiated HTTP/1.1 fallback.  This is the safe baseline measured by
+     * the transport probe; QUIC/HTTP3 remains an explicit future provider and
+     * never becomes a hidden hard dependency of the Agent.
+     */
+    private static HttpClient defaultHttpClient() {
+        return HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_2)
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
     }
 }

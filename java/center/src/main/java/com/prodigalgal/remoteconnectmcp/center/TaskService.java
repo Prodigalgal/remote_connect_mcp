@@ -264,6 +264,73 @@ public final class TaskService {
         }
     }
 
+    /**
+     * Return a bounded, low-cardinality task SLO projection.  The projection
+     * is calculated on demand for a metrics scrape; it never loads command
+     * text, environment values, output or artifact bytes.  PostgreSQL remains
+     * the sole source of truth when the JDBC adapter is active.
+     */
+    public TaskSloMetrics sloMetrics(Instant now) {
+        var reference = now == null ? Instant.now() : now;
+        if (jdbcStore != null) return jdbcStore.sloMetrics(reference);
+        lock.lock();
+        try {
+            var queued = 0L;
+            var active = 0L;
+            var terminal = 0L;
+            var completed = 0L;
+            var failed = 0L;
+            var canceled = 0L;
+            var expiredLeases = 0L;
+            var oldestQueued = 0L;
+            for (var task : tasks.values()) {
+                switch (task.status()) {
+                    case TaskStatus.QUEUED -> {
+                        queued++;
+                        oldestQueued = Math.max(oldestQueued, ageSeconds(reference, task.createdAt()));
+                    }
+                    case TaskStatus.DISPATCHING, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED -> {
+                        active++;
+                        if (task.leaseUntil() != null && !reference.isBefore(task.leaseUntil())) expiredLeases++;
+                    }
+                    case TaskStatus.COMPLETED -> {
+                        terminal++;
+                        completed++;
+                    }
+                    case TaskStatus.FAILED -> {
+                        terminal++;
+                        failed++;
+                    }
+                    case TaskStatus.CANCELED -> {
+                        terminal++;
+                        canceled++;
+                    }
+                    default -> {
+                        // Unknown legacy states are intentionally excluded
+                        // from SLO ratios rather than guessed.
+                    }
+                }
+            }
+            var artifacts = tasks.values().stream().mapToLong(TaskState::artifactBytes).sum();
+            return new TaskSloMetrics(queued, active, terminal, completed, failed, canceled,
+                    oldestQueued, expiredLeases, tasks.values().stream().mapToLong(TaskState::outputBytes).sum(),
+                    tasks.values().stream().filter(value -> value.artifactBytes() > 0).count(), artifacts);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private static long ageSeconds(Instant now, Instant createdAt) {
+        if (createdAt == null || now == null || now.isBefore(createdAt)) return 0L;
+        return Math.max(0L, Duration.between(createdAt, now).toSeconds());
+    }
+
+    /** Low-cardinality task and artifact values used by the metrics endpoint. */
+    public record TaskSloMetrics(long queued, long active, long terminal, long completed, long failed,
+                                 long canceled, long oldestQueuedAgeSeconds, long expiredLeases,
+                                 long outputBytes, long artifactObjects, long artifactBytes) {
+    }
+
     public TaskView cancel(String taskId) {
         if (jdbcStore != null) {
             var view = jdbcStore.cancel(taskId);

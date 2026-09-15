@@ -144,7 +144,7 @@ Browser Agent 与 Desktop Agent 分离，Java Agent 负责身份、生命周期�
 
 ## 7. 连接与配置演进
 
-Java Agent 默认通过 25 秒 HTTPS 长轮询领取任务；请求在任务、取消、配置或升级事件到达时立即返回，空闲只由服务端 deadline 结束。旧 Go Center 或显式禁用长轮询时才退避重试；可选 WebSocket 仅传递带单调序列号的唤醒提示，客户端兼容无序列号旧提示并丢弃重复/乱序事件，任务数据和认证仍由 HTTPS 负责。PostgreSQL 模式下 Center 还会用阻塞式 LISTEN/NOTIFY 在多副本之间转发 Agent 唤醒和按任务摘要路由的任务等待提示；高频输出 chunk 只在本副本唤醒任务等待者，避免广播风暴，终态/控制面事件仍跨副本广播。通知是 best-effort，丢失时由长轮询 deadline 和下一次显式读取修复，不把数据库通知当作任务状态来源。
+Java Agent 默认通过 25 秒 HTTPS 长轮询领取任务；请求在任务、取消、配置或升级事件到达时立即返回，空闲只由服务端 deadline 结束。旧 Go Center 或显式禁用长轮询时才退避重试；可选 WebSocket 仅传递带单调序列号的唤醒提示，客户端兼容无序列号旧提示并丢弃重复/乱序事件，任务数据和认证仍由 HTTPS 负责。PostgreSQL 模式下保留阻塞式 LISTEN/NOTIFY 桥接能力，供单 Center 内的 Agent 唤醒和未来实验使用；它不是当前多副本生产门禁。通知是 best-effort，丢失时由长轮询 deadline 和下一次显式读取修复，不把数据库通知当作任务状态来源。
 
 1. WebSocket：已实现为可选 wake-only 通道，适合普通公网反向代理并降低事件延迟；消息丢失时由 HTTPS 长轮询补偿；
 2. PostgreSQL LISTEN/NOTIFY：已实现跨 Center 副本的 Agent 唤醒和 `task_wait` 事件桥接，驱动在数据库 socket 上阻塞等待，连接异常时才自动退避重连；
@@ -183,6 +183,6 @@ Agent 心跳自描述版本、平台、HostID、角色、能力、范围策略�
 4. **可靠性阶段**：完善 Task Attempt、死信/过期任务和 WebSocket；配置代次/热更新与心跳自描述已落地。
 5. **开发工作流阶段**：Project Registry 与 Git worktree 已落地基础闭环；继续补结构化文件/Git/检查、提交审阅和显式合并工具。
 6. **专用自动化阶段**：Browser Agent 的 Playwright/Patchright/Comoufox 完整 Worker 协议、会话生命周期和工件策略；桌面输入基础能力已落地，继续补窗口/焦点适配。
-7. **规模化阶段**：在 PostgreSQL + Liquibase 持久化已经成为默认生产路径后，再按多副本需求增加 Center 副本、LISTEN/NOTIFY 唤醒和 S3 兼容对象存储扩展，保持 MCP URL 与工具契约不变；当前文件对象实现只依赖独立持久卷。
+7. **规模化阶段**：在 PostgreSQL + Liquibase 持久化已经成为默认生产路径后，继续扩展集中日志、S3 兼容对象存储、SLO/告警和可选 QUIC provider，保持 MCP URL 与工具契约不变；Center 多副本/多租户不属于当前路线，文件对象实现继续依赖独立持久卷。
 
 明确不在当前范围：OAuth 2.1 强制化、代理其他 MCP、把任意范围模式冒充 OS 沙箱、把 ChatGPT 的动作审批策略写入 Center、或一次性暴露海量浏览器/桌面底层工具。

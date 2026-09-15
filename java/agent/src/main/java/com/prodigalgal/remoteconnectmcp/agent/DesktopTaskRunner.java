@@ -257,8 +257,10 @@ final class DesktopTaskRunner implements Runnable {
     private static void validate(TaskCommand.DesktopAction action) {
         if (action == null || action.operation() == null || action.operation().isBlank()) throw new IllegalArgumentException("desktop action is required");
         var operation = action.operation().trim().toLowerCase(Locale.ROOT);
-        if (!operation.equals("launch") && !operation.equals("screenshot") && !operation.equals("screens")
-                && !operation.equals("click") && !operation.equals("drag") && !operation.equals("key")
+            if (!operation.equals("launch") && !operation.equals("screenshot") && !operation.equals("screens")
+                && !operation.equals("click") && !operation.equals("double_click")
+                && !operation.equals("right_click") && !operation.equals("move")
+                && !operation.equals("screenshot_region") && !operation.equals("drag") && !operation.equals("key")
                 && !operation.equals("type") && !operation.equals("clipboard_read")
                 && !operation.equals("clipboard_write") && !operation.equals("focus")) {
             throw new IllegalArgumentException("unsupported desktop operation: " + operation);
@@ -269,15 +271,21 @@ final class DesktopTaskRunner implements Runnable {
             if (value == null || value.indexOf('\u0000') >= 0 || value.length() > MAX_ARG_CHARS) throw new IllegalArgumentException("desktop argument is invalid");
         });
         if (operation.equals("launch") && (action.executable() == null || action.executable().isBlank())) throw new IllegalArgumentException("launch executable is required");
-        if ((operation.equals("screenshot") || operation.equals("screens") || operation.equals("clipboard_read")
+        if ((operation.equals("screenshot") || operation.equals("screenshot_region") || operation.equals("screens") || operation.equals("clipboard_read")
                 || operation.equals("clipboard_write") || operation.equals("drag") || operation.equals("click")
+                || operation.equals("double_click") || operation.equals("right_click") || operation.equals("move")
                 || operation.equals("key") || operation.equals("type") || operation.equals("focus"))
                 && (action.executable() != null || !action.args().isEmpty())) {
             throw new IllegalArgumentException("executable and args are allowed only for launch");
         }
-        if (operation.equals("click") && (action.x() == null || action.y() == null)) throw new IllegalArgumentException("click requires x/y");
+        if ((operation.equals("click") || operation.equals("double_click") || operation.equals("right_click") || operation.equals("move"))
+                && (action.x() == null || action.y() == null)) throw new IllegalArgumentException(operation + " requires x/y");
         if (operation.equals("drag") && (action.x() == null || action.y() == null || action.x2() == null || action.y2() == null)) {
             throw new IllegalArgumentException("drag requires x/y/x2/y2");
+        }
+        if (operation.equals("screenshot_region") && (action.x() == null || action.y() == null
+                || action.x2() == null || action.y2() == null || action.x2() <= action.x() || action.y2() <= action.y())) {
+            throw new IllegalArgumentException("screenshot_region requires ordered x/y/x2/y2");
         }
         if (operation.equals("key") && (action.key() == null || action.key().isBlank())) throw new IllegalArgumentException("key requires key name");
         if (operation.equals("type") && (action.text() == null || action.text().isEmpty() || action.text().length() > 16384)) throw new IllegalArgumentException("type requires text up to 16384 characters");
