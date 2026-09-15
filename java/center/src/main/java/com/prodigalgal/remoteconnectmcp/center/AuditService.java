@@ -41,9 +41,15 @@ public final class AuditService implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final LongAdder droppedEvents = new LongAdder();
     private final LongAdder persistFailures = new LongAdder();
+    private final boolean structuredLogging;
 
     public AuditService(ObjectProvider<JdbcTemplate> jdbcProvider) {
+        this(jdbcProvider, structuredLoggingEnabled());
+    }
+
+    AuditService(ObjectProvider<JdbcTemplate> jdbcProvider, boolean structuredLogging) {
         this.jdbc = jdbcProvider == null ? null : jdbcProvider.getIfAvailable();
+        this.structuredLogging = structuredLogging;
         writer.execute(this::drain);
     }
 
@@ -189,6 +195,14 @@ public final class AuditService implements AutoCloseable {
                         LOG.log(Level.WARNING, "could not persist audit event " + view.eventType(), failure);
                     }
                 }
+                if (structuredLogging) {
+                    try {
+                        var line = StructuredLog.audit(view);
+                        LOG.info(() -> "rcm.audit " + line);
+                    } catch (RuntimeException loggingFailure) {
+                        LOG.log(Level.FINE, "could not render structured audit event", loggingFailure);
+                    }
+                }
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
@@ -214,6 +228,12 @@ public final class AuditService implements AutoCloseable {
         }).collect(java.util.stream.Collectors.joining());
         var redacted = SensitiveValueRedactor.redact(clean);
         return redacted == null || redacted.isBlank() ? null : redacted;
+    }
+
+    private static boolean structuredLoggingEnabled() {
+        var property = System.getProperty("RCM_CENTER_STRUCTURED_AUDIT_LOG");
+        if (property == null) property = System.getenv("RCM_CENTER_STRUCTURED_AUDIT_LOG");
+        return property != null && Boolean.parseBoolean(property.trim());
     }
 
     @Override

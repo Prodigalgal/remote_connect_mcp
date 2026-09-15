@@ -154,6 +154,7 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 | `RCM_CENTER_ARTIFACT_HTTP_BASE_URL` | 空 | `http` 后端的 HTTPS 对象网关基址；HTTP 仅允许 loopback 开发环境 |
 | `RCM_CENTER_ARTIFACT_HTTP_TOKEN` | 空 | 对象网关 Bearer Token；只通过 Secret/env 注入，不写入 PostgreSQL 或日志 |
 | `RCM_CENTER_ARTIFACT_HTTP_TIMEOUT_SECONDS` | `30` | 对象网关单次请求超时，范围 1–120 秒 |
+| `RCM_CENTER_STRUCTURED_AUDIT_LOG` | `false` | 设为 `true` 时，将已脱敏的审计事件以 `rcm.audit {JSON}` 单行写入 stdout/journal，供 Loki/OTel 等采集器接收 |
 | `RCM_CENTER_LIQUIBASE_ENABLED` | `true` | Java Center 是否在当前进程执行 Liquibase；生产 Pod 设为 `false`，由独立 migration Job 执行 |
 | `RCM_CENTER_DATABASE_URL` | 空 | PostgreSQL JDBC URL（postgres 模式必填） |
 | `RCM_CENTER_DATABASE_USERNAME` | 空 | PostgreSQL 用户名（postgres 模式必填） |

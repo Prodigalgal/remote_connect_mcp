@@ -8,6 +8,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.ProtocolValidation;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
+import com.prodigalgal.remoteconnectmcp.protocol.TransportNegotiation;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ArtifactRequest;
@@ -73,16 +74,21 @@ public final class AgentController {
     public CompletableFuture<ResponseEntity<?>> poll(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                       @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
                                                       @RequestHeader(value = "X-Agent-Metadata", required = false) String metadataHeader,
+                                                      @RequestHeader(value = TransportNegotiation.HEADER_CAPABILITIES, required = false) String transportCapabilities,
+                                                      @RequestHeader(value = TransportNegotiation.HEADER_PREFERRED, required = false) String preferredTransport,
                                                       @RequestBody(required = false) PollRequest request,
                                                       @RequestParam(value = "wait_ms", defaultValue = "0") long waitMs) {
         return execute(() -> {
             var pollRequest = withHeaderMetadata(request, metadataHeader);
             var normalizedWait = normalizeLongPoll(waitMs);
             var response = pollUntilChange(machineId, bearerValue(authorization), pollRequest, normalizedWait);
+            var selectedTransport = TransportNegotiation.select(transportCapabilities, preferredTransport,
+                    java.util.Set.of(TransportNegotiation.HTTPS));
             if (normalizedWait > 0 && wakes != null) {
-                return ResponseEntity.ok().header("X-RCM-Long-Poll", "accepted").body(response);
+                return ResponseEntity.ok().header("X-RCM-Long-Poll", "accepted")
+                        .header(TransportNegotiation.HEADER_SELECTED, selectedTransport).body(response);
             }
-            return ResponseEntity.ok(response);
+            return ResponseEntity.ok().header(TransportNegotiation.HEADER_SELECTED, selectedTransport).body(response);
         });
     }
 

@@ -9,6 +9,9 @@ Java 25 的标准 `HttpClient` 没有通用 HTTP/3 客户端 API。引入 Netty 
 ## 当前实现
 
 - `Envelope` 和 Agent HTTP 客户端不把业务语义绑定到 TCP；
+- Agent 请求带有有界的 `X-RCM-Transport-Capabilities`/`X-RCM-Transport-Preferred`
+  头，Center 在响应中回传 `X-RCM-Transport-Selected`；未知能力会被忽略，当前
+  `/agent/v1/*` 只选择 HTTPS，保证旧 Agent 和未来 provider 都有明确回退；
 - `scripts/benchmark-transport.sh` 和 `scripts/benchmark-transport.ps1` 提供一次性 HTTP/1.1、HTTP/2、可选 HTTP/3 探针；
 - 探针只读取健康 URL，不输出或接收 Bearer Token，不启动定时任务；
 - HTTP/3 不可用、失败或性能不佳时，必须回退到 HTTPS/WebSocket，不得让 Agent 离线。

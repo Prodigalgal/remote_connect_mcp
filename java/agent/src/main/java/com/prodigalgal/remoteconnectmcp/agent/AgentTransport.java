@@ -20,6 +20,14 @@ public interface AgentTransport {
         return false;
     }
 
+    /**
+     * Last transport selected by the Center.  This is diagnostic metadata
+     * only; task semantics and retry fencing do not depend on it.
+     */
+    default String selectedTransport() {
+        return "https";
+    }
+
     void updateState(String machineId, String token, String taskId, TaskUpdateRequest request) throws IOException, InterruptedException;
 
     /** Fenced delivery variant; old test/Go transports can use the legacy method. */
