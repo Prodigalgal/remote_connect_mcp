@@ -408,7 +408,10 @@ foreach ($entry in $environment) {
 $launcherLines.Add('$binary = Join-Path $PSScriptRoot ''rcm-agent.exe''')
 $launcherLines.Add('& $binary --run')
 $launcherLines.Add('exit $LASTEXITCODE')
-Set-Content -LiteralPath $launcherPath -Value $launcherLines -Encoding UTF8 -Force
+# The startup task deliberately uses inbox Windows PowerShell 5.1 so it does
+# not depend on a per-user PS7 installation; write UTF-16LE for lossless
+# parsing of non-ASCII machine names/paths by that host.
+Set-Content -LiteralPath $launcherPath -Value $launcherLines -Encoding Unicode -Force
 & icacls.exe $launcherPath /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
 # Keep the advertised version in sync with a direct reinstall as well as with
 # the detached self-upgrade helper; stale markers otherwise mask new bundles.
