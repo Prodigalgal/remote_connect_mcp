@@ -54,6 +54,9 @@ public final class HttpArtifactStore implements ArtifactStore {
         ArtifactStore.validateInput(taskId, sha256, data);
         if (data.length > MAX_BYTES) throw new IllegalArgumentException("artifact exceeds 64 MiB store limit");
         var digest = sha256.trim().toLowerCase();
+        if (!sha256(data).equalsIgnoreCase(digest)) {
+            throw new IllegalArgumentException("artifact sha256 does not match data");
+        }
         var key = PREFIX + digest(taskId) + "/" + digest + ".blob";
         var request = request("PUT", key).header("Content-Type", "application/octet-stream")
                 .header("X-RCM-SHA256", digest).PUT(HttpRequest.BodyPublishers.ofByteArray(data)).build();
