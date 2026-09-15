@@ -386,7 +386,13 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   if [[ -n "$browser_source" ]]; then
     printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=%s\n' "$install_root/browser/rcm-browser-agent"
   fi
-} > /etc/remote-connect-mcp-agent/agent.env
+ } > /etc/remote-connect-mcp-agent/agent.env
+
+# The runtime prefers the immutable marker written by the detached upgrade
+# helper.  Refresh it during a package installation too; otherwise reinstalling
+# a newer binary can keep advertising the previous upgrade version forever.
+printf '%s\n' "${REMOTE_CONNECT_MCP_AGENT_VERSION:-dev}" > "$state_dir/agent-version"
+chmod 0600 "$state_dir/agent-version"
 
 install -m 0644 "$service_file" /etc/systemd/system/remote-connect-mcp-agent.service
 configure_linux_desktop_companion

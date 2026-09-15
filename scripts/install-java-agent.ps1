@@ -410,6 +410,11 @@ $launcherLines.Add('& $binary --run')
 $launcherLines.Add('exit $LASTEXITCODE')
 Set-Content -LiteralPath $launcherPath -Value $launcherLines -Encoding UTF8 -Force
 & icacls.exe $launcherPath /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
+# Keep the advertised version in sync with a direct reinstall as well as with
+# the detached self-upgrade helper; stale markers otherwise mask new bundles.
+$versionMarker = Join-Path $StateDir 'agent-version'
+Set-Content -LiteralPath $versionMarker -Value $Version.Trim() -Encoding ASCII -Force
+& icacls.exe $versionMarker /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
 & icacls.exe $StateDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
 if ($DesktopEnabled) {
     # The startup task remains the single Center identity. A per-logon task
