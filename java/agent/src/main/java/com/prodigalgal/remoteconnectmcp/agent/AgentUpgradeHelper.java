@@ -426,7 +426,11 @@ final class AgentUpgradeHelper {
     }
 
     private static String decodeWindowsOutput(byte[] bytes) {
-        if (bytes.length >= 2 && (bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xfe) {
+        if (bytes.length >= 2 && (bytes[0] & 0xff) == 0xfe && (bytes[1] & 0xff) == 0xff) {
+            return new String(bytes, StandardCharsets.UTF_16BE);
+        }
+        if (bytes.length >= 2 && ((bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xfe
+                || ((bytes[1] & 0xff) == 0 && bytes[0] != 0))) {
             return new String(bytes, StandardCharsets.UTF_16LE);
         }
         return new String(bytes, StandardCharsets.UTF_8);
