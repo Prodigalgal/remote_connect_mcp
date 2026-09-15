@@ -11,6 +11,20 @@
 - 任务闭环只使用固定 `printf` 输出，不读取文件、不修改配置、不启动额外服务。
 - WebSocket、升级、Desktop/Browser 和故障演练若缺少安全的目标条件，记录为“待验收”，不使用 CI 结果替代。
 
+## 2026-09-15 Agent v0.1.26 五机滚动验收
+
+Java Agent `v0.1.26` 已通过 GitHub Actions Native Release（构建与签名均在 GitHub Actions 完成），并重新安装到本批次的五台目标终端。Center 仍保持现有 Java 生产版本；本次只更新 Agent，不改变 ChatGPT/MCP 连接器地址。
+
+| 终端 | 平台 | 运行方式 | 结果 |
+| --- | --- | --- | --- |
+| `local-cmcc-debian` | Linux arm64 | systemd | 在线；固定 `echo` 命令完成，Attempt 1，退出码 0 |
+| `local-cmcc-zz-jr` | Linux amd64 | systemd | 在线；固定 `echo` 命令完成，Attempt 1，退出码 0 |
+| `local-home-pve` | Linux amd64 | systemd | 在线；固定 `echo` 命令完成，Attempt 1，退出码 0 |
+| `local-ly-windows11` | Windows amd64 | SYSTEM 级 Task Scheduler（隐藏 PowerShell 启动器） | 在线；固定 `echo` 命令完成，Attempt 1，退出码 0 |
+| `local-zzp-laptop-windows` | Windows amd64 | SYSTEM 级 Task Scheduler（隐藏 PowerShell 启动器） | 在线；固定 `echo` 命令完成，Attempt 1，退出码 0 |
+
+本批次只执行无副作用的标记命令，并通过 Center 事件等待获取终态；五台 Agent 的版本、架构、在线状态和命令输出均已核对。Windows 目标不再注册旧 SCM 服务，Linux 目标继续使用 systemd。旧 Go 进程未运行。
+
 ## 2026-09-15 生产批次
 
 生产应用 `remote-connect-mcp-java-production` 在 Kubernetes 中为 `Synced/Healthy`；Java Center、Console、PostgreSQL 均为 Ready，Liquibase migration Job 为 Complete。生产镜像版本已收敛到 `v0.1.22`，对应 GitOps 提交为 `ac82da9`，镜像使用不可变 digest。
