@@ -1,6 +1,7 @@
 package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
+import com.prodigalgal.remoteconnectmcp.protocol.TransportNegotiation;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
@@ -80,6 +81,8 @@ final class AgentWakeClient implements AutoCloseable {
                         .connectTimeout(CONNECT_TIMEOUT)
                         .header("Authorization", "Bearer " + current.token())
                         .header("X-Machine-ID", current.machineId())
+                        .header(TransportNegotiation.HEADER_CAPABILITIES, TransportNegotiation.AGENT_CAPABILITIES)
+                        .header(TransportNegotiation.HEADER_PREFERRED, TransportNegotiation.WEBSOCKET)
                         .buildAsync(websocketUri(config.centerUrl()), new Listener(latch));
                 var connected = future.get(CONNECT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
                 socket.set(connected);
