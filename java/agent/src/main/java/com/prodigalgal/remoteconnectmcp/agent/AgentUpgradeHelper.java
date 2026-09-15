@@ -349,7 +349,11 @@ final class AgentUpgradeHelper {
             // installers supervise them with Task Scheduler.  Keep the SCM
             // path as a compatibility fallback for older wrapper installs.
             if (windowsTaskExists(service)) {
-                runServiceCommand(List.of("schtasks.exe", "/End", "/TN", service), false);
+                // The helper itself is launched by the Agent task.  Calling
+                // `schtasks /End` here could terminate this detached helper
+                // together with the task action.  waitForParent() above has
+                // already observed the Agent exit, so only wait for the
+                // PowerShell launcher/task action to drain naturally.
                 waitWindowsTaskStopped(service);
             } else {
                 runServiceCommand(List.of("sc.exe", "stop", service), false);
