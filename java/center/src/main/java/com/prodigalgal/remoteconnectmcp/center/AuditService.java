@@ -18,6 +18,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -43,6 +44,7 @@ public final class AuditService implements AutoCloseable {
     private final LongAdder persistFailures = new LongAdder();
     private final boolean structuredLogging;
 
+    @Autowired
     public AuditService(ObjectProvider<JdbcTemplate> jdbcProvider) {
         this(jdbcProvider, structuredLoggingEnabled());
     }
