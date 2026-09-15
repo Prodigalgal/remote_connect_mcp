@@ -210,7 +210,7 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS` | `1` | Browser Worker 是否无头运行；仅影响目标机本地会话，不改变 Center 权限 |
 | `REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES` | `16` | 没有用户会话 companion 时，命令 Agent 的桌面启动回退上限（1–64）；伴侣进程有独立上限 |
 
-Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 Center，原始值以 `0600` 权限保存在 Agent 状态目录。注册时会同时上报 `host_id`、`scope_mode` 和 `workspace_root`，控制台的机器详情可据此区分同一终端上的多个物理 Agent。若身份被吊销或丢失，请在 Center 重新生成一次性 Token，更新目标 Agent 的配置并重启；正常的 Center 重启和新建 Enrollment Token 不会影响已注册 Agent。
+Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 Center，原始值以 `0600` 权限保存在 Agent 状态目录。注册时会同时上报 `host_id`、`scope_mode` 和 `workspace_root`，控制台的机器详情可据此区分同一终端上的多个物理 Agent。注册后的机器名称和 `host_id` 属于不可变身份字段，心跳只更新平台、版本、能力和运行时自描述；若身份被吊销或丢失，请在 Center 重新生成一次性 Token，更新目标 Agent 的配置并重启；正常的 Center 重启和新建 Enrollment Token 不会影响已注册 Agent。
 
 ### 多 Agent 与桌面/浏览器能力
 

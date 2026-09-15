@@ -31,6 +31,8 @@ command-agent 实例，并为每个实例使用独立状态目录、一次性注
 每个 `machine_name` 在 Center 中仍是唯一的人类可读身份；同名重装只有在
 `host_id` 也一致时才会复用原 `machine_id` 并旋转日常 Token。另一个
 `host_id` 试图占用同名时会明确失败，避免错误的注册令牌接管已有 Agent。
+注册后的 `machine_name`/`host_id` 也是不可由心跳修改的身份字段；机器改名或
+重新归组必须重新注册，心跳只更新平台、版本、能力和运行时自描述。
 
 ## 2. Center、Agent 与能力
 

@@ -70,6 +70,19 @@ class AgentRegistryTest {
     }
 
     @Test
+    void heartbeatCannotRenameOrRegroupAnAgentIdentity() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var request = new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"));
+        var response = registry.register(request, "enroll-test");
+        var renamed = new AgentMetadata("other-name", "host-b", "host-b", "linux", "amd64", "v2", "/srv",
+                ScopeMode.UNRESTRICTED, null, List.of("command"));
+
+        assertThrows(SecurityException.class, () -> registry.poll(response.machineId(), response.token(),
+                new PollRequest(List.of(), 1, List.of("command"), renamed)));
+        assertEquals("command-agent", registry.findMachine(response.machineId(), java.time.Instant.now()).orElseThrow().name());
+    }
+
+    @Test
     void keepsTheLatestRuntimeDescriptorInTheMachineProjection() {
         var registry = AgentRegistry.forTest("enroll-test");
         var request = new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"));

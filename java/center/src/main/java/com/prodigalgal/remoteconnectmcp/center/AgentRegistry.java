@@ -180,12 +180,18 @@ public final class AgentRegistry {
             if (agent == null || !MessageDigest.isEqual(agent.tokenHash(), hash(agentToken))) {
                 throw new SecurityException("invalid agent credentials");
             }
+            if (request != null && request.metadata() != null) {
+                agent.validateIdentity(request.metadata());
+                agent.updateMetadata(request.metadata());
+            }
             agent.touch();
-            if (request != null && request.metadata() != null) agent.updateMetadata(request.metadata());
         } else {
             var storedHash = storedTokenHash(machineId);
             if (storedHash == null || !MessageDigest.isEqual(storedHash.trim().getBytes(StandardCharsets.US_ASCII), hexHash(agentToken).getBytes(StandardCharsets.US_ASCII))) {
                 throw new SecurityException("invalid agent credentials");
+            }
+            if (request != null && request.metadata() != null) {
+                validateHeartbeatIdentity(machineId, request.metadata());
             }
             jdbc.update("UPDATE rcm_agent SET last_seen_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?", machineId);
             if (request != null && request.metadata() != null) updateHeartbeatMetadata(machineId, request.metadata());
@@ -193,15 +199,30 @@ public final class AgentRegistry {
         return PollResponse.empty();
     }
 
+    private void validateHeartbeatIdentity(String machineId, AgentMetadata metadata) {
+        var identity = jdbc.query("SELECT machine_name, host_id FROM rcm_agent WHERE agent_id = ?",
+                ps -> ps.setString(1, machineId), rs -> {
+                    if (!rs.next()) return null;
+                    return new RegisteredIdentity(rs.getString("machine_name"), rs.getString("host_id"));
+                });
+        if (identity == null || !identity.name().equals(metadata.name()) || !identity.hostId().equals(metadata.hostId())) {
+            // machine_name and host_id are registration identity fields, not
+            // heartbeat labels.  Requiring re-enrollment for a change keeps a
+            // stale or misconfigured Agent from renaming itself into another
+            // machine row (and from bypassing the same-name guard).
+            throw new SecurityException("Agent identity metadata does not match registration");
+        }
+    }
+
     private void updateHeartbeatMetadata(String machineId, AgentMetadata metadata) {
         var capabilities = new String(JsonCodec.write(metadata.capabilities()), StandardCharsets.UTF_8);
         var runtime = new String(JsonCodec.write(metadata.runtime()), StandardCharsets.UTF_8);
         jdbc.update("""
-                UPDATE rcm_agent SET machine_name = ?, host_id = ?, hostname = ?, os = ?, arch = ?, version = ?,
+                UPDATE rcm_agent SET hostname = ?, os = ?, arch = ?, version = ?,
                     default_cwd = ?, scope_mode = ?, workspace_root = ?, capabilities = CAST(? AS jsonb),
                     runtime_descriptor = CAST(? AS jsonb),
                     updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?
-                """, metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
+                """, metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
                 metadata.defaultCwd(), metadata.scopeMode().wireValue(), metadata.workspaceRoot(), capabilities, runtime, machineId);
     }
 
@@ -450,11 +471,20 @@ public final class AgentRegistry {
             metadata = value;
         }
 
+        private void validateIdentity(AgentMetadata value) {
+            if (!sameIdentity(metadata, value)) {
+                throw new SecurityException("Agent identity metadata does not match registration");
+            }
+        }
+
         private MachineView view(String id, Instant now) {
             return new MachineView(id, metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
                     metadata.defaultCwd(), metadata.scopeMode().wireValue(), metadata.workspaceRoot(), metadata.capabilities(), lastSeen, lastSeen,
                     lastSeen != null && now.minusSeconds(45).isBefore(lastSeen), metadata.runtime());
         }
+    }
+
+    private record RegisteredIdentity(String name, String hostId) {
     }
 
     private static final class CenterTokenConfigForTest extends CenterTokenConfig {
