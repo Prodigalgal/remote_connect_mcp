@@ -101,8 +101,10 @@ function Register-AgentTask {
         '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $LauncherPath)
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    # Task Scheduler rejects restart intervals below one minute (HRESULT
+    # 0x80041318); use the platform minimum while retaining three retries.
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Seconds 15) `
+        -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
         -ExecutionTimeLimit ([TimeSpan]::Zero)
     Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger -Principal $principal `
         -Settings $settings -Description 'Remote Connect MCP Java Agent (system startup task)' -Force | Out-Null

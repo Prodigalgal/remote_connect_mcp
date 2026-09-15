@@ -274,7 +274,7 @@ Windows amd64 使用 Native Image Agent，并由内置 Windows Task Scheduler �
   -BrowserBinaryPath ./remote-connect-mcp-browser-vX.Y.Z-windows-amd64.zip
 ```
 
-任务名为 `RemoteConnectMCPAgent`，默认开机启动，异常退出按 15 秒间隔最多重试 3 次。状态、进程和日志：
+任务名为 `RemoteConnectMCPAgent`，默认开机启动，异常退出按 1 分钟间隔最多重试 3 次（Windows Task Scheduler 的最小重试间隔）。状态、进程和日志：
 
 ```powershell
 Get-ScheduledTask -TaskName RemoteConnectMCPAgent
