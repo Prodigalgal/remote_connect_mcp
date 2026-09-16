@@ -2,16 +2,15 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.DesktopCompanionProtocol;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -27,29 +26,12 @@ final class DesktopTaskRunner implements Runnable {
     private final AgentIdentity identity;
     private final TaskCommand task;
     private final AgentTransport transport;
-    private final DesktopProcessBudget directLaunchBudget;
-    private final AgentProcessBudget processBudget;
 
     DesktopTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task, AgentTransport transport) {
-        this(config, identity, task, transport, new DesktopProcessBudget(),
-                new AgentProcessBudget(config.maxTotalChildProcesses()));
-    }
-
-    DesktopTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
-                      AgentTransport transport, DesktopProcessBudget directLaunchBudget) {
-        this(config, identity, task, transport, directLaunchBudget,
-                new AgentProcessBudget(config.maxTotalChildProcesses()));
-    }
-
-    DesktopTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
-                      AgentTransport transport, DesktopProcessBudget directLaunchBudget,
-                      AgentProcessBudget processBudget) {
         this.config = config;
         this.identity = identity;
         this.task = task;
         this.transport = transport;
-        this.directLaunchBudget = directLaunchBudget;
-        this.processBudget = processBudget;
     }
 
     @Override
@@ -61,7 +43,6 @@ final class DesktopTaskRunner implements Runnable {
             var action = task.desktop();
             validate(action);
             sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
-            var operation = action.operation().trim().toLowerCase(Locale.ROOT);
             // Validate the contract before entering the user-session IPC.
             // The companion is intentionally a small loopback process and
             // must not become a second scope authority.  In particular,
@@ -70,29 +51,9 @@ final class DesktopTaskRunner implements Runnable {
             var resolvedCwd = resolveCwd(action.cwd());
             var scopedAction = withCwd(action, resolvedCwd.toString());
             var companion = DesktopCompanionClient.discover(config.stateDir());
-            if (companion != null) {
-                try {
-                    completeCompanion(companion.call(scopedAction, task.contract(),
-                            Duration.ofSeconds(Math.min(TaskLimits.timeoutSeconds(task, 30), 300))));
-                    return;
-                } catch (IOException exception) {
-                    // A stale endpoint may be left while the user session is
-                    // restarting. Launch/screenshot retain the old direct
-                    // fallback; input actions must fail closed rather than
-                    // pretending a SYSTEM service owns the desktop.
-                    if (!operation.equals("launch") && !operation.equals("screenshot")) throw exception;
-                    LOG.log(Level.FINE, "desktop companion unavailable; using direct fallback", exception);
-                }
-            } else if (!operation.equals("launch") && !operation.equals("screenshot")) {
-                throw new IOException("desktop user-session companion is not available for input actions");
-            }
-            if ("launch".equals(operation)) {
-                launch(scopedAction);
-            } else if ("screenshot".equals(operation)) {
-                screenshot(action);
-            } else {
-                throw new IOException("unsupported desktop operation: " + operation);
-            }
+            if (companion == null) throw new IOException("desktop user-session companion is not available");
+            completeCompanion(companion.call(scopedAction, task.contract(),
+                    Duration.ofSeconds(Math.min(TaskLimits.timeoutSeconds(task, 30), 300))));
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             try {
@@ -109,67 +70,7 @@ final class DesktopTaskRunner implements Runnable {
         }
     }
 
-    private void launch(TaskCommand.DesktopAction action) throws IOException, InterruptedException {
-        var builder = new ProcessBuilder(command(action)).directory(resolveCwd(action.cwd()).toFile());
-        cleanSensitiveEnvironment(builder.environment());
-        var process = directLaunchBudget.start(builder);
-        var summary = "launched process " + process.pid();
-        sendOutput(summary + System.lineSeparator());
-        sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
-    }
-
-    private void screenshot(TaskCommand.DesktopAction action) throws IOException, InterruptedException {
-        var file = Files.createTempFile("remote-connect-mcp-desktop-", ".png");
-        try {
-            var command = screenshotCommand(file, action.screen());
-            // Screenshot utilities must never fill an inherited pipe with
-            // diagnostics. The image itself is written to the temp file.
-            var builder = new ProcessBuilder(command)
-                    .redirectErrorStream(true)
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD);
-            if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")) {
-                builder.environment().put("RCM_DESKTOP_SCREENSHOT", file.toString());
-            }
-            var process = builder.start();
-            var resourceSupervisor = ProcessResourceSupervisor.start(process, config, task,
-                    () -> terminate(process), processBudget);
-            try {
-                var timeout = Math.min(TaskLimits.timeoutSeconds(task, 30), 300);
-                if (!process.waitFor(timeout, TimeUnit.SECONDS)) {
-                    process.destroyForcibly();
-                    throw new IOException("desktop screenshot timed out");
-                }
-                var resourceViolation = resourceSupervisor == null ? null : resourceSupervisor.violation();
-                if (resourceViolation != null && !resourceViolation.isBlank()) {
-                    throw new IOException(resourceViolation);
-                }
-                if (process.exitValue() != 0) {
-                    throw new IOException("desktop screenshot command exited with code " + process.exitValue());
-                }
-            } finally {
-                if (resourceSupervisor != null) resourceSupervisor.close();
-            }
-            var data = Files.readAllBytes(file);
-            var maxArtifactBytes = TaskLimits.artifactBytes(task, MAX_SCREENSHOT_BYTES);
-            if (data.length == 0 || data.length > maxArtifactBytes) {
-                throw new IOException("desktop screenshot is empty or exceeds " + maxArtifactBytes + " bytes");
-            }
-            if (data.length < 8 || data[0] != (byte) 0x89 || data[1] != 0x50 || data[2] != 0x4e || data[3] != 0x47) {
-                throw new IOException("desktop screenshot is not a PNG");
-            }
-            var digest = sha256(data);
-            AgentRetry.call(LOG, "desktop artifact upload " + task.id(), () -> {
-                transport.appendArtifact(identity.machineId(), identity.token(), task.id(), task.attempt(), "image/png", digest, data);
-                return null;
-            });
-            sendOutput("screenshot captured (" + data.length + " bytes)" + System.lineSeparator());
-            sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
-        } finally {
-            Files.deleteIfExists(file);
-        }
-    }
-
-    private void completeCompanion(DesktopCompanionClient.Response response) throws IOException, InterruptedException {
+    private void completeCompanion(DesktopCompanionProtocol.Response response) throws IOException, InterruptedException {
         var data = response.data();
         var maxArtifactBytes = TaskLimits.artifactBytes(task, MAX_SCREENSHOT_BYTES);
         if (data.length > maxArtifactBytes) throw new IOException("desktop companion artifact exceeds " + maxArtifactBytes + " bytes");
@@ -188,45 +89,6 @@ final class DesktopTaskRunner implements Runnable {
             sendOutput(response.output() + System.lineSeparator());
         }
         sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
-    }
-
-    private List<String> screenshotCommand(Path file, Integer screen) {
-        if (screen != null) {
-            throw new IllegalArgumentException("screen selection requires the desktop companion");
-        }
-        var os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        if (os.contains("win")) {
-            var script = "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $b=[System.Windows.Forms.SystemInformation]::VirtualScreen; if($b.Width -le 0 -or $b.Height -le 0){$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds}; $bmp=[System.Drawing.Bitmap]::new($b.Width,$b.Height); try{$g=[System.Drawing.Graphics]::FromImage($bmp); try{$g.CopyFromScreen($b.X,$b.Y,0,0,$bmp.Size)}finally{$g.Dispose()}; $bmp.Save($env:RCM_DESKTOP_SCREENSHOT,[System.Drawing.Imaging.ImageFormat]::Png)}finally{$bmp.Dispose()}";
-            return List.of("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script);
-        }
-        var path = file.toString();
-        for (var candidate : List.of(
-                List.of("gnome-screenshot", "-f", path),
-                List.of("scrot", path),
-                List.of("import", "-window", "root", path),
-                List.of("grim", path))) {
-            if (isExecutableAvailable(candidate.getFirst())) return candidate;
-        }
-        throw new IllegalStateException("no supported screenshot utility found");
-    }
-
-    private static boolean isExecutableAvailable(String executable) {
-        Process process = null;
-        try {
-            process = new ProcessBuilder("sh", "-lc", "command -v " + executable).start();
-            return process.waitFor(2, TimeUnit.SECONDS) && process.exitValue() == 0;
-        } catch (Exception ignored) {
-            return false;
-        } finally {
-            if (process != null && process.isAlive()) process.destroyForcibly();
-        }
-    }
-
-    private static List<String> command(TaskCommand.DesktopAction action) {
-        var result = new java.util.ArrayList<String>();
-        result.add(action.executable());
-        result.addAll(action.args());
-        return List.copyOf(result);
     }
 
     private Path resolveCwd(String requested) throws IOException {
@@ -301,10 +163,6 @@ final class DesktopTaskRunner implements Runnable {
                 || action.windowTitle().indexOf('\r') >= 0 || action.windowTitle().indexOf('\n') >= 0)) throw new IllegalArgumentException("window title is invalid");
     }
 
-    private static void cleanSensitiveEnvironment(java.util.Map<String, String> environment) {
-        environment.keySet().removeIf(CommandRunner::isSensitive);
-    }
-
     private static String sha256(byte[] data) {
         try {
             return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
@@ -318,21 +176,4 @@ final class DesktopTaskRunner implements Runnable {
         return error.length() <= 4096 ? error : error.substring(0, 4096);
     }
 
-    private static void terminate(Process process) {
-        if (process == null) return;
-        try {
-            var descendants = process.descendants().toList();
-            for (var index = descendants.size() - 1; index >= 0; index--) descendants.get(index).destroy();
-            process.destroy();
-            if (!process.waitFor(2, TimeUnit.SECONDS) && process.isAlive()) process.destroyForcibly();
-            for (var index = descendants.size() - 1; index >= 0; index--) {
-                if (descendants.get(index).isAlive()) descendants.get(index).destroyForcibly();
-            }
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            process.destroyForcibly();
-        } catch (RuntimeException ignored) {
-            process.destroyForcibly();
-        }
-    }
 }

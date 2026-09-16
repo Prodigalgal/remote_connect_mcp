@@ -61,7 +61,7 @@
 | [x] | P1-05 | 升级 offer/attempt 与兼容回滚 | canary、批次、SHA-256、原子替换和回滚、attempt 栅栏、PostgreSQL 行锁、失败目标单独重排队均已实现；数据库并发、版本兼容、离线补升级和现场演练属于独立生产验收 | `UpgradeServiceTest`、GitHub Actions |
 | [x] | P1-06 | WebSocket/事件唤醒生产验收 | wake-only WebSocket、指数重连、HTTPS 回退、PG 通知桥接和序列号去重已实现；真实反向代理、断线和 Center 重启属于独立生产验收 | WebSocket smoke、TransportNegotiation/AgentWake 测试、GitHub Actions |
 | [x] | P1-07 | 配置与心跳自描述 | 版本化 runtime descriptor、generation/CAS、有限历史和回滚、旧 schema 有界兼容已实现；目标机回滚演练属于独立生产验收 | AgentRuntimeSettings/ConfigurationService/runtime descriptor 测试、GitHub Actions |
-| [~] | P1-08 | 终端与子 Agent 生命周期 | 默认一个 command-agent 身份，桌面/浏览器作为子组件；command-agent 的桌面直启进程已纳入有界预算，并在 Agent 关闭/升级/JVM shutdown hook 中回收；多物理 Agent 的显式隔离、互斥、崩溃拉起和 Center 视图仍有代码缺口 | `DesktopProcessBudgetTest`、GitHub Actions；多 Agent 主机测试待补齐 |
+| [~] | P1-08 | 终端与子 Agent 生命周期 | 默认一个 command-agent 身份，桌面/浏览器作为独立 Native 目标；command-agent 只负责 Center 生命周期和 IPC/Worker 编排，不包含 AWT 或桌面直启实现；desktop-companion、browser-agent 各自拥有锁、并发和子进程回收；多物理 Agent 的显式隔离、互斥、崩溃拉起和 Center 视图仍有代码缺口 | `DesktopCompanionServerTest`、边界静态门禁、GitHub Actions；多 Agent 主机测试待补齐 |
 | [x] | P1-09 | 审计与错误可解释性 | 有界异步审计队列、PostgreSQL `rcm_audit_event`、Admin/Console 查询、来源区分、错误脱敏和有界保留清理入口已实现；审批来源细化、脱敏抽样和真实故障报告属于独立生产验收 | StructuredLog/AuditService/脱敏测试、GitHub Actions |
 
 ### P1 生产验收门禁（不计代码状态）

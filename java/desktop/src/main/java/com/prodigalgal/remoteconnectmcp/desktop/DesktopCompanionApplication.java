@@ -1,6 +1,5 @@
 package com.prodigalgal.remoteconnectmcp.desktop;
 
-import com.prodigalgal.remoteconnectmcp.agent.DesktopCompanionServer;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.nio.file.Path;
 import java.util.Locale;

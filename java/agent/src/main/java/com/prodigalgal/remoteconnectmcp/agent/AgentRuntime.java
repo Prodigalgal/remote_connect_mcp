@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
+import com.prodigalgal.remoteconnectmcp.protocol.DesktopCompanionProtocol;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import java.nio.file.Files;
 import java.io.IOException;
@@ -59,7 +60,7 @@ public final class AgentRuntime {
                 // Publish a non-secret machine policy for the user-session
                 // companion.  The command Agent remains the authority, while
                 // the companion adds a second cwd/expiry check before GUI I/O.
-                DesktopCompanionServer.writePolicy(config.stateDir(), config.scopeMode(), config.workspaceRoot());
+                DesktopCompanionProtocol.writePolicy(config.stateDir(), config.scopeMode(), config.workspaceRoot());
             } catch (IOException failure) {
                 LOG.log(Level.WARNING, "could not publish desktop companion scope policy", failure);
             }
@@ -72,25 +73,12 @@ public final class AgentRuntime {
         var backoff = settings.pollInterval();
         var resourceBudget = new AgentResourceBudget(config.maxAggregateOutputBytes());
         var processBudget = new AgentProcessBudget(config.maxTotalChildProcesses());
-        var desktopProcessBudget = new DesktopProcessBudget(processBudget);
         var maxBrowserWorkers = config.maxBrowserWorkers();
         var browserRunning = new AtomicInteger();
         var wakeSignal = new AgentWakeSignal();
         var wakeClient = AgentWakeClient.startIfEnabled(config, identity, wakeSignal::signal);
         var executor = Executors.newVirtualThreadPerTaskExecutor();
-        var desktopCleanupHook = new Thread(desktopProcessBudget::close, "rcm-desktop-budget-cleanup");
-        var shutdownHookInstalled = false;
         try {
-            try {
-                Runtime.getRuntime().addShutdownHook(desktopCleanupHook);
-                shutdownHookInstalled = true;
-            } catch (IllegalStateException | SecurityException hookFailure) {
-                // A shutdown already in progress (or a restricted runtime)
-                // still reaches the normal finally path in ordinary service
-                // exits; do not make task dispatch fail solely because the
-                // best-effort emergency hook could not be registered.
-                LOG.log(Level.FINE, "could not install desktop cleanup shutdown hook", hookFailure);
-            }
             reportPendingUpgradeResult(identity);
             recoverDurable(identity, durableStore, executor, settings, resourceBudget, processBudget);
             while (!Thread.currentThread().isInterrupted() && !stopRequested.get()) {
@@ -149,7 +137,7 @@ public final class AgentRuntime {
                                     durableRecord == null ? task : durableRecord.taskCommand(), transport, durableStore, durableRecord,
                                     resourceBudget, processBudget)
                                     : new CommandRunner(config, taskIdentity, task, transport, resourceBudget, processBudget);
-                            case DESKTOP -> new DesktopTaskRunner(config, taskIdentity, task, transport, desktopProcessBudget, processBudget);
+                            case DESKTOP -> new DesktopTaskRunner(config, taskIdentity, task, transport);
                             case BROWSER -> new BrowserTaskRunner(config, taskIdentity, task, transport, resourceBudget, processBudget);
                         };
                         // FutureTask removes itself from the running map in its
@@ -241,14 +229,6 @@ public final class AgentRuntime {
                 }
             }
         } finally {
-            if (shutdownHookInstalled) {
-                try {
-                    Runtime.getRuntime().removeShutdownHook(desktopCleanupHook);
-                } catch (IllegalStateException | SecurityException ignored) {
-                    // JVM shutdown is already executing; the hook itself is
-                    // responsible for the final desktop-process cleanup.
-                }
-            }
             if (wakeClient != null) wakeClient.close();
             // Do not use ExecutorService.close() here: it waits indefinitely for
             // an unattended command. Interrupt the command/output virtual
@@ -261,10 +241,6 @@ public final class AgentRuntime {
                 Thread.currentThread().interrupt();
             }
             running.clear();
-            // A headless desktop launch may deliberately outlive its task.
-            // Reap it with the Agent so upgrades/restarts cannot leave an
-            // unbounded set of GUI processes behind.
-            desktopProcessBudget.close();
         }
     }
 

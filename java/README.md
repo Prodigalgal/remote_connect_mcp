@@ -2,11 +2,11 @@
 
 这是 RCM Java 25 迁移实现，包含：
 
-- `protocol`：跨 Center/Agent/Transport 的协议记录和边界校验；
+- `protocol`：跨组件的轻量协议记录、桌面 IPC 合同和边界校验；不包含任何 Agent 实现；
 - `center`：Spring Boot 4.x Center、异步 MCP、Bearer 鉴权、注册/HTTPS 长轮询、任务/输出/工件队列、项目与 Git worktree 编排、Admin API 和 PostgreSQL + Liquibase 适配；
-- `agent`：无 Spring 的 Java command-agent，支持虚拟线程命令执行、磁盘 spool 与异步重试、Desktop IPC 客户端、Browser 本机适配器桥接、断线重连和身份持久化；`agent` Native Image 不包含 AWT 桌面实现。
+- `agent`：无 Spring 的 Java command-agent，支持虚拟线程命令执行、磁盘 spool 与异步重试、Desktop IPC 客户端、Browser 本机适配器桥接、断线重连和身份持久化；只依赖 `protocol`，Native Image 不包含 AWT 桌面实现。
 - `desktop`：独立的 `rcm-desktop-companion` Java Native Image，仅在用户会话中提供 AWT/Robot 截图与输入能力，不向 Center 注册第二个身份。
-- `browser`：独立的 `rcm-browser-agent` Java Native Image，按 browser 任务编排本机 Playwright/Patchright/Comoufox 适配器，不向 Center 注册第二个身份。
+- `browser`：独立的 `rcm-browser-agent` Java Native Image，只负责编排本机 Playwright/Patchright/Comoufox 适配器，不向 Center 注册第二个身份，也不依赖 command-agent 或 desktop。
 
 根目录 Go Center/Agent 仍作为兼容基线保留，Java 组件可独立进行协议验收。`--check-config` 只校验配置；`--register-once` 注册并把 Center 返回的日常身份写入 `STATE_DIR/identity.json`；`--run`（或无参数，供 Windows 启动任务/Linux systemd 使用）启动注册、心跳和异步任务循环，支持并发槽位、输出游标、超时、取消、桌面工件、Browser Worker 和 Center 控制的 canary 自升级。命令输出先落入有界本机 spool，再由独立虚拟线程上传；单任务和 Agent 级聚合输出上限同时生效，达到聚合上限时普通任务仍继续执行并仅截断后续输出；Center 暂时不可达时不会终止子进程，但 durable 日志达到上限会由看门器终止并标记失败。
 
@@ -56,7 +56,7 @@ Native Agent 烟测可设置 `RCM_SMOKE_RESOURCE_REPORT=/tmp/rcm-agent-resource.
 不应提交到仓库或作为运行时限制依据。
 
 资源回收约束：command-agent 在 `STATE_DIR/agent.lock` 上单实例运行；Browser Worker 达到
-`REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` 后不会再领取 browser 任务，超时/取消会终止整个子进程树并删除临时文件；Desktop companion 在 `STATE_DIR/desktop/desktop-companion.lock` 上单实例运行，最多 4 个 IPC 请求和 16 个活动启动进程，已退出的进程通过 `ProcessHandle.onExit()` 自动释放名额。没有用户会话时，command-agent 的桌面启动回退同样受 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES`（1–64）限制。`REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`（默认按并发计算、封顶 256；可配置 1–4096）还会在 command、desktop 直启和 browser 任务之间共享一个 Agent 级进程预算。任务监督器观察到新的子进程时占用预算，任务终止/正常退出和桌面进程 `onExit()` 会释放预算；Agent 关闭、重启或升级时，直启预算会停止接受新进程、终止仍登记的 GUI 进程并释放名额；预算耗尽的任务 fail-closed 并回传可解释错误。Windows 启动任务和 Linux systemd 仍应配置运行管理器的重启/资源上限，不能用无限制的 `maxConcurrency` 代替容量规划。
+`REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` 后不会再领取 browser 任务，超时/取消会终止整个子进程树并删除临时文件；Desktop companion 在 `STATE_DIR/desktop/desktop-companion.lock` 上单实例运行，最多 4 个 IPC 请求和 16 个活动启动进程，已退出的进程通过 `ProcessHandle.onExit()` 自动释放名额。没有用户会话时，桌面任务只返回明确的 companion 不可用错误，不在 command-agent 内回退实现 GUI 或启动桌面进程。`REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`（默认按并发计算、封顶 256；可配置 1–4096）仅约束 command 任务和 browser-agent supervisor 的 Agent 级进程预算；desktop-companion 使用自己的连接/启动上限和退出回收，不共享该预算或其实现代码。任务监督器观察到新的子进程时占用预算，任务终止/正常退出会释放预算；Agent 关闭、重启或升级时，command/browser 进程树按既有监督语义回收，伴侣由自己的 shutdown hook 回收 GUI 进程。Windows 启动任务和 Linux systemd 仍应配置运行管理器的重启/资源上限，不能用无限制的 `maxConcurrency` 代替容量规划。
 
 Center 持久化统一使用 PostgreSQL + Liquibase，不使用 Flyway。默认 `RCM_CENTER_PERSISTENCE_MODE=memory` 只用于无数据库协议回归；生产设置 `RCM_CENTER_PERSISTENCE_MODE=postgres`、`RCM_CENTER_DATABASE_URL`、`RCM_CENTER_DATABASE_USERNAME` 和 `RCM_CENTER_DATABASE_PASSWORD`。任务、输出游标和有界截图工件均写入事务存储。生产通过 `rcm-center --migrate` 或 `deploy/k8s/java-center/migration-job.yaml` 单独执行 Liquibase，Center Pod 设置 `RCM_CENTER_LIQUIBASE_ENABLED=false`。
 

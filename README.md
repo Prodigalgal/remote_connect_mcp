@@ -195,7 +195,7 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES` | `67108864`（并发提高时默认最多 256 MiB） | 所有普通任务磁盘 spool 的聚合上限；必须不小于单任务上限，范围单任务上限–4 GiB；达到后任务继续运行但后续输出标记为截断 |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS` | `0` | 单任务墙钟上限；0 表示不额外收紧任务/合同（范围 0–2592000） |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES` | `32` | 单任务进程树上限（含根进程，范围 1–256），超限会终止整棵树 |
-| `REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES` | `min(256, max(32, MAX_CONCURRENCY×32))` | command、desktop 直启和 browser 共享的 Agent 级进程总预算，范围 1–4096；耗尽时新任务 fail-closed，退出后自动释放 |
+| `REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES` | `min(256, max(32, MAX_CONCURRENCY×32))` | command 任务和 browser-agent supervisor 共享的 Agent 级进程总预算，范围 1–4096；desktop-companion 使用自己的独立上限；耗尽时新任务 fail-closed，退出后自动释放 |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES` | `0` | 单任务 RSS 上限；Linux 通过 `/proc` 执行，0 或不支持的平台表示关闭（最多 16 GiB） |
 | `REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS` | `0` | 单任务累计 CPU 时间上限（范围 0–2592000） |
 | `REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS` | `1000` | 资源监督的任务级采样间隔（250–10000 ms）；只在任务运行时启用，不产生空闲 Agent 轮询 |
@@ -212,7 +212,7 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 | `REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE` | `playwright` | 本机适配器引擎：`playwright`、`patchright` 或 `comoufox`；不由 Center/模型远程选择 |
 | `REMOTE_CONNECT_MCP_AGENT_BROWSER` | `chromium` | 本机浏览器类型：`chromium`、`firefox` 或 `webkit` |
 | `REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS` | `1` | Browser Worker 是否无头运行；仅影响目标机本地会话，不改变 Center 权限 |
-| `REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES` | `16` | 没有用户会话 companion 时，命令 Agent 的桌面启动回退上限（1–64）；伴侣进程有独立上限 |
+| `REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES` | `16` | desktop-companion 的活动 GUI 启动上限（1–64）；没有用户会话时 command-agent 不回退启动桌面进程 |
 
 Agent 首次注册后获得每机独立 Token，只保存其 SHA-256 摘要到 Center，原始值以 `0600` 权限保存在 Agent 状态目录。注册时会同时上报 `host_id`、`scope_mode` 和 `workspace_root`，控制台的机器详情可据此区分同一终端上的多个物理 Agent。注册后的机器名称和 `host_id` 属于不可变身份字段，心跳只更新平台、版本、能力和运行时自描述；若身份被吊销或丢失，请在 Center 重新生成一次性 Token，更新目标 Agent 的配置并重启；正常的 Center 重启和新建 Enrollment Token 不会影响已注册 Agent。
 

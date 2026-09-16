@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
+import com.prodigalgal.remoteconnectmcp.protocol.DesktopCompanionProtocol;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -15,7 +16,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -27,15 +27,15 @@ class DesktopCompanionClientTest {
         var companionDir = Files.createDirectories(stateDir.resolve("desktop"));
         try (var server = new ServerSocket(0, 4, InetAddress.getLoopbackAddress())) {
             Files.write(companionDir.resolve("desktop-companion.json"),
-                    JsonCodec.write(new DesktopCompanionClient.Endpoint(server.getLocalPort(), "local-secret")));
+                    JsonCodec.write(new DesktopCompanionProtocol.Endpoint(server.getLocalPort(), "local-secret")));
             var worker = Thread.startVirtualThread(() -> {
                 try (var socket = server.accept();
                      var reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
                      var writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8))) {
-                    var request = JsonCodec.read(reader.readLine().getBytes(StandardCharsets.UTF_8), DesktopCompanionClient.Request.class);
+                    var request = JsonCodec.read(reader.readLine().getBytes(StandardCharsets.UTF_8), DesktopCompanionProtocol.Request.class);
                     assertEquals("local-secret", request.token());
                     assertEquals("screenshot", request.operation());
-                    var response = new DesktopCompanionClient.Response(true, "ok", "image/png",
+                    var response = new DesktopCompanionProtocol.Response(true, "ok", "image/png",
                             Base64.getEncoder().encodeToString(new byte[] {1, 2, 3}), null);
                     writer.write(new String(JsonCodec.write(response), StandardCharsets.UTF_8));
                     writer.newLine();

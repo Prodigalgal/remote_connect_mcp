@@ -138,6 +138,7 @@
   },
   {
     "name": "java.awt.Font",
+    "allDeclaredConstructors": true,
     "fields": [
       {
         "name": "pData"
@@ -278,6 +279,7 @@
   },
   {
     "name": "java.awt.GraphicsEnvironment",
+    "allDeclaredConstructors": true,
     "methods": [
       {
         "name": "isHeadless",
@@ -291,10 +293,25 @@
   },
   {
     "name": "java.awt.Toolkit",
+    "allDeclaredConstructors": true,
     "allDeclaredMethods": true
   },
   {
+    "name": "java.awt.Robot",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "java.awt.Dimension",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "java.awt.Point",
+    "allDeclaredConstructors": true
+  },
+  {
     "name": "java.awt.image.BufferedImage",
+    "allDeclaredConstructors": true,
     "fields": [
       {
         "name": "colorModel"
@@ -495,6 +512,7 @@
   },
   {
     "name": "java.awt.Insets",
+    "allDeclaredConstructors": true,
     "fields": [
       {
         "name": "bottom"
@@ -512,6 +530,7 @@
   },
   {
     "name": "java.awt.Rectangle",
+    "allDeclaredConstructors": true,
     "methods": [
       {
         "name": "<init>",

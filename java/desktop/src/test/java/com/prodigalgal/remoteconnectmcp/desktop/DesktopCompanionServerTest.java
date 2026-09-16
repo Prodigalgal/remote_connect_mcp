@@ -1,4 +1,4 @@
-package com.prodigalgal.remoteconnectmcp.agent;
+package com.prodigalgal.remoteconnectmcp.desktop;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
+import com.prodigalgal.remoteconnectmcp.protocol.DesktopCompanionProtocol;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -20,7 +21,7 @@ import org.junit.jupiter.api.io.TempDir;
 class DesktopCompanionServerTest {
     @Test
     void publishesOnlyTheMachineScopePolicy(@TempDir Path stateDir) throws Exception {
-        DesktopCompanionServer.writePolicy(stateDir, ScopeMode.WORKSPACE, stateDir.toString());
+        DesktopCompanionProtocol.writePolicy(stateDir, ScopeMode.WORKSPACE, stateDir.toString());
 
         var policyFile = stateDir.resolve("desktop/desktop-companion-policy.json");
         assertTrue(Files.isRegularFile(policyFile));
@@ -38,7 +39,7 @@ class DesktopCompanionServerTest {
         var request = request(scope, scope, "path");
 
         assertDoesNotThrow(() -> DesktopCompanionServer.validateScope(
-                new DesktopCompanionServer.Policy(ScopeMode.UNRESTRICTED, null), request));
+                new DesktopCompanionProtocol.Policy(ScopeMode.UNRESTRICTED, null), request));
     }
 
     @Test
@@ -50,11 +51,11 @@ class DesktopCompanionServerTest {
         var request = request(outside, outside, "path");
 
         assertThrows(IOException.class, () -> DesktopCompanionServer.validateScope(
-                new DesktopCompanionServer.Policy(ScopeMode.WORKSPACE, machineRoot.toString()), request));
+                new DesktopCompanionProtocol.Policy(ScopeMode.WORKSPACE, machineRoot.toString()), request));
     }
 
-    private static DesktopCompanionClient.Request request(Path cwd, Path scopeRoot, String scopeMode) {
-        return new DesktopCompanionClient.Request("companion-token", "screenshot", null, List.of(),
+    private static DesktopCompanionProtocol.Request request(Path cwd, Path scopeRoot, String scopeMode) {
+        return new DesktopCompanionProtocol.Request("companion-token", "screenshot", null, List.of(),
                 cwd.toString(), null, null, null, null, null, null, null, null, null,
                 scopeMode, scopeRoot.toString(), Instant.now().plusSeconds(60));
     }

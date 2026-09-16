@@ -6,10 +6,6 @@ plugins {
 val nativeMarch = providers.gradleProperty("nativeMarch").orElse("compatibility").get()
 
 dependencies {
-    // The AWT implementation remains reachable only from this executable.
-    // The command Agent can still share the protocol/client classes without
-    // pulling desktop libraries into its Native Image.
-    implementation(project(":agent"))
     implementation(project(":protocol"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.13.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.13.4")
