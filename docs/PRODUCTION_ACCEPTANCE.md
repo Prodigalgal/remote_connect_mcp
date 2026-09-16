@@ -237,6 +237,7 @@ WebSocket 反向代理握手、离线/失败/回滚升级及 Center 重启的项
 | Windows 长输出 | 通过 | 生成 4,000 行固定文本，共 82,893 字节；按 16 KiB 页读取 6 页，最终游标 82,893，`more=false` |
 | Windows 超时 | 通过 | 1 秒合同下运行 8 秒等待命令，状态 failed，错误为 `task duration exceeded 1 seconds`，Attempt 1 |
 | Linux arm64 运行中取消 | 通过 | `task_wait` 先观察到 running，再收到 `cancel_requested`；最终状态 canceled、Attempt 1，未留下运行进程 |
+| 现场任务清理 | 通过 | 本轮验收任务均已进入终态；复核时 Center `queued=0`、`running=0`，没有遗留执行进程 |
 
 现场验收结论：命令 Agent 的入队、运行、输出分页、超时和运行中取消均可经 MCP
 完成闭环；桌面和浏览器因目标未声明对应 capability，继续保持待验收。
