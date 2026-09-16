@@ -46,7 +46,7 @@ public final class McpAccessService {
     }
 
     McpAccessService() {
-        this(null, null);
+        this((JdbcTemplate) null, (TransactionTemplate) null);
     }
 
     McpAccessService(JdbcTemplate jdbc, TransactionTemplate transactions) {
