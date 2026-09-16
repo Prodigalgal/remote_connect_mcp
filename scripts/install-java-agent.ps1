@@ -482,7 +482,10 @@ if ($DesktopEnabled) {
     if (-not $desktopDestination) { throw 'Desktop companion binary is not installed.' }
     $action = New-ScheduledTaskAction -Execute $desktopDestination -Argument ('--desktop-companion "{0}"' -f $escapedStateDir)
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType InteractiveToken -RunLevel Limited
+    # Windows PowerShell 5.1 exposes the interactive logon type as `Interactive`;
+    # `InteractiveToken` is not a valid enum value there and prevents the
+    # desktop companion task from being registered on GUI hosts.
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $companionTaskName -Action $action -Trigger $trigger -Principal $principal -Description "Interactive desktop companion for Remote Connect MCP" -Force | Out-Null
 } else {
     Unregister-ScheduledTask -TaskName $companionTaskName -Confirm:$false -ErrorAction SilentlyContinue
