@@ -69,6 +69,7 @@ function Download-Verified {
     return $zip
 }
 
+$agentZip = Download-Verified "remote-connect-mcp-agent-$Version-windows-amd64.zip"
 $desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-windows-amd64.zip"
 $browserZip = Download-Verified "remote-connect-mcp-browser-$Version-windows-amd64.zip"
 $installer = Join-Path $StageRoot "install-java-agent.ps1"
@@ -146,10 +147,10 @@ $applyLines = @(
     '  $worker = Join-Path $stage "browser-runtime\browser-worker.mjs"',
     '  $adapter = ''"{0}" "{1}"'' -f $node, $worker',
     '  $installer = Join-Path $stage "install-java-agent.ps1"',
-    '  $binary = Join-Path $installRoot "rcm-agent.exe"',
+    ('  $agent = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $agentZip))),
     ('  $desktop = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $desktopZip))),
     ('  $browser = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $browserZip))),
-    '  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -BinaryPath $binary -AgentName $agentName -HostId $hostId -CenterUrl $centerUrl -DefaultCwd "C:\" -ScopeMode unrestricted -Capabilities "command,durable_tasks,desktop,browser" -Version $version -DesktopEnabled -DesktopBinaryPath $desktop -BrowserBinaryPath $browser -BrowserAdapter $adapter -BrowserEngine $browserEngine -BrowserName $browserName -BrowserHeadless $browserHeadless -BrowserProfileDir $browserProfileDir -MaxConcurrency 1 -MaxBrowserWorkers 1 -DesktopMaxLaunchedProcesses 16 -MaxChildProcesses 32 -MaxTotalChildProcesses 32',
+    '  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -BinaryPath $agent -AgentName $agentName -HostId $hostId -CenterUrl $centerUrl -DefaultCwd "C:\" -ScopeMode unrestricted -Capabilities "command,durable_tasks,desktop,browser" -Version $version -DesktopEnabled -DesktopBinaryPath $desktop -BrowserBinaryPath $browser -BrowserAdapter $adapter -BrowserEngine $browserEngine -BrowserName $browserName -BrowserHeadless $browserHeadless -BrowserProfileDir $browserProfileDir -MaxConcurrency 1 -MaxBrowserWorkers 1 -DesktopMaxLaunchedProcesses 16 -MaxChildProcesses 32 -MaxTotalChildProcesses 32',
     '  if ($LASTEXITCODE -ne 0) { throw "agent installer failed with exit $LASTEXITCODE" }',
     '  try { Start-ScheduledTask -TaskName "RemoteConnectMCPDesktopCompanion" -ErrorAction Stop } catch { }',
     '  Start-Sleep -Seconds 3',
