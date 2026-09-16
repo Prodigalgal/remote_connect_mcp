@@ -160,7 +160,7 @@ Desktop 能力默认由同一安装包的用户会话伴侣提供，而不是让
 - 未登录或伴侣不可达时，所有桌面操作都明确失败，不让 SYSTEM command-agent 伪装成用户桌面；命令 Agent 的无人值守命令能力继续独立可用；
 - command-agent 使用 `agent.lock` 防止服务重启重叠产生第二个任务执行器；停止时附着任务按既有取消语义回收，durable 任务保留其可恢复日志。
 
-任务的环境变量会在 Center 持久化前、Agent 启动子进程前各过滤一次；`TOKEN`、`PASSWORD`、`PASSWD`、`SECRET`、`COOKIE`、`AUTHORIZATION`、`API_KEY`、`PRIVATE_KEY` 和 `CREDENTIAL` 形态的键不会进入任务投影或子进程环境。MCP 只内联不超过 2 MiB 的图片，较大图片/下载只返回 SHA-256、大小和控制台下载提示，避免工具结果污染对话上下文。
+任务的环境变量会在 Center 持久化前、Agent 启动子进程前各过滤一次；`TOKEN`、`PASSWORD`、`PASSWD`、`SECRET`、`COOKIE`、`AUTHORIZATION`、`API_KEY`、`PRIVATE_KEY` 和 `CREDENTIAL` 形态的键不会进入任务投影或子进程环境。MCP 列表只返回固定大小摘要：机器列表最多 25 条且不带运行时详情，项目列表不带本地路径且 worktree 摘要最多 10 条；任务输出使用游标分页，JSON 文本有 192 KiB 最后防线。图片只有不超过 512 KiB 才内联，较大图片/下载只返回 SHA-256、大小和控制台下载提示，避免工具结果污染对话上下文。
 
 ## 6. Browser Agent
 

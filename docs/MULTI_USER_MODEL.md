@@ -143,7 +143,7 @@ erDiagram
          ∩ 当前 Task execution contract
 ```
 
-1. `machines_list`、`project`、任务状态和工件列表只返回主体有权看到的投影。
+1. `machines_list`、`project`、任务状态和工件列表只返回主体有权看到的投影；机器列表最多 25 条，项目列表不携带本地根路径，worktree 只给最多 10 条轻量摘要。
 2. `unrestricted` 必须同时满足 Token 能力和任务显式声明；普通项目 Token 不能升级为整机权限。
 3. Agent 继续执行最终路径、进程、资源和桌面会话校验；Center 的主体授权不能替代本机校验。
 4. `task_wait`、`task_output` 和 `task_cancel` 必须检查任务主体或共享项目 ACL，不能只凭任务 ID 放行。
@@ -174,7 +174,14 @@ Token、Cookie、完整命令、环境变量和页面内容不作为普通字段
 
 ## 7. MCP 与控制台边界
 
-为了保持 Web 上下文精简，不新增“每用户一套工具”或“每机器一套工具”：
+为了保持 Web 上下文精简，不新增“每用户一套工具”或“每机器一套工具”。列表和结果遵循固定预算：
+
+- 机器发现只返回 `id/name/os/arch/version/capabilities/scope_mode/online` 等路由摘要；运行时预算、HostID、路径和心跳时间必须显式调用 `machine_info` 获取；
+- 项目发现只返回项目 ID、名称、默认 ref、worktree 数量和有限 worktree 摘要，不把本地 root/repository/path 或完整 worktree 历史带进对话；
+- 任务输出继续使用字节游标分页；MCP 文本 JSON 设有最后防线，超过预算时要求使用游标或 Console 详情端点；
+- 图片只有不超过 512 KiB 才以内联，较大截图/下载只返回大小、MIME、SHA-256 和 Console 工件引用。
+
+因此，MCP 是“摘要 + 句柄 + 游标”的控制通道，而不是日志、目录或工件浏览器：
 
 - 继续使用现有 `machines_list`、`machine_info`、`project`、`command_start`、`desktop`、
   `browser`、`task_wait`、`task_output`、`task_cancel`；

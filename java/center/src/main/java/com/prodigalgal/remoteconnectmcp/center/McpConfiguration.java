@@ -99,13 +99,19 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         McpAccessService.ProjectMemberView.class, ExecutionSessionService.SessionView.class,
         TaskService.ArtifactGcResult.class})
 public class McpConfiguration {
-    private static final int MAX_MACHINE_PAGE = 50;
+    // MCP inventory responses are intentionally smaller than the Console
+    // pages.  The model normally only needs an identifier and a few routing
+    // hints; detailed runtime data is an explicit machine_info follow-up.
+    private static final int MAX_MACHINE_PAGE = 25;
+    private static final int MAX_PROJECT_PAGE = 25;
     private static final int MAX_OUTPUT_PAGE = 64 * 1024;
+    private static final int MAX_INLINE_WORKTREE_SUMMARIES = 10;
+    private static final int MAX_MCP_JSON_CHARS = 192 * 1024;
     // Keep screenshots useful in the ChatGPT conversation without allowing a
     // single desktop/browser result to consume the whole MCP context window.
     // Larger artifacts remain available through the authenticated Console
     // artifact endpoint using the returned SHA-256 metadata.
-    private static final int MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024;
+    private static final int MAX_INLINE_IMAGE_BYTES = 512 * 1024;
 
     @Bean
     public HttpServletStreamableServerTransportProvider mcpTransport(CenterTokenConfig tokens,
@@ -168,7 +174,7 @@ public class McpConfiguration {
                                     @Value("${rcm.version:dev}") String version) {
         var server = McpServer.async(transport)
                 .serverInfo("remote-connect-mcp-center", version)
-                .instructions("Use machines_list first and always pass an explicit machine_id and scope. Prefer project/worktree or workspace/path; unrestricted must be explicit. Tasks are asynchronous and bounded; report task_id for long work and read output with cursors.")
+                .instructions("Use machines_list first and always pass an explicit machine_id and scope. Inventory lists are compact summaries: use machine_info or an explicit project operation for details instead of asking for everything at once. Prefer project/worktree or workspace/path; unrestricted must be explicit. Tasks are asynchronous and bounded; report task_id for long work and read output with cursors. Large artifacts are returned as metadata and must be opened through the authenticated Console when needed.")
                 .strictToolNameValidation(true)
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
@@ -183,13 +189,13 @@ public class McpConfiguration {
                                                                              ExecutorService mcpVirtualThreadExecutor) {
         var scheduler = Schedulers.fromExecutor(mcpVirtualThreadExecutor);
         return List.of(
-                tool("machines_list", "List a bounded page of registered machines.", schema(
-                        Map.of("offset", integer("zero-based offset"), "limit", integer("1-50 page size")), List.of()),
+                tool("machines_list", "List a compact, bounded page of registered machine summaries; call machine_info for runtime details.", schema(
+                        Map.of("offset", integer("zero-based offset"), "limit", integer("1-25 page size")), List.of()),
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesList(agents, access, origin(exchange), request); }, scheduler),
-                tool("machine_info", "Show one machine's platform, capabilities, scope and heartbeat.", schema(
+                tool("machine_info", "Show one machine's detailed platform, capabilities, scope, runtime descriptor and heartbeat.", schema(
                         Map.of("machine_id", string("machine ID from machines_list")), List.of("machine_id")),
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return machineInfo(agents, access, origin(exchange), request); }, scheduler),
-                tool("project", "List, register, remove projects or queue one isolated Git/worktree operation on a selected machine.", schema(
+                tool("project", "List compact project/worktree summaries, register/remove projects, or queue one isolated Git/worktree operation. Listing omits local paths; request an explicit operation for details.", schema(
                         Map.ofEntries(
                             Map.entry("operation", string("list, register, remove, worktree_create, worktree_remove, git_status, git_diff, git_log, git_commit, git_merge, or git_merge_abort")),
                                 Map.entry("machine_id", string("target machine ID")),
@@ -203,7 +209,7 @@ public class McpConfiguration {
                                 Map.entry("message", string("single-line commit message for git_commit")),
                                 Map.entry("mode", string("git_diff mode: stat or patch")),
                                 Map.entry("offset", integer("project list offset")),
-                                Map.entry("limit", integer("project list page size, at most 50")),
+                                Map.entry("limit", integer("project list page size, at most 25")),
                                 Map.entry("idempotency_key", string("stable retry key"))),
                         List.of("operation")), (exchange, request) -> { requireScope(exchange, "mcp:project"); return project(projects, access, origin(exchange), request); }, scheduler),
                 tool("desktop", "Queue a bounded screenshot, screen listing, launch, pointer, drag, key, text, clipboard, or window-focus action on an explicitly desktop-capable user-session Agent.", schema(
@@ -335,7 +341,7 @@ public class McpConfiguration {
             var visible = all.stream().filter(machine -> access.canReadMachine(origin, machine.id())).toList();
             var machines = offset >= visible.size() ? List.<MachineView>of()
                     : visible.subList(offset, Math.min(visible.size(), offset + limit));
-            var values = machines.stream().map(McpConfiguration::machineMap).toList();
+            var values = machines.stream().map(McpConfiguration::machineSummary).toList();
             var total = visible.size();
             return json(Map.of("machines", values, "offset", offset, "limit", limit,
                     "total", total, "has_more", offset + values.size() < total,
@@ -367,8 +373,8 @@ public class McpConfiguration {
                 case "list" -> {
                     var offset = args.offset() == null ? 0 : args.offset();
                     var limit = args.limit() == null ? 25 : args.limit();
-                    if (offset < 0 || limit < 1 || limit > 50) {
-                        throw new IllegalArgumentException("project list offset must be non-negative and limit must be between 1 and 50");
+                    if (offset < 0 || limit < 1 || limit > MAX_PROJECT_PAGE) {
+                        throw new IllegalArgumentException("project list offset must be non-negative and limit must be between 1 and " + MAX_PROJECT_PAGE);
                     }
                     var values = projects.listAll(args.machineId()).stream()
                             .filter(value -> access.canReadMachine(origin, value.machineId()))
@@ -376,7 +382,8 @@ public class McpConfiguration {
                             .toList();
                     var total = values.size();
                     values = offset >= total ? List.of() : values.subList(offset, Math.min(total, offset + limit));
-                    yield json(Map.of("projects", values, "offset", offset, "limit", limit,
+                    var summaries = values.stream().map(McpConfiguration::projectSummary).toList();
+                    yield json(Map.of("projects", summaries, "offset", offset, "limit", limit,
                             "total", total, "has_more", offset + values.size() < total,
                             "next_action", offset + values.size() < total
                                     ? "call project list with offset + limit" : "no more projects"));
@@ -392,27 +399,28 @@ public class McpConfiguration {
                         // create durable ACL rows.
                         access.grantProject(origin.principalId(), created.id(), Set.of("admin"), null);
                     }
-                    yield json(Map.of("project", created));
+                    yield json(Map.of("project", projectSummary(created),
+                            "next_action", "use project list or an explicit project operation for details"));
                 }
                 case "remove" -> {
                     var project = projects.find(args.projectId());
                     access.authorizeMachine(origin, project.machineId(), "admin");
                     access.authorizeProject(origin, project.id(), "admin");
-                    yield json(Map.of("project", projects.remove(args.projectId())));
+                    yield json(Map.of("project", projectSummary(projects.remove(args.projectId()))));
                 }
                 case "worktree_create" -> {
                     var project = projects.find(args.projectId());
                     access.authorizeMachine(origin, project.machineId(), "execute");
                     access.authorizeProject(origin, project.id(), "write");
                     var value = projects.createWorktree(args.projectId(), new ProjectWorktreeRequest(args.ref(), args.idempotencyKey()), origin);
-                    yield json(Map.of("worktree", value, "next_action", "use task_wait with the returned task_id, then submit project-scoped tasks"));
+                    yield json(Map.of("worktree", worktreeSummary(value), "next_action", "use task_wait with the returned task_id, then submit project-scoped tasks"));
                 }
                 case "worktree_remove" -> {
                     var project = projects.find(args.projectId());
                     access.authorizeMachine(origin, project.machineId(), "execute");
                     access.authorizeProject(origin, project.id(), "write");
                     var value = projects.removeWorktree(args.projectId(), args.worktreeId(), args.idempotencyKey(), origin);
-                    yield json(Map.of("worktree", value, "next_action", "use task_wait with the returned task_id"));
+                    yield json(Map.of("worktree", worktreeSummary(value), "next_action", "use task_wait with the returned task_id"));
                 }
                 case "git_status", "git_diff", "git_log", "git_commit", "git_merge", "git_merge_abort" -> {
                     var project = projects.find(args.projectId());
@@ -594,9 +602,9 @@ public class McpConfiguration {
 
     private static String jsonText(Object value) {
         try {
-            return McpJsonDefaults.getMapper().writeValueAsString(value);
+            return boundedJsonText(value);
         } catch (IOException exception) {
-            return "artifact ready";
+            return "{\"message\":\"response omitted; use task_output cursor or the Console detail endpoint\"}";
         }
     }
 
@@ -657,8 +665,9 @@ public class McpConfiguration {
         // Browser and desktop tasks can finish with a screenshot or another
         // bounded artifact.  Keep task_wait useful for those capabilities as
         // well as command tasks: return metadata for every artifact, and
-        // inline only image bytes (the same bounded 8 MiB contract used by
-        // the Center artifact endpoint).  Non-image downloads remain
+        // inline only small image bytes (the Center MCP threshold is 512 KiB;
+        // the authenticated artifact endpoint has its separate bounded
+        // storage contract). Non-image downloads remain
         // available through the authenticated console artifact endpoint
         // without inflating MCP context with binary/base64 data.
         if (view.artifactBytes() <= 0) {
@@ -699,6 +708,63 @@ public class McpConfiguration {
     private static boolean isInlineImage(String mimeType, long bytes) {
         return mimeType != null && mimeType.toLowerCase(java.util.Locale.ROOT).startsWith("image/")
                 && bytes > 0 && bytes <= MAX_INLINE_IMAGE_BYTES;
+    }
+
+    /**
+     * Keep the default machine discovery response useful for routing without
+     * copying runtime budgets, paths, timestamps, or host metadata into the
+     * model transcript.  Those fields remain available through machine_info.
+     */
+    private static Map<String, Object> machineSummary(MachineView machine) {
+        var value = new LinkedHashMap<String, Object>();
+        value.put("id", machine.id());
+        value.put("name", machine.name());
+        value.put("os", machine.os());
+        value.put("arch", machine.arch());
+        value.put("version", textOrEmpty(machine.version()));
+        value.put("scope_mode", textOrEmpty(machine.scopeMode()));
+        var capabilities = machine.capabilities() == null ? List.<String>of() : machine.capabilities();
+        var visibleCapabilities = capabilities.stream().limit(16).toList();
+        value.put("capabilities", visibleCapabilities);
+        value.put("capabilities_truncated", capabilities.size() > visibleCapabilities.size());
+        value.put("online", machine.online());
+        return value;
+    }
+
+    /**
+     * Project discovery deliberately excludes root/repository/worktree paths.
+     * Paths can be long and are often private; an explicit project operation
+     * or the Console is the detail channel.  Worktree summaries are capped so
+     * a project with many historical worktrees cannot flood MCP context.
+     */
+    private static Map<String, Object> projectSummary(ProjectView project) {
+        var value = new LinkedHashMap<String, Object>();
+        value.put("id", project.id());
+        value.put("machine_id", project.machineId());
+        value.put("name", project.name());
+        value.put("default_ref", textOrEmpty(project.defaultRef()));
+        var worktrees = project.worktrees() == null ? List.<WorktreeView>of() : project.worktrees();
+        var summaries = worktrees.stream()
+                .limit(MAX_INLINE_WORKTREE_SUMMARIES)
+                .map(McpConfiguration::worktreeSummary)
+                .toList();
+        value.put("worktree_count", worktrees.size());
+        value.put("worktrees", summaries);
+        value.put("worktrees_truncated", worktrees.size() > summaries.size());
+        return value;
+    }
+
+    private static Map<String, Object> worktreeSummary(WorktreeView worktree) {
+        var value = new LinkedHashMap<String, Object>();
+        value.put("id", worktree.id());
+        value.put("ref", textOrEmpty(worktree.ref()));
+        value.put("status", textOrEmpty(worktree.status()));
+        value.put("task_id", textOrEmpty(worktree.taskId()));
+        return value;
+    }
+
+    private static String textOrEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     private static Map<String, Object> machineMap(MachineView machine) {
@@ -864,10 +930,25 @@ public class McpConfiguration {
 
     private static McpSchema.CallToolResult json(Object value) {
         try {
-            return McpSchema.CallToolResult.builder().addTextContent(McpJsonDefaults.getMapper().writeValueAsString(value)).build();
+            var text = boundedJsonText(value);
+            return McpSchema.CallToolResult.builder().addTextContent(text).build();
         } catch (IOException exception) {
             return error(exception);
         }
+    }
+
+    /**
+     * Last-resort guard for accidental future projections. Normal list/task
+     * paths are much smaller; this prevents an unbounded field from silently
+     * becoming a large model-context turn. Callers should use cursors or the
+     * authenticated Console detail endpoint instead.
+     */
+    private static String boundedJsonText(Object value) throws IOException {
+        var text = McpJsonDefaults.getMapper().writeValueAsString(value);
+        if (text.length() > MAX_MCP_JSON_CHARS) {
+            throw new IOException("MCP response exceeds the bounded context budget; use a cursor or Console detail endpoint");
+        }
+        return text;
     }
 
     private static McpSchema.CallToolResult error(Exception exception) {

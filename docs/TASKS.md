@@ -79,7 +79,7 @@
 | [—] | P2-02 | Center 多副本与高可用 | **明确不做。** 当前保持单副本稳定路径，不建立多副本、PDB、HPA 或跨副本一致性门禁 | 需求决策记录 |
 | [x] | P2-03 | 集中日志与对象存储规模化 | 异步审计、`rcm.audit` JSON 行导出、filesystem/HTTPS 对象网关、GC 边界和容量指标已实现；生产采集器、对象生命周期/索引与成本压测属于独立生产验收 | `HttpArtifactStore`、StructuredLog、artifact gateway contract、GitHub Actions |
 | [x] | P2-04 | SLO、告警和升级通知 | 任务成功率、排队延迟、断线恢复、资源、升级失败和工件容量指标及 PrometheusRule 已实现；生产通知出口和演练属于独立生产验收 | MetricsController、PrometheusRule、GitHub Actions |
-| [~] | P2-05 | 轻量多主体、对话与 MCP 连接模型 | **第一阶段已实施。** 每个用户使用独立不透明 Bearer Token；主体、连接元数据、任务归属、主体维度幂等键、执行车道、机器/项目 ACL 和执行会话合同已接入；配额、会话自动过期和 Desktop/Browser 会话隔离待补；不做完整 SaaS 多租户、跨组织计费或复杂 RBAC | `McpPrincipalService`、`McpAccessService`、`ExecutionSessionService`、`McpTransportContext`、`TaskService`、`015`–`019`；GitHub Actions 待跑 |
+| [~] | P2-05 | 轻量多主体、对话与 MCP 连接模型 | **第一阶段已实施。** 每个用户使用独立不透明 Bearer Token；主体、连接元数据、任务归属、主体维度幂等键、执行车道、机器/项目 ACL 和执行会话合同已接入；MCP 列表使用固定大小摘要投影，详情按需查询，工件大于 512 KiB 时只返回引用；配额、会话自动过期和 Desktop/Browser 会话隔离待补；不做完整 SaaS 多租户、跨组织计费或复杂 RBAC | `McpPrincipalService`、`McpAccessService`、`ExecutionSessionService`、`McpTransportContext`、`TaskService`、`015`–`019`；GitHub Actions 待跑 |
 | [~] | P2-06 | 更丰富的桌面和浏览器平台 | 已有受控桌面 companion 和 Browser Worker；补齐常用交互、平台适配、会话恢复和兼容性自描述，不扩大 MCP 原始工具面 | 平台兼容矩阵和资源报告 |
 | [x] | P2-07 | 旧 Go 回滚路径退出 | Java 已是生产路径，Go 自动发布/部署已降为兼容归档；旧 workflow、Deployment、Service/PVC 和旧代码的最终移除属于独立生产变更验收 | release workflow、GO_RETIREMENT 文档、GitHub Actions |
 
@@ -97,6 +97,7 @@
 | [ ] | P2-05-05 | Desktop 独占 lease、Browser 按主体/对话隔离 Context/Profile，任务结束回收或续租 | 两用户交错操作、Cookie/下载隔离、崩溃回收 |
 | [ ] | P2-05-06 | React Console 增加主体、Token、项目成员、范围、配额、撤销和任务归属页面 | UI E2E、a11y、脱敏和审计 |
 | [ ] | P2-05-07 | 双账号多窗口端到端验收；同 URL、不同 Token、同项目/不同 worktree、撤销和故障恢复 | ChatGPT Web/Console/Center/Agent 真实矩阵 |
+| [x] | P2-05-R08 | MCP 上下文预算与摘要投影 | `machines_list` 只返回固定字段摘要（最多 25 台），`project list` 不返回本地路径且 worktree 摘要最多 10 条；任务输出保持游标分页，MCP JSON 设置 192 KiB 最后防线；图片仅在不超过 512 KiB 时内联，较大工件改用 SHA-256/Console 引用；详情通过 `machine_info`、显式 project 操作、`task_output` 或 Console 获取 | `McpConfiguration` compact projection/response guard；GitHub Actions |
 
 ### P2-05 需求驱动并发子项
 
@@ -105,7 +106,7 @@
 
 | 状态 | 子项 | 目标和完成条件 |
 | --- | --- | --- |
-| [~] | P2-05-R01 | 固化并发不变量：任务绑定主体、ExecutionSession、Attempt 和 ResultChannel；禁止全局结果广播 | 任务主体/连接元数据、显式 `execution_session_id`、任务专属 `result_channel`、lane_key 已落地；`019` 已持久化会话最新合同并支持显式关闭；会话能力/自动过期回收待补 |
+| [~] | P2-05-R01 | 固化并发不变量：任务绑定主体、ExecutionSession、Attempt 和 ResultChannel；禁止全局结果广播 | 任务主体/连接元数据、显式 `execution_session_id`、任务专属 `result_channel`、lane_key 已落地；`019` 已持久化会话最新合同并支持显式关闭；会话能力/自动过期回收待补；MCP 结果采用固定预算摘要和游标，不把长输出或全量清单注入对话 |
 | [x] | P2-05-R01-A | 任务创建时绑定认证主体、连接来源、幂等键和派发车道；跨主体同键不冲突 | `015/016`、`TaskServiceTest`、`PostgresIntegrationTest` |
 | [x] | P2-05-R01-B | 持久化显式 `execution_session_id` 与任务专属 `result_channel`，重连/重启可恢复且不做全局广播 | `017-task-session-channel`、`a96653f`、GitHub Actions `35101569455`/`35101569558` |
 | [~] | P2-05-R01-C | 补齐会话生命周期、能力/预算持久化和会话级 ACL | `019-execution-sessions`、`ExecutionSessionService` 已实现 ensure/close/list；自动过期回收、能力 ACL 和 Console 页面待补 |

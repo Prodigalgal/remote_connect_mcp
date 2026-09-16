@@ -4,8 +4,6 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -343,6 +341,11 @@ public final class McpAccessService {
             }
         }
         if (result.isEmpty()) result.addAll(fallback);
+        // Higher privileges imply read visibility.  Persist the implied
+        // element as well so the PostgreSQL and memory authorization paths
+        // have exactly the same semantics without expression-heavy queries.
+        if (supported == MACHINE_SCOPES && result.contains("execute")) result.add("read");
+        if (supported == PROJECT_SCOPES && result.contains("write")) result.add("read");
         return Set.copyOf(result);
     }
 
