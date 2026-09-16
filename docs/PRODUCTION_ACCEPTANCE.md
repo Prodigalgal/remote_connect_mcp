@@ -20,8 +20,8 @@
 | P0 | G3 长任务/工件/资源 | 部分通过 | 128 KiB 分页、超时终态、durable 完成和 32 子进程硬上限均已通过；工件及 RSS/CPU 极限仍待 capability/压测条件 |
 | P0 | G4 固定 `/mcp` 多机路由 | 通过 | 9 台在线 Agent 经同一 MCP 会话完成 `command_start`/`task_wait` |
 | P1 | P1-01 项目注册与 worktree | 通过 | 项目注册、Git 读操作、worktree 创建/删除和清理闭环见下文 |
-| P1 | P1-02 Desktop Companion | 待验收 | 当前在线 Agent 未声明 `desktop`；需 Windows/Linux 会话目标 |
-| P1 | P1-03 Browser Agent | 待验收 | 当前在线 Agent 未声明 `browser`；需浏览器运行时目标 |
+| P1 | P1-02 Desktop Companion | 部分通过 | `local-ly-windows11` 已安装 desktop bundle、SYSTEM Agent 和按用户登录触发的 Companion 任务；当前无交互登录会话（`desktop_session_available=false`），截图/输入仍待用户会话 |
+| P1 | P1-03 Browser Agent | 部分通过 | `local-ly-windows11` 已声明 `browser`，Playwright/Chromium 共享运行时可用；真实 `navigate` 已通过，snapshot/截图/下载和持久会话仍待补充 |
 | P1 | P1-04 React Console | 部分通过 | Center 后端提交/日志/取消通过；React E2E、工件页面、a11y/视觉待验收 |
 | P1 | P1-05 升级与回滚 | 部分通过 | `v0.1.28` canary+批次已覆盖 9/9 在线目标且失败 0；离线领取、启动失败和回滚仍未演练 |
 | P1 | P1-06 WebSocket/唤醒 | 待验收 | CI smoke 已通过；生产反向代理握手、断线和 Center 重启待窗口 |
@@ -33,7 +33,7 @@
 | P2 | P2-03 日志/对象存储 | 待验收 | 代码与 CI 具备；生产采集器、生命周期和成本压测未执行 |
 | P2 | P2-04 SLO/告警 | 待验收 | 指标与 PrometheusRule 存在；通知出口和告警演练未执行 |
 | P2 | P2-05 多租户 | 不做 | 需求决策保持单管理域 |
-| P2 | P2-06 桌面/浏览器增强 | 待验收 | 依赖 P1-02/P1-03 真实平台目标 |
+| P2 | P2-06 桌面/浏览器增强 | 部分通过 | Windows 目标已完成独立 command/desktop/browser 包部署和浏览器基线；桌面交互与更多浏览器工件场景仍待真实登录会话 |
 | P2 | P2-07 Go 路径退出 | 待验收 | Java 已为生产路径；Go 兼容清理仍需独立生产变更 |
 
 ## 2026-09-15 Agent v0.1.26 五机滚动验收
@@ -241,3 +241,24 @@ WebSocket 反向代理握手、离线/失败/回滚升级及 Center 重启的项
 
 现场验收结论：命令 Agent 的入队、运行、输出分页、超时和运行中取消均可经 MCP
 完成闭环；桌面和浏览器因目标未声明对应 capability，继续保持待验收。
+
+### 2026-09-16 Windows Desktop/Browser Agent 部署验收
+
+选择具备 Windows 桌面环境的 `local-ly-windows11` 作为第一台真实目标。部署过程只
+使用 GitHub Actions 已发布的 `v0.1.28` Native ZIP，不在本机编译；目标机安装一个
+Java command-agent，并在同一安装目录下启用独立 desktop-companion 与 browser-agent，
+没有新增 machine ID 或第二套身份。浏览器运行时使用目标机共享的 Playwright/Chromium
+缓存，避免 SYSTEM 会话找不到按用户安装的浏览器。
+
+| 项目 | 结果 | 证据与边界 |
+| --- | --- | --- |
+| Java command-agent 替换 | 通过 | 目标 Agent 上报版本 `v0.1.28`，Center 状态 online；旧 Go Agent 不再承载该身份 |
+| Desktop bundle/任务 | 已部署 | `rcm-desktop-companion.exe` 已安装；`RemoteConnectMCPDesktopCompanion` 任务为 Ready、登录用户触发；当前没有交互用户会话，Center 报告 `desktop_session_available=false`，因此未伪造截图/输入通过 |
+| Browser bundle/运行时 | 通过 | `rcm-browser-agent.exe`、Node 22、Playwright 1.63.0 和 Chromium 共享缓存已安装；Center 上报 `browser_adapter_configured=true` |
+| Browser MCP navigate | 通过 | 真实 `/mcp` `browser` 任务在该目标完成 `navigate https://example.com`，HTTP 200、标题 `Example Domain`，状态 `completed`、Attempt 1、退出码 0；输出 169 字节且无敏感字段 |
+| 进程回收 | 通过 | Browser 任务结束后由 command-agent 回收 browser-agent/Node 子进程；目标并发仍为 1，进程树上限 32 |
+
+本节结论：该 Windows 目标已经具备可用的 Browser Agent；Desktop 组件和登录触发链路
+已部署，但只有 `LY` 登录到图形会话后才能继续完成 screenshot、screens、launch、click
+和键盘输入验收。此前“9 台均无 desktop/browser capability”的历史记录仅代表复核时点，
+不覆盖本节之后新增的 canary 目标。
