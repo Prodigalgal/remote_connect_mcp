@@ -51,7 +51,7 @@ public final class ExecutionSessionService {
         var conversationId = required(origin == null ? null : origin.connectionId(), "conversation_id");
         var now = Instant.now();
         var state = new SessionState(principal, sessionId, conversationId, contract.machineId(),
-                contract, "active", now, contract.expiresAt(), now);
+                contract, "active", now, contract.expiresAt(), now, now);
         if (jdbc == null) {
             memory.put(key(principal, sessionId), state);
         } else {
@@ -168,10 +168,10 @@ public final class ExecutionSessionService {
 
     private record SessionState(String principalId, String sessionId, String conversationId, String machineId,
                                 ExecutionContract contract, String status, Instant lastSeenAt,
-                                Instant expiresAt, Instant updatedAt) {
+                                Instant expiresAt, Instant createdAt, Instant updatedAt) {
         SessionState withStatus(String nextStatus, Instant now) {
             return new SessionState(principalId, sessionId, conversationId, machineId, contract,
-                    nextStatus, lastSeenAt, expiresAt, now);
+                    nextStatus, lastSeenAt, expiresAt, createdAt, now);
         }
     }
 
