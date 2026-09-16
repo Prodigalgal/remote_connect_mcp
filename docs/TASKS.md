@@ -18,7 +18,7 @@
 
 ## 当前阶段：选定 P2 实施，代码状态与生产验收分离
 
-截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程和兼容实现已经完成，选定的 P2-01/03/04/07 的代码与 CI 门禁已完成；P1-02/03/04/08、P2-06 仍有明确的平台/协议代码缺口，保留 `[~]`。生产验收记录见 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)：生产 Java Center、Console 与 9 台在线 Agent 已在 `v0.1.28` 收敛，JDBC 锁竞争修复和命令 smoke 已复验；真实桌面/浏览器、升级故障/回滚、Center 重启重试和告警通知仍待验收。P2-02 和 P2-05 已按需求决策明确不做。
+截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程和兼容实现已经完成，选定的 P2-01/03/04/07 的代码与 CI 门禁已完成；P1-02/03/04/08、P2-06 仍有明确的平台/协议代码缺口，保留 `[~]`。生产验收记录见 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)：生产 Java Center、Console 与 9 台在线 Agent 已在 `v0.1.28` 收敛，Linux GUI canary 已用 GitHub Actions preview `v0.0.0-main.57` 完成 Desktop screens/截图和 Browser navigate；Windows Desktop 交互会话、更多 Browser 场景、升级故障/回滚、Center 重启重试和告警通知仍待验收。P2-02 和 P2-05 已按需求决策明确不做。
 
 | 层级 | 当前判断 | 剩余工作 |
 | --- | --- | --- |
@@ -26,7 +26,7 @@
 | P1 | 主流程已具备，平台特性待实测 | Windows/Linux Desktop 与 Browser、Git/Console/升级/长连接真实矩阵，以及无障碍、视觉和代理故障验收 |
 | P2 | P2-01/03/04/06/07 已进入实施队列；P2-02/05 按决策移除 | QUIC/HTTP3 评估、集中日志与对象存储规模化、SLO/告警、桌面/浏览器平台增强和 Go 回滚路径退出 |
 
-当前证据基线：Java Native Release `35043403122`（tag `java-v0.1.28`）成功；GitOps revision `eee62d2` 已由 Argo 报告 `Synced/Healthy/Succeeded`；事件驱动检查、仓库敏感信息扫描和浏览器脚本静态检查均通过。本机没有执行 Java、Gradle、Native Image 或 React 构建。
+当前证据基线：Java Native Release `35043403122`（tag `java-v0.1.28`）成功；Linux GUI canary preview `35060687497`（commit `2868934`）的三平台 Native、镜像、SBOM、签名和 release jobs 成功；GitOps revision `eee62d2` 已由 Argo 报告 `Synced/Healthy/Succeeded`；事件驱动检查、仓库敏感信息扫描和浏览器脚本静态检查均通过。本机没有执行 Java、Gradle、Native Image 或 React 构建。
 
 ## P0：平台必须可靠
 

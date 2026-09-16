@@ -20,8 +20,8 @@
 | P0 | G3 长任务/工件/资源 | 部分通过 | 128 KiB 分页、超时终态、durable 完成和 32 子进程硬上限均已通过；工件及 RSS/CPU 极限仍待 capability/压测条件 |
 | P0 | G4 固定 `/mcp` 多机路由 | 通过 | 9 台在线 Agent 经同一 MCP 会话完成 `command_start`/`task_wait` |
 | P1 | P1-01 项目注册与 worktree | 通过 | 项目注册、Git 读操作、worktree 创建/删除和清理闭环见下文 |
-| P1 | P1-02 Desktop Companion | 部分通过 | `local-ly-windows11` 已安装 desktop bundle、SYSTEM Agent 和按用户登录触发的 Companion 任务；当前无交互登录会话（`desktop_session_available=false`），截图/输入仍待用户会话 |
-| P1 | P1-03 Browser Agent | 部分通过 | `local-ly-windows11` 已声明 `browser`，Playwright/Chromium 共享运行时可用；真实 `navigate` 已通过，snapshot/截图/下载和持久会话仍待补充 |
+| P1 | P1-02 Desktop Companion | 部分通过 | `local-cmcc-debian` 已完成真实 screens/截图路由；`local-ly-windows11` 已安装 desktop bundle、SYSTEM Agent 和按用户登录触发的 Companion 任务，但当前无交互登录会话，Windows 截图/输入仍待用户会话 |
+| P1 | P1-03 Browser Agent | 部分通过 | `local-cmcc-debian` 与 `local-ly-windows11` 均完成真实 `navigate`；snapshot/截图/下载、持久会话和更多浏览器引擎仍待补充 |
 | P1 | P1-04 React Console | 部分通过 | Center 后端提交/日志/取消通过；React E2E、工件页面、a11y/视觉待验收 |
 | P1 | P1-05 升级与回滚 | 部分通过 | `v0.1.28` canary+批次已覆盖 9/9 在线目标且失败 0；离线领取、启动失败和回滚仍未演练 |
 | P1 | P1-06 WebSocket/唤醒 | 待验收 | CI smoke 已通过；生产反向代理握手、断线和 Center 重启待窗口 |
@@ -33,7 +33,7 @@
 | P2 | P2-03 日志/对象存储 | 待验收 | 代码与 CI 具备；生产采集器、生命周期和成本压测未执行 |
 | P2 | P2-04 SLO/告警 | 待验收 | 指标与 PrometheusRule 存在；通知出口和告警演练未执行 |
 | P2 | P2-05 多租户 | 不做 | 需求决策保持单管理域 |
-| P2 | P2-06 桌面/浏览器增强 | 部分通过 | Windows 目标已完成独立 command/desktop/browser 包部署和浏览器基线；桌面交互与更多浏览器工件场景仍待真实登录会话 |
+| P2 | P2-06 桌面/浏览器增强 | 部分通过 | Linux/Windows 均已完成独立 command/desktop/browser 包部署和浏览器基线；Windows 桌面交互与更多浏览器工件场景仍待真实登录会话 |
 | P2 | P2-07 Go 路径退出 | 待验收 | Java 已为生产路径；Go 兼容清理仍需独立生产变更 |
 
 ## 2026-09-15 Agent v0.1.26 五机滚动验收
@@ -262,3 +262,26 @@ Java command-agent，并在同一安装目录下启用独立 desktop-companion �
 已部署，但只有 `LY` 登录到图形会话后才能继续完成 screenshot、screens、launch、click
 和键盘输入验收。此前“9 台均无 desktop/browser capability”的历史记录仅代表复核时点，
 不覆盖本节之后新增的 canary 目标。
+
+### 2026-09-16 Linux GUI Desktop/Browser Agent canary 复验
+
+本轮使用 GitHub Actions 产出的 arm64 preview `v0.0.0-main.57`（提交
+`2868934`，run `35060687497`）作为 canary；三平台 Native、JVM、PostgreSQL/Liquibase、
+镜像、SBOM、签名和 release jobs 均成功。本机没有执行 Java、Gradle 或 Native 构建。
+目标为 `local-cmcc-debian`（Debian 12 arm64、Plasma/X11），只替换 Desktop Companion
+可执行文件和旁路库，保留本机 endpoint、token、policy；升级前已保留回滚副本。
+
+| 项目 | 结果 | 证据与边界 |
+| --- | --- | --- |
+| Desktop Companion 部署 | 通过 | 新二进制与 CI 资产 SHA-256 一致；`remote-connect-mcp-desktop.service` 重启后 `active`、`MainPID` 正常、无重启计数 |
+| Desktop 本机 IPC | 通过 | `screens` 返回 1 个 `1920×1080` 屏幕；`screenshot(screen=0)` 返回有效 PNG，约 6 KiB |
+| Desktop Center/MCP screens | 通过 | 真实 `/mcp` 任务经历 `queued → running → completed`，退出码 0，输出 65 字节，屏幕描述与目标一致 |
+| Desktop Center/MCP screenshot | 通过 | 真实 `/mcp` 任务完成，生成 `image/png` 工件约 629 KiB，Center 返回工件大小、MIME 和 SHA-256 元数据 |
+| Browser Agent 回归 | 通过 | 同一目标真实 `browser navigate https://example.com` 完成，退出码 0，标题 `Example Domain`，输出 168 字节 |
+| Center 自描述 | 通过 | machine info 上报 `online=true`、`v0.1.28`、`command,durable_tasks,desktop,browser`，`desktop_session_available=true`、`browser_session_available=true` |
+| 资源清理 | 通过 | Desktop 服务保持单进程；Browser 任务结束后无 `rcm-browser-agent`/`browser-worker.mjs` 残留；当前错误日志无新增条目 |
+
+本节结论：Linux GUI canary 的 Desktop screens/截图和 Browser navigate 已通过真实
+Center 路由；Windows Desktop 仍需用户登录交互会话后完成输入/启动/截图，Browser 的
+snapshot/下载/持久 profile 仍属于后续矩阵。preview 资产尚未替代稳定 tag，待 canary
+观察完成后再提升为稳定版本。
