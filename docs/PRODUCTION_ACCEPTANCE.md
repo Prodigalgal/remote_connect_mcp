@@ -217,6 +217,7 @@ P1-06 有效 WebSocket 断线恢复，以及离线/失败/回滚升级仍按前�
 | 事件驱动等待 | 通过 | 使用当前事件游标等待 1 秒返回 `changed=false`，未使用固定间隔轮询；事件游标保持连续 |
 | Agent 收敛 | 通过 | 9/9 Agent `online=true` 且版本为 `v0.1.28`；运行时 `max_child_processes=32`、`resource_enforcement=process-tree` |
 | 数据库空闲状态 | 通过 | PostgreSQL 只读复核为 `1 total / 1 active / 0 lock wait / 0 idle in transaction` |
+| 幂等重试 | 通过 | 同一幂等键连续提交两次固定 `printf` 任务，Center 返回同一 `task_id`；最终状态 completed、Attempt 1、exit code 0 |
 | 桌面/浏览器条件 | 未通过验收 | 当前 9 台 Agent 均只声明 `command,durable_tasks`，桌面会话和浏览器会话均不可用；因此不把工具已注册误判为能力已上线 |
 
 本次复核没有改变待验收边界：需要真实 Windows 登录桌面、浏览器运行时、有效
