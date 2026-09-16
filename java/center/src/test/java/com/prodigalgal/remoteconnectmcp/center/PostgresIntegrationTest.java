@@ -228,6 +228,19 @@ class PostgresIntegrationTest {
                 claimed.add(claimedTask.id());
             }
             assertEquals(2, claimed.size(), "concurrent polls must not double-dispatch one task");
+            // Release both claimed rows before the following lease-recovery
+            // assertions.  They deliberately share the host lane; leaving a
+            // dispatching row alive would correctly block the next poll and
+            // make this test depend on an agent callback that it does not run.
+            for (var claimedId : claimed) {
+                var claimedTask = store.find(claimedId).orElseThrow();
+                store.updateState(agentId, claimedId,
+                        new TaskUpdateRequest("running", null, null, Instant.now(), null, false),
+                        claimedTask.attempt());
+                store.updateState(agentId, claimedId,
+                        new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false),
+                        claimedTask.attempt());
+            }
         }
 
         // An Agent that disappears after a lease is claimed must not leave a
