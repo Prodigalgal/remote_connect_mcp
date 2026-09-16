@@ -21,6 +21,7 @@ param(
     [string]$BrowserName = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER } else { "chromium" }),
     [ValidateSet("0", "1")]
     [string]$BrowserHeadless = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS } else { "1" }),
+    [string]$PlaywrightBrowsersPath = $env:REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH,
     [string]$DesktopBinaryPath = "",
     [string]$BrowserBinaryPath = "",
     [switch]$DesktopEnabled,
@@ -375,6 +376,7 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
         REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE = $BrowserEngine
         REMOTE_CONNECT_MCP_AGENT_BROWSER = $BrowserName
         REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS = $BrowserHeadless
+        REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH = [string]$PlaywrightBrowsersPath
         REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED = $DesktopEnabled.IsPresent.ToString().ToLowerInvariant()
         REMOTE_CONNECT_MCP_AGENT_STATE_DIR = $StateDir
         REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY = $MaxConcurrency.ToString()
@@ -425,6 +427,7 @@ $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE=$BrowserEngine",
     "REMOTE_CONNECT_MCP_AGENT_BROWSER=$BrowserName",
     "REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS=$BrowserHeadless",
+    "REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH=$PlaywrightBrowsersPath",
     "REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=$($DesktopEnabled.IsPresent.ToString().ToLowerInvariant())",
     "REMOTE_CONNECT_MCP_AGENT_STATE_DIR=$StateDir",
     "REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY=$MaxConcurrency",
@@ -444,6 +447,9 @@ $environment = [string[]]@(
 )
 if ($desktopDestination) { $environment += "REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY=$desktopDestination" }
 if ($browserDestination) { $environment += "REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=$browserDestination" }
+if (-not [string]::IsNullOrWhiteSpace($PlaywrightBrowsersPath)) {
+    $environment += "PLAYWRIGHT_BROWSERS_PATH=$PlaywrightBrowsersPath"
+}
 $launcherPath = Join-Path $InstallRoot 'run-agent.ps1'
 $launcherLines = [System.Collections.Generic.List[string]]::new()
 $launcherLines.Add('$ErrorActionPreference = "Stop"')

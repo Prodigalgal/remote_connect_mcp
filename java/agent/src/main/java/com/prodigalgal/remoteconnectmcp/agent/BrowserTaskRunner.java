@@ -125,6 +125,10 @@ final class BrowserTaskRunner implements Runnable {
             builder.environment().put("RCM_BROWSER_ENGINE", config.browserEngine());
             builder.environment().put("RCM_BROWSER_BROWSER", config.browserName());
             builder.environment().put("RCM_BROWSER_HEADLESS", config.browserHeadless() ? "1" : "0");
+            var playwrightBrowsersPath = System.getenv("REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH");
+            if (playwrightBrowsersPath != null && !playwrightBrowsersPath.isBlank()) {
+                builder.environment().put("PLAYWRIGHT_BROWSERS_PATH", playwrightBrowsersPath);
+            }
             var timeout = Math.min(TaskLimits.timeoutSeconds(task, 300), 24 * 60 * 60);
             builder.environment().put("RCM_BROWSER_TASK_TIMEOUT_SECONDS", Integer.toString(timeout));
             outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), TaskLimits.outputBytes(config, task), resourceBudget);

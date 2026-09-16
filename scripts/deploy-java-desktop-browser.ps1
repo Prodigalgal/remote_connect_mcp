@@ -10,6 +10,7 @@ param(
     [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
     [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent",
     [string]$NodePath = "",
+    [string]$PlaywrightBrowsersPath = "",
     [ValidatePattern("^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")]
     [string]$DesktopUser = "",
     [string]$BrowserProfileDir = "",
@@ -41,6 +42,10 @@ if ([string]::IsNullOrWhiteSpace($StageRoot)) {
 if ([string]::IsNullOrWhiteSpace($BrowserProfileDir)) {
     $BrowserProfileDir = Join-Path $StateDir "browser-profile"
 }
+if ([string]::IsNullOrWhiteSpace($PlaywrightBrowsersPath)) {
+    $PlaywrightBrowsersPath = Join-Path $StateDir "playwright-browsers"
+}
+New-Item -ItemType Directory -Path $PlaywrightBrowsersPath -Force | Out-Null
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -89,6 +94,7 @@ $node = if ([string]::IsNullOrWhiteSpace($NodePath)) {
 } else {
     (Resolve-Path -LiteralPath $NodePath -ErrorAction Stop).Path
 }
+$env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightBrowsersPath
 $nodeDirectory = Split-Path -Parent $node
 $npm = @(
     (Get-Command npm.cmd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
@@ -134,6 +140,7 @@ $applyLines = @(
     ('$installRoot = {0}' -f (ConvertTo-PSLiteral $InstallRoot)),
     ('$stateDir = {0}' -f (ConvertTo-PSLiteral $StateDir)),
     ('$nodePath = {0}' -f (ConvertTo-PSLiteral $node)),
+    ('$playwrightBrowsersPath = {0}' -f (ConvertTo-PSLiteral $PlaywrightBrowsersPath)),
     ('$desktopUser = {0}' -f (ConvertTo-PSLiteral $DesktopUser)),
     ('$browserProfileDir = {0}' -f (ConvertTo-PSLiteral $BrowserProfileDir)),
     ('$browserEngine = {0}' -f (ConvertTo-PSLiteral $BrowserEngine)),
@@ -151,7 +158,7 @@ $applyLines = @(
     ('  $agent = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $agentZip))),
     ('  $desktop = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $desktopZip))),
     ('  $browser = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $browserZip))),
-    '  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -BinaryPath $agent -AgentName $agentName -HostId $hostId -CenterUrl $centerUrl -DefaultCwd "C:\" -ScopeMode unrestricted -Capabilities "command,durable_tasks,desktop,browser" -Version $version -DesktopEnabled -DesktopBinaryPath $desktop -BrowserBinaryPath $browser -BrowserAdapter $adapter -BrowserEngine $browserEngine -BrowserName $browserName -BrowserHeadless $browserHeadless -BrowserProfileDir $browserProfileDir -MaxConcurrency 1 -MaxBrowserWorkers 1 -DesktopMaxLaunchedProcesses 16 -MaxChildProcesses 32 -MaxTotalChildProcesses 32',
+    '  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -BinaryPath $agent -AgentName $agentName -HostId $hostId -CenterUrl $centerUrl -DefaultCwd "C:\" -ScopeMode unrestricted -Capabilities "command,durable_tasks,desktop,browser" -Version $version -DesktopEnabled -DesktopBinaryPath $desktop -BrowserBinaryPath $browser -BrowserAdapter $adapter -BrowserEngine $browserEngine -BrowserName $browserName -BrowserHeadless $browserHeadless -PlaywrightBrowsersPath $playwrightBrowsersPath -BrowserProfileDir $browserProfileDir -MaxConcurrency 1 -MaxBrowserWorkers 1 -DesktopMaxLaunchedProcesses 16 -MaxChildProcesses 32 -MaxTotalChildProcesses 32',
     '  if ($LASTEXITCODE -ne 0) { throw "agent installer failed with exit $LASTEXITCODE" }',
     '  try { Start-ScheduledTask -TaskName "RemoteConnectMCPDesktopCompanion" -ErrorAction Stop } catch { }',
     '  Start-Sleep -Seconds 3',
