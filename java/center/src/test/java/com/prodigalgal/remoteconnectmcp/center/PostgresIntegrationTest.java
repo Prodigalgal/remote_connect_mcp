@@ -49,6 +49,7 @@ class PostgresIntegrationTest {
     private JdbcTemplate jdbc;
     private TransactionTemplate transactions;
     private String agentId;
+    private String aclPrincipalId;
 
     @BeforeAll
     void migrateSchema() throws Exception {
@@ -75,6 +76,9 @@ class PostgresIntegrationTest {
 
     @AfterAll
     void cleanUp() {
+        if (jdbc != null && aclPrincipalId != null) {
+            jdbc.update("DELETE FROM rcm_principal WHERE principal_id = ?", aclPrincipalId);
+        }
         if (jdbc != null && agentId != null) {
             jdbc.update("DELETE FROM rcm_agent WHERE agent_id = ?", agentId);
         }
@@ -128,6 +132,26 @@ class PostgresIntegrationTest {
         var projectTasks = new TaskService(registry, jdbc, transactions);
         var projectService = new ProjectService(registry, projectTasks, jdbc, transactions);
         var project = projectService.register(new ProjectRegistrationRequest(agentId, "integration-project", "/tmp/rcm-it-project", null, "main"));
+
+        // ACL rows are explicit: a user Token can see/use this machine only
+        // after the Admin grants it, and project execution additionally
+        // requires project membership.  This verifies the 018 schema and the
+        // fail-closed authorization path against real PostgreSQL.
+        aclPrincipalId = "acl_it_" + UUID.randomUUID().toString().replace("-", "");
+        jdbc.update("""
+                INSERT INTO rcm_principal(principal_id, kind, display_name, status, created_at, updated_at)
+                VALUES (?, 'user', ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, aclPrincipalId, "ACL integration user");
+        var access = new McpAccessService(jdbc, transactions);
+        var aclOrigin = new TaskOrigin(aclPrincipalId, "acl-token", "acl-conversation");
+        org.junit.jupiter.api.Assertions.assertThrows(SecurityException.class,
+                () -> access.authorizeMachine(aclOrigin, agentId, "read"));
+        access.grantMachine(aclPrincipalId, agentId, java.util.Set.of("read", "execute"), null);
+        access.grantProject(aclPrincipalId, project.id(), java.util.Set.of("write"), null);
+        access.authorizeExecution(aclOrigin, agentId, project.id());
+        org.junit.jupiter.api.Assertions.assertEquals(1, access.machineCount(aclPrincipalId));
+        org.junit.jupiter.api.Assertions.assertEquals(1, access.projectCount(aclPrincipalId));
+
         var worktree = projectService.createWorktree(project.id(), new ProjectWorktreeRequest("feature/integration", "project-worktree-1"));
         assertNotNull(worktree.taskId());
         var worktreeTask = projectTasks.poll(agentId, new PollRequest(List.of(), 1, List.of("command"))).task();

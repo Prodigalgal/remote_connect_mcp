@@ -41,6 +41,7 @@ import java.util.concurrent.Executors;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BiFunction;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -91,8 +92,10 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         ProjectGitOperationRequest.class, ProjectView.class, WorktreeView.class,
         AuditEventView.class,
         AdminController.IssueEnrollmentRequest.class, AdminController.IssueMcpTokenRequest.class,
+        AdminController.MachineGrantRequest.class, AdminController.ProjectMemberRequest.class,
         McpPrincipalService.IssueRequest.class, McpPrincipalService.IssuedToken.class,
-        McpTokenView.class, TaskService.ArtifactGcResult.class})
+        McpTokenView.class, McpAccessService.MachineGrantView.class,
+        McpAccessService.ProjectMemberView.class, TaskService.ArtifactGcResult.class})
 public class McpConfiguration {
     private static final int MAX_MACHINE_PAGE = 50;
     private static final int MAX_OUTPUT_PAGE = 64 * 1024;
@@ -158,6 +161,7 @@ public class McpConfiguration {
                                     AgentRegistry agents,
                                     TaskService tasks,
                                     ProjectService projects,
+                                    McpAccessService access,
                                     ExecutorService mcpVirtualThreadExecutor,
                                     @Value("${rcm.version:dev}") String version) {
         var server = McpServer.async(transport)
@@ -166,22 +170,23 @@ public class McpConfiguration {
                 .strictToolNameValidation(true)
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
-                .tools(toolSpecs(agents, tasks, projects, mcpVirtualThreadExecutor))
+                .tools(toolSpecs(agents, tasks, projects, access, mcpVirtualThreadExecutor))
                 .build();
         return server;
     }
 
     private static List<McpServerFeatures.AsyncToolSpecification> toolSpecs(AgentRegistry agents, TaskService tasks,
                                                                              ProjectService projects,
+                                                                             McpAccessService access,
                                                                              ExecutorService mcpVirtualThreadExecutor) {
         var scheduler = Schedulers.fromExecutor(mcpVirtualThreadExecutor);
         return List.of(
                 tool("machines_list", "List a bounded page of registered machines.", schema(
                         Map.of("offset", integer("zero-based offset"), "limit", integer("1-50 page size")), List.of()),
-                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesList(agents, request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesList(agents, access, origin(exchange), request); }, scheduler),
                 tool("machine_info", "Show one machine's platform, capabilities, scope and heartbeat.", schema(
                         Map.of("machine_id", string("machine ID from machines_list")), List.of("machine_id")),
-                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machineInfo(agents, request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machineInfo(agents, access, origin(exchange), request); }, scheduler),
                 tool("project", "List, register, remove projects or queue one isolated Git/worktree operation on a selected machine.", schema(
                         Map.ofEntries(
                             Map.entry("operation", string("list, register, remove, worktree_create, worktree_remove, git_status, git_diff, git_log, git_commit, git_merge, or git_merge_abort")),
@@ -198,7 +203,7 @@ public class McpConfiguration {
                                 Map.entry("offset", integer("project list offset")),
                                 Map.entry("limit", integer("project list page size, at most 50")),
                                 Map.entry("idempotency_key", string("stable retry key"))),
-                        List.of("operation")), (exchange, request) -> { requireScope(exchange, "mcp:project"); return project(projects, origin(exchange), request); }, scheduler),
+                        List.of("operation")), (exchange, request) -> { requireScope(exchange, "mcp:project"); return project(projects, access, origin(exchange), request); }, scheduler),
                 tool("desktop", "Queue a bounded screenshot, screen listing, launch, pointer, drag, key, text, clipboard, or window-focus action on an explicitly desktop-capable user-session Agent.", schema(
                         Map.ofEntries(
                                 Map.entry("operation", string("screenshot, screenshot_region, screens, launch, click, double_click, right_click, move, drag, key, type, clipboard_read, clipboard_write, focus, or result")),
@@ -226,7 +231,7 @@ public class McpConfiguration {
                                 Map.entry("session_id", string("optional stable user/session identifier")),
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
-                        List.of("operation")), (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktop(agents, tasks, projects, origin(exchange), request); }, scheduler),
+                        List.of("operation")), (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktop(agents, tasks, projects, access, origin(exchange), request); }, scheduler),
                 tool("browser", "Queue one bounded browser adapter request on an explicitly browser-capable Agent.", schema(
                         Map.ofEntries(
                                 Map.entry("machine_id", string("command-agent machine ID with browser capability")),
@@ -242,7 +247,7 @@ public class McpConfiguration {
                                 Map.entry("session_id", string("optional stable user/session identifier")),
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
-                        List.of("machine_id", "command")), (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browser(agents, tasks, projects, origin(exchange), request); }, scheduler),
+                        List.of("machine_id", "command")), (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browser(agents, tasks, projects, access, origin(exchange), request); }, scheduler),
                 tool("command_start", "Queue a shell command and return immediately with a durable task ID.", schema(
                         Map.ofEntries(
                                 Map.entry("machine_id", string("target machine ID")),
@@ -259,7 +264,7 @@ public class McpConfiguration {
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
                         List.of("machine_id", "command")),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandStart(agents, tasks, projects, origin(exchange), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandStart(agents, tasks, projects, access, origin(exchange), request); }, scheduler),
                 tool("task_wait", "Read task state and one bounded output page; optionally wait briefly for a change.", schema(
                         Map.of("task_id", string("task ID"), "cursor", integer("known output cursor"), "wait_ms", integer("0-20000")), List.of("task_id")),
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskWait(tasks, origin(exchange), request); }, scheduler),
@@ -315,7 +320,8 @@ public class McpConfiguration {
         return Map.of("type", "array", "description", description, "items", Map.of("type", "string"));
     }
 
-    private static McpSchema.CallToolResult machinesList(AgentRegistry agents, McpSchema.CallToolRequest request) {
+    private static McpSchema.CallToolResult machinesList(AgentRegistry agents, McpAccessService access,
+                                                         TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, MachinesArgs.class);
             var offset = Math.max(0, args.offset() == null ? 0 : args.offset());
@@ -323,9 +329,12 @@ public class McpConfiguration {
             if (limit < 1 || limit > MAX_MACHINE_PAGE) {
                 throw new IllegalArgumentException("limit must be between 1 and " + MAX_MACHINE_PAGE);
             }
-            var machines = agents.listMachines(offset, limit, Instant.now());
+            var all = agents.listAllMachines(Instant.now());
+            var visible = all.stream().filter(machine -> access.canReadMachine(origin, machine.id())).toList();
+            var machines = offset >= visible.size() ? List.<MachineView>of()
+                    : visible.subList(offset, Math.min(visible.size(), offset + limit));
             var values = machines.stream().map(McpConfiguration::machineMap).toList();
-            var total = agents.totalCount();
+            var total = visible.size();
             return json(Map.of("machines", values, "offset", offset, "limit", limit,
                     "total", total, "has_more", offset + values.size() < total,
                     "next_action", offset + values.size() < total
@@ -335,9 +344,11 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult machineInfo(AgentRegistry agents, McpSchema.CallToolRequest request) {
+    private static McpSchema.CallToolResult machineInfo(AgentRegistry agents, McpAccessService access,
+                                                        TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, MachineInfoArgs.class);
+            access.authorizeMachine(origin, args.machineId(), "read");
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             return json(machineMap(machine));
         } catch (Exception exception) {
@@ -345,7 +356,7 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult project(ProjectService projects, TaskOrigin origin,
+    private static McpSchema.CallToolResult project(ProjectService projects, McpAccessService access, TaskOrigin origin,
                                                     McpSchema.CallToolRequest request) {
         try {
             var args = args(request, ProjectArgs.class);
@@ -357,25 +368,58 @@ public class McpConfiguration {
                     if (offset < 0 || limit < 1 || limit > 50) {
                         throw new IllegalArgumentException("project list offset must be non-negative and limit must be between 1 and 50");
                     }
-                    var values = projects.list(args.machineId(), offset, limit);
-                    var total = projects.count(args.machineId());
+                    var values = projects.listAll(args.machineId()).stream()
+                            .filter(value -> access.canReadMachine(origin, value.machineId()))
+                            .filter(value -> access.canReadProject(origin, value.id()))
+                            .toList();
+                    var total = values.size();
+                    values = offset >= total ? List.of() : values.subList(offset, Math.min(total, offset + limit));
                     yield json(Map.of("projects", values, "offset", offset, "limit", limit,
                             "total", total, "has_more", offset + values.size() < total,
                             "next_action", offset + values.size() < total
                                     ? "call project list with offset + limit" : "no more projects"));
                 }
-                case "register" -> json(Map.of("project", projects.register(new ProjectRegistrationRequest(
-                        args.machineId(), args.name(), args.rootPath(), args.repositoryPath(), args.defaultRef()))));
-                case "remove" -> json(Map.of("project", projects.remove(args.projectId())));
+                case "register" -> {
+                    access.authorizeMachine(origin, args.machineId(), "admin");
+                    var created = projects.register(new ProjectRegistrationRequest(
+                            args.machineId(), args.name(), args.rootPath(), args.repositoryPath(), args.defaultRef()));
+                    if (!origin.isShared()) {
+                        // The principal that explicitly registered a project
+                        // becomes its first admin member.  Shared legacy
+                        // identity remains compatibility-only and does not
+                        // create durable ACL rows.
+                        access.grantProject(origin.principalId(), created.id(), Set.of("admin"), null);
+                    }
+                    yield json(Map.of("project", created));
+                }
+                case "remove" -> {
+                    var project = projects.find(args.projectId());
+                    access.authorizeMachine(origin, project.machineId(), "admin");
+                    access.authorizeProject(origin, project.id(), "admin");
+                    yield json(Map.of("project", projects.remove(args.projectId())));
+                }
                 case "worktree_create" -> {
+                    var project = projects.find(args.projectId());
+                    access.authorizeMachine(origin, project.machineId(), "execute");
+                    access.authorizeProject(origin, project.id(), "write");
                     var value = projects.createWorktree(args.projectId(), new ProjectWorktreeRequest(args.ref(), args.idempotencyKey()), origin);
                     yield json(Map.of("worktree", value, "next_action", "use task_wait with the returned task_id, then submit project-scoped tasks"));
                 }
                 case "worktree_remove" -> {
+                    var project = projects.find(args.projectId());
+                    access.authorizeMachine(origin, project.machineId(), "execute");
+                    access.authorizeProject(origin, project.id(), "write");
                     var value = projects.removeWorktree(args.projectId(), args.worktreeId(), args.idempotencyKey(), origin);
                     yield json(Map.of("worktree", value, "next_action", "use task_wait with the returned task_id"));
                 }
                 case "git_status", "git_diff", "git_log", "git_commit", "git_merge", "git_merge_abort" -> {
+                    var project = projects.find(args.projectId());
+                    access.authorizeMachine(origin, project.machineId(), "execute");
+                    var gitAction = switch (operation) {
+                        case "git_status", "git_diff", "git_log" -> "read";
+                        default -> "write";
+                    };
+                    access.authorizeProject(origin, project.id(), gitAction);
                     var gitOperation = operation.substring("git_".length());
                     var value = projects.gitOperation(args.projectId(), gitOperation,
                             new ProjectGitOperationRequest(args.worktreeId(), args.ref(), args.message(), args.mode(), args.idempotencyKey()), origin);
@@ -390,10 +434,12 @@ public class McpConfiguration {
     }
 
     private static McpSchema.CallToolResult commandStart(AgentRegistry agents, TaskService tasks,
-                                                         ProjectService projects, TaskOrigin origin,
+                                                         ProjectService projects, McpAccessService access,
+                                                         TaskOrigin origin,
                                                          McpSchema.CallToolRequest request) {
         try {
             var args = args(request, CommandArgs.class);
+            access.authorizeExecution(origin, args.machineId(), args.projectId());
             var timeout = args.timeoutSeconds() == null ? 0 : args.timeoutSeconds();
             var scope = resolveScope(agents, projects, args.machineId(), args.projectId(), args.worktreeId(),
                     args.scopeMode(), args.scopeRoot(), args.cwd());
@@ -409,10 +455,12 @@ public class McpConfiguration {
     }
 
     private static McpSchema.CallToolResult browser(AgentRegistry agents, TaskService tasks,
-                                                    ProjectService projects, TaskOrigin origin,
+                                                    ProjectService projects, McpAccessService access,
+                                                    TaskOrigin origin,
                                                     McpSchema.CallToolRequest request) {
         try {
             var args = args(request, BrowserArgs.class);
+            access.authorizeExecution(origin, args.machineId(), args.projectId());
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             if (!machine.capabilities().contains("browser")) throw new IllegalArgumentException("machine does not advertise browser capability");
             var timeout = args.timeoutSeconds() == null ? 300 : args.timeoutSeconds();
@@ -437,7 +485,8 @@ public class McpConfiguration {
     }
 
     private static McpSchema.CallToolResult desktop(AgentRegistry agents, TaskService tasks,
-                                                    ProjectService projects, TaskOrigin origin,
+                                                    ProjectService projects, McpAccessService access,
+                                                    TaskOrigin origin,
                                                     McpSchema.CallToolRequest request) {
         try {
             var args = args(request, DesktopArgs.class);
@@ -463,6 +512,7 @@ public class McpConfiguration {
                     && !"clipboard_write".equals(operation) && !"focus".equals(operation)) {
                 throw new IllegalArgumentException("operation must be screenshot, screenshot_region, screens, launch, click, double_click, right_click, move, drag, key, type, clipboard_read, clipboard_write, focus, or result");
             }
+            access.authorizeExecution(origin, args.machineId(), args.projectId());
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             if (!machine.capabilities().contains("desktop")) throw new IllegalArgumentException("machine does not advertise desktop capability");
             var timeout = args.timeoutSeconds() == null ? 30 : args.timeoutSeconds();

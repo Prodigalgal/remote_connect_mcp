@@ -1,0 +1,163 @@
+databaseChangeLog:
+  - changeSet:
+      id: 018-principal-access
+      author: remote-connect-mcp
+      labels: principals,acl
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - createTable:
+            tableName: rcm_machine_grant
+            columns:
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: agent_id
+                  type: varchar(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: scope_json
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: timestamptz
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addPrimaryKey:
+            tableName: rcm_machine_grant
+            columnNames: principal_id, agent_id
+            constraintName: pk_rcm_machine_grant
+        - addForeignKeyConstraint:
+            baseTableName: rcm_machine_grant
+            baseColumnNames: principal_id
+            constraintName: fk_rcm_machine_grant_principal
+            referencedTableName: rcm_principal
+            referencedColumnNames: principal_id
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: rcm_machine_grant
+            baseColumnNames: agent_id
+            constraintName: fk_rcm_machine_grant_agent
+            referencedTableName: rcm_agent
+            referencedColumnNames: agent_id
+            onDelete: CASCADE
+        - createIndex:
+            indexName: idx_rcm_machine_grant_active
+            tableName: rcm_machine_grant
+            columns:
+              - column:
+                  name: principal_id
+              - column:
+                  name: expires_at
+              - column:
+                  name: agent_id
+        - createTable:
+            tableName: rcm_project_member
+            columns:
+              - column:
+                  name: project_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: role
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: scope_json
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: timestamptz
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addPrimaryKey:
+            tableName: rcm_project_member
+            columnNames: project_id, principal_id
+            constraintName: pk_rcm_project_member
+        - addForeignKeyConstraint:
+            baseTableName: rcm_project_member
+            baseColumnNames: project_id
+            constraintName: fk_rcm_project_member_project
+            referencedTableName: rcm_project
+            referencedColumnNames: project_id
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: rcm_project_member
+            baseColumnNames: principal_id
+            constraintName: fk_rcm_project_member_principal
+            referencedTableName: rcm_principal
+            referencedColumnNames: principal_id
+            onDelete: CASCADE
+        - createIndex:
+            indexName: idx_rcm_project_member_active
+            tableName: rcm_project_member
+            columns:
+              - column:
+                  name: principal_id
+              - column:
+                  name: expires_at
+              - column:
+                  name: project_id
+      rollback:
+        - dropIndex:
+            indexName: idx_rcm_project_member_active
+            tableName: rcm_project_member
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_project_member
+            constraintName: fk_rcm_project_member_principal
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_project_member
+            constraintName: fk_rcm_project_member_project
+        - dropPrimaryKey:
+            tableName: rcm_project_member
+            constraintName: pk_rcm_project_member
+        - dropTable:
+            tableName: rcm_project_member
+        - dropIndex:
+            indexName: idx_rcm_machine_grant_active
+            tableName: rcm_machine_grant
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_machine_grant
+            constraintName: fk_rcm_machine_grant_agent
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_machine_grant
+            constraintName: fk_rcm_machine_grant_principal
+        - dropPrimaryKey:
+            tableName: rcm_machine_grant
+            constraintName: pk_rcm_machine_grant
+        - dropTable:
+            tableName: rcm_machine_grant

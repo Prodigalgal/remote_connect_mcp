@@ -16,6 +16,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -34,6 +35,7 @@ public final class AdminController {
     private final AgentRegistry agents;
     private final TaskService tasks;
     private final McpPrincipalService principals;
+    private final McpAccessService access;
     private final EnrollmentTokenService enrollments;
     private final UpgradeService upgrades;
     private final AgentConfigurationService configurations;
@@ -46,7 +48,8 @@ public final class AdminController {
 
     @org.springframework.beans.factory.annotation.Autowired
     public AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
-                           McpPrincipalService principals, EnrollmentTokenService enrollments, UpgradeService upgrades,
+                           McpPrincipalService principals, McpAccessService access,
+                           EnrollmentTokenService enrollments, UpgradeService upgrades,
                            AgentConfigurationService configurations, CenterAsyncExecutor async,
                            ObjectProvider<AgentWakeRegistry> wakeProvider,
                            ProjectService projects,
@@ -57,6 +60,7 @@ public final class AdminController {
         this.agents = agents;
         this.tasks = tasks;
         this.principals = principals;
+        this.access = access;
         this.enrollments = enrollments;
         this.upgrades = upgrades;
         this.configurations = configurations;
@@ -72,7 +76,7 @@ public final class AdminController {
     AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                     EnrollmentTokenService enrollments, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
-        this(tokens, agents, tasks, null, enrollments, upgrades, configurations, async, null, null, null, null, null);
+        this(tokens, agents, tasks, null, null, enrollments, upgrades, configurations, async, null, null, null, null, null);
     }
 
     /**
@@ -413,6 +417,104 @@ public final class AdminController {
         });
     }
 
+    /** Grant a user Token explicit access to one machine. */
+    @PostMapping("/access/machines")
+    public CompletableFuture<ResponseEntity<?>> grantMachineAccess(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestBody(required = false) MachineGrantRequest request) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (access == null) throw new IllegalStateException("MCP access service is unavailable");
+            var body = request == null ? new MachineGrantRequest("", "", java.util.Set.of(), null) : request;
+            var grant = access.grantMachine(body.principalId(), body.machineId(), body.scopes(),
+                    grantExpiry(body.expiresInSeconds()));
+            signalChange();
+            if (audit != null) audit.record("mcp-access.machine-grant", "admin", body.machineId(), null,
+                    null, "medium", "accepted", "principal_id=" + body.principalId());
+            return ResponseEntity.status(HttpStatus.CREATED).body(grant);
+        });
+    }
+
+    @GetMapping("/access/machines")
+    public CompletableFuture<ResponseEntity<?>> machineAccess(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "") String principalId,
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestParam(defaultValue = "50") int limit) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (access == null) throw new IllegalStateException("MCP access service is unavailable");
+            var items = access.listMachine(principalId, offset, limit);
+            var total = access.machineCount(principalId);
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
+        });
+    }
+
+    @DeleteMapping("/access/machines")
+    public CompletableFuture<ResponseEntity<?>> revokeMachineAccess(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestBody(required = false) MachineGrantRequest request) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (access == null) throw new IllegalStateException("MCP access service is unavailable");
+            var body = request == null ? new MachineGrantRequest("", "", java.util.Set.of(), null) : request;
+            var revoked = access.revokeMachine(body.principalId(), body.machineId());
+            if (revoked) signalChange();
+            return ResponseEntity.ok(Map.of("principal_id", body.principalId(), "machine_id", body.machineId(),
+                    "revoked", revoked));
+        });
+    }
+
+    /** Grant a user Token explicit membership in one registered project. */
+    @PostMapping("/access/projects")
+    public CompletableFuture<ResponseEntity<?>> grantProjectAccess(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestBody(required = false) ProjectMemberRequest request) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (access == null) throw new IllegalStateException("MCP access service is unavailable");
+            var body = request == null ? new ProjectMemberRequest("", "", java.util.Set.of(), null) : request;
+            var grant = access.grantProject(body.principalId(), body.projectId(), body.scopes(),
+                    grantExpiry(body.expiresInSeconds()));
+            signalChange();
+            if (audit != null) audit.record("mcp-access.project-grant", "admin", null, body.projectId(),
+                    null, "medium", "accepted", "principal_id=" + body.principalId());
+            return ResponseEntity.status(HttpStatus.CREATED).body(grant);
+        });
+    }
+
+    @GetMapping("/access/projects")
+    public CompletableFuture<ResponseEntity<?>> projectAccess(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "") String principalId,
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestParam(defaultValue = "50") int limit) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (access == null) throw new IllegalStateException("MCP access service is unavailable");
+            var items = access.listProject(principalId, offset, limit);
+            var total = access.projectCount(principalId);
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
+        });
+    }
+
+    @DeleteMapping("/access/projects")
+    public CompletableFuture<ResponseEntity<?>> revokeProjectAccess(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestBody(required = false) ProjectMemberRequest request) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (access == null) throw new IllegalStateException("MCP access service is unavailable");
+            var body = request == null ? new ProjectMemberRequest("", "", java.util.Set.of(), null) : request;
+            var revoked = access.revokeProject(body.principalId(), body.projectId());
+            if (revoked) signalChange();
+            return ResponseEntity.ok(Map.of("principal_id", body.principalId(), "project_id", body.projectId(),
+                    "revoked", revoked));
+        });
+    }
+
     private static Boolean bool(Object value) {
         if (value == null) return Boolean.FALSE;
         if (value instanceof Boolean flag) return flag;
@@ -587,6 +689,15 @@ public final class AdminController {
         return offset >= 0 && size > 0 && offset < total - size;
     }
 
+    private static java.time.Instant grantExpiry(Long expiresInSeconds) {
+        if (expiresInSeconds == null || expiresInSeconds == 0) return null;
+        var max = java.time.Duration.ofDays(3650).toSeconds();
+        if (expiresInSeconds < 3600 || expiresInSeconds > max) {
+            throw new IllegalArgumentException("expires_in_seconds must be 0 or between 3600 and 315360000 seconds");
+        }
+        return java.time.Instant.now().plusSeconds(expiresInSeconds);
+    }
+
     private static Throwable unwrap(Throwable failure) {
         if (failure instanceof CompletionException && failure.getCause() != null) {
             return unwrap(failure.getCause());
@@ -604,5 +715,19 @@ public final class AdminController {
             @JsonProperty("display_name") String displayName,
             @JsonProperty("expires_in_seconds") Long expiresInSeconds,
             java.util.Set<String> scopes) {
+    }
+
+    public record MachineGrantRequest(
+            @JsonProperty("principal_id") String principalId,
+            @JsonProperty("machine_id") String machineId,
+            java.util.Set<String> scopes,
+            @JsonProperty("expires_in_seconds") Long expiresInSeconds) {
+    }
+
+    public record ProjectMemberRequest(
+            @JsonProperty("principal_id") String principalId,
+            @JsonProperty("project_id") String projectId,
+            java.util.Set<String> scopes,
+            @JsonProperty("expires_in_seconds") Long expiresInSeconds) {
     }
 }

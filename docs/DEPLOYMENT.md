@@ -148,7 +148,7 @@ Linux/Windows 原生二进制还会由 GitHub OIDC 生成 Artifact Attestation�
 rcm-center --migrate
 ```
 
-该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`、`009-task-lease-index`、`010-execution-contract`、`011-artifact-storage`、`012-audit-events`、`013-agent-runtime-descriptor`、`014-agent-config-history`、`015-mcp-principals`、`016-execution-lanes`、`017-task-session-channel`；仓库不使用 Flyway。
+该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`、`009-task-lease-index`、`010-execution-contract`、`011-artifact-storage`、`012-audit-events`、`013-agent-runtime-descriptor`、`014-agent-config-history`、`015-mcp-principals`、`016-execution-lanes`、`017-task-session-channel`、`018-principal-access`；仓库不使用 Flyway。
 
 Java Center 的 memory 模式只用于协议回归/开发。生产必须同时设置
 `RCM_CENTER_PERSISTENCE_MODE=postgres` 和
@@ -166,6 +166,27 @@ Authorization: Bearer <Admin Token>
 ```
 
 接口最多处理 5000 条/次，返回删除数量；任务、工件和机器数据不会因审计清理被删除。
+
+### 用户 Token 的机器/项目授权
+
+`018-principal-access` 后，非兼容用户 Token 默认没有任何机器或项目权限。
+由 Admin Token 显式授予最小权限；机器范围使用 `read`、`execute`、`admin`，项目范围使用
+`read`、`write`、`admin`。`expires_in_seconds=0` 表示不过期，其他值限制为 1 小时至 3650 天：
+
+```text
+POST /api/v1/admin/access/machines
+Authorization: Bearer <Admin Token>
+{"principal_id":"user-a","machine_id":"machine-1","scopes":["read","execute"],"expires_in_seconds":0}
+
+POST /api/v1/admin/access/projects
+Authorization: Bearer <Admin Token>
+{"principal_id":"user-a","project_id":"project-1","scopes":["write"],"expires_in_seconds":2592000}
+```
+
+撤销分别对 `/api/v1/admin/access/machines` 和 `/api/v1/admin/access/projects` 发送同形状
+`DELETE` 请求。MCP 的机器列表、机器详情、项目列表、任务创建和 Git/Worktree 操作会在
+Center 侧先执行 ACL；兼容共享 Token 仍保持迁移期的全局行为。明文 MCP Token 只在发放时返回，
+不写入 ACL 或日志。
 
 从旧 Go 文件存储切换时，先停止旧 Center 并完整备份其状态目录，再在已完成 Liquibase 的空 PostgreSQL 库上执行：
 

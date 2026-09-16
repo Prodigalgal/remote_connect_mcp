@@ -187,6 +187,28 @@ public final class ProjectService {
         }, (rs, rowNum) -> projectView(rs)));
     }
 
+    /**
+     * Read a bounded project snapshot for an authorization-filtered MCP
+     * inventory.  The console remains paginated; this explicit operation is
+     * used only when a principal's ACL must be applied before pagination so a
+     * caller cannot infer projects it is not allowed to see.
+     */
+    public List<ProjectView> listAll(String machineId) {
+        final int pageSize = 200;
+        final int max = 10_000;
+        var result = new ArrayList<ProjectView>();
+        var offset = 0;
+        while (true) {
+            var page = list(machineId, offset, pageSize);
+            result.addAll(page);
+            if (result.size() > max) {
+                throw new IllegalStateException("project inventory exceeds the control-plane snapshot limit");
+            }
+            if (page.size() < pageSize) return List.copyOf(result);
+            offset += page.size();
+        }
+    }
+
     /** Total project count for console pagination; no repository data is read. */
     public int count(String machineId) {
         if (jdbc == null) {
