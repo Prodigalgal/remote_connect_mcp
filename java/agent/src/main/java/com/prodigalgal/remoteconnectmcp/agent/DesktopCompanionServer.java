@@ -261,9 +261,8 @@ public final class DesktopCompanionServer {
                 // the command Agent can explain a missing/stale GUI session.
                 // Preserve VM-fatal errors: catching an OutOfMemoryError or
                 // ThreadDeath would leave the companion in an unsafe state.
-                if (failure instanceof VirtualMachineError || failure instanceof ThreadDeath) {
-                    throw failure;
-                }
+                if (failure instanceof VirtualMachineError) throw (VirtualMachineError) failure;
+                if (failure instanceof ThreadDeath) throw (ThreadDeath) failure;
                 LOG.log(Level.WARNING, "desktop companion request failed", failure);
                 write(writer, new DesktopCompanionClient.Response(false, null, null, null,
                         compactError(failure.getMessage() == null ? failure.toString() : failure.getMessage())));
