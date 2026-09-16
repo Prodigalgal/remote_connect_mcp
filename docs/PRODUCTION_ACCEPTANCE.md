@@ -205,3 +205,20 @@ P2-03 的代码路径已存在，生产日志采集器、对象生命周期和�
 `v0.1.28`。P0-G2 的 Center 重启/ChatGPT 重试、P1-02/P1-03 桌面/浏览器真实平台、
 P1-06 有效 WebSocket 断线恢复，以及离线/失败/回滚升级仍按前述条件保持待验收；这些
 不是本轮只读健康检查可以替代的项目。
+
+### 2026-09-16 后续只读复核
+
+在不修改生产资源、不重启 Center、不注入升级故障的前提下再次复核：
+
+| 项目 | 结果 | 证据 |
+| --- | --- | --- |
+| Gateway 路由 | 通过 | Java Center 与 Console 的生产 HTTPRoute 均被 Gateway 接受；健康、就绪和版本端点继续 HTTP 200 |
+| MCP 工具发现 | 通过 | Streamable HTTP 会话可建立，`tools/list` 返回 9 个精简工具：`machines_list`、`machine_info`、`project`、`desktop`、`browser`、`command_start`、`task_wait`、`task_output`、`task_cancel` |
+| 事件驱动等待 | 通过 | 使用当前事件游标等待 1 秒返回 `changed=false`，未使用固定间隔轮询；事件游标保持连续 |
+| Agent 收敛 | 通过 | 9/9 Agent `online=true` 且版本为 `v0.1.28`；运行时 `max_child_processes=32`、`resource_enforcement=process-tree` |
+| 数据库空闲状态 | 通过 | PostgreSQL 只读复核为 `1 total / 1 active / 0 lock wait / 0 idle in transaction` |
+| 桌面/浏览器条件 | 未通过验收 | 当前 9 台 Agent 均只声明 `command,durable_tasks`，桌面会话和浏览器会话均不可用；因此不把工具已注册误判为能力已上线 |
+
+本次复核没有改变待验收边界：需要真实 Windows 登录桌面、浏览器运行时、有效
+WebSocket 反向代理握手、离线/失败/回滚升级及 Center 重启的项目，仍需安排专门目标和
+维护窗口后再验收。
