@@ -102,12 +102,16 @@ class TaskServiceTest {
                 new TaskCommand("", TaskKind.COMMAND, "command", "printf second", "/srv", Map.of(), 0, null, null), "lane-2"));
 
         var firstLease = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
-        assertEquals(first.id(), firstLease.id());
+        // FIFO is not part of the lane contract when two tasks share the
+        // same clock tick.  Whichever task wins, the other one must remain
+        // queued until the lane is released.
+        assertTrue(firstLease.id().equals(first.id()) || firstLease.id().equals(second.id()));
         assertTrue(tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task() == null);
 
-        tasks.updateState(registration.machineId(), first.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), firstLease.attempt());
-        tasks.updateState(registration.machineId(), first.id(), new TaskUpdateRequest(TaskStatus.COMPLETED, 0, null, null, null, false), firstLease.attempt());
-        assertEquals(second.id(), tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task().id());
+        tasks.updateState(registration.machineId(), firstLease.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), firstLease.attempt());
+        tasks.updateState(registration.machineId(), firstLease.id(), new TaskUpdateRequest(TaskStatus.COMPLETED, 0, null, null, null, false), firstLease.attempt());
+        var secondLease = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        assertEquals(firstLease.id().equals(first.id()) ? second.id() : first.id(), secondLease.id());
     }
 
     @Test
@@ -356,8 +360,12 @@ class TaskServiceTest {
         assertEquals(TaskStatus.RUNNING, tasks.find(durable.id()).orElseThrow().status());
         assertTrue(tasks.find(durable.id()).orElseThrow().leaseUntil().isAfter(java.time.Instant.now()));
 
+        // The durable task is still running and therefore owns the default
+        // host lane.  Put the timed lease probe in an explicit path lane so
+        // the test exercises lease expiry rather than queue serialization.
         var timed = tasks.create(new CreateTaskRequest(registration.machineId(),
-                new TaskCommand("", TaskKind.COMMAND, "command", "sleep 10", "/srv", java.util.Map.of(), 30, null, null), "timed-lease"));
+                new TaskCommand("", TaskKind.COMMAND, "command", "sleep 10", "/srv/timed", java.util.Map.of(), 30, null, null),
+                "timed-lease", "", "", ScopeMode.PATH, "/srv", "timed-session", "low", false));
         tasks.poll(registration.machineId(), new PollRequest(List.of(durable.id()), 1, List.of("command")));
         tasks.updateState(registration.machineId(), timed.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false));
         tasks.find(timed.id()).orElseThrow().leaseUntil(java.time.Instant.now().minusSeconds(1));

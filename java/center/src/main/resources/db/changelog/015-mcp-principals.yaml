@@ -135,27 +135,16 @@ databaseChangeLog:
             tableName: rcm_task
             columnName: principal_id
             columnDataType: varchar(180)
-        - insert:
-            tableName: rcm_principal
-            columns:
-              - column:
-                  name: principal_id
-                  value: owner/shared-domain
-              - column:
-                  name: kind
-                  value: shared-compat
-              - column:
-                  name: display_name
-                  value: Compatibility shared domain
-              - column:
-                  name: status
-                  value: active
-              - column:
-                  name: created_at
-                  valueDate: "1970-01-01T00:00:00Z"
-              - column:
-                  name: updated_at
-                  valueDate: "1970-01-01T00:00:00Z"
+        # Use explicit PostgreSQL timestamp syntax here.  Liquibase's
+        # valueDate serializer can emit an unquoted ISO literal for
+        # timestamptz, which PostgreSQL parses as arithmetic and rejects.
+        - sql:
+            sql: |
+              INSERT INTO rcm_principal
+                (principal_id, kind, display_name, status, created_at, updated_at)
+              VALUES
+                ('owner/shared-domain', 'shared-compat', 'Compatibility shared domain', 'active',
+                 TIMESTAMPTZ '1970-01-01 00:00:00+00', TIMESTAMPTZ '1970-01-01 00:00:00+00');
         - addForeignKeyConstraint:
             baseTableName: rcm_task
             baseColumnNames: principal_id
