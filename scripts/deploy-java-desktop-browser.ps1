@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$AgentName,
     [string]$HostId = "",
+    [string]$CenterUrl = "",
     [string]$Version = "v0.1.28",
     [string]$ReleaseTag = "",
     [string]$StageRoot = "",
@@ -27,6 +28,13 @@ $ProgressPreference = "SilentlyContinue"
 
 if ([string]::IsNullOrWhiteSpace($HostId)) { $HostId = $AgentName }
 if ([string]::IsNullOrWhiteSpace($ReleaseTag)) { $ReleaseTag = "java-$Version" }
+if ([string]::IsNullOrWhiteSpace($CenterUrl) -or $CenterUrl.Contains("`r") -or $CenterUrl.Contains("`n")) {
+    throw "CenterUrl is required and must be one line."
+}
+$parsedCenterUrl = [Uri]$CenterUrl
+if (-not $parsedCenterUrl.IsAbsoluteUri -or $parsedCenterUrl.Scheme -ne 'https') {
+    throw "CenterUrl must use HTTPS."
+}
 if ([string]::IsNullOrWhiteSpace($StageRoot)) {
     $StageRoot = Join-Path $StateDir ("desktop-browser-" + $Version)
 }
@@ -119,6 +127,7 @@ $applyLines = @(
     ('$applyTaskName = {0}' -f (ConvertTo-PSLiteral $applyTaskName)),
     ('$agentName = {0}' -f (ConvertTo-PSLiteral $AgentName)),
     ('$hostId = {0}' -f (ConvertTo-PSLiteral $HostId)),
+    ('$centerUrl = {0}' -f (ConvertTo-PSLiteral $CenterUrl)),
     ('$version = {0}' -f (ConvertTo-PSLiteral $Version)),
     ('$installRoot = {0}' -f (ConvertTo-PSLiteral $InstallRoot)),
     ('$stateDir = {0}' -f (ConvertTo-PSLiteral $StateDir)),
@@ -140,7 +149,7 @@ $applyLines = @(
     '  $binary = Join-Path $installRoot "rcm-agent.exe"',
     ('  $desktop = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $desktopZip))),
     ('  $browser = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $browserZip))),
-    '  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -BinaryPath $binary -AgentName $agentName -HostId $hostId -DefaultCwd "C:\" -ScopeMode unrestricted -Capabilities "command,durable_tasks,desktop,browser" -Version $version -DesktopEnabled -DesktopBinaryPath $desktop -BrowserBinaryPath $browser -BrowserAdapter $adapter -BrowserEngine $browserEngine -BrowserName $browserName -BrowserHeadless $browserHeadless -BrowserProfileDir $browserProfileDir -MaxConcurrency 1 -MaxBrowserWorkers 1 -DesktopMaxLaunchedProcesses 16 -MaxChildProcesses 32 -MaxTotalChildProcesses 32',
+    '  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -BinaryPath $binary -AgentName $agentName -HostId $hostId -CenterUrl $centerUrl -DefaultCwd "C:\" -ScopeMode unrestricted -Capabilities "command,durable_tasks,desktop,browser" -Version $version -DesktopEnabled -DesktopBinaryPath $desktop -BrowserBinaryPath $browser -BrowserAdapter $adapter -BrowserEngine $browserEngine -BrowserName $browserName -BrowserHeadless $browserHeadless -BrowserProfileDir $browserProfileDir -MaxConcurrency 1 -MaxBrowserWorkers 1 -DesktopMaxLaunchedProcesses 16 -MaxChildProcesses 32 -MaxTotalChildProcesses 32',
     '  if ($LASTEXITCODE -ne 0) { throw "agent installer failed with exit $LASTEXITCODE" }',
     '  try { Start-ScheduledTask -TaskName "RemoteConnectMCPDesktopCompanion" -ErrorAction Stop } catch { }',
     '  Start-Sleep -Seconds 3',
