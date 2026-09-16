@@ -73,12 +73,13 @@ $agentZip = Download-Verified "remote-connect-mcp-agent-$Version-windows-amd64.z
 $desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-windows-amd64.zip"
 $browserZip = Download-Verified "remote-connect-mcp-browser-$Version-windows-amd64.zip"
 $installer = Join-Path $StageRoot "install-java-agent.ps1"
-$worker = Join-Path $StageRoot "browser-worker.mjs"
 Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-java-agent.ps1" -OutFile $installer -TimeoutSec 30
-Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/browser-worker.mjs" -OutFile $worker -TimeoutSec 30
 
 $runtime = Join-Path $StageRoot "browser-runtime"
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
+$worker = Join-Path $runtime "browser-worker.mjs"
+Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-java-agent.ps1" -OutFile $installer -TimeoutSec 30
+Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/browser-worker.mjs" -OutFile $worker -TimeoutSec 30
 $packageJson = Join-Path $runtime "package.json"
 if (-not (Test-Path -LiteralPath $packageJson)) {
     Set-Content -LiteralPath $packageJson -Value '{"name":"rcm-browser-runtime","private":true}' -Encoding UTF8
