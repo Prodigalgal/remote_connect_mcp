@@ -127,7 +127,13 @@ public class McpConfiguration {
                 .contextExtractor((HttpServletRequest request) -> {
                     var principal = principals.resolve(request.getHeader("Authorization") == null
                             ? "" : bearerValue(request.getHeader("Authorization")))
-                            .orElseThrow(() -> new ServerTransportSecurityException(401, "invalid MCP bearer token"));
+                            // The transport invokes the security validator immediately
+                            // before the extractor.  A checked
+                            // ServerTransportSecurityException cannot cross the
+                            // extractor's functional interface, so keep this as a
+                            // fail-closed invariant check; invalid HTTP requests
+                            // have already been returned as 401 by the validator.
+                            .orElseThrow(() -> new IllegalStateException("invalid MCP bearer token"));
                     return McpTransportContext.create(Map.of("rcm.principal", principal));
                 })
                 .securityValidator(security)
