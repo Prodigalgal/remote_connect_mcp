@@ -266,6 +266,22 @@ disable_linux_desktop_companion() {
   [[ -z "$home" ]] || rm -f -- "$unit_file"
 }
 
+# EnvironmentFile uses a shell-like tokenizer.  A browser adapter is a
+# command line and therefore normally contains a space between the runtime
+# executable and its worker script (and may contain spaces in either path).
+# Writing that value verbatim makes systemd concatenate separately quoted
+# fragments, for example `"node" "worker.mjs"` becomes `nodeworker.mjs`.
+# Keep the whole value in one quoted assignment and escape its embedded
+# quotes/backslashes so the Agent receives the exact command string.
+systemd_env_quote() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  value=${value//$'\r'/\\r}
+  printf '"%s"' "$value"
+}
+
 # Native Image may emit shared libraries beside the ELF.  Accept the flat
 # Agent ZIP produced by GitHub Actions as well as an already extracted binary;
 # never copy arbitrary nested archive paths into the service directory.
@@ -364,7 +380,7 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   printf 'REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT=%s\n' "${REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT:-}"
   printf 'REMOTE_CONNECT_MCP_AGENT_CAPABILITIES=%s\n' "${REMOTE_CONNECT_MCP_AGENT_CAPABILITIES:-command,durable_tasks}"
   printf 'REMOTE_CONNECT_MCP_AGENT_VERSION=%s\n' "${REMOTE_CONNECT_MCP_AGENT_VERSION:-dev}"
-  printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER=%s\n' "${REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER:-}"
+  printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER=%s\n' "$(systemd_env_quote "${REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER:-}")"
   printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR=%s\n' "$browser_profile_dir"
   printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE=%s\n' "$browser_engine"
   printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER=%s\n' "$browser_name"

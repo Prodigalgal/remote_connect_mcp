@@ -231,28 +231,35 @@ public final class DesktopCompanionServer {
     }
 
     private void handle(Socket socket) {
+        // Keep the response writer alive while handling a request.  The old
+        // try-with-resources closed the socket before its catch block ran, so
+        // any AWT/IPC validation error surfaced to the command Agent merely
+        // as "desktop companion closed the connection" and discarded the
+        // actionable root cause.  Returning a bounded error also lets the
+        // caller distinguish a missing display from a stale endpoint without
+        // adding a retry loop or leaking a stack trace into task output.
         try (socket;
              var reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
              var writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8))) {
             socket.setSoTimeout(300_000);
-            var line = reader.readLine();
-            if (line == null || line.getBytes(StandardCharsets.UTF_8).length > MAX_REQUEST_BYTES) {
-                write(writer, new DesktopCompanionClient.Response(false, null, null, null, "request too large"));
-                return;
-            }
-            var request = JsonCodec.read(line.getBytes(StandardCharsets.UTF_8), DesktopCompanionClient.Request.class);
-            if (!constantTimeEquals(token, request.token())) {
-                write(writer, new DesktopCompanionClient.Response(false, null, null, null, "invalid companion token"));
-                return;
-            }
-            var response = execute(request);
-            write(writer, response);
-        } catch (Exception exception) {
-            LOG.log(Level.FINE, "desktop companion request failed", exception);
             try {
-                var writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
+                var line = reader.readLine();
+                if (line == null || line.getBytes(StandardCharsets.UTF_8).length > MAX_REQUEST_BYTES) {
+                    write(writer, new DesktopCompanionClient.Response(false, null, null, null, "request too large"));
+                    return;
+                }
+                var request = JsonCodec.read(line.getBytes(StandardCharsets.UTF_8), DesktopCompanionClient.Request.class);
+                if (!constantTimeEquals(token, request.token())) {
+                    write(writer, new DesktopCompanionClient.Response(false, null, null, null, "invalid companion token"));
+                    return;
+                }
+                write(writer, execute(request));
+            } catch (Exception exception) {
+                LOG.log(Level.WARNING, "desktop companion request failed", exception);
                 write(writer, new DesktopCompanionClient.Response(false, null, null, null, compactError(exception.getMessage())));
-            } catch (Exception ignored) { }
+            }
+        } catch (Exception exception) {
+            LOG.log(Level.FINE, "desktop companion connection failed", exception);
         }
     }
 
