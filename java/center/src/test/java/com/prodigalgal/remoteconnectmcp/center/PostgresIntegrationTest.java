@@ -200,7 +200,12 @@ class PostgresIntegrationTest {
             // The race task is only a uniqueness probe. Remove it from the
             // queue so the following lease-recovery assertions select their
             // own task deterministically.
-            store.cancel(ids.iterator().next());
+            var raceTaskId = ids.iterator().next();
+            store.cancel(raceTaskId);
+            var canceledRace = store.find(raceTaskId).orElseThrow();
+            store.updateState(agentId, raceTaskId,
+                    new TaskUpdateRequest("canceled", null, null, null, Instant.now(), false),
+                    canceledRace.attempt());
         }
 
         // Two independent Center facades must be able to claim different
@@ -259,6 +264,16 @@ class PostgresIntegrationTest {
         assertEquals(2, store.find(leaseTaskId).orElseThrow().attempt(), "reclaimed lease must increment attempt");
         var restartedStore = new JdbcTaskStore(jdbc, transactions);
         assertEquals(TaskStatus.DISPATCHING, restartedStore.find(leaseTaskId).orElseThrow().status());
+        // The task is intentionally left dispatching for the restart read
+        // above, then finalized so the next durable-lease scenario can use
+        // the same host lane without an Agent callback.
+        var reclaimedLease = store.find(leaseTaskId).orElseThrow();
+        store.updateState(agentId, leaseTaskId,
+                new TaskUpdateRequest("running", null, null, Instant.now(), null, false),
+                reclaimedLease.attempt());
+        store.updateState(agentId, leaseTaskId,
+                new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false),
+                reclaimedLease.attempt());
 
         // A no-timeout process recovered by the same Agent advertises its
         // durable task ID and renews the expired lease without dispatching a
@@ -274,6 +289,10 @@ class PostgresIntegrationTest {
         var durableReconnect = store.poll(agentId, new PollRequest(List.of(durableLeaseId), 1, List.of("command")));
         assertNull(durableReconnect.task());
         assertEquals(TaskStatus.RUNNING, store.find(durableLeaseId).orElseThrow().status());
+        var renewedDurable = store.find(durableLeaseId).orElseThrow();
+        store.updateState(agentId, durableLeaseId,
+                new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false),
+                renewedDurable.attempt());
 
         var timedLeaseId = "task_it_timed_" + UUID.randomUUID().toString().replace("-", "");
         var timedLeaseCommand = new TaskCommand(timedLeaseId, TaskKind.COMMAND, "command", "printf timed", "/tmp",
