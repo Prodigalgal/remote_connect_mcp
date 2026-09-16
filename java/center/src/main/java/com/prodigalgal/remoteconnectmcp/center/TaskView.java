@@ -31,7 +31,9 @@ public record TaskView(
         String worktreeId,
         String scopeRoot,
         String risk,
-        Instant contractExpiresAt) {
+        Instant contractExpiresAt,
+        String executionSessionId,
+        String resultChannel) {
 
     public TaskView(TaskState task) {
         this(task.id(), task.machineId(), task.command().kind().wireValue(), task.command().requiredCapability(),
@@ -44,6 +46,7 @@ public record TaskView(
                 task.command().contract() == null ? null : task.command().contract().worktreeId(),
                 task.command().contract() == null ? null : task.command().contract().scopeRoot(),
                 task.command().contract() == null ? null : task.command().contract().risk(),
-                task.command().contract() == null ? null : task.command().contract().expiresAt());
+                task.command().contract() == null ? null : task.command().contract().expiresAt(),
+                task.executionSessionId(), task.resultChannel());
     }
 }

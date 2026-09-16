@@ -31,3 +31,5 @@ databaseChangeLog:
       file: db/changelog/015-mcp-principals.yaml
   - include:
       file: db/changelog/016-execution-lanes.yaml
+  - include:
+      file: db/changelog/017-task-session-channel.yaml

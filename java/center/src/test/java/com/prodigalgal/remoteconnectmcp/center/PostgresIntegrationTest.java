@@ -149,6 +149,9 @@ class PostgresIntegrationTest {
         var first = store.create(taskId, agentId, command, "integration-key", command.createdAt());
         var replay = store.create("task_it_replay", agentId, command, "integration-key", command.createdAt());
         assertEquals(first.id(), replay.id(), "idempotent retry must return the committed task");
+        var persistedCorrelation = store.find(taskId).orElseThrow();
+        assertEquals("internal", persistedCorrelation.executionSessionId());
+        assertEquals("rcm.task." + taskId, persistedCorrelation.resultChannel());
 
         var poll = store.poll(agentId, new PollRequest(List.of(), 1, List.of("command"),
                 new AgentMetadata(request.name(), request.hostId(), request.hostname(), request.os(), request.arch(),

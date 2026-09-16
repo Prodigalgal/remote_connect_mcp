@@ -13,6 +13,10 @@ final class TaskState {
     private final Instant createdAt;
     private final TaskOrigin origin;
     private final String laneKey;
+    /** Durable correlation identity for one principal/transport session. */
+    private final String executionSessionId;
+    /** Task-specific result route; never publish output to a session-wide bus. */
+    private final String resultChannel;
     private final ByteArrayOutputStream output = new ByteArrayOutputStream();
     private String status = TaskStatus.QUEUED;
     /** Number of Center dispatch attempts; increments only when a lease is claimed. */
@@ -43,6 +47,12 @@ final class TaskState {
 
     TaskState(String id, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt,
               TaskOrigin origin, String laneKey) {
+        this(id, machineId, command, idempotencyKey, createdAt, origin, laneKey,
+                deriveExecutionSessionId(command, origin), deriveResultChannel(id));
+    }
+
+    TaskState(String id, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt,
+              TaskOrigin origin, String laneKey, String executionSessionId, String resultChannel) {
         this.id = id;
         this.machineId = machineId;
         this.command = command;
@@ -51,6 +61,9 @@ final class TaskState {
         this.origin = origin == null ? TaskOrigin.shared() : origin;
         this.laneKey = laneKey == null || laneKey.isBlank()
                 ? ExecutionLaneKey.derive(machineId, command == null ? null : command.contract()) : laneKey.trim();
+        this.executionSessionId = normalizeCorrelation(executionSessionId,
+                deriveExecutionSessionId(command, this.origin));
+        this.resultChannel = normalizeCorrelation(resultChannel, deriveResultChannel(id));
     }
 
     static TaskState restore(String id, String machineId, TaskCommand command, String idempotencyKey,
@@ -70,6 +83,18 @@ final class TaskState {
                              long artifactBytes, String artifactMime, String artifactSha256, byte[] artifactData,
                              TaskOrigin origin) {
         var state = new TaskState(id, machineId, command, idempotencyKey, createdAt, origin);
+        return restoreInto(state, status, attempt, exitCode, error, outputTruncated, dispatchedAt, startedAt,
+                finishedAt, leaseUntil, output, artifactBytes, artifactMime, artifactSha256, artifactData);
+    }
+
+    static TaskState restore(String id, String machineId, TaskCommand command, String idempotencyKey,
+                             Instant createdAt, String status, int attempt, Integer exitCode, String error,
+                             boolean outputTruncated, Instant dispatchedAt, Instant startedAt,
+                             Instant finishedAt, Instant leaseUntil, byte[] output,
+                             long artifactBytes, String artifactMime, String artifactSha256, byte[] artifactData,
+                             TaskOrigin origin, String laneKey, String executionSessionId, String resultChannel) {
+        var state = new TaskState(id, machineId, command, idempotencyKey, createdAt, origin, laneKey,
+                executionSessionId, resultChannel);
         return restoreInto(state, status, attempt, exitCode, error, outputTruncated, dispatchedAt, startedAt,
                 finishedAt, leaseUntil, output, artifactBytes, artifactMime, artifactSha256, artifactData);
     }
@@ -116,6 +141,8 @@ final class TaskState {
     Instant createdAt() { return createdAt; }
     TaskOrigin origin() { return origin; }
     String laneKey() { return laneKey; }
+    String executionSessionId() { return executionSessionId; }
+    String resultChannel() { return resultChannel; }
     ByteArrayOutputStream output() { return output; }
     String status() { return status; }
     void status(String value) { status = value; }
@@ -146,4 +173,28 @@ final class TaskState {
 
     long outputBytes() { return outputByteCount; }
     void outputBytes(long value) { outputByteCount = Math.max(0L, value); }
+
+    private static String deriveExecutionSessionId(TaskCommand command, TaskOrigin origin) {
+        var contract = command == null ? null : command.contract();
+        if (contract != null && contract.sessionId() != null && !contract.sessionId().isBlank()) {
+            return contract.sessionId().trim();
+        }
+        return origin == null ? TaskOrigin.shared().connectionId() : origin.connectionId();
+    }
+
+    private static String deriveResultChannel(String taskId) {
+        var value = taskId == null || taskId.isBlank() ? "unknown" : taskId.trim();
+        return "rcm.task." + value;
+    }
+
+    private static String normalizeCorrelation(String value, String fallback) {
+        var normalized = value == null || value.isBlank() ? fallback : value.trim();
+        if (normalized == null || normalized.isBlank() || normalized.length() > 256
+                || normalized.indexOf('\u0000') >= 0 || normalized.indexOf('\r') >= 0
+                || normalized.indexOf('\n') >= 0
+                || normalized.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("task correlation is invalid");
+        }
+        return normalized;
+    }
 }

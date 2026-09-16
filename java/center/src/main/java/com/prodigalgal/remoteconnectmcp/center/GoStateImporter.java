@@ -151,26 +151,40 @@ final class GoStateImporter {
         if (error == null && declaredOutputBytes > 0 && retainedOutput.bytes() == 0) {
             error = "legacy output file is missing during import";
         }
+        // Imported Go tasks have no MCP conversation owner. Keep them in the
+        // reserved compatibility principal and give each machine a stable
+        // legacy execution session; their result routes remain task-specific.
+        var principalId = TaskOrigin.SHARED_PRINCIPAL;
+        var connectionId = "legacy";
+        var laneKey = ExecutionLaneKey.derive(machineId, null);
+        var executionSessionId = "legacy-" + machineId;
+        var resultChannel = "rcm.task." + taskId;
         var originalExit = value.get("exit_code");
         jdbc.update("""
                 INSERT INTO rcm_task(task_id, agent_id, kind, required_capability, command_text, cwd,
                     environment, desktop_action, timeout_seconds, idempotency_key, status, exit_code, lease_until,
+                    principal_id, connection_id, lane_key, execution_session_id, result_channel,
                     attempt, output_bytes, output_truncated, error_text, created_at, dispatched_at,
                     started_at, finished_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (task_id) DO UPDATE SET agent_id = EXCLUDED.agent_id,
                     kind = EXCLUDED.kind, required_capability = EXCLUDED.required_capability,
                     command_text = EXCLUDED.command_text, cwd = EXCLUDED.cwd,
                     environment = EXCLUDED.environment, desktop_action = EXCLUDED.desktop_action,
                     timeout_seconds = EXCLUDED.timeout_seconds, idempotency_key = EXCLUDED.idempotency_key,
-                    status = EXCLUDED.status, exit_code = EXCLUDED.exit_code, lease_until = EXCLUDED.lease_until, attempt = EXCLUDED.attempt,
+                    principal_id = EXCLUDED.principal_id, connection_id = EXCLUDED.connection_id,
+                    lane_key = EXCLUDED.lane_key, execution_session_id = EXCLUDED.execution_session_id,
+                    result_channel = EXCLUDED.result_channel, status = EXCLUDED.status,
+                    exit_code = EXCLUDED.exit_code, lease_until = EXCLUDED.lease_until, attempt = EXCLUDED.attempt,
                     output_bytes = EXCLUDED.output_bytes, output_truncated = EXCLUDED.output_truncated,
                     error_text = EXCLUDED.error_text, created_at = EXCLUDED.created_at,
                     dispatched_at = EXCLUDED.dispatched_at, started_at = EXCLUDED.started_at,
                     finished_at = EXCLUDED.finished_at, updated_at = EXCLUDED.updated_at
                 """, taskId, machineId, kind, capability, command, nullableText(value.get("cwd")), environment,
                 desktopJson, integer(value.get("timeout_seconds"), 0), nullableText(value.get("idempotency_key")),
-                status, nullableInteger(originalExit), timestamp(instantOrNull(value.get("lease_until"))), integer(value.get("attempt"), 0),
+                status, nullableInteger(originalExit), timestamp(instantOrNull(value.get("lease_until"))),
+                principalId, connectionId, laneKey, executionSessionId, resultChannel,
+                integer(value.get("attempt"), 0),
                 retainedOutput.bytes(), outputTruncated, error, timestamp(created),
                 timestamp(instantOrNull(value.get("dispatched_at"))), timestamp(instantOrNull(value.get("started_at"))),
                 timestamp(instantOrNull(value.get("finished_at"))), timestamp(instant(value.get("updated_at"), created)));

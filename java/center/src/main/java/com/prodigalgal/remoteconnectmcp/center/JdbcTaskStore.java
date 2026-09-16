@@ -42,7 +42,8 @@ final class JdbcTaskStore {
     static final String SELECT_TASK_META = """
             SELECT t.task_id, t.agent_id, t.kind, t.required_capability, t.command_text,
                    t.cwd, t.environment, t.desktop_action, t.timeout_seconds,
-                   t.idempotency_key, t.principal_id, t.connection_id, t.lane_key, t.status, t.lease_until, t.attempt,
+                   t.idempotency_key, t.principal_id, t.connection_id, t.lane_key,
+                   t.execution_session_id, t.result_channel, t.status, t.lease_until, t.attempt,
                    t.output_bytes, t.output_truncated, t.error_text, t.exit_code, t.created_at,
                    t.dispatched_at, t.started_at, t.finished_at, t.updated_at, t.execution_contract,
                    NULL::bytea AS output_data, a.bytes AS artifact_bytes, a.mime_type AS artifact_mime,
@@ -604,13 +605,14 @@ final class JdbcTaskStore {
                 INSERT INTO rcm_task (
                     task_id, agent_id, kind, required_capability, command_text, cwd,
                     environment, desktop_action, timeout_seconds, idempotency_key,
-                    principal_id, connection_id, lane_key,
+                    principal_id, connection_id, lane_key, execution_session_id, result_channel,
                     status, lease_until, attempt, output_bytes, output_truncated,
                     error_text, created_at, dispatched_at, started_at, finished_at, updated_at, execution_contract
-                ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, 0, 0, false, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb))
+                ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, false, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb))
                 """, state.id(), state.machineId(), command.kind().wireValue(), command.requiredCapability(), command.command(),
                 command.cwd(), env, desktop, command.timeoutSeconds(), state.idempotencyKey(), state.origin().principalId(),
-                state.origin().connectionId(), state.laneKey(), state.status(), null,
+                state.origin().connectionId(), state.laneKey(), state.executionSessionId(), state.resultChannel(),
+                state.status(), null,
                 null, timestamp(state.createdAt()), null, null, null, timestamp(state.createdAt()), contract);
         jdbc.update("INSERT INTO rcm_task_output(task_id, output_data, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", state.id(), new byte[0]);
     }
@@ -711,7 +713,7 @@ final class JdbcTaskStore {
                 artifactBytes, rs.getString("artifact_mime"), rs.getString("artifact_sha256"),
                 artifactData == null ? new byte[0] : artifactData,
                 new TaskOrigin(rs.getString("principal_id"), TaskOrigin.COMPAT_TOKEN, rs.getString("connection_id")),
-                rs.getString("lane_key"));
+                rs.getString("lane_key"), rs.getString("execution_session_id"), rs.getString("result_channel"));
         state.outputBytes(rs.getLong("output_bytes"));
         return state;
     }

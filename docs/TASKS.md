@@ -35,7 +35,7 @@
 | [x] | P0-01 | 固定 MCP 地址和多机器路由 | `/mcp`、Bearer 和按 machine ID 路由已可用；后续不因 Center/Agent/Console 升级改变连接器地址 | v0.1.21 MCP/health/ready 验收 |
 | [x] | P0-02 | 机器注册与凭据分层 | 一次性 Enrollment Token、独立 Agent Token、稳定 MCP Token、独立 Admin Token 已实现；Enrollment 不写入长期配置 | 注册与身份测试、生产 Secret |
 | [x] | P0-03 | 异步任务全链路恢复 | 已有幂等、租约、Attempt、旧 attempt 回传栅栏、取消、输出游标和 LISTEN/NOTIFY；Agent 对重复 poll 回传增加原子 `putIfAbsent` dispatch fence，避免覆盖正在运行的 Future；Center 重启、Agent 断线、重复重试、长任务和高并发属于独立生产验收 | `AgentRuntimeTest.duplicateTaskRegistrationKeepsTheFirstRunner`、GitHub Actions |
-| [x] | P0-04 | PostgreSQL + Liquibase 唯一事实来源 | PostgreSQL、Liquibase `001`–`014`、旧 Go 状态导入和迁移 Job 的代码与 CI 实现完成；生产迁移/版本收敛属于独立生产验收 | PostgreSQL/Liquibase CI、`PostgresIntegrationTest` |
+| [x] | P0-04 | PostgreSQL + Liquibase 唯一事实来源 | PostgreSQL、Liquibase `001`–`017`、旧 Go 状态导入和迁移 Job 的代码与 CI 实现完成；生产迁移/版本收敛属于独立生产验收 | PostgreSQL/Liquibase CI、`PostgresIntegrationTest` |
 | [x] | P0-05 | 任务与工件的持久化边界 | `ArtifactStore`、持久卷文件对象、原子写入/读取校验、旧 `artifact_data` 懒迁移和显式 GC API 已实现；生产卷备份/恢复、保留策略和规模压测属于独立生产验收 | 对象存储适配、迁移/恢复、生命周期测试、GitHub Actions |
 | [x] | P0-06 | 执行范围与权限合同 | project/worktree/path/workspace/unrestricted 合同、Center/Agent/桌面双端校验、预算收窄和凭据过滤已实现；目标机绕过与回归属于独立生产验收 | `DesktopCompanionServerTest`、GitHub Actions |
 | [x] | P0-07 | Agent 资源硬限制 | 任务级进程树/墙钟/CPU/RSS 监督、输出/磁盘/并发上限、Linux cgroup 可选边界、Windows 有界进程树/Task Scheduler 路径和 Agent 总进程预算已实现；目标机压测属于独立生产验收 | GitHub Actions Native smoke、RSS gate、资源监督测试 |
@@ -105,7 +105,7 @@
 
 | 状态 | 子项 | 目标和完成条件 |
 | --- | --- | --- |
-| [~] | P2-05-R01 | 固化并发不变量：任务绑定主体、ExecutionSession、Attempt 和 ResultChannel；禁止全局结果广播 | 任务主体/连接元数据和 lane_key 已落地；ResultChannel/会话持久化待补 |
+| [~] | P2-05-R01 | 固化并发不变量：任务绑定主体、ExecutionSession、Attempt 和 ResultChannel；禁止全局结果广播 | 任务主体/连接元数据、显式 `execution_session_id`、任务专属 `result_channel`、lane_key 已落地；会话生命周期/能力持久化待补 |
 | [ ] | P2-05-R02 | 固化 `isolated`、`shared_serial`、`host` 三种 WorkspacePolicy；默认写任务使用会话 worktree |
 | [~] | P2-05-R03 | 实现同一 checkout 写车道串行、不同 worktree 有界并行、只读快照有限并行；不做隐式合并 | 同一 lane 已串行；isolated/shared_serial 策略和只读并发分类待补 |
 | [~] | P2-05-R04 | 实现整机/终端 host lane：独立进程组/cwd/env；主机全局写入串行，冲突任务持久化排队 | host lane 已按机器范围互斥；任务进程组已有，持久化 lease/公平队列待补 |

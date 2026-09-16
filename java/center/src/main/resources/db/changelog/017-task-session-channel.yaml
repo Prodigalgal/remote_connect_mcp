@@ -1,0 +1,69 @@
+databaseChangeLog:
+  - changeSet:
+      id: 017-task-session-channel
+      author: remote-connect-mcp
+      labels: tasks
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: execution_session_id
+                  type: varchar(256)
+                  remarks: Center-derived transport/execution session correlation
+              - column:
+                  name: result_channel
+                  type: varchar(256)
+                  remarks: Task-specific result route; output is never session-broadcast
+        - sql:
+            sql: |
+              UPDATE rcm_task
+                 SET execution_session_id = COALESCE(
+                         NULLIF(execution_contract ->> 'session_id', ''),
+                         'session_' || md5(agent_id || ':' || COALESCE(principal_id, 'owner/shared-domain')
+                                           || ':' || COALESCE(connection_id, 'legacy'))
+                     ),
+                     result_channel = 'rcm.task.' || task_id
+               WHERE execution_session_id IS NULL OR result_channel IS NULL;
+        - addNotNullConstraint:
+            tableName: rcm_task
+            columnName: execution_session_id
+            columnDataType: varchar(256)
+        - addNotNullConstraint:
+            tableName: rcm_task
+            columnName: result_channel
+            columnDataType: varchar(256)
+        - createIndex:
+            indexName: idx_rcm_task_session_created
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: principal_id
+              - column:
+                  name: execution_session_id
+              - column:
+                  name: created_at
+        - createIndex:
+            indexName: idx_rcm_task_result_channel
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: result_channel
+      rollback:
+        - dropIndex:
+            indexName: idx_rcm_task_result_channel
+            tableName: rcm_task
+        - dropIndex:
+            indexName: idx_rcm_task_session_created
+            tableName: rcm_task
+        - dropColumn:
+            tableName: rcm_task
+            columnName: result_channel
+        - dropColumn:
+            tableName: rcm_task
+            columnName: execution_session_id

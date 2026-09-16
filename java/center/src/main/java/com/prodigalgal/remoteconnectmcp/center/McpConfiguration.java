@@ -717,6 +717,11 @@ public class McpConfiguration {
         value.put("artifact_bytes", task.artifactBytes());
         value.put("artifact_mime", task.artifactMime());
         value.put("artifact_sha256", task.artifactSha256());
+        // Correlation identifiers are fixed-size and opaque.  Returning them
+        // lets a caller correlate a task across a reconnect without exposing
+        // the original Bearer token or broadcasting output to a whole session.
+        value.put("execution_session_id", task.executionSessionId());
+        value.put("result_channel", task.resultChannel());
         if (task.scopeMode() != null) {
             var scope = new LinkedHashMap<String, Object>();
             scope.put("mode", task.scopeMode());

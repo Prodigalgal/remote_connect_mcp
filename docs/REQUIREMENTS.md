@@ -4,7 +4,7 @@
 
 日期：2026-09-16（Asia/Shanghai）
 
-状态：已确认的产品与工程基线；P2-05-lite 轻量多主体已完成竞品比较与最终选型，代码尚未实施
+状态：已确认的产品与工程基线；P2-05-lite 轻量多主体已完成竞品比较与最终选型，主体/任务归属/执行车道已进入实现，结果会话显式化正在推进
 
 本文档定义 Remote Connect MCP（RCM）要解决的问题、必须具备的能力、明确的边界和验收标准。它是后续架构、协议、实现和发布决策的上游依据。
 
@@ -12,7 +12,7 @@
 - [`docs/ASYNC_CONTRACT.md`](ASYNC_CONTRACT.md)：描述异步任务的协议语义；
 - [`docs/TECH_STACK.md`](TECH_STACK.md)：描述语言、数据库、构建和前端选型；
 - [`docs/STATUS.md`](STATUS.md)：只记录已经有代码、CI 或生产探针证明的实现状态，不改变本文档的需求。
-- [`docs/MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)：描述轻量多主体、对话、MCP 连接和执行车道模型；不代表当前代码已经实现。
+- [`docs/MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)：描述轻量多主体、对话、MCP 连接和执行车道模型；代码状态以 [`docs/TASKS.md`](TASKS.md) 和 [`docs/STATUS.md`](STATUS.md) 为准。
 
 ## 1. 产品定位
 
