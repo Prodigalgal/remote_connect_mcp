@@ -71,9 +71,22 @@ $packageJson = Join-Path $runtime "package.json"
 if (-not (Test-Path -LiteralPath $packageJson)) {
     Set-Content -LiteralPath $packageJson -Value '{"name":"rcm-browser-runtime","private":true}' -Encoding UTF8
 }
-$npm = (Get-Command npm.exe -ErrorAction Stop).Source
 $node = (Get-Command node.exe -ErrorAction Stop).Source
-& $npm install --prefix $runtime --no-save --ignore-scripts "playwright@$PlaywrightVersion"
+$nodeDirectory = Split-Path -Parent $node
+$npm = @(
+    (Get-Command npm.cmd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
+    (Get-Command npm.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
+    (Join-Path $nodeDirectory "npm.cmd")
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+if ($npm) {
+    & $npm install --prefix $runtime --no-save --ignore-scripts "playwright@$PlaywrightVersion"
+} else {
+    $npmCli = Join-Path $nodeDirectory "node_modules\npm\bin\npm-cli.js"
+    if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
+        throw "npm.cmd and npm-cli.js were not found beside node.exe"
+    }
+    & $node $npmCli install --prefix $runtime --no-save --ignore-scripts "playwright@$PlaywrightVersion"
+}
 if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit $LASTEXITCODE" }
 $playwrightCli = Join-Path $runtime "node_modules\playwright\cli.js"
 if (-not (Test-Path -LiteralPath $playwrightCli)) { throw "Playwright CLI was not installed" }
