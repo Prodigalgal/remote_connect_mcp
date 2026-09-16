@@ -290,6 +290,15 @@
     ]
   },
   {
+    "name": "java.awt.Toolkit",
+    "methods": [
+      {
+        "name": "getDefaultToolkit",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
     "name": "java.awt.image.BufferedImage",
     "fields": [
       {
