@@ -712,6 +712,11 @@
     ]
   },
   {
+    "name": "sun.awt.image.SunVolatileImage",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
     "name": "sun.awt.image.IntegerComponentRaster",
     "fields": [
       {
