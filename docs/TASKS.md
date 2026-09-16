@@ -89,7 +89,7 @@
 
 | 状态 | 子任务 | 完成条件 | 依赖/验收 |
 | --- | --- | --- | --- |
-| [x] | P2-05-D | 完成用户、Token、对话、MCP Connection、Session、Project ACL、Lane、Task、Desktop Lease、Browser Context 关系设计 | [`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md) |
+| [x] | P2-05-D | 完成用户、Token、对话、MCP Connection、Session、Project ACL、Lane、Task、Desktop Lease、Browser Context 关系设计、竞品比较和最终选型 | [`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md) §11 |
 | [ ] | P2-05-01 | Liquibase 增加 `principal`、用户 MCP Token、机器/项目 ACL、Token 范围/配额和撤销字段；兼容全局 Token 映射为 owner/shared 主体 | PostgreSQL 集成、迁移回滚、Token 哈希与脱敏检查 |
 | [ ] | P2-05-02 | Center 从 Bearer 派生主体；机器、项目、任务、输出、工件和审计按主体/机器/项目 ACL 过滤 | 授权矩阵、越权拒绝、撤销后立即失效 |
 | [ ] | P2-05-03 | 幂等键加入主体和目标指纹；同一主体重试复用任务，不同主体相同键互不冲突 | 并发提交、参数变化拒绝、Center 重启恢复 |

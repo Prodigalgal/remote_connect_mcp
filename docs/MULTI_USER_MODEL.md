@@ -216,3 +216,90 @@ Token、Cookie、完整命令、环境变量和页面内容不作为普通字段
 - 不把 MCP Token 传给 Agent；Agent 继续使用独立的机器 Token；
 - 不用固定频率轮询解决多用户调度；
 - 不把“共享 Token”描述成用户级隔离。
+
+## 11. 方案比较与最终选型
+
+本节把可选方案和公开项目的实际模式放在同一张表中。WebCodex 更接近“真实主机上的
+远程开发入口”：持久化 Server/Runner 可以承载多个项目，临时分享则收窄到单项目和短
+生命周期；这说明“稳定服务端 + 可选范围收窄”比每次为项目创建一个新入口更适合长期使用。
+参见 [WebCodex 仓库](https://github.com/yyjeqhc/webcodex)。
+
+MCP 的新版 Streamable HTTP 规范允许一个 Endpoint 处理多个客户端连接，并要求服务端
+自行校验 Origin 和认证；传输层连接或会话不能直接充当业务授权模型。参见
+[MCP Streamable HTTP 规范](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2026-07-28/basic/transports/streamable-http.mdx)。
+
+OpenHands 把客户端、Agent Server 和 Workspace 分开，事件通过 WebSocket 传递；它的
+Runtime 文档把隔离、资源控制和可复现性作为独立层。Microsoft MCP Gateway 进一步采用
+会话感知路由和生命周期管理，并明确建议多租户场景使用每会话沙箱。参见
+[OpenHands Agent Server](https://docs.openhands.dev/sdk/guides/agent-server/overview)、
+[OpenHands Runtime Architecture](https://docs.openhands.dev/openhands/usage/architecture/runtime)
+和 [Microsoft MCP Gateway](https://github.com/microsoft/mcp-gateway)。
+
+浏览器领域通常把短生命周期的 Session 与可复用的 Context/Profile 分开：Browserbase 的
+Sessions/Contexts 设计允许并发浏览器，同时按 Context 持久化登录状态；E2B、Daytona
+则把更强的 VM/沙箱隔离和会话级并发作为另一种运行时选择。参见
+[Browserbase API](https://browserbase.mintlify.app/reference/api/overview)、
+[Browserbase Context](https://www.browserbase.com/templates/context)、
+[E2B Security](https://e2b.dev/security) 和 [Daytona Sandboxes](https://www.daytona.io/docs/sandboxes)。
+
+| 方案 | 典型做法/参考 | 对 RCM 的优点 | 对 RCM 的代价或缺陷 | 结论 |
+| --- | --- | --- | --- | --- |
+| A. 全局共享 Bearer | 当前兼容模式；所有 Web 对话共用一个 Token | 最简单，旧连接器无需改动；适合单人或完全互信的管理员域 | 无法区分用户、撤销单个用户、做用户配额和审计；两个账号会互相看到任务 | 仅作迁移兼容，不能作为最终多用户模型 |
+| B. 每用户不透明 Bearer + Center ACL | Token 映射 `Principal`，Center 派生主体并过滤机器/项目/任务 | 保持一个固定 `/mcp`；可撤销、限额、审计；兼容真实 Windows/Linux 主机；实现量可控 | 需要新增主体、Token、ACL 和任务归属表；共享项目需显式成员关系 | **选定为基础身份模型** |
+| C. 每对话 Token/连接即权限 | 每个 Web 对话创建独立 Token 或独立服务入口 | 对话级配额和回收直观，误串话风险低 | ChatGPT Web 不一定提供可验证的稳定对话身份；Token 数量和连接器配置会爆炸；不利于固定 URL | 不作为认证模型；只把对话映射为内部 `ExecutionSession` |
+| D. 每用户/每对话物理沙箱 | E2B/Daytona VM，或 OpenHands/MCP Gateway 的每会话 runtime | 隔离、资源上限、可复现性最好；适合不可信用户和高风险任务 | 启动/存储/网络成本高；无法自然控制用户正在登录的 Windows 桌面和本机 GUI；改变 RCM 的真实主机语义 | 作为可选运行时，不替代默认 Agent |
+| E. OAuth/OIDC/企业 IdP | Gateway 通过 Entra/OIDC 发放委托 Token | 企业身份、统一撤销和组织联邦能力强 | 引入 IdP、动态注册、回调和更多运维面；不能单独解决 worktree、Desktop lease 或公平调度；与当前 ChatGPT DCR 问题冲突 | 预留适配器，当前不作为主路径 |
+| F. 每用户/机器独立 MCP Endpoint | 为账号、机器或项目生成不同 URL | 路由和隔离容易理解；服务端逻辑较少 | URL/连接器数量随规模增长；升级、域名、故障恢复和用户体验变差；违背稳定 `/mcp` 目标 | 不采用 |
+| G. 外置消息总线优先 | Redis/Kafka/NATS 负责任务队列、事件和锁 | 高吞吐、多副本和跨节点路由能力强 | 增加第二状态真相源和运维成本；当前单 Center + PostgreSQL 已能用行锁、`LISTEN/NOTIFY` 和有界队列完成需求 | 先不引入；达到明确吞吐/HA 指标再评估 |
+| H. 完整 SaaS 多租户 | 组织、复杂 RBAC、计费、Center HA 和跨租户治理 | 产品化能力最完整 | 明显超出当前“可信用户控制自有机器”的需求；开发和验收面大幅膨胀 | 当前路线明确不做 |
+
+### 11.1 最终选型：四层分离的轻量混合模型
+
+RCM 采用 **B + C（内部会话）+ 可选 D** 的混合方案，但不采用 C 的“每对话凭证”和 D
+的“默认沙箱”做法：
+
+```text
+认证层：opaque Bearer Token -> Principal
+上下文层：Principal + Conversation -> ExecutionSession
+资源层：MachineGrant/Project ACL -> Worktree/Path -> ExecutionLane
+运行时层：command-agent；Desktop lease；Browser Context/Profile；可选 sandbox
+```
+
+具体规则如下：
+
+1. **一个 Center、一个固定 `/mcp`。** 所有账号和窗口连接同一入口；协议层只提供精简、
+   稳定的工具契约。
+2. **Token 是用户边界，Conversation 是任务上下文。** Center 从 Bearer 查出
+   `Principal`；不信任模型传入的 `principal_id`，也不把不可验证的 ChatGPT 账号字段当权限。
+3. **每个对话在 Center 内生成 `ExecutionSession`。** 它保存目标机器、项目/worktree、
+   范围、能力、预算和恢复游标；Web 重试只携带 `task_id`/幂等键，不携带长上下文。
+4. **同一 worktree 通过派生车道串行，不同 worktree 才并行。** 车道键由机器、真实项目
+   路径、worktree、能力和写入性质派生，调用方不能任意指定；用户配额和 Agent 总预算再做
+   第二层有界约束。
+5. **Desktop 与 Browser 是资源会话，不是新的用户身份。** Desktop 使用机器/OS 会话独占
+   lease；Browser 为主体/对话分配 Context/Profile，Cookie、下载和页面状态不跨主体共享。
+6. **沙箱是策略化运行时。** 默认仍在用户授权的真实主机执行，以满足 Windows GUI 和现有
+   项目需求；未来对高风险或不可信任务，可在同一任务合同下选择 VM/容器/worktree sandbox，
+   不改变 `/mcp`、Token 和任务 API。
+7. **PostgreSQL 先作为唯一真相源。** Liquibase 持久化主体、Token 哈希、ACL、会话、车道、
+   任务和游标；使用事务、行锁和 `LISTEN/NOTIFY`，不以固定周期轮询或额外消息总线作为基础依赖。
+8. **兼容 Token 只作为过渡。** 旧全局 Token 映射为 `owner/shared-domain`，明确标记为共享信任域；
+   控制台生成的用户 Token 才提供用户级撤销、审计和配额。迁移完成后由管理员手动撤销共享 Token。
+
+### 11.2 为什么这是当前最优解
+
+- **满足真实需求**：既能让多个 Web 账号和多个窗口共用一台真实机器，又能控制项目、worktree、
+  桌面和浏览器资源；不强迫所有任务进入容器，也不牺牲无人值守任务的持久性。
+- **不改变用户入口**：不用为每个用户重新创建 ChatGPT 连接器，Center/Agent 升级也不改变
+  `/mcp`；新增用户只需生成和撤销自己的 Bearer Token。
+- **上下文克制**：主体、ACL、会话和调度都在 Center/Console/数据库完成，MCP 只返回任务 ID、
+  状态摘要、游标和工件引用，不把每台机器或每个用户复制成一套工具。
+- **渐进式增强**：先完成轻量多主体和车道；需要更强隔离时增加 sandbox runtime，需要企业
+  身份时增加 OAuth/OIDC adapter，需要更高吞吐时再评估消息总线，不推翻现有协议。
+- **可验证、可回滚**：兼容主体可以影子运行和按阶段收紧；每一步都有主体、ACL、车道、租约、
+  会话隔离和双账号端到端验收，不依赖“看起来已连接”作为成功标准。
+
+因此，`P2-05-lite` 的实现基线更新为：**per-user opaque Bearer + Center-derived Principal +
+per-conversation ExecutionSession + project/worktree ACL + derived execution lane + isolated
+Desktop lease/Browser Context，sandbox/OAuth/broker 作为后续可插拔能力**。这也是本文件后续
+数据迁移、API 和验收的唯一推荐路径。
