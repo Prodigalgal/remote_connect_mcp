@@ -97,6 +97,38 @@ function Remove-AgentTask {
     Unregister-ScheduledTask -TaskName $Name -Confirm:$false -ErrorAction SilentlyContinue
 }
 
+function Stop-AgentProcessForReplacement {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$ExecutablePaths
+    )
+    $expected = @($ExecutablePaths | Where-Object { $_ } | ForEach-Object {
+        try { [IO.Path]::GetFullPath($_) } catch { $null }
+    } | Where-Object { $_ })
+    if ($expected.Count -eq 0) { return }
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        $processes = @()
+        foreach ($name in @('rcm-agent.exe', 'rcm-desktop-companion.exe', 'rcm-browser-agent.exe')) {
+            foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='$name'" -ErrorAction SilentlyContinue)) {
+                if (-not $process.ExecutablePath) { continue }
+                try {
+                    $actual = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
+                    if ($expected | Where-Object { $_ -ieq $actual }) {
+                        $processes += $process
+                    }
+                } catch { }
+            }
+        }
+        if ($processes.Count -eq 0) { return }
+        foreach ($process in $processes) {
+            Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Agent process did not exit before bundle replacement."
+}
+
 function Register-AgentTask {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -276,6 +308,11 @@ try {
     # old logon task; it is recreated below when DesktopEnabled is requested.
     Remove-AgentTask -Name $companionTaskName
     Remove-AgentTask -Name $serviceName
+    Stop-AgentProcessForReplacement -ExecutablePaths @(
+        (Join-Path $InstallRoot 'rcm-agent.exe'),
+        (Join-Path $InstallRoot 'desktop\rcm-desktop-companion.exe'),
+        (Join-Path $InstallRoot 'browser\rcm-browser-agent.exe')
+    )
 
     New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
