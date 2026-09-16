@@ -207,11 +207,14 @@ class PostgresIntegrationTest {
         // queued rows at the same time.  The row lock/SKIP LOCKED contract is
         // what permits multiple Center replicas without double dispatch.
         var claimIds = IntStream.range(0, 2).mapToObj(index -> {
-            var id = "task_it_claim_" + UUID.randomUUID().toString().replace("-", "");
-            var claimCommand = new TaskCommand(id, TaskKind.COMMAND, "command", "printf claim-" + index, "/tmp",
+            // Explicit path roots produce two independent execution lanes;
+            // using the implicit host lane here would correctly serialize the
+            // claims and make the SKIP LOCKED assertion nondeterministic.
+            var claimCommand = new TaskCommand("", TaskKind.COMMAND, "command", "printf claim-" + index, "/tmp/claim-" + index,
                     Map.of(), 30, null, Instant.now());
-            store.create(id, agentId, claimCommand, "claim-key-" + index, claimCommand.createdAt());
-            return id;
+            return projectTasks.create(new CreateTaskRequest(agentId, claimCommand, "claim-key-" + index,
+                    "", "", ScopeMode.PATH, "/tmp/claim-" + index,
+                    "claim-session-" + index, "low", false)).id();
         }).toList();
         var claimStart = new CountDownLatch(1);
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
@@ -229,9 +232,8 @@ class PostgresIntegrationTest {
             }
             assertEquals(2, claimed.size(), "concurrent polls must not double-dispatch one task");
             // Release both claimed rows before the following lease-recovery
-            // assertions.  They deliberately share the host lane; leaving a
-            // dispatching row alive would correctly block the next poll and
-            // make this test depend on an agent callback that it does not run.
+            // assertions.  Leaving dispatching rows alive would make this
+            // test depend on an Agent callback that it does not run.
             for (var claimedId : claimed) {
                 var claimedTask = store.find(claimedId).orElseThrow();
                 store.updateState(agentId, claimedId,
