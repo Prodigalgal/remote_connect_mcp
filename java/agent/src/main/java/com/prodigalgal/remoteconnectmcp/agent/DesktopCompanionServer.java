@@ -254,9 +254,19 @@ public final class DesktopCompanionServer {
                     return;
                 }
                 write(writer, execute(request));
-            } catch (Exception exception) {
-                LOG.log(Level.WARNING, "desktop companion request failed", exception);
-                write(writer, new DesktopCompanionClient.Response(false, null, null, null, compactError(exception.getMessage())));
+            } catch (Throwable failure) {
+                // AWT reports display/toolkit initialization failures as
+                // java.awt.AWTError (an Error, not an Exception).  Surface
+                // those failures through the bounded protocol response so
+                // the command Agent can explain a missing/stale GUI session.
+                // Preserve VM-fatal errors: catching an OutOfMemoryError or
+                // ThreadDeath would leave the companion in an unsafe state.
+                if (failure instanceof VirtualMachineError || failure instanceof ThreadDeath) {
+                    throw failure;
+                }
+                LOG.log(Level.WARNING, "desktop companion request failed", failure);
+                write(writer, new DesktopCompanionClient.Response(false, null, null, null,
+                        compactError(failure.getMessage() == null ? failure.toString() : failure.getMessage())));
             }
         } catch (Exception exception) {
             LOG.log(Level.FINE, "desktop companion connection failed", exception);
