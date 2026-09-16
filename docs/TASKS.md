@@ -97,7 +97,7 @@
 | [ ] | P2-05-05 | Desktop 独占 lease、Browser 按主体/对话隔离 Context/Profile，任务结束回收或续租 | 两用户交错操作、Cookie/下载隔离、崩溃回收 |
 | [ ] | P2-05-06 | React Console 增加主体、Token、项目成员、范围、配额、撤销和任务归属页面 | UI E2E、a11y、脱敏和审计 |
 | [ ] | P2-05-07 | 双账号多窗口端到端验收；同 URL、不同 Token、同项目/不同 worktree、撤销和故障恢复 | ChatGPT Web/Console/Center/Agent 真实矩阵 |
-| [x] | P2-05-R08 | MCP 上下文预算与摘要投影 | `machines_list` 只返回固定字段摘要（最多 25 台），`project list` 不返回本地路径且 worktree 摘要最多 10 条；任务输出保持游标分页，MCP JSON 设置 192 KiB 最后防线；图片仅在不超过 512 KiB 时内联，较大工件改用 SHA-256/Console 引用；详情通过 `machine_info`、显式 project 操作、`task_output` 或 Console 获取 | `McpConfiguration` compact projection/response guard；GitHub Actions |
+| [x] | P2-05-R08 | MCP 上下文预算与摘要投影 | `machines_list` 只返回固定字段摘要（最多 25 台），`project list` 不返回本地路径且 worktree 摘要最多 10 条；需要时可通过 `project(operation=detail)` 分页获取项目详情，路径必须显式 `include_paths=true`；任务输出保持游标分页，MCP JSON 设置 192 KiB 最后防线；图片仅在不超过 512 KiB 时内联，较大工件改用 SHA-256/Console 引用 | `McpConfiguration` compact/detail projection/response guard；GitHub Actions |
 
 ### P2-05 需求驱动并发子项
 

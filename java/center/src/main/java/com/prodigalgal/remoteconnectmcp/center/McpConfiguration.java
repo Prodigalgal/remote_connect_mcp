@@ -104,6 +104,7 @@ public class McpConfiguration {
     // hints; detailed runtime data is an explicit machine_info follow-up.
     private static final int MAX_MACHINE_PAGE = 25;
     private static final int MAX_PROJECT_PAGE = 25;
+    private static final int MAX_WORKTREE_PAGE = 10;
     private static final int MAX_OUTPUT_PAGE = 64 * 1024;
     private static final int MAX_INLINE_WORKTREE_SUMMARIES = 10;
     private static final int MAX_MCP_JSON_CHARS = 192 * 1024;
@@ -195,9 +196,9 @@ public class McpConfiguration {
                 tool("machine_info", "Show one machine's detailed platform, capabilities, scope, runtime descriptor and heartbeat.", schema(
                         Map.of("machine_id", string("machine ID from machines_list")), List.of("machine_id")),
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return machineInfo(agents, access, origin(exchange), request); }, scheduler),
-                tool("project", "List compact project/worktree summaries, register/remove projects, or queue one isolated Git/worktree operation. Listing omits local paths; request an explicit operation for details.", schema(
+                tool("project", "List compact project/worktree summaries, fetch one bounded project detail page, register/remove projects, or queue one isolated Git/worktree operation. Listing omits local paths; detail paths require explicit include_paths=true.", schema(
                         Map.ofEntries(
-                            Map.entry("operation", string("list, register, remove, worktree_create, worktree_remove, git_status, git_diff, git_log, git_commit, git_merge, or git_merge_abort")),
+                            Map.entry("operation", string("list, detail, register, remove, worktree_create, worktree_remove, git_status, git_diff, git_log, git_commit, git_merge, or git_merge_abort")),
                                 Map.entry("machine_id", string("target machine ID")),
                                 Map.entry("project_id", string("project ID from a previous response")),
                                 Map.entry("worktree_id", string("worktree ID for remove")),
@@ -210,6 +211,7 @@ public class McpConfiguration {
                                 Map.entry("mode", string("git_diff mode: stat or patch")),
                                 Map.entry("offset", integer("project list offset")),
                                 Map.entry("limit", integer("project list page size, at most 25")),
+                                Map.entry("include_paths", Map.of("type", "boolean", "description", "project detail only: explicitly include local root/repository/worktree paths")),
                                 Map.entry("idempotency_key", string("stable retry key"))),
                         List.of("operation")), (exchange, request) -> { requireScope(exchange, "mcp:project"); return project(projects, access, origin(exchange), request); }, scheduler),
                 tool("desktop", "Queue a bounded screenshot, screen listing, launch, pointer, drag, key, text, clipboard, or window-focus action on an explicitly desktop-capable user-session Agent.", schema(
@@ -388,6 +390,17 @@ public class McpConfiguration {
                             "next_action", offset + values.size() < total
                                     ? "call project list with offset + limit" : "no more projects"));
                 }
+                case "detail" -> {
+                    var project = projects.find(args.projectId());
+                    access.authorizeMachine(origin, project.machineId(), "read");
+                    access.authorizeProject(origin, project.id(), "read");
+                    var offset = args.offset() == null ? 0 : args.offset();
+                    var limit = args.limit() == null ? MAX_WORKTREE_PAGE : args.limit();
+                    if (offset < 0 || limit < 1 || limit > MAX_WORKTREE_PAGE) {
+                        throw new IllegalArgumentException("project detail offset must be non-negative and limit must be between 1 and " + MAX_WORKTREE_PAGE);
+                    }
+                    yield json(projectDetail(project, offset, limit, Boolean.TRUE.equals(args.includePaths())));
+                }
                 case "register" -> {
                     access.authorizeMachine(origin, args.machineId(), "admin");
                     var created = projects.register(new ProjectRegistrationRequest(
@@ -436,7 +449,7 @@ public class McpConfiguration {
                     yield json(Map.of("task", taskMap(value),
                             "next_action", "use task_wait or task_output with the returned task_id"));
                 }
-                default -> throw new IllegalArgumentException("operation must be list, register, remove, worktree_create, worktree_remove, or git_* operation");
+                default -> throw new IllegalArgumentException("operation must be list, detail, register, remove, worktree_create, worktree_remove, or git_* operation");
             };
         } catch (Exception exception) {
             return error(exception);
@@ -754,6 +767,54 @@ public class McpConfiguration {
         return value;
     }
 
+    /**
+     * Explicit project details are still paged.  A caller must opt in to
+     * local paths because they are rarely needed for routing and can be noisy
+     * or private.  Worktree metadata is returned in a small page rather than
+     * copying the complete project history into one MCP response.
+     */
+    private static Map<String, Object> projectDetail(ProjectView project, int offset, int limit,
+                                                     boolean includePaths) {
+        var value = new LinkedHashMap<String, Object>();
+        value.put("id", project.id());
+        value.put("machine_id", project.machineId());
+        value.put("name", project.name());
+        value.put("default_ref", textOrEmpty(project.defaultRef()));
+        value.put("created_at", project.createdAt());
+        value.put("updated_at", project.updatedAt());
+        value.put("paths_included", includePaths);
+        if (includePaths) {
+            value.put("root_path", textOrEmpty(project.rootPath()));
+            value.put("repository_path", textOrEmpty(project.repositoryPath()));
+        }
+        var worktrees = project.worktrees() == null ? List.<WorktreeView>of() : project.worktrees();
+        var page = offset >= worktrees.size() ? List.<WorktreeView>of()
+                : worktrees.subList(offset, Math.min(worktrees.size(), offset + limit));
+        value.put("worktrees", page.stream().map(worktree -> worktreeDetail(worktree, includePaths)).toList());
+        value.put("offset", offset);
+        value.put("limit", limit);
+        value.put("total_worktrees", worktrees.size());
+        value.put("has_more", offset + page.size() < worktrees.size());
+        value.put("next_action", offset + page.size() < worktrees.size()
+                ? "call project detail with offset + limit"
+                : "no more worktrees");
+        return value;
+    }
+
+    private static Map<String, Object> worktreeDetail(WorktreeView worktree, boolean includePath) {
+        var value = new LinkedHashMap<String, Object>();
+        value.put("id", worktree.id());
+        value.put("project_id", worktree.projectId());
+        value.put("ref", textOrEmpty(worktree.ref()));
+        value.put("operation", textOrEmpty(worktree.operation()));
+        value.put("status", textOrEmpty(worktree.status()));
+        value.put("task_id", textOrEmpty(worktree.taskId()));
+        value.put("created_at", worktree.createdAt());
+        value.put("updated_at", worktree.updatedAt());
+        if (includePath) value.put("path", textOrEmpty(worktree.path()));
+        return value;
+    }
+
     private static Map<String, Object> worktreeSummary(WorktreeView worktree) {
         var value = new LinkedHashMap<String, Object>();
         value.put("id", worktree.id());
@@ -980,6 +1041,7 @@ public class McpConfiguration {
                        String mode,
                        Integer offset,
                        Integer limit,
+                       @JsonProperty("include_paths") Boolean includePaths,
                        @JsonProperty("idempotency_key") String idempotencyKey) {
     }
 

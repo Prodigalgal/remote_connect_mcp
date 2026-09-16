@@ -177,7 +177,7 @@ Token、Cookie、完整命令、环境变量和页面内容不作为普通字段
 为了保持 Web 上下文精简，不新增“每用户一套工具”或“每机器一套工具”。列表和结果遵循固定预算：
 
 - 机器发现只返回 `id/name/os/arch/version/capabilities/scope_mode/online` 等路由摘要；运行时预算、HostID、路径和心跳时间必须显式调用 `machine_info` 获取；
-- 项目发现只返回项目 ID、名称、默认 ref、worktree 数量和有限 worktree 摘要，不把本地 root/repository/path 或完整 worktree 历史带进对话；
+- 项目发现只返回项目 ID、名称、默认 ref、worktree 数量和有限 worktree 摘要，不把本地 root/repository/path 或完整 worktree 历史带进对话；需要时显式调用 `project(operation=detail)` 分页获取详情，路径还必须传 `include_paths=true`；
 - 任务输出继续使用字节游标分页；MCP 文本 JSON 设有最后防线，超过预算时要求使用游标或 Console 详情端点；
 - 图片只有不超过 512 KiB 才内联，较大截图/下载只返回大小、MIME、SHA-256 和 Console 工件引用。
 
