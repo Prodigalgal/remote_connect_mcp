@@ -24,6 +24,13 @@ graalvmNative {
         named("main") {
             imageName.set("rcm-desktop-companion")
             buildArgs.add("-march=$nativeMarch")
+            // The Linux Native Image builder runs in a headless container. If
+            // the default AWT property is captured from that environment, the
+            // same binary reports a headless session even when the target has
+            // an active X11/Wayland display. Desktop capability is opt-in and
+            // already starts only in the user's session, so keep the runtime
+            // property explicitly non-headless for all GUI targets.
+            buildArgs.add("-Djava.awt.headless=false")
         }
     }
 }
