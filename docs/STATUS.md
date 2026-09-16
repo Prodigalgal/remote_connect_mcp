@@ -6,7 +6,7 @@
 
 ## 结论
 
-Java 25 Center/Agent 与 React 控制台已经完成 v0.1.28 生产发布；9 台登记 Agent 已通过 canary+批次活动完成 v0.1.28 升级，失败和 pending 均为 0。生产数据库已完成 Liquibase 初始化、旧 Go 状态导入与清理验证；Java Center/Console 已通过 Argo CD 以不可变 digest 部署，旧 Go Center、Deployment 和 PVC 仍保留作回滚点。公网 health/ready、Console Admin API、MCP 入口、升级活动、资源上限和 Agent 任务闭环均已验收；Linux GUI canary 已用 GitHub Actions preview `v0.0.0-main.57` 完成 Desktop screens/截图和 Browser navigate。当前剩余工作集中在 Center 重启/ChatGPT 重试、Windows Desktop 真实交互、更多 Browser 场景、有效 WebSocket 断线恢复、离线/失败/回滚升级、QUIC、可观测性现场通知和工件生命周期演练。
+Java 25 Center/Agent 与 React 控制台已经完成 v0.1.28 生产发布；9 台登记 Agent 已通过 canary+批次活动完成 v0.1.28 升级，失败和 pending 均为 0。生产数据库已完成 Liquibase 初始化、旧 Go 状态导入与清理验证；Java Center/Console 已通过 Argo CD 以不可变 digest 部署，旧 Go Center、Deployment 和 PVC 仍保留作回滚点。公网 health/ready、Console Admin API、MCP 入口、升级活动、资源上限和 Agent 任务闭环均已验收；Linux GUI canary 已在稳定 `v0.1.29` Desktop 资产上完成 screens/截图和 Browser navigate。当前剩余工作集中在 Center 重启/ChatGPT 重试、Windows Desktop 真实交互、更多 Browser 场景、有效 WebSocket 断线恢复、离线/失败/回滚升级、QUIC、可观测性现场通知和工件生命周期演练。
 
 ## 已完成实现与历史证据
 
@@ -42,7 +42,7 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.28 生产发布；9 �
 - 集群上下文为 `kubernetes-admin@sg-osaka-dualstack`；Java v0.1.28 Center、Console、PostgreSQL 和迁移 Job 均已运行，旧 Go Center Deployment 已缩容为 0，Service/PVC 仍保留作回滚。
 - 生产 Java HTTPRoute 已切换，旧用户路由也已指向 Java Service；真实域名与 Token 只保存在私有 GitOps/Secret，不写入公开仓库。
 - Argo CD 生产 Application 的同步操作已成功；集群控制面偶发 `http2: client connection lost`，可能导致 status 短暂显示旧 revision，需继续观察而不是误判为业务故障。
-- 当前 9 台登记 Agent 均在线并已通过 v0.1.28 canary/批次升级和真实命令闭环；本次活动 9/9 completed、0 failed、0 pending。`local-cmcc-debian` 另完成 Linux GUI preview canary，Desktop/Browser 能力已在 Center 自描述中收敛；Windows Desktop 交互、离线领取和安装失败/回滚仍需单独的维护窗口演练。
+- 当前 9 台登记 Agent 均在线并已通过 v0.1.28 canary/批次升级和真实命令闭环；本次活动 9/9 completed、0 failed、0 pending。`local-cmcc-debian` 另完成稳定 v0.1.29 Linux GUI canary，Desktop/Browser 能力已在 Center 自描述中收敛；Windows Desktop 交互、离线领取和安装失败/回滚仍需单独的维护窗口演练。
 
 ## 资源占用说明
 

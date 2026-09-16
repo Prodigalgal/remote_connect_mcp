@@ -283,5 +283,25 @@ Java command-agent，并在同一安装目录下启用独立 desktop-companion �
 
 本节结论：Linux GUI canary 的 Desktop screens/截图和 Browser navigate 已通过真实
 Center 路由；Windows Desktop 仍需用户登录交互会话后完成输入/启动/截图，Browser 的
-snapshot/下载/持久 profile 仍属于后续矩阵。preview 资产尚未替代稳定 tag，待 canary
-观察完成后再提升为稳定版本。
+snapshot/下载/持久 profile 仍属于后续矩阵。preview 观察通过后已提升为稳定
+`v0.1.29`，稳定资产收口见下节。
+
+### 2026-09-16 v0.1.29 稳定 Desktop 资产收口
+
+Linux GUI canary 观察通过后，将同一代码提交 `2868934` 提升为稳定 tag
+`java-v0.1.29`。GitHub Actions run `35064539692` 的 prepare、JVM/React、Linux
+amd64/arm64、Windows amd64、镜像和 release jobs 全部成功；本机未执行构建。
+稳定 arm64 Desktop ZIP 已按 sidecar SHA-256 校验并原子替换 `local-cmcc-debian`，
+保留上一版回滚副本。
+
+| 项目 | 结果 | 证据 |
+| --- | --- | --- |
+| 稳定 Desktop 资产 | 通过 | `remote-connect-mcp-desktop-v0.1.29-linux-arm64.zip` 校验通过；目标二进制 SHA 与资产一致 |
+| 服务与回滚 | 通过 | `remote-connect-mcp-desktop.service` 为 `active`、`NRestarts=0`；`desktop-...-v0129` 回滚副本保留 |
+| 稳定 MCP screens | 通过 | `/mcp` 任务 `queued → running → completed`，退出码 0，返回 1 个 `1920×1080` 屏幕 |
+| 稳定 MCP screenshot | 通过 | `/mcp` 任务完成，返回 `image/png` 工件约 629 KiB，并带 SHA-256 元数据 |
+| 稳定 Browser 回归 | 通过 | 同一目标 `navigate https://example.com` 完成，标题 `Example Domain`，退出码 0 |
+
+本节结论：Desktop 的 Linux AWT/Java2D/X11 元数据缺口已在稳定 `v0.1.29` 中闭环，
+并经真实 Center 路由复验。稳定版本只替换了 GUI canary；Windows Desktop 仍需真实
+交互登录会话完成输入/启动/截图，其他目标的全量升级按后续维护窗口执行。
