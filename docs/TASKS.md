@@ -1,6 +1,6 @@
 # RCM 生产任务清单
 
-更新时间：2026-09-15（Asia/Shanghai）
+更新时间：2026-09-16（Asia/Shanghai）
 
 本文是 Remote Connect MCP 的可持续任务清单。第一列只表示代码交付状态：实现和自动化检查完成即可勾选；生产验收单独记录在 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)，不再阻止代码任务勾选。这样可以明确区分“代码没做完”和“代码已完成但尚未在目标环境验收”。
 
@@ -18,7 +18,7 @@
 
 ## 当前阶段：选定 P2 实施，代码状态与生产验收分离
 
-截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程和兼容实现已经完成，选定的 P2-01/03/04/07 的代码与 CI 门禁已完成；P1-02/03/04/08、P2-06 仍有明确的平台/协议代码缺口，保留 `[~]`。生产验收记录见 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)：当前生产 Java v0.1.22 的基础链路和本轮 Agent v0.1.26 目标机命令闭环已复验，真实桌面/浏览器、升级故障、热更新回滚和告警通知仍待验收。P2-02 和 P2-05 已按需求决策明确不做。
+截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程和兼容实现已经完成，选定的 P2-01/03/04/07 的代码与 CI 门禁已完成；P1-02/03/04/08、P2-06 仍有明确的平台/协议代码缺口，保留 `[~]`。生产验收记录见 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)：生产 Java Center、Console 与 9 台在线 Agent 已在 `v0.1.28` 收敛，JDBC 锁竞争修复和命令 smoke 已复验；真实桌面/浏览器、升级故障/回滚、Center 重启重试和告警通知仍待验收。P2-02 和 P2-05 已按需求决策明确不做。
 
 | 层级 | 当前判断 | 剩余工作 |
 | --- | --- | --- |
@@ -26,7 +26,7 @@
 | P1 | 主流程已具备，平台特性待实测 | Windows/Linux Desktop 与 Browser、Git/Console/升级/长连接真实矩阵，以及无障碍、视觉和代理故障验收 |
 | P2 | P2-01/03/04/06/07 已进入实施队列；P2-02/05 按决策移除 | QUIC/HTTP3 评估、集中日志与对象存储规模化、SLO/告警、桌面/浏览器平台增强和 Go 回滚路径退出 |
 
-当前证据基线：Java/React workflow `34973274151`、综合 CI `34973274018`、Java Native Release `34973274072` 均成功；事件驱动检查、仓库敏感信息扫描和浏览器脚本静态检查均通过。
+当前证据基线：Java Native Release `35043403122`（tag `java-v0.1.28`）成功；GitOps revision `eee62d2` 已由 Argo 报告 `Synced/Healthy/Succeeded`；事件驱动检查、仓库敏感信息扫描和浏览器脚本静态检查均通过。本机没有执行 Java、Gradle、Native Image 或 React 构建。
 
 ## P0：平台必须可靠
 
@@ -47,7 +47,7 @@
 
 - [x] P0-G1：范围合同不能被改变 cwd、环境变量或任务重试绕过；Linux/Windows path 合同、环境变量伪造、越界路径和幂等重试已完成目标机验收。
 - [~] P0-G2：Agent 断线重连和 durable 任务不重复执行已验收；Center 重启及 ChatGPT 端重试仍需维护窗口演练。
-- [~] P0-G3：长输出分页、任务超时和无超时 durable 任务已验收；子进程上限探针发现 `Stream closed` 错误归类并已修复代码，待 CI/发布后复验；截图/下载能力与 RSS/CPU 极限压测尚未具备目标条件。
+- [~] P0-G3：长输出分页、任务超时、无超时 durable 任务和 32 子进程上限已验收；截图/下载能力与 RSS/CPU 极限压测尚未具备目标条件。
 - [x] P0-G4：所有 9 台在线 Agent 均通过固定 `/mcp` 的 `command_start` 路由并以 `task_wait`/终态核对。
 
 ## P1：核心生产体验

@@ -1,6 +1,6 @@
 # RCM 生产验收记录
 
-更新时间：2026-09-15（Asia/Shanghai）
+更新时间：2026-09-16（Asia/Shanghai）
 
 本文记录目标环境验收，不改变 [`TASKS.md`](TASKS.md) 中的代码状态。代码任务在实现和 CI 完成后即可标 `[x]`；只有这里的生产证据才会把对应能力标记为生产“通过”。所有地址、Token、数据库连接和机器敏感属性均不写入本文。
 
@@ -17,13 +17,13 @@
 | --- | --- | --- | --- |
 | P0 | G1 范围合同 | 通过 | Linux/Windows cwd、环境变量伪造、越界路径和幂等重试均已实机验证 |
 | P0 | G2 重启/重试 | 部分通过 | Agent 停止/启动期间 durable 任务只执行一次；Center 重启与 ChatGPT 重试需维护窗口 |
-| P0 | G3 长任务/工件/资源 | 部分通过 | 128 KiB 分页、超时终态和 durable 完成通过；子进程上限探针暴露错误归类，command/browser 路径已修复代码，待 CI/发布后复验；工件及 RSS/CPU 极限仍待 capability/压测条件 |
+| P0 | G3 长任务/工件/资源 | 部分通过 | 128 KiB 分页、超时终态、durable 完成和 32 子进程硬上限均已通过；工件及 RSS/CPU 极限仍待 capability/压测条件 |
 | P0 | G4 固定 `/mcp` 多机路由 | 通过 | 9 台在线 Agent 经同一 MCP 会话完成 `command_start`/`task_wait` |
 | P1 | P1-01 项目注册与 worktree | 通过 | 项目注册、Git 读操作、worktree 创建/删除和清理闭环见下文 |
 | P1 | P1-02 Desktop Companion | 待验收 | 当前在线 Agent 未声明 `desktop`；需 Windows/Linux 会话目标 |
 | P1 | P1-03 Browser Agent | 待验收 | 当前在线 Agent 未声明 `browser`；需浏览器运行时目标 |
 | P1 | P1-04 React Console | 部分通过 | Center 后端提交/日志/取消通过；React E2E、工件页面、a11y/视觉待验收 |
-| P1 | P1-05 升级与回滚 | 部分通过 | 历史 canary/在线批次有成功记录；离线领取、启动失败和回滚未演练 |
+| P1 | P1-05 升级与回滚 | 部分通过 | `v0.1.28` canary+批次已覆盖 9/9 在线目标且失败 0；离线领取、启动失败和回滚仍未演练 |
 | P1 | P1-06 WebSocket/唤醒 | 待验收 | CI smoke 已通过；生产反向代理握手、断线和 Center 重启待窗口 |
 | P1 | P1-07 配置/心跳自描述 | 通过 | 一台 Linux Agent 完成 generation 0→1→2→3 热更新/回滚；旧 generation 写入 HTTP 400，心跳已收敛到最终代次 |
 | P1 | P1-08 生命周期/子 Agent | 待验收 | 现有目标只有 command/durable_tasks；多物理 Agent 隔离/崩溃拉起待目标 |
@@ -178,5 +178,30 @@ P2-03 的代码路径已存在，生产日志采集器、对象生命周期和�
 
 1. 生产基础链路已通过 GitHub Actions 发布并经 GitOps 收敛到不可变的 `v0.1.22`；已复验 `total/has_more`、MCP 工具发现、健康/就绪和新 Center PVC。
 2. 生产命令闭环已通过一次低风险验证；第一次验证脚本因换行转义产生误报，修正后第二次按字节校验通过，不代表其他故障场景已经验收。
-3. 下一批应在维护窗口内执行 Center/Agent 重启、断线恢复、长任务取消、资源超限、升级失败/回滚、离线领取和 WebSocket 反向代理演练；当前 5 台离线目标已在升级活动中等待重连。
+3. 下一批应在维护窗口内执行 Center/Agent 重启、断线恢复、长任务取消、资源超限、升级失败/回滚、离线领取和 WebSocket 反向代理演练；当前升级活动已完成，没有遗留 pending 目标。
 4. Desktop/Browser 需要至少一台 Windows 和一台 Linux 目标机具备对应 capability，再执行截图、输入、会话恢复、浏览器 profile 和工件清理回归。
+
+## 2026-09-16 v0.1.28 稳定发布与生产复验
+
+本轮针对升级分配期间发现的 JDBC 行锁等待完成修复、发布和生产复验。Center
+仍保持单一 JDBC/Hikari 数据访问层；没有在运行时混用 JDBC 与 R2DBC。Liquibase
+继续在独立 migration Job 中使用 JDBC，后续若切换 R2DBC 必须作为整套应用数据层的
+独立大版本迁移。
+
+| 项目 | 结果 | 证据 |
+| --- | --- | --- |
+| 代码修复 | 通过 | `82510e7` 将升级 offer 的活动行锁改为 `FOR UPDATE SKIP LOCKED`；竞争心跳拿不到分配锁时立即返回，由下一次事件/心跳重试，避免占满 Hikari 连接 |
+| GitHub Actions 稳定构建 | 通过 | tag `java-v0.1.28` 的 Java Native Release `35043403122` 成功；Linux amd64/arm64、Windows amd64、Center/Agent/Console 镜像、SBOM、签名和 smoke 全部通过；本机未编译 |
+| GitOps/Argo 发布 | 通过 | GitOps 提交 `eee62d2`；应用 revision 收敛到该提交并报告 `Synced/Healthy/Succeeded`；Center、Console、migration Job 均使用 v0.1.28 不可变 digest |
+| Center 健康与就绪 | 通过 | `/api/v1/healthz`、`/api/v1/readyz`、`/api/v1/version` 均 HTTP 200，版本为 `v0.1.28`，持久化为 PostgreSQL |
+| MCP 协议面 | 通过 | Bearer 鉴权下 `initialize` 与 `tools/list` 均 HTTP 200，返回 SSE，会话建立成功，精简工具面保持 9 个；无 Bearer 的 `/mcp` 返回 401 |
+| Admin metrics 脱敏 | 通过 | `/metrics` 使用 Admin 鉴权返回 200，18 个指标名、约 3.9 KiB；敏感词扫描未发现 Token/Authorization 内容 |
+| 数据库连接稳定性 | 通过 | 生产只读 `pg_stat_activity`：9 个连接、1 active、0 lock wait、0 idle-in-transaction；Center 最近日志无连接池耗尽或异常 |
+| Agent 升级批次 | 通过 | 新建 v0.1.28 活动，9/9 目标完成、0 failed、0 pending；canary 成功后自动放行后续批次；原 v0.1.27 暂停活动已取消并保留审计记录 |
+| v0.1.28 命令闭环 | 通过 | 一台在线 Agent 执行 `/tmp` path 范围内固定 smoke 命令，状态 completed、Attempt 1、exit code 0、输出 18 字节，并通过事件游标获得终态 |
+| v0.1.28 资源硬上限 | 通过 | 同一 Agent 在 `/tmp` 受控启动 64 个短时子进程，任务以 exit code 143 收口，错误明确为 `task process tree exceeded 32 processes`，未出现 `Stream closed` 误归类 |
+
+本轮结论：JDBC 锁竞争的生产缺陷已经闭环，Center 和全部 9 台在线 Agent 已运行
+`v0.1.28`。P0-G2 的 Center 重启/ChatGPT 重试、P1-02/P1-03 桌面/浏览器真实平台、
+P1-06 有效 WebSocket 断线恢复，以及离线/失败/回滚升级仍按前述条件保持待验收；这些
+不是本轮只读健康检查可以替代的项目。
