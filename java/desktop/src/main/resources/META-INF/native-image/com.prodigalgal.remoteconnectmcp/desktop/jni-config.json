@@ -25,5 +25,46 @@
         "parameterTypes": ["java.lang.String"]
       }
     ]
+  },
+  {
+    "name": "sun.awt.SunToolkit",
+    "methods": [
+      {
+        "name": "awtLock",
+        "parameterTypes": []
+      },
+      {
+        "name": "awtTryLock",
+        "parameterTypes": []
+      },
+      {
+        "name": "awtUnlock",
+        "parameterTypes": []
+      },
+      {
+        "name": "awtLockWait",
+        "parameterTypes": []
+      },
+      {
+        "name": "awtLockWait",
+        "parameterTypes": ["long"]
+      },
+      {
+        "name": "awtLockNotify",
+        "parameterTypes": []
+      },
+      {
+        "name": "awtLockNotifyAll",
+        "parameterTypes": []
+      },
+      {
+        "name": "isAWTLockHeldByCurrentThread",
+        "parameterTypes": []
+      },
+      {
+        "name": "isTouchKeyboardAutoShowEnabled",
+        "parameterTypes": []
+      }
+    ]
   }
 ]
