@@ -61,7 +61,7 @@ public final class McpPrincipalService {
         if (dynamic.isPresent()) return dynamic;
         // Keep existing connectors usable until the administrator migrates to
         // per-user tokens. This principal is deliberately explicit as shared.
-        return compatibility.acceptsMcp(value) ? Optional.of(McpPrincipal.shared()) : Optional.empty();
+        return compatibility.acceptsMcp(value) ? Optional.of(McpPrincipal.compatibility()) : Optional.empty();
     }
 
     /** Issue a token; plaintext is returned to the caller exactly once. */

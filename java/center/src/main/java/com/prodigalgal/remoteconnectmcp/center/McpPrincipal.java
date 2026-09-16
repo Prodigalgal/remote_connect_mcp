@@ -30,7 +30,7 @@ public record McpPrincipal(String principalId, String tokenId, String displayNam
         return scopes.contains("*") || scopes.contains(value);
     }
 
-    public static McpPrincipal shared() {
+    public static McpPrincipal compatibility() {
         return new McpPrincipal(TaskOrigin.SHARED_PRINCIPAL, TaskOrigin.COMPAT_TOKEN,
                 "Compatibility shared domain", Set.of("*"), true, null);
     }
