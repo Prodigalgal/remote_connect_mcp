@@ -27,3 +27,7 @@ databaseChangeLog:
       file: db/changelog/013-agent-runtime-descriptor.yaml
   - include:
       file: db/changelog/014-agent-config-history.yaml
+  - include:
+      file: db/changelog/015-mcp-principals.yaml
+  - include:
+      file: db/changelog/016-execution-lanes.yaml

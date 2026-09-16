@@ -1,0 +1,42 @@
+databaseChangeLog:
+  - changeSet:
+      id: 016-execution-lanes
+      author: remote-connect-mcp
+      labels: tasks
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: lane_key
+                  type: varchar(96)
+        - sql:
+            sql: UPDATE rcm_task SET lane_key = 'lane_' || md5(agent_id) WHERE lane_key IS NULL
+        - addNotNullConstraint:
+            tableName: rcm_task
+            columnName: lane_key
+            columnDataType: varchar(96)
+        - createIndex:
+            indexName: idx_rcm_task_lane_dispatch
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: agent_id
+              - column:
+                  name: lane_key
+              - column:
+                  name: status
+              - column:
+                  name: created_at
+      rollback:
+        - dropIndex:
+            indexName: idx_rcm_task_lane_dispatch
+            tableName: rcm_task
+        - dropColumn:
+            tableName: rcm_task
+            columnName: lane_key

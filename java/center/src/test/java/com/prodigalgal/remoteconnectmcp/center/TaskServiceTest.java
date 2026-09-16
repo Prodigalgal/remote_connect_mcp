@@ -23,6 +23,25 @@ import org.junit.jupiter.api.Test;
 
 class TaskServiceTest {
     @Test
+    void isolatesIdempotencyAndTaskReadsByPrincipal() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var command = new TaskCommand("", TaskKind.COMMAND, "command", "printf owner", "/srv", Map.of(), 0, null, null);
+        var ownerA = new TaskOrigin("user-a", "token-a", "connection-a");
+        var ownerB = new TaskOrigin("user-b", "token-b", "connection-b");
+
+        var first = tasks.create(new CreateTaskRequest(registration.machineId(), command, "same-key", "", "", ScopeMode.UNRESTRICTED,
+                "", "", "low", false, ownerA), "mcp", ownerA);
+        var second = tasks.create(new CreateTaskRequest(registration.machineId(), command, "same-key", "", "", ScopeMode.UNRESTRICTED,
+                "", "", "low", false, ownerB), "mcp", ownerB);
+
+        assertTrue(!first.id().equals(second.id()));
+        assertEquals(first.id(), tasks.findFor(ownerA, first.id()).orElseThrow().id());
+        assertThrows(SecurityException.class, () -> tasks.findFor(ownerB, first.id()));
+    }
+
+    @Test
     void createsIdempotentTaskDispatchesAndStreamsOutput() {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
@@ -70,6 +89,25 @@ class TaskServiceTest {
         assertThrows(SecurityException.class, () -> tasks.updateState(registration.machineId(), task.id(),
                 new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), 1));
         assertEquals(2, tasks.find(task.id()).orElseThrow().attempt());
+    }
+
+    @Test
+    void serializesQueuedTasksThatTargetTheSameExecutionLane() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var first = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "printf first", "/srv", Map.of(), 0, null, null), "lane-1"));
+        var second = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "printf second", "/srv", Map.of(), 0, null, null), "lane-2"));
+
+        var firstLease = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        assertEquals(first.id(), firstLease.id());
+        assertTrue(tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task() == null);
+
+        tasks.updateState(registration.machineId(), first.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), firstLease.attempt());
+        tasks.updateState(registration.machineId(), first.id(), new TaskUpdateRequest(TaskStatus.COMPLETED, 0, null, null, null, false), firstLease.attempt());
+        assertEquals(second.id(), tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task().id());
     }
 
     @Test

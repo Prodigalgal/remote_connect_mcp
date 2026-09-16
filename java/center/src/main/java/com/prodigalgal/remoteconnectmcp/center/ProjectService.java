@@ -269,6 +269,11 @@ public final class ProjectService {
      * arbitrary output directory.
      */
     public WorktreeView createWorktree(String projectId, ProjectWorktreeRequest request) {
+        return createWorktree(projectId, request, TaskOrigin.shared());
+    }
+
+    /** Queue a worktree operation owned by the authenticated MCP principal. */
+    WorktreeView createWorktree(String projectId, ProjectWorktreeRequest request, TaskOrigin origin) {
         var project = findState(projectId);
         var ref = normalizeRef(request == null ? null : request.ref());
         var idempotency = normalizeIdempotency(request == null ? null : request.idempotencyKey());
@@ -289,7 +294,7 @@ public final class ProjectService {
                         worktreePath(project.rootPath, project.machineId, id), "create", "queued", null,
                         Instant.now(), Instant.now(), idempotency);
                 worktrees.put(state.id, state);
-                queueOperation(project, state, false);
+                queueOperation(project, state, false, origin);
                 var result = refresh(state);
                 signalChange();
                 audit("worktree.create", "admin", project.machineId, project.id, "accepted", "worktree=" + state.id);
@@ -334,7 +339,7 @@ public final class ProjectService {
             }
             throw new IllegalArgumentException("a worktree for this ref already exists", race);
         }
-        queueOperation(project, state, true);
+        queueOperation(project, state, true, origin);
         var result = refresh(state);
         signalChange();
         audit("worktree.create", "admin", project.machineId, project.id, "accepted", "worktree=" + state.id);
@@ -342,6 +347,11 @@ public final class ProjectService {
     }
 
     public WorktreeView removeWorktree(String projectId, String worktreeId, String idempotencyKey) {
+        return removeWorktree(projectId, worktreeId, idempotencyKey, TaskOrigin.shared());
+    }
+
+    /** Queue a worktree removal owned by the authenticated MCP principal. */
+    WorktreeView removeWorktree(String projectId, String worktreeId, String idempotencyKey, TaskOrigin origin) {
         var project = findState(projectId);
         var state = findWorktree(project.id, worktreeId);
         var requestedIdempotency = normalizeIdempotency(idempotencyKey);
@@ -361,7 +371,7 @@ public final class ProjectService {
         state.idempotencyKey = idempotency;
         state.updatedAt = Instant.now();
         persistWorktree(state);
-        queueOperation(project, state, jdbc != null);
+        queueOperation(project, state, jdbc != null, origin);
         var result = refresh(state);
         signalChange();
         audit("worktree.remove", "admin", project.machineId, project.id, "accepted", "worktree=" + state.id);
@@ -448,6 +458,11 @@ public final class ProjectService {
      * second commit or merge.
      */
     public TaskView gitOperation(String projectId, String operation, ProjectGitOperationRequest request) {
+        return gitOperation(projectId, operation, request, TaskOrigin.shared());
+    }
+
+    /** Queue a Git operation owned by the authenticated MCP principal. */
+    TaskView gitOperation(String projectId, String operation, ProjectGitOperationRequest request, TaskOrigin origin) {
         var project = findState(projectId);
         var machine = agents.findMachine(project.machineId, Instant.now())
                 .orElseThrow(() -> new IllegalArgumentException("machine not found"));
@@ -482,7 +497,7 @@ public final class ProjectService {
                 Map.of("GIT_TERMINAL_PROMPT", "0", "GIT_EDITOR", "true"), timeout, null, Instant.now());
         var session = "project-git-" + normalizedOperation + "-" + UUID.randomUUID().toString().replace("-", "");
         var result = tasks.create(new CreateTaskRequest(project.machineId, task, taskKey, project.id, worktreeId,
-                scopeMode, scopeRoot, session, mutating ? "high" : "low", false));
+                scopeMode, scopeRoot, session, mutating ? "high" : "low", false, origin), "mcp", origin);
         audit("git." + normalizedOperation, "admin", project.machineId, project.id, "accepted",
                 "worktree=" + (worktreeId.isBlank() ? "project" : worktreeId));
         return result;
@@ -547,7 +562,7 @@ public final class ProjectService {
         return "\"" + value + "\"";
     }
 
-    private void queueOperation(ProjectState project, WorktreeState state, boolean persisted) {
+    private void queueOperation(ProjectState project, WorktreeState state, boolean persisted, TaskOrigin origin) {
         var machine = agents.findMachine(project.machineId, Instant.now())
                 .orElseThrow(() -> new IllegalArgumentException("machine not found"));
         var commandText = state.operation.equals("remove")
@@ -558,7 +573,7 @@ public final class ProjectService {
                     new TaskCommand("", TaskKind.COMMAND, "command", commandText, project.rootPath,
                             Map.of(), WORKTREE_TIMEOUT_SECONDS, null, Instant.now()),
                     "rcm-worktree:" + state.id + ":" + state.operation,
-                    project.id, null, ScopeMode.PROJECT, project.rootPath, "", "low", false));
+                    project.id, null, ScopeMode.PROJECT, project.rootPath, "", "low", false, origin), "mcp", origin);
             state.taskId = task.id();
             state.status = "queued";
             state.updatedAt = Instant.now();

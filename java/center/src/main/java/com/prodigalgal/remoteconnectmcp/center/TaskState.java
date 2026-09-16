@@ -11,6 +11,8 @@ final class TaskState {
     private final TaskCommand command;
     private final String idempotencyKey;
     private final Instant createdAt;
+    private final TaskOrigin origin;
+    private final String laneKey;
     private final ByteArrayOutputStream output = new ByteArrayOutputStream();
     private String status = TaskStatus.QUEUED;
     /** Number of Center dispatch attempts; increments only when a lease is claimed. */
@@ -30,11 +32,25 @@ final class TaskState {
     private byte[] artifactData;
 
     TaskState(String id, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt) {
+        this(id, machineId, command, idempotencyKey, createdAt, TaskOrigin.shared());
+    }
+
+    TaskState(String id, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt,
+              TaskOrigin origin) {
+        this(id, machineId, command, idempotencyKey, createdAt, origin,
+                ExecutionLaneKey.derive(machineId, command == null ? null : command.contract()));
+    }
+
+    TaskState(String id, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt,
+              TaskOrigin origin, String laneKey) {
         this.id = id;
         this.machineId = machineId;
         this.command = command;
         this.idempotencyKey = idempotencyKey;
         this.createdAt = createdAt;
+        this.origin = origin == null ? TaskOrigin.shared() : origin;
+        this.laneKey = laneKey == null || laneKey.isBlank()
+                ? ExecutionLaneKey.derive(machineId, command == null ? null : command.contract()) : laneKey.trim();
     }
 
     static TaskState restore(String id, String machineId, TaskCommand command, String idempotencyKey,
@@ -42,7 +58,37 @@ final class TaskState {
                              boolean outputTruncated, Instant dispatchedAt, Instant startedAt,
                              Instant finishedAt, Instant leaseUntil, byte[] output,
                              long artifactBytes, String artifactMime, String artifactSha256, byte[] artifactData) {
-        var state = new TaskState(id, machineId, command, idempotencyKey, createdAt);
+        return restore(id, machineId, command, idempotencyKey, createdAt, status, attempt, exitCode, error,
+                outputTruncated, dispatchedAt, startedAt, finishedAt, leaseUntil, output, artifactBytes,
+                artifactMime, artifactSha256, artifactData, TaskOrigin.shared());
+    }
+
+    static TaskState restore(String id, String machineId, TaskCommand command, String idempotencyKey,
+                             Instant createdAt, String status, int attempt, Integer exitCode, String error,
+                             boolean outputTruncated, Instant dispatchedAt, Instant startedAt,
+                             Instant finishedAt, Instant leaseUntil, byte[] output,
+                             long artifactBytes, String artifactMime, String artifactSha256, byte[] artifactData,
+                             TaskOrigin origin) {
+        var state = new TaskState(id, machineId, command, idempotencyKey, createdAt, origin);
+        return restoreInto(state, status, attempt, exitCode, error, outputTruncated, dispatchedAt, startedAt,
+                finishedAt, leaseUntil, output, artifactBytes, artifactMime, artifactSha256, artifactData);
+    }
+
+    static TaskState restore(String id, String machineId, TaskCommand command, String idempotencyKey,
+                             Instant createdAt, String status, int attempt, Integer exitCode, String error,
+                             boolean outputTruncated, Instant dispatchedAt, Instant startedAt,
+                             Instant finishedAt, Instant leaseUntil, byte[] output,
+                             long artifactBytes, String artifactMime, String artifactSha256, byte[] artifactData,
+                             TaskOrigin origin, String laneKey) {
+        var state = new TaskState(id, machineId, command, idempotencyKey, createdAt, origin, laneKey);
+        return restoreInto(state, status, attempt, exitCode, error, outputTruncated, dispatchedAt, startedAt,
+                finishedAt, leaseUntil, output, artifactBytes, artifactMime, artifactSha256, artifactData);
+    }
+
+    private static TaskState restoreInto(TaskState state, String status, int attempt, Integer exitCode, String error,
+                                         boolean outputTruncated, Instant dispatchedAt, Instant startedAt,
+                                         Instant finishedAt, Instant leaseUntil, byte[] output,
+                                         long artifactBytes, String artifactMime, String artifactSha256, byte[] artifactData) {
         state.status(status);
         state.attempt(attempt);
         state.exitCode(exitCode);
@@ -68,6 +114,8 @@ final class TaskState {
     TaskCommand command() { return command; }
     String idempotencyKey() { return idempotencyKey; }
     Instant createdAt() { return createdAt; }
+    TaskOrigin origin() { return origin; }
+    String laneKey() { return laneKey; }
     ByteArrayOutputStream output() { return output; }
     String status() { return status; }
     void status(String value) { status = value; }

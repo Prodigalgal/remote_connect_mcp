@@ -106,10 +106,16 @@ public final class TaskService {
 
     /** Enqueue a task and retain only a bounded, normalized audit source. */
     public TaskView create(CreateTaskRequest request, String auditActor) {
+        return create(request, auditActor, request == null ? null : request.origin());
+    }
+
+    /** Enqueue a task with an explicit MCP principal/connection owner. */
+    public TaskView create(CreateTaskRequest request, String auditActor, TaskOrigin requestedOrigin) {
         var actor = normalizeAuditActor(auditActor);
         if (request == null || request.machineId().isBlank()) {
             throw new IllegalArgumentException("machineId is required");
         }
+        var origin = requestedOrigin == null ? TaskOrigin.shared() : requestedOrigin;
         var machine = agents.findMachine(request.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
         var original = request.command();
         var kind = original.kind() == null ? TaskKind.COMMAND : original.kind();
@@ -135,12 +141,12 @@ public final class TaskService {
                 original.contract(), original.attempt());
         var id = "task_" + UUID.randomUUID().toString().replace("-", "");
         var createdAt = Instant.now();
-        var contract = buildContract(request, machine, original, capability, id, createdAt);
+        var contract = buildContract(request, machine, original, capability, id, createdAt, origin);
         var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), createdAt, contract);
         ProtocolValidation.validateTask(command);
 
         if (jdbcStore != null) {
-            var created = jdbcStore.create(id, request.machineId(), command, request.idempotencyKey(), command.createdAt());
+            var created = jdbcStore.create(id, request.machineId(), command, request.idempotencyKey(), command.createdAt(), origin);
             signalChanged(id);
             signalWake(request.machineId());
             audit("task.created", actor, request.machineId(), created.id(), command, "accepted",
@@ -151,7 +157,7 @@ public final class TaskService {
         lock.lock();
         try {
             if (!request.idempotencyKey().isBlank()) {
-                var key = idempotencyKey(request.machineId(), request.idempotencyKey());
+                var key = idempotencyKey(request.machineId(), origin.principalId(), request.idempotencyKey());
                 var existingId = idempotency.get(key);
                 if (existingId != null) {
                     var existing = tasks.get(existingId);
@@ -162,7 +168,7 @@ public final class TaskService {
                 }
                 idempotency.put(key, id);
             }
-            var state = new TaskState(id, request.machineId(), command, request.idempotencyKey(), command.createdAt());
+            var state = new TaskState(id, request.machineId(), command, request.idempotencyKey(), command.createdAt(), origin);
             tasks.put(id, state);
             signalChanged();
             var created = new TaskView(state);
@@ -180,6 +186,48 @@ public final class TaskService {
             return jdbcStore.find(taskId);
         }
         return Optional.ofNullable(tasks.get(taskId == null ? "" : taskId.trim()));
+    }
+
+    /**
+     * Return a task only when it belongs to the authenticated MCP principal.
+     * Admin/Agent callers intentionally keep using {@link #find(String)} so
+     * their existing machine/control-plane semantics remain unchanged.
+     */
+    Optional<TaskState> findFor(TaskOrigin origin, String taskId) {
+        var task = find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
+        assertOwner(task, origin);
+        return Optional.of(task);
+    }
+
+    TaskView cancel(TaskOrigin origin, String taskId) {
+        findFor(origin, taskId);
+        return cancel(taskId);
+    }
+
+    OutputPage readOutput(TaskOrigin origin, String taskId, long cursor, int limit) {
+        findFor(origin, taskId);
+        return readOutput(taskId, cursor, limit);
+    }
+
+    Optional<ArtifactData> readArtifact(TaskOrigin origin, String taskId) {
+        findFor(origin, taskId);
+        return readArtifact(taskId);
+    }
+
+    TaskView waitForChange(TaskOrigin origin, String taskId, long cursor, Duration timeout)
+            throws InterruptedException {
+        findFor(origin, taskId);
+        var result = waitForChange(taskId, cursor, timeout);
+        assertOwner(find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found")), origin);
+        return result;
+    }
+
+    TaskView waitForTerminal(TaskOrigin origin, String taskId, Duration timeout)
+            throws InterruptedException {
+        findFor(origin, taskId);
+        var result = waitForTerminal(taskId, timeout);
+        assertOwner(find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found")), origin);
+        return result;
     }
 
     /** Lightweight restart-safety probe that never loads output or artifacts. */
@@ -395,6 +443,7 @@ public final class TaskService {
                 var candidate = tasks.values().stream()
                         .filter(value -> value.machineId().equals(machineId) && TaskStatus.QUEUED.equals(value.status()))
                         .filter(value -> capabilities.contains(value.command().requiredCapability()))
+                        .filter(value -> !laneBusy(value))
                         .sorted(Comparator.comparing(TaskState::createdAt))
                         .findFirst();
                 if (candidate.isPresent()) {
@@ -757,9 +806,25 @@ public final class TaskService {
         }
     }
 
+    private static void assertOwner(TaskState task, TaskOrigin origin) {
+        if (task == null || origin == null || !java.util.Objects.equals(task.origin().principalId(), origin.principalId())) {
+            throw new SecurityException("task is not visible to this MCP principal");
+        }
+    }
+
+    private boolean laneBusy(TaskState candidate) {
+        return tasks.values().stream()
+                .filter(value -> !value.id().equals(candidate.id()))
+                .filter(value -> value.machineId().equals(candidate.machineId()))
+                .filter(value -> value.laneKey().equals(candidate.laneKey()))
+                .anyMatch(value -> TaskStatus.DISPATCHING.equals(value.status())
+                        || TaskStatus.RUNNING.equals(value.status())
+                        || TaskStatus.CANCEL_REQUESTED.equals(value.status()));
+    }
+
     private static ExecutionContract buildContract(CreateTaskRequest request, MachineView machine,
                                                     TaskCommand original, String capability,
-                                                    String taskId, Instant createdAt) {
+                                                    String taskId, Instant createdAt, TaskOrigin origin) {
         var supplied = original.contract();
         var mode = request.scopeMode() != null ? request.scopeMode()
                 : supplied != null ? supplied.scopeMode()
@@ -773,7 +838,11 @@ public final class TaskService {
                 && mode != ScopeMode.PROJECT && mode != ScopeMode.WORKTREE) {
             scopeRoot = machine.workspaceRoot();
         }
-        var sessionId = firstNonBlank(request.sessionId(), supplied == null ? null : supplied.sessionId());
+        // The MCP transport session is the safest default correlation value.
+        // A caller-supplied session_id remains useful for admin/legacy clients,
+        // but it never overrides the authenticated connection owner.
+        var sessionId = firstNonBlank(origin == null ? null : origin.connectionId(),
+                firstNonBlank(request.sessionId(), supplied == null ? null : supplied.sessionId()));
         if (sessionId == null) {
             sessionId = request.idempotencyKey().isBlank()
                     ? "session_" + taskId.substring(Math.max(0, taskId.length() - 24))
@@ -1028,8 +1097,8 @@ public final class TaskService {
         };
     }
 
-    private static String idempotencyKey(String machineId, String key) {
-        return machineId + "\u0000" + key;
+    private static String idempotencyKey(String machineId, String principalId, String key) {
+        return machineId + "\u0000" + principalId + "\u0000" + key;
     }
 
     private static boolean sameCommand(TaskCommand left, TaskCommand right) {

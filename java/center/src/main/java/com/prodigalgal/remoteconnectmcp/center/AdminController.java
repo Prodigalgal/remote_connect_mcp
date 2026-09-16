@@ -33,6 +33,7 @@ public final class AdminController {
     private final CenterTokenConfig tokens;
     private final AgentRegistry agents;
     private final TaskService tasks;
+    private final McpPrincipalService principals;
     private final EnrollmentTokenService enrollments;
     private final UpgradeService upgrades;
     private final AgentConfigurationService configurations;
@@ -45,7 +46,7 @@ public final class AdminController {
 
     @org.springframework.beans.factory.annotation.Autowired
     public AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
-                           EnrollmentTokenService enrollments, UpgradeService upgrades,
+                           McpPrincipalService principals, EnrollmentTokenService enrollments, UpgradeService upgrades,
                            AgentConfigurationService configurations, CenterAsyncExecutor async,
                            ObjectProvider<AgentWakeRegistry> wakeProvider,
                            ProjectService projects,
@@ -55,6 +56,7 @@ public final class AdminController {
         this.tokens = tokens;
         this.agents = agents;
         this.tasks = tasks;
+        this.principals = principals;
         this.enrollments = enrollments;
         this.upgrades = upgrades;
         this.configurations = configurations;
@@ -70,7 +72,7 @@ public final class AdminController {
     AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                     EnrollmentTokenService enrollments, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
-        this(tokens, agents, tasks, enrollments, upgrades, configurations, async, null, null, null, null, null);
+        this(tokens, agents, tasks, null, enrollments, upgrades, configurations, async, null, null, null, null, null);
     }
 
     /**
@@ -359,6 +361,58 @@ public final class AdminController {
         });
     }
 
+    /** Issue one opaque user MCP token; plaintext is returned exactly once. */
+    @PostMapping("/mcp-tokens")
+    public CompletableFuture<ResponseEntity<?>> issueMcpToken(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestBody(required = false) IssueMcpTokenRequest request) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (principals == null) throw new IllegalStateException("MCP principal service is unavailable");
+            var body = request == null ? new IssueMcpTokenRequest("", "", null, java.util.Set.of()) : request;
+            var issued = principals.issue(new McpPrincipalService.IssueRequest(body.principalId(), body.displayName(),
+                    body.expiresInSeconds(), body.scopes()));
+            signalChange();
+            if (audit != null) audit.record("mcp-token.issue", "admin", null, null, null, "medium", "accepted",
+                    "token_id=" + issued.tokenId() + ",principal_id=" + issued.principalId());
+            return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
+                    "token_id", issued.tokenId(), "principal_id", issued.principalId(),
+                    "display_name", issued.displayName(), "scopes", issued.scopes(),
+                    "expires_at", issued.expiresAt() == null ? "" : issued.expiresAt(),
+                    "token", issued.token()));
+        });
+    }
+
+    @GetMapping("/mcp-tokens")
+    public CompletableFuture<ResponseEntity<?>> mcpTokens(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestParam(defaultValue = "50") int limit) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (principals == null) throw new IllegalStateException("MCP principal service is unavailable");
+            var items = principals.list(offset, limit);
+            var total = principals.count();
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
+        });
+    }
+
+    @PostMapping("/mcp-tokens/{tokenId}/revoke")
+    public CompletableFuture<ResponseEntity<?>> revokeMcpToken(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String tokenId) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (principals == null) throw new IllegalStateException("MCP principal service is unavailable");
+            var revoked = principals.revoke(tokenId);
+            if (revoked) signalChange();
+            if (audit != null) audit.record("mcp-token.revoke", "admin", null, null, null, "medium",
+                    revoked ? "accepted" : "not_found", "token_id_present=" + (tokenId != null && !tokenId.isBlank()));
+            return ResponseEntity.ok(Map.of("token_id", tokenId == null ? "" : tokenId, "revoked", revoked));
+        });
+    }
+
     private static Boolean bool(Object value) {
         if (value == null) return Boolean.FALSE;
         if (value instanceof Boolean flag) return flag;
@@ -543,5 +597,12 @@ public final class AdminController {
     public record IssueEnrollmentRequest(
             @JsonProperty("requested_name") String requestedName,
             @JsonProperty("expires_in_seconds") Long expiresInSeconds) {
+    }
+
+    public record IssueMcpTokenRequest(
+            @JsonProperty("principal_id") String principalId,
+            @JsonProperty("display_name") String displayName,
+            @JsonProperty("expires_in_seconds") Long expiresInSeconds,
+            java.util.Set<String> scopes) {
     }
 }

@@ -42,7 +42,7 @@ final class JdbcTaskStore {
     static final String SELECT_TASK_META = """
             SELECT t.task_id, t.agent_id, t.kind, t.required_capability, t.command_text,
                    t.cwd, t.environment, t.desktop_action, t.timeout_seconds,
-                   t.idempotency_key, t.status, t.lease_until, t.attempt,
+                   t.idempotency_key, t.principal_id, t.connection_id, t.lane_key, t.status, t.lease_until, t.attempt,
                    t.output_bytes, t.output_truncated, t.error_text, t.exit_code, t.created_at,
                    t.dispatched_at, t.started_at, t.finished_at, t.updated_at, t.execution_contract,
                    NULL::bytea AS output_data, a.bytes AS artifact_bytes, a.mime_type AS artifact_mime,
@@ -65,12 +65,19 @@ final class JdbcTaskStore {
         this.artifactStore = Objects.requireNonNull(artifactStore, "artifactStore");
     }
 
+    /** Compatibility entry point for Agent/admin callers without a user owner. */
     TaskView create(String taskId, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt) {
+        return create(taskId, machineId, command, idempotencyKey, createdAt, TaskOrigin.shared());
+    }
+
+    TaskView create(String taskId, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt,
+                    TaskOrigin origin) {
         var normalizedKey = idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey;
+        var normalizedOrigin = origin == null ? TaskOrigin.shared() : origin;
         try {
             return transactions.execute(status -> {
                 if (normalizedKey != null) {
-                    var existing = findByIdempotency(machineId, normalizedKey, true);
+                    var existing = findByIdempotency(machineId, normalizedOrigin.principalId(), normalizedKey, true);
                     if (existing != null) {
                         if (sameCommand(existing.command(), command)) {
                             return new TaskView(existing);
@@ -78,7 +85,7 @@ final class JdbcTaskStore {
                         throw new IllegalArgumentException("idempotency key is already used with different task parameters");
                     }
                 }
-                var state = new TaskState(taskId, machineId, command, normalizedKey, createdAt);
+                var state = new TaskState(taskId, machineId, command, normalizedKey, createdAt, normalizedOrigin);
                 insert(state);
                 return new TaskView(state);
             });
@@ -87,7 +94,7 @@ final class JdbcTaskStore {
             // database key wins; re-read the committed row and preserve the
             // idempotent response instead of exposing a spurious 500.
             if (normalizedKey != null) {
-                var existing = findByIdempotency(machineId, normalizedKey, false);
+                var existing = findByIdempotency(machineId, normalizedOrigin.principalId(), normalizedKey, false);
                 if (existing != null && sameCommand(existing.command(), command)) {
                     return new TaskView(existing);
                 }
@@ -237,6 +244,11 @@ final class JdbcTaskStore {
             var queued = jdbc.query((SELECT_TASK_META + """
                      WHERE t.agent_id = ? AND t.status = ?
                        AND t.required_capability IN (%s)
+                       AND NOT EXISTS (
+                           SELECT 1 FROM rcm_task active
+                            WHERE active.lane_key = t.lane_key
+                              AND active.status IN (?, ?, ?)
+                       )
                      ORDER BY t.created_at, t.task_id
                      LIMIT 1 FOR UPDATE OF t SKIP LOCKED
                     """).formatted(capabilityPlaceholders), ps -> {
@@ -244,6 +256,9 @@ final class JdbcTaskStore {
                 ps.setString(index++, machineId);
                 ps.setString(index++, TaskStatus.QUEUED);
                 for (var capability : capabilities) ps.setString(index++, capability);
+                ps.setString(index++, TaskStatus.DISPATCHING);
+                ps.setString(index++, TaskStatus.RUNNING);
+                ps.setString(index, TaskStatus.CANCEL_REQUESTED);
             }, (rs, rowNum) -> readState(rs));
             var selected = queued.stream()
                     .filter(task -> capabilities.contains(task.command().requiredCapability()))
@@ -589,11 +604,13 @@ final class JdbcTaskStore {
                 INSERT INTO rcm_task (
                     task_id, agent_id, kind, required_capability, command_text, cwd,
                     environment, desktop_action, timeout_seconds, idempotency_key,
+                    principal_id, connection_id, lane_key,
                     status, lease_until, attempt, output_bytes, output_truncated,
                     error_text, created_at, dispatched_at, started_at, finished_at, updated_at, execution_contract
-                ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, 0, 0, false, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb))
+                ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, 0, 0, false, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb))
                 """, state.id(), state.machineId(), command.kind().wireValue(), command.requiredCapability(), command.command(),
-                command.cwd(), env, desktop, command.timeoutSeconds(), state.idempotencyKey(), state.status(), null,
+                command.cwd(), env, desktop, command.timeoutSeconds(), state.idempotencyKey(), state.origin().principalId(),
+                state.origin().connectionId(), state.laneKey(), state.status(), null,
                 null, timestamp(state.createdAt()), null, null, null, timestamp(state.createdAt()), contract);
         jdbc.update("INSERT INTO rcm_task_output(task_id, output_data, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", state.id(), new byte[0]);
     }
@@ -604,11 +621,12 @@ final class JdbcTaskStore {
                 rs -> rs.next() ? readState(rs) : null);
     }
 
-    private TaskState findByIdempotency(String machineId, String key, boolean forUpdate) {
+    private TaskState findByIdempotency(String machineId, String principalId, String key, boolean forUpdate) {
         var suffix = forUpdate ? " FOR UPDATE OF t" : "";
-        return jdbc.query(SELECT_TASK_META + " WHERE t.agent_id = ? AND t.idempotency_key = ?" + suffix, ps -> {
+        return jdbc.query(SELECT_TASK_META + " WHERE t.agent_id = ? AND t.principal_id = ? AND t.idempotency_key = ?" + suffix, ps -> {
             ps.setString(1, machineId);
-            ps.setString(2, key);
+            ps.setString(2, principalId);
+            ps.setString(3, key);
         }, rs -> rs.next() ? readState(rs) : null);
     }
 
@@ -691,7 +709,9 @@ final class JdbcTaskStore {
                 rs.getBoolean("output_truncated"), instant(rs, "dispatched_at"), instant(rs, "started_at"), instant(rs, "finished_at"),
                 instant(rs, "lease_until"), output == null ? new byte[0] : output,
                 artifactBytes, rs.getString("artifact_mime"), rs.getString("artifact_sha256"),
-                artifactData == null ? new byte[0] : artifactData);
+                artifactData == null ? new byte[0] : artifactData,
+                new TaskOrigin(rs.getString("principal_id"), TaskOrigin.COMPAT_TOKEN, rs.getString("connection_id")),
+                rs.getString("lane_key"));
         state.outputBytes(rs.getLong("output_bytes"));
         return state;
     }

@@ -1,8 +1,10 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.modelcontextprotocol.common.McpTransportContext;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.server.McpServer;
+import io.modelcontextprotocol.server.McpAsyncServerExchange;
 import io.modelcontextprotocol.server.McpAsyncServer;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.server.transport.HttpServletStreamableServerTransportProvider;
@@ -29,6 +31,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.UpgradeArtifact;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -38,7 +41,7 @@ import java.util.concurrent.Executors;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
+import java.util.function.BiFunction;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import org.springframework.beans.factory.annotation.Value;
@@ -87,7 +90,9 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         ProjectRegistrationRequest.class, ProjectWorktreeRequest.class,
         ProjectGitOperationRequest.class, ProjectView.class, WorktreeView.class,
         AuditEventView.class,
-        AdminController.IssueEnrollmentRequest.class, TaskService.ArtifactGcResult.class})
+        AdminController.IssueEnrollmentRequest.class, AdminController.IssueMcpTokenRequest.class,
+        McpPrincipalService.IssueRequest.class, McpPrincipalService.IssuedToken.class,
+        McpTokenView.class, TaskService.ArtifactGcResult.class})
 public class McpConfiguration {
     private static final int MAX_MACHINE_PAGE = 50;
     private static final int MAX_OUTPUT_PAGE = 64 * 1024;
@@ -98,7 +103,8 @@ public class McpConfiguration {
     private static final int MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024;
 
     @Bean
-    public HttpServletStreamableServerTransportProvider mcpTransport(CenterTokenConfig tokens) {
+    public HttpServletStreamableServerTransportProvider mcpTransport(CenterTokenConfig tokens,
+                                                                      McpPrincipalService principals) {
         ServerTransportSecurityValidator security = headers -> {
             var authorization = headers.entrySet().stream()
                     .filter(entry -> "authorization".equalsIgnoreCase(entry.getKey()))
@@ -107,7 +113,7 @@ public class McpConfiguration {
                     .orElse("");
             var parts = authorization.trim().split("\\s+", 2);
             var bearer = parts.length == 2 && "Bearer".equalsIgnoreCase(parts[0]) ? parts[1].trim() : "";
-            if (!tokens.acceptsMcp(bearer)) {
+            if (principals.resolve(bearer).isEmpty()) {
                 throw new ServerTransportSecurityException(401, "invalid MCP bearer token");
             }
         };
@@ -115,6 +121,15 @@ public class McpConfiguration {
                 .mcpEndpoint("/mcp")
                 .disallowDelete(true)
                 .maxRequestSize(256 * 1024)
+                // The SDK carries this immutable transport metadata into the
+                // async tool exchange, so authorization never depends on a
+                // ThreadLocal surviving a scheduler hop.
+                .contextExtractor((HttpServletRequest request) -> {
+                    var principal = principals.resolve(request.getHeader("Authorization") == null
+                            ? "" : bearerValue(request.getHeader("Authorization")))
+                            .orElseThrow(() -> new ServerTransportSecurityException(401, "invalid MCP bearer token"));
+                    return McpTransportContext.create(Map.of("rcm.principal", principal));
+                })
                 .securityValidator(security)
                 .build();
     }
@@ -157,10 +172,10 @@ public class McpConfiguration {
         return List.of(
                 tool("machines_list", "List a bounded page of registered machines.", schema(
                         Map.of("offset", integer("zero-based offset"), "limit", integer("1-50 page size")), List.of()),
-                        request -> machinesList(agents, request), scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesList(agents, request); }, scheduler),
                 tool("machine_info", "Show one machine's platform, capabilities, scope and heartbeat.", schema(
                         Map.of("machine_id", string("machine ID from machines_list")), List.of("machine_id")),
-                        request -> machineInfo(agents, request), scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machineInfo(agents, request); }, scheduler),
                 tool("project", "List, register, remove projects or queue one isolated Git/worktree operation on a selected machine.", schema(
                         Map.ofEntries(
                             Map.entry("operation", string("list, register, remove, worktree_create, worktree_remove, git_status, git_diff, git_log, git_commit, git_merge, or git_merge_abort")),
@@ -177,7 +192,7 @@ public class McpConfiguration {
                                 Map.entry("offset", integer("project list offset")),
                                 Map.entry("limit", integer("project list page size, at most 50")),
                                 Map.entry("idempotency_key", string("stable retry key"))),
-                        List.of("operation")), request -> project(projects, request), scheduler),
+                        List.of("operation")), (exchange, request) -> { requireScope(exchange, "mcp:project"); return project(projects, origin(exchange), request); }, scheduler),
                 tool("desktop", "Queue a bounded screenshot, screen listing, launch, pointer, drag, key, text, clipboard, or window-focus action on an explicitly desktop-capable user-session Agent.", schema(
                         Map.ofEntries(
                                 Map.entry("operation", string("screenshot, screenshot_region, screens, launch, click, double_click, right_click, move, drag, key, type, clipboard_read, clipboard_write, focus, or result")),
@@ -205,7 +220,7 @@ public class McpConfiguration {
                                 Map.entry("session_id", string("optional stable user/session identifier")),
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
-                        List.of("operation")), request -> desktop(agents, tasks, projects, request), scheduler),
+                        List.of("operation")), (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktop(agents, tasks, projects, origin(exchange), request); }, scheduler),
                 tool("browser", "Queue one bounded browser adapter request on an explicitly browser-capable Agent.", schema(
                         Map.ofEntries(
                                 Map.entry("machine_id", string("command-agent machine ID with browser capability")),
@@ -221,7 +236,7 @@ public class McpConfiguration {
                                 Map.entry("session_id", string("optional stable user/session identifier")),
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
-                        List.of("machine_id", "command")), request -> browser(agents, tasks, projects, request), scheduler),
+                        List.of("machine_id", "command")), (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browser(agents, tasks, projects, origin(exchange), request); }, scheduler),
                 tool("command_start", "Queue a shell command and return immediately with a durable task ID.", schema(
                         Map.ofEntries(
                                 Map.entry("machine_id", string("target machine ID")),
@@ -238,20 +253,20 @@ public class McpConfiguration {
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
                         List.of("machine_id", "command")),
-                        request -> commandStart(agents, tasks, projects, request), scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandStart(agents, tasks, projects, origin(exchange), request); }, scheduler),
                 tool("task_wait", "Read task state and one bounded output page; optionally wait briefly for a change.", schema(
                         Map.of("task_id", string("task ID"), "cursor", integer("known output cursor"), "wait_ms", integer("0-20000")), List.of("task_id")),
-                        request -> taskWait(tasks, request), scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskWait(tasks, origin(exchange), request); }, scheduler),
                 tool("task_output", "Read one bounded output page from a byte cursor.", schema(
                         Map.of("task_id", string("task ID"), "cursor", integer("known output cursor"), "limit", integer("maximum 65536 bytes")), List.of("task_id")),
-                        request -> taskOutput(tasks, request), scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskOutput(tasks, origin(exchange), request); }, scheduler),
                 tool("task_cancel", "Cancel a queued or running task.", schema(
                         Map.of("task_id", string("task ID")), List.of("task_id")),
-                        request -> taskCancel(tasks, request), scheduler));
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancel(tasks, origin(exchange), request); }, scheduler));
     }
 
     private static McpServerFeatures.AsyncToolSpecification tool(String name, String description, Map<String, Object> schema,
-                                                                   Function<McpSchema.CallToolRequest, McpSchema.CallToolResult> handler,
+                                                                   BiFunction<McpAsyncServerExchange, McpSchema.CallToolRequest, McpSchema.CallToolResult> handler,
                                                                    reactor.core.scheduler.Scheduler scheduler) {
         var annotations = McpSchema.ToolAnnotations.builder()
                 .readOnlyHint(name.equals("machines_list") || name.equals("machine_info") || name.equals("task_wait") || name.equals("task_output"))
@@ -265,7 +280,7 @@ public class McpConfiguration {
                 .build();
         return McpServerFeatures.AsyncToolSpecification.builder()
                 .tool(tool)
-                .callHandler((exchange, request) -> Mono.fromCallable(() -> handler.apply(request)).subscribeOn(scheduler))
+                .callHandler((exchange, request) -> Mono.fromCallable(() -> handler.apply(exchange, request)).subscribeOn(scheduler))
                 .build();
     }
 
@@ -324,7 +339,8 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult project(ProjectService projects, McpSchema.CallToolRequest request) {
+    private static McpSchema.CallToolResult project(ProjectService projects, TaskOrigin origin,
+                                                    McpSchema.CallToolRequest request) {
         try {
             var args = args(request, ProjectArgs.class);
             var operation = args.operation() == null ? "" : args.operation().trim().toLowerCase(java.util.Locale.ROOT);
@@ -346,17 +362,17 @@ public class McpConfiguration {
                         args.machineId(), args.name(), args.rootPath(), args.repositoryPath(), args.defaultRef()))));
                 case "remove" -> json(Map.of("project", projects.remove(args.projectId())));
                 case "worktree_create" -> {
-                    var value = projects.createWorktree(args.projectId(), new ProjectWorktreeRequest(args.ref(), args.idempotencyKey()));
+                    var value = projects.createWorktree(args.projectId(), new ProjectWorktreeRequest(args.ref(), args.idempotencyKey()), origin);
                     yield json(Map.of("worktree", value, "next_action", "use task_wait with the returned task_id, then submit project-scoped tasks"));
                 }
                 case "worktree_remove" -> {
-                    var value = projects.removeWorktree(args.projectId(), args.worktreeId(), args.idempotencyKey());
+                    var value = projects.removeWorktree(args.projectId(), args.worktreeId(), args.idempotencyKey(), origin);
                     yield json(Map.of("worktree", value, "next_action", "use task_wait with the returned task_id"));
                 }
                 case "git_status", "git_diff", "git_log", "git_commit", "git_merge", "git_merge_abort" -> {
                     var gitOperation = operation.substring("git_".length());
                     var value = projects.gitOperation(args.projectId(), gitOperation,
-                            new ProjectGitOperationRequest(args.worktreeId(), args.ref(), args.message(), args.mode(), args.idempotencyKey()));
+                            new ProjectGitOperationRequest(args.worktreeId(), args.ref(), args.message(), args.mode(), args.idempotencyKey()), origin);
                     yield json(Map.of("task", taskMap(value),
                             "next_action", "use task_wait or task_output with the returned task_id"));
                 }
@@ -368,7 +384,8 @@ public class McpConfiguration {
     }
 
     private static McpSchema.CallToolResult commandStart(AgentRegistry agents, TaskService tasks,
-                                                         ProjectService projects, McpSchema.CallToolRequest request) {
+                                                         ProjectService projects, TaskOrigin origin,
+                                                         McpSchema.CallToolRequest request) {
         try {
             var args = args(request, CommandArgs.class);
             var timeout = args.timeoutSeconds() == null ? 0 : args.timeoutSeconds();
@@ -378,7 +395,7 @@ public class McpConfiguration {
                     null, args.command(), scope.cwd(), args.env(), timeout, null, Instant.now());
             var task = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
-                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())), "mcp");
+                    args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
             return json(Map.of("task", taskMap(task), "next_action", "use task_wait or task_output with this task_id"));
         } catch (Exception exception) {
             return error(exception);
@@ -386,7 +403,8 @@ public class McpConfiguration {
     }
 
     private static McpSchema.CallToolResult browser(AgentRegistry agents, TaskService tasks,
-                                                    ProjectService projects, McpSchema.CallToolRequest request) {
+                                                    ProjectService projects, TaskOrigin origin,
+                                                    McpSchema.CallToolRequest request) {
         try {
             var args = args(request, BrowserArgs.class);
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
@@ -398,10 +416,11 @@ public class McpConfiguration {
                     "browser", args.command(), scope.cwd(), Map.of(), timeout, null, Instant.now());
             var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
-                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())), "mcp");
+                    args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
             var waitMs = args.waitMs() == null ? 0 : args.waitMs();
             if (waitMs < 0 || waitMs > 15000) throw new IllegalArgumentException("wait_ms must be between 0 and 15000");
-            if (waitMs > 0) return taskResult(tasks, tasks.waitForTerminal(created.id(), Duration.ofMillis(waitMs)), 0, 16 * 1024);
+            if (waitMs > 0) return taskResult(tasks, origin,
+                    tasks.waitForTerminal(origin, created.id(), Duration.ofMillis(waitMs)), 0, 16 * 1024);
             return json(Map.of("task", taskMap(created), "next_action", "use task_wait or task_output with this task_id"));
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -412,7 +431,8 @@ public class McpConfiguration {
     }
 
     private static McpSchema.CallToolResult desktop(AgentRegistry agents, TaskService tasks,
-                                                    ProjectService projects, McpSchema.CallToolRequest request) {
+                                                    ProjectService projects, TaskOrigin origin,
+                                                    McpSchema.CallToolRequest request) {
         try {
             var args = args(request, DesktopArgs.class);
             var operation = args.operation() == null ? "" : args.operation().trim().toLowerCase();
@@ -422,13 +442,13 @@ public class McpConfiguration {
             var waitMs = args.waitMs() == null ? 0 : args.waitMs();
             if (waitMs < 0 || waitMs > 15000) throw new IllegalArgumentException("wait_ms must be between 0 and 15000");
             if ("result".equals(operation)) {
-                var taskState = tasks.find(args.taskId()).orElseThrow(() -> new IllegalArgumentException("task not found"));
+                var taskState = tasks.findFor(origin, args.taskId()).orElseThrow(() -> new IllegalArgumentException("task not found"));
                 if (!"desktop".equals(taskState.command().kind().wireValue())) throw new IllegalArgumentException("task is not a desktop task");
                 var task = new TaskView(taskState);
                 if (waitMs > 0 && !TaskStatus.terminal(task.status())) {
-                    task = tasks.waitForTerminal(task.id(), Duration.ofMillis(waitMs));
+                    task = tasks.waitForTerminal(origin, task.id(), Duration.ofMillis(waitMs));
                 }
-                return desktopResult(tasks, task);
+                return desktopResult(tasks, origin, task);
             }
             if (!"screenshot".equals(operation) && !"screenshot_region".equals(operation) && !"screens".equals(operation) && !"launch".equals(operation)
                     && !"click".equals(operation) && !"double_click".equals(operation) && !"right_click".equals(operation)
@@ -449,10 +469,10 @@ public class McpConfiguration {
                     "desktop", null, scope.cwd(), Map.of(), timeout, action, Instant.now());
             var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
-                    args.risk(), Boolean.TRUE.equals(args.elevationRequired())), "mcp");
+                    args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
             if (waitMs > 0) {
-                var completed = tasks.waitForTerminal(created.id(), Duration.ofMillis(waitMs));
-                return desktopResult(tasks, completed);
+                var completed = tasks.waitForTerminal(origin, created.id(), Duration.ofMillis(waitMs));
+                return desktopResult(tasks, origin, completed);
             }
             return json(Map.of("task", taskMap(created), "next_action", "call desktop with operation=result and this task_id"));
         } catch (InterruptedException exception) {
@@ -463,11 +483,11 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult desktopResult(TaskService tasks, TaskView task) {
+    private static McpSchema.CallToolResult desktopResult(TaskService tasks, TaskOrigin origin, TaskView task) {
         if (!TaskStatus.terminal(task.status())) {
             return json(Map.of("task", taskMap(task), "next_action", "retry operation=result later"));
         }
-        var page = tasks.readOutput(task.id(), 0, 16 * 1024);
+        var page = tasks.readOutput(origin, task.id(), 0, 16 * 1024);
         var output = new LinkedHashMap<String, Object>();
         output.put("text", new String(page.data(), StandardCharsets.UTF_8));
         output.put("cursor", page.cursor());
@@ -492,7 +512,7 @@ public class McpConfiguration {
         // Only load bytes when the bounded MCP response can actually inline
         // them. Large downloads and non-image artifacts remain metadata-only;
         // the authenticated Console endpoint performs the full read on demand.
-        var artifact = tasks.readArtifact(task.id());
+        var artifact = tasks.readArtifact(origin, task.id());
         if (artifact.isEmpty()) return json(resultPayload);
         var value = artifact.get();
         artifactMetadata.put("sha256", value.sha256());
@@ -522,7 +542,8 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult taskWait(TaskService tasks, McpSchema.CallToolRequest request) {
+    private static McpSchema.CallToolResult taskWait(TaskService tasks, TaskOrigin origin,
+                                                     McpSchema.CallToolRequest request) {
         try {
             var args = args(request, TaskWaitArgs.class);
             var cursor = args.cursor() == null ? 0 : args.cursor();
@@ -530,9 +551,9 @@ public class McpConfiguration {
             if (waitMs < 0 || waitMs > 20000) {
                 throw new IllegalArgumentException("wait_ms must be between 0 and 20000");
             }
-            var task = tasks.find(args.taskId()).orElseThrow(() -> new IllegalArgumentException("task not found"));
-            var view = waitMs == 0 ? new TaskView(task) : tasks.waitForChange(args.taskId(), cursor, Duration.ofMillis(waitMs));
-            return taskResult(tasks, view, cursor, 16 * 1024);
+            var task = tasks.findFor(origin, args.taskId()).orElseThrow(() -> new IllegalArgumentException("task not found"));
+            var view = waitMs == 0 ? new TaskView(task) : tasks.waitForChange(origin, args.taskId(), cursor, Duration.ofMillis(waitMs));
+            return taskResult(tasks, origin, view, cursor, 16 * 1024);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return error(exception);
@@ -541,7 +562,8 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult taskOutput(TaskService tasks, McpSchema.CallToolRequest request) {
+    private static McpSchema.CallToolResult taskOutput(TaskService tasks, TaskOrigin origin,
+                                                       McpSchema.CallToolRequest request) {
         try {
             var args = args(request, TaskOutputArgs.class);
             var cursor = args.cursor() == null ? 0 : args.cursor();
@@ -549,24 +571,26 @@ public class McpConfiguration {
             if (limit < 1 || limit > MAX_OUTPUT_PAGE) {
                 throw new IllegalArgumentException("limit must be between 1 and " + MAX_OUTPUT_PAGE);
             }
-            var task = tasks.find(args.taskId()).orElseThrow(() -> new IllegalArgumentException("task not found"));
-            return taskResult(tasks, new TaskView(task), cursor, limit);
+            var task = tasks.findFor(origin, args.taskId()).orElseThrow(() -> new IllegalArgumentException("task not found"));
+            return taskResult(tasks, origin, new TaskView(task), cursor, limit);
         } catch (Exception exception) {
             return error(exception);
         }
     }
 
-    private static McpSchema.CallToolResult taskCancel(TaskService tasks, McpSchema.CallToolRequest request) {
+    private static McpSchema.CallToolResult taskCancel(TaskService tasks, TaskOrigin origin,
+                                                       McpSchema.CallToolRequest request) {
         try {
             var args = args(request, TaskCancelArgs.class);
-            return json(Map.of("task", taskMap(tasks.cancel(args.taskId()))));
+            return json(Map.of("task", taskMap(tasks.cancel(origin, args.taskId()))));
         } catch (Exception exception) {
             return error(exception);
         }
     }
 
-    private static McpSchema.CallToolResult taskResult(TaskService tasks, TaskView view, long cursor, int limit) {
-        var page = tasks.readOutput(view.id(), cursor, limit);
+    private static McpSchema.CallToolResult taskResult(TaskService tasks, TaskOrigin origin,
+                                                       TaskView view, long cursor, int limit) {
+        var page = tasks.readOutput(origin, view.id(), cursor, limit);
         var output = new LinkedHashMap<String, Object>();
         output.put("text", new String(page.data(), StandardCharsets.UTF_8));
         output.put("cursor", page.cursor());
@@ -593,7 +617,7 @@ public class McpConfiguration {
         payload.put("output", output);
         payload.put("artifact", metadata);
         if (!inlineImage) return json(payload);
-        var artifact = tasks.readArtifact(view.id());
+        var artifact = tasks.readArtifact(origin, view.id());
         if (artifact.isEmpty()) return json(payload);
         var value = artifact.get();
         metadata.put("sha256", value.sha256());
@@ -746,6 +770,33 @@ public class McpConfiguration {
         var root = requestedRoot == null || requestedRoot.isBlank() ? machine.workspaceRoot() : requestedRoot.trim();
         if (mode == ScopeMode.UNRESTRICTED) root = null;
         return new ResolvedScope(requestedCwd == null || requestedCwd.isBlank() ? null : requestedCwd.trim(), root, mode);
+    }
+
+    private static TaskOrigin origin(McpAsyncServerExchange exchange) {
+        if (exchange == null || exchange.transportContext() == null) {
+            throw new SecurityException("MCP transport principal is missing");
+        }
+        var value = exchange.transportContext().get("rcm.principal");
+        if (!(value instanceof McpPrincipal principal)) {
+            throw new SecurityException("MCP transport principal is missing");
+        }
+        return principal.taskOrigin(exchange.sessionId());
+    }
+
+    private static void requireScope(McpAsyncServerExchange exchange, String scope) {
+        if (exchange == null || exchange.transportContext() == null) {
+            throw new SecurityException("MCP transport principal is missing");
+        }
+        var value = exchange.transportContext().get("rcm.principal");
+        if (!(value instanceof McpPrincipal principal) || !principal.allows(scope)) {
+            throw new SecurityException("MCP token is missing required scope: " + scope);
+        }
+    }
+
+    private static String bearerValue(String authorization) {
+        if (authorization == null) return "";
+        var parts = authorization.trim().split("\\s+", 2);
+        return parts.length == 2 && "Bearer".equalsIgnoreCase(parts[0]) ? parts[1].trim() : "";
     }
 
     private static McpSchema.CallToolResult json(Object value) {

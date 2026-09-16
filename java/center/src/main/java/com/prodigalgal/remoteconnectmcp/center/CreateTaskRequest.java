@@ -14,11 +14,20 @@ public record CreateTaskRequest(
         String scopeRoot,
         String sessionId,
         String risk,
-        boolean elevationRequired) {
+        boolean elevationRequired,
+        TaskOrigin origin) {
 
     /** Compatibility constructor for callers written before execution contracts. */
     public CreateTaskRequest(String machineId, TaskCommand command, String idempotencyKey) {
-        this(machineId, command, idempotencyKey, "", "", null, "", "", "low", false);
+        this(machineId, command, idempotencyKey, "", "", null, "", "", "low", false, TaskOrigin.shared());
+    }
+
+    /** Compatibility constructor for the pre-principal request shape. */
+    public CreateTaskRequest(String machineId, TaskCommand command, String idempotencyKey,
+                             String projectId, String worktreeId, ScopeMode scopeMode, String scopeRoot,
+                             String sessionId, String risk, boolean elevationRequired) {
+        this(machineId, command, idempotencyKey, projectId, worktreeId, scopeMode, scopeRoot,
+                sessionId, risk, elevationRequired, TaskOrigin.shared());
     }
 
     public CreateTaskRequest {
@@ -29,6 +38,7 @@ public record CreateTaskRequest(
         scopeRoot = scopeRoot == null ? "" : scopeRoot.trim();
         sessionId = sessionId == null ? "" : sessionId.trim();
         risk = risk == null ? "" : risk.trim();
+        origin = origin == null ? TaskOrigin.shared() : origin;
         if (command == null) {
             throw new IllegalArgumentException("command is required");
         }

@@ -1,0 +1,227 @@
+databaseChangeLog:
+  - changeSet:
+      id: 015-mcp-principals
+      author: remote-connect-mcp
+      labels: principals
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - createTable:
+            tableName: rcm_principal
+            columns:
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: kind
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: display_name
+                  type: varchar(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - createIndex:
+            indexName: idx_rcm_principal_status
+            tableName: rcm_principal
+            columns:
+              - column:
+                  name: status
+              - column:
+                  name: updated_at
+        - createTable:
+            tableName: rcm_mcp_token
+            columns:
+              - column:
+                  name: token_id
+                  type: varchar(180)
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: token_hash
+                  type: char(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: display_name
+                  type: varchar(256)
+              - column:
+                  name: scope_json
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: timestamptz
+              - column:
+                  name: revoked_at
+                  type: timestamptz
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_used_at
+                  type: timestamptz
+        - addForeignKeyConstraint:
+            baseTableName: rcm_mcp_token
+            baseColumnNames: principal_id
+            constraintName: fk_rcm_mcp_token_principal
+            referencedTableName: rcm_principal
+            referencedColumnNames: principal_id
+            onDelete: CASCADE
+        - addUniqueConstraint:
+            tableName: rcm_mcp_token
+            columnNames: token_hash
+            constraintName: uq_rcm_mcp_token_hash
+        - createIndex:
+            indexName: idx_rcm_mcp_token_principal
+            tableName: rcm_mcp_token
+            columns:
+              - column:
+                  name: principal_id
+              - column:
+                  name: revoked_at
+              - column:
+                  name: expires_at
+        - addColumn:
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+              - column:
+                  name: connection_id
+                  type: varchar(256)
+        - update:
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: principal_id
+                  value: owner/shared-domain
+              - column:
+                  name: connection_id
+                  value: legacy
+        - addNotNullConstraint:
+            tableName: rcm_task
+            columnName: principal_id
+            columnDataType: varchar(180)
+        - insert:
+            tableName: rcm_principal
+            columns:
+              - column:
+                  name: principal_id
+                  value: owner/shared-domain
+              - column:
+                  name: kind
+                  value: shared-compat
+              - column:
+                  name: display_name
+                  value: Compatibility shared domain
+              - column:
+                  name: status
+                  value: active
+              - column:
+                  name: created_at
+                  valueDate: "1970-01-01T00:00:00Z"
+              - column:
+                  name: updated_at
+                  valueDate: "1970-01-01T00:00:00Z"
+        - addForeignKeyConstraint:
+            baseTableName: rcm_task
+            baseColumnNames: principal_id
+            constraintName: fk_rcm_task_principal
+            referencedTableName: rcm_principal
+            referencedColumnNames: principal_id
+            onDelete: RESTRICT
+        - dropUniqueConstraint:
+            tableName: rcm_task
+            constraintName: uq_rcm_task_idempotency
+        - addUniqueConstraint:
+            tableName: rcm_task
+            columnNames: agent_id, principal_id, idempotency_key
+            constraintName: uq_rcm_task_principal_idempotency
+        - createIndex:
+            indexName: idx_rcm_task_principal_created
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: principal_id
+              - column:
+                  name: created_at
+        - createIndex:
+            indexName: idx_rcm_task_connection
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: connection_id
+              - column:
+                  name: created_at
+      rollback:
+        - dropIndex:
+            indexName: idx_rcm_task_connection
+            tableName: rcm_task
+        - dropIndex:
+            indexName: idx_rcm_task_principal_created
+            tableName: rcm_task
+        - dropUniqueConstraint:
+            tableName: rcm_task
+            constraintName: uq_rcm_task_principal_idempotency
+        - addUniqueConstraint:
+            tableName: rcm_task
+            columnNames: agent_id, idempotency_key
+            constraintName: uq_rcm_task_idempotency
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_task
+            constraintName: fk_rcm_task_principal
+        - dropColumn:
+            tableName: rcm_task
+            columnName: connection_id
+        - dropColumn:
+            tableName: rcm_task
+            columnName: principal_id
+        - dropIndex:
+            indexName: idx_rcm_mcp_token_principal
+            tableName: rcm_mcp_token
+        - dropUniqueConstraint:
+            tableName: rcm_mcp_token
+            constraintName: uq_rcm_mcp_token_hash
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_mcp_token
+            constraintName: fk_rcm_mcp_token_principal
+        - dropTable:
+            tableName: rcm_mcp_token
+        - dropIndex:
+            indexName: idx_rcm_principal_status
+            tableName: rcm_principal
+        - dropTable:
+            tableName: rcm_principal
