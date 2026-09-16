@@ -8,6 +8,7 @@ param(
     [string]$StageRoot = "",
     [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
     [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent",
+    [string]$NodePath = "",
     [ValidatePattern("^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")]
     [string]$DesktopUser = "",
     [string]$BrowserProfileDir = "",
@@ -73,7 +74,11 @@ $packageJson = Join-Path $runtime "package.json"
 if (-not (Test-Path -LiteralPath $packageJson)) {
     Set-Content -LiteralPath $packageJson -Value '{"name":"rcm-browser-runtime","private":true}' -Encoding UTF8
 }
-$node = (Get-Command node.exe -ErrorAction Stop).Source
+$node = if ([string]::IsNullOrWhiteSpace($NodePath)) {
+    (Get-Command node.exe -ErrorAction Stop).Source
+} else {
+    (Resolve-Path -LiteralPath $NodePath -ErrorAction Stop).Path
+}
 $nodeDirectory = Split-Path -Parent $node
 $npm = @(
     (Get-Command npm.cmd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
@@ -117,6 +122,7 @@ $applyLines = @(
     ('$version = {0}' -f (ConvertTo-PSLiteral $Version)),
     ('$installRoot = {0}' -f (ConvertTo-PSLiteral $InstallRoot)),
     ('$stateDir = {0}' -f (ConvertTo-PSLiteral $StateDir)),
+    ('$nodePath = {0}' -f (ConvertTo-PSLiteral $node)),
     ('$desktopUser = {0}' -f (ConvertTo-PSLiteral $DesktopUser)),
     ('$browserProfileDir = {0}' -f (ConvertTo-PSLiteral $BrowserProfileDir)),
     ('$browserEngine = {0}' -f (ConvertTo-PSLiteral $BrowserEngine)),
@@ -127,7 +133,7 @@ $applyLines = @(
     '  if ([string]::IsNullOrWhiteSpace($desktopUser)) { if (-not [string]::IsNullOrWhiteSpace($u)) { $desktopUser = $u.Substring($u.LastIndexOf([char]92) + 1) } }',
     '  if ([string]::IsNullOrWhiteSpace($desktopUser)) { throw "no interactive user; pass -DesktopUser for a not-yet-logged-in GUI host" }',
     '  $env:USERNAME = $desktopUser',
-    '  $node = (Get-Command node.exe -ErrorAction Stop).Source',
+    '  $node = $nodePath',
     '  $worker = Join-Path $stage "browser-runtime\browser-worker.mjs"',
     '  $adapter = ''"{0}" "{1}"'' -f $node, $worker',
     '  $installer = Join-Path $stage "install-java-agent.ps1"',
