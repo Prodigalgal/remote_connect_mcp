@@ -79,6 +79,11 @@ MCP 工具不要求模型传入 `principal_id` 或用户账号。Center 从认�
 - 车道 lease、任务状态和幂等关系持久化在 PostgreSQL，通知丢失时通过任务 ID 和游标恢复，
   不运行 Center 固定频率扫描。
 
+工作区策略由执行合同明确给出：写任务默认使用会话专属 `isolated` worktree；用户明确要求
+共同 checkout 时使用 `shared_serial` 并接受排队；整机/环境任务使用 `host`，独立进程仍然
+共享主机写车道。任务结果通过任务句柄和专属序列游标回传，不依赖 ChatGPT 的私有对话 ID，
+因此多个 Web 对话可以同时提交任务，但不会收到彼此的主动结果。
+
 ### Agent
 
 Agent 是执行信任边界；迁移目标为不带 Spring 的 Java 25 模块化 Native Image，负责：
