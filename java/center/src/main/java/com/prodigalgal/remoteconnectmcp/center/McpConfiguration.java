@@ -93,9 +93,11 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         AuditEventView.class,
         AdminController.IssueEnrollmentRequest.class, AdminController.IssueMcpTokenRequest.class,
         AdminController.MachineGrantRequest.class, AdminController.ProjectMemberRequest.class,
+        AdminController.SessionCloseRequest.class,
         McpPrincipalService.IssueRequest.class, McpPrincipalService.IssuedToken.class,
         McpTokenView.class, McpAccessService.MachineGrantView.class,
-        McpAccessService.ProjectMemberView.class, TaskService.ArtifactGcResult.class})
+        McpAccessService.ProjectMemberView.class, ExecutionSessionService.SessionView.class,
+        TaskService.ArtifactGcResult.class})
 public class McpConfiguration {
     private static final int MAX_MACHINE_PAGE = 50;
     private static final int MAX_OUTPUT_PAGE = 64 * 1024;

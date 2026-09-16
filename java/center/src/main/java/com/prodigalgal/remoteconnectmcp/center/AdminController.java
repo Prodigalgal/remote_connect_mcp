@@ -36,6 +36,7 @@ public final class AdminController {
     private final TaskService tasks;
     private final McpPrincipalService principals;
     private final McpAccessService access;
+    private final ExecutionSessionService sessions;
     private final EnrollmentTokenService enrollments;
     private final UpgradeService upgrades;
     private final AgentConfigurationService configurations;
@@ -49,6 +50,7 @@ public final class AdminController {
     @org.springframework.beans.factory.annotation.Autowired
     public AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                            McpPrincipalService principals, McpAccessService access,
+                           ExecutionSessionService sessions,
                            EnrollmentTokenService enrollments, UpgradeService upgrades,
                            AgentConfigurationService configurations, CenterAsyncExecutor async,
                            ObjectProvider<AgentWakeRegistry> wakeProvider,
@@ -61,6 +63,7 @@ public final class AdminController {
         this.tasks = tasks;
         this.principals = principals;
         this.access = access;
+        this.sessions = sessions;
         this.enrollments = enrollments;
         this.upgrades = upgrades;
         this.configurations = configurations;
@@ -76,7 +79,7 @@ public final class AdminController {
     AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                     EnrollmentTokenService enrollments, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
-        this(tokens, agents, tasks, null, null, enrollments, upgrades, configurations, async, null, null, null, null, null);
+        this(tokens, agents, tasks, null, null, null, enrollments, upgrades, configurations, async, null, null, null, null, null);
     }
 
     /**
@@ -515,6 +518,39 @@ public final class AdminController {
         });
     }
 
+    /** Bounded execution-session projection for recovery and support tooling. */
+    @GetMapping("/execution-sessions")
+    public CompletableFuture<ResponseEntity<?>> executionSessions(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "") String principalId,
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestParam(defaultValue = "50") int limit) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (sessions == null) throw new IllegalStateException("execution session service is unavailable");
+            var items = sessions.list(principalId, offset, limit);
+            var total = sessions.count(principalId);
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
+        });
+    }
+
+    /** Explicitly close one session; no background cleanup or timer is used. */
+    @PostMapping("/execution-sessions/close")
+    public CompletableFuture<ResponseEntity<?>> closeExecutionSession(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestBody(required = false) SessionCloseRequest request) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (sessions == null) throw new IllegalStateException("execution session service is unavailable");
+            var body = request == null ? new SessionCloseRequest("", "") : request;
+            var closed = sessions.close(new TaskOrigin(body.principalId(), "admin", "admin"), body.sessionId());
+            if (closed) signalChange();
+            return ResponseEntity.ok(Map.of("principal_id", body.principalId(), "session_id", body.sessionId(),
+                    "closed", closed));
+        });
+    }
+
     private static Boolean bool(Object value) {
         if (value == null) return Boolean.FALSE;
         if (value instanceof Boolean flag) return flag;
@@ -729,5 +765,10 @@ public final class AdminController {
             @JsonProperty("project_id") String projectId,
             java.util.Set<String> scopes,
             @JsonProperty("expires_in_seconds") Long expiresInSeconds) {
+    }
+
+    public record SessionCloseRequest(
+            @JsonProperty("principal_id") String principalId,
+            @JsonProperty("session_id") String sessionId) {
     }
 }

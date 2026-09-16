@@ -59,6 +59,7 @@ public final class TaskService {
     private final AgentWakeRegistry wakes;
     private final TaskChangeRegistry taskChanges;
     private final AuditService audit;
+    private final ExecutionSessionService sessions;
 
     @Autowired
     public TaskService(AgentRegistry agents, ObjectProvider<JdbcTemplate> jdbcProvider,
@@ -66,7 +67,8 @@ public final class TaskService {
                        ObjectProvider<AgentWakeRegistry> wakeProvider,
                        ObjectProvider<TaskChangeRegistry> taskChangeProvider,
                        ObjectProvider<ArtifactStore> artifactProvider,
-                       ObjectProvider<AuditService> auditProvider) {
+                       ObjectProvider<AuditService> auditProvider,
+                       ObjectProvider<ExecutionSessionService> sessionProvider) {
         this.agents = agents;
         var jdbc = jdbcProvider.getIfAvailable();
         var artifactStore = artifactProvider.getIfAvailable();
@@ -75,6 +77,7 @@ public final class TaskService {
         this.wakes = wakeProvider.getIfAvailable();
         this.taskChanges = taskChangeProvider.getIfAvailable();
         this.audit = auditProvider == null ? null : auditProvider.getIfAvailable();
+        this.sessions = sessionProvider == null ? null : sessionProvider.getIfAvailable();
     }
 
     TaskService(AgentRegistry agents) {
@@ -83,6 +86,7 @@ public final class TaskService {
         this.wakes = null;
         this.taskChanges = null;
         this.audit = null;
+        this.sessions = null;
     }
 
     /** Package-private constructor used by the PostgreSQL contract tests. */
@@ -92,6 +96,18 @@ public final class TaskService {
         this.wakes = null;
         this.taskChanges = null;
         this.audit = null;
+        this.sessions = null;
+    }
+
+    /** Package-private constructor for PostgreSQL session contract tests. */
+    TaskService(AgentRegistry agents, JdbcTemplate jdbc, TransactionTemplate transactions,
+                ExecutionSessionService sessions) {
+        this.agents = agents;
+        this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactions, new InMemoryArtifactStore());
+        this.wakes = null;
+        this.taskChanges = null;
+        this.audit = null;
+        this.sessions = sessions;
     }
 
     /**
@@ -144,6 +160,7 @@ public final class TaskService {
         var contract = buildContract(request, machine, original, capability, id, createdAt, origin);
         var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), createdAt, contract);
         ProtocolValidation.validateTask(command);
+        if (sessions != null) sessions.ensure(origin, contract);
 
         if (jdbcStore != null) {
             var created = jdbcStore.create(id, request.machineId(), command, request.idempotencyKey(), command.createdAt(), origin);

@@ -18,7 +18,7 @@
 
 ## 当前阶段：P0/P1 生产验收与 P2 规模化收口
 
-截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程和兼容实现已经完成，选定的 P2-01/03/04/07 的代码与 CI 门禁已完成；P1-02/03/04/08、P2-06 仍有明确的平台/协议代码缺口，保留 `[~]`。生产验收记录见 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)：生产 Java Center、Console 与 9 台在线 Agent 已在 `v0.1.28` 收敛，Linux GUI canary 已用 GitHub Actions preview `v0.0.0-main.57` 完成 Desktop screens/截图和 Browser navigate；Windows Desktop 交互会话、更多 Browser 场景、升级故障/回滚、Center 重启重试和告警通知仍待验收。P2-02 仍明确不做；原 P2-05 的完整多租户不做，轻量 `P2-05-lite` 已进入第一阶段代码实施（主体/Token、任务归属、幂等隔离、执行车道、机器/项目 ACL），会话持久化、配额和 Desktop/Browser 会话隔离待补，设计文档见 [`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)。
+截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程和兼容实现已经完成，选定的 P2-01/03/04/07 的代码与 CI 门禁已完成；P1-02/03/04/08、P2-06 仍有明确的平台/协议代码缺口，保留 `[~]`。生产验收记录见 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)：生产 Java Center、Console 与 9 台在线 Agent 已在 `v0.1.28` 收敛，Linux GUI canary 已用 GitHub Actions preview `v0.0.0-main.57` 完成 Desktop screens/截图和 Browser navigate；Windows Desktop 交互会话、更多 Browser 场景、升级故障/回滚、Center 重启重试和告警通知仍待验收。P2-02 仍明确不做；原 P2-05 的完整多租户不做，轻量 `P2-05-lite` 已进入第一阶段代码实施（主体/Token、任务归属、幂等隔离、执行车道、机器/项目 ACL、执行会话合同），配额、会话自动过期和 Desktop/Browser 会话隔离待补，设计文档见 [`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)。
 
 | 层级 | 当前判断 | 剩余工作 |
 | --- | --- | --- |
@@ -79,7 +79,7 @@
 | [—] | P2-02 | Center 多副本与高可用 | **明确不做。** 当前保持单副本稳定路径，不建立多副本、PDB、HPA 或跨副本一致性门禁 | 需求决策记录 |
 | [x] | P2-03 | 集中日志与对象存储规模化 | 异步审计、`rcm.audit` JSON 行导出、filesystem/HTTPS 对象网关、GC 边界和容量指标已实现；生产采集器、对象生命周期/索引与成本压测属于独立生产验收 | `HttpArtifactStore`、StructuredLog、artifact gateway contract、GitHub Actions |
 | [x] | P2-04 | SLO、告警和升级通知 | 任务成功率、排队延迟、断线恢复、资源、升级失败和工件容量指标及 PrometheusRule 已实现；生产通知出口和演练属于独立生产验收 | MetricsController、PrometheusRule、GitHub Actions |
-| [~] | P2-05 | 轻量多主体、对话与 MCP 连接模型 | **第一阶段已实施。** 每个用户使用独立不透明 Bearer Token；主体、连接元数据、任务归属、主体维度幂等键、执行车道和机器/项目 ACL 已接入；对话/会话持久化、配额和 Desktop/Browser 会话隔离待补；不做完整 SaaS 多租户、跨组织计费或复杂 RBAC | `McpPrincipalService`、`McpAccessService`、`McpTransportContext`、`TaskService`、`015`–`018`；GitHub Actions `35101569455`/`35101569558` |
+| [~] | P2-05 | 轻量多主体、对话与 MCP 连接模型 | **第一阶段已实施。** 每个用户使用独立不透明 Bearer Token；主体、连接元数据、任务归属、主体维度幂等键、执行车道、机器/项目 ACL 和执行会话合同已接入；配额、会话自动过期和 Desktop/Browser 会话隔离待补；不做完整 SaaS 多租户、跨组织计费或复杂 RBAC | `McpPrincipalService`、`McpAccessService`、`ExecutionSessionService`、`McpTransportContext`、`TaskService`、`015`–`019`；GitHub Actions 待跑 |
 | [~] | P2-06 | 更丰富的桌面和浏览器平台 | 已有受控桌面 companion 和 Browser Worker；补齐常用交互、平台适配、会话恢复和兼容性自描述，不扩大 MCP 原始工具面 | 平台兼容矩阵和资源报告 |
 | [x] | P2-07 | 旧 Go 回滚路径退出 | Java 已是生产路径，Go 自动发布/部署已降为兼容归档；旧 workflow、Deployment、Service/PVC 和旧代码的最终移除属于独立生产变更验收 | release workflow、GO_RETIREMENT 文档、GitHub Actions |
 
@@ -105,10 +105,10 @@
 
 | 状态 | 子项 | 目标和完成条件 |
 | --- | --- | --- |
-| [~] | P2-05-R01 | 固化并发不变量：任务绑定主体、ExecutionSession、Attempt 和 ResultChannel；禁止全局结果广播 | 任务主体/连接元数据、显式 `execution_session_id`、任务专属 `result_channel`、lane_key 已落地；会话生命周期/能力持久化待补 |
+| [~] | P2-05-R01 | 固化并发不变量：任务绑定主体、ExecutionSession、Attempt 和 ResultChannel；禁止全局结果广播 | 任务主体/连接元数据、显式 `execution_session_id`、任务专属 `result_channel`、lane_key 已落地；`019` 已持久化会话最新合同并支持显式关闭；会话能力/自动过期回收待补 |
 | [x] | P2-05-R01-A | 任务创建时绑定认证主体、连接来源、幂等键和派发车道；跨主体同键不冲突 | `015/016`、`TaskServiceTest`、`PostgresIntegrationTest` |
 | [x] | P2-05-R01-B | 持久化显式 `execution_session_id` 与任务专属 `result_channel`，重连/重启可恢复且不做全局广播 | `017-task-session-channel`、`a96653f`、GitHub Actions `35101569455`/`35101569558` |
-| [ ] | P2-05-R01-C | 补齐会话生命周期、能力/预算持久化和会话级 ACL | 后续 `rcm_execution_session` 切片 |
+| [~] | P2-05-R01-C | 补齐会话生命周期、能力/预算持久化和会话级 ACL | `019-execution-sessions`、`ExecutionSessionService` 已实现 ensure/close/list；自动过期回收、能力 ACL 和 Console 页面待补 |
 | [ ] | P2-05-R02 | 固化 `isolated`、`shared_serial`、`host` 三种 WorkspacePolicy；默认写任务使用会话 worktree |
 | [~] | P2-05-R03 | 实现同一 checkout 写车道串行、不同 worktree 有界并行、只读快照有限并行；不做隐式合并 | 同一 lane 已串行；isolated/shared_serial 策略和只读并发分类待补 |
 | [~] | P2-05-R04 | 实现整机/终端 host lane：独立进程组/cwd/env；主机全局写入串行，冲突任务持久化排队 | host lane 已按机器范围互斥；任务进程组已有，持久化 lease/公平队列待补 |

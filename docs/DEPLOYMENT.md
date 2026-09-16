@@ -148,7 +148,7 @@ Linux/Windows 原生二进制还会由 GitHub OIDC 生成 Artifact Attestation�
 rcm-center --migrate
 ```
 
-该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`、`009-task-lease-index`、`010-execution-contract`、`011-artifact-storage`、`012-audit-events`、`013-agent-runtime-descriptor`、`014-agent-config-history`、`015-mcp-principals`、`016-execution-lanes`、`017-task-session-channel`、`018-principal-access`；仓库不使用 Flyway。
+该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`、`009-task-lease-index`、`010-execution-contract`、`011-artifact-storage`、`012-audit-events`、`013-agent-runtime-descriptor`、`014-agent-config-history`、`015-mcp-principals`、`016-execution-lanes`、`017-task-session-channel`、`018-principal-access`、`019-execution-sessions`；仓库不使用 Flyway。
 
 Java Center 的 memory 模式只用于协议回归/开发。生产必须同时设置
 `RCM_CENTER_PERSISTENCE_MODE=postgres` 和
@@ -187,6 +187,10 @@ Authorization: Bearer <Admin Token>
 `DELETE` 请求。MCP 的机器列表、机器详情、项目列表、任务创建和 Git/Worktree 操作会在
 Center 侧先执行 ACL；兼容共享 Token 仍保持迁移期的全局行为。明文 MCP Token 只在发放时返回，
 不写入 ACL 或日志。
+
+执行会话可通过 `GET /api/v1/admin/execution-sessions` 查看有界摘要，并用
+`POST /api/v1/admin/execution-sessions/close`（提交 `principal_id` 与 `session_id`）显式关闭；
+会话表只保存最新合同元数据，不保存 MCP Token、Cookie 或完整任务输出。
 
 从旧 Go 文件存储切换时，先停止旧 Center 并完整备份其状态目录，再在已完成 Liquibase 的空 PostgreSQL 库上执行：
 

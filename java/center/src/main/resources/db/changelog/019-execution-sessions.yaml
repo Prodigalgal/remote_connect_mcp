@@ -1,0 +1,118 @@
+databaseChangeLog:
+  - changeSet:
+      id: 019-execution-sessions
+      author: remote-connect-mcp
+      labels: sessions
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - createTable:
+            tableName: rcm_execution_session
+            columns:
+              - column:
+                  name: session_id
+                  type: varchar(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: conversation_id
+                  type: varchar(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: machine_id
+                  type: varchar(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: contract_json
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_seen_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addPrimaryKey:
+            tableName: rcm_execution_session
+            columnNames: principal_id, session_id
+            constraintName: pk_rcm_execution_session
+        - addForeignKeyConstraint:
+            baseTableName: rcm_execution_session
+            baseColumnNames: principal_id
+            constraintName: fk_rcm_execution_session_principal
+            referencedTableName: rcm_principal
+            referencedColumnNames: principal_id
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: rcm_execution_session
+            baseColumnNames: machine_id
+            constraintName: fk_rcm_execution_session_agent
+            referencedTableName: rcm_agent
+            referencedColumnNames: agent_id
+            onDelete: CASCADE
+        - createIndex:
+            indexName: idx_rcm_execution_session_activity
+            tableName: rcm_execution_session
+            columns:
+              - column:
+                  name: principal_id
+              - column:
+                  name: status
+              - column:
+                  name: last_seen_at
+        - createIndex:
+            indexName: idx_rcm_execution_session_machine
+            tableName: rcm_execution_session
+            columns:
+              - column:
+                  name: machine_id
+              - column:
+                  name: last_seen_at
+      rollback:
+        - dropIndex:
+            indexName: idx_rcm_execution_session_machine
+            tableName: rcm_execution_session
+        - dropIndex:
+            indexName: idx_rcm_execution_session_activity
+            tableName: rcm_execution_session
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_execution_session
+            constraintName: fk_rcm_execution_session_agent
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_execution_session
+            constraintName: fk_rcm_execution_session_principal
+        - dropPrimaryKey:
+            tableName: rcm_execution_session
+            constraintName: pk_rcm_execution_session
+        - dropTable:
+            tableName: rcm_execution_session

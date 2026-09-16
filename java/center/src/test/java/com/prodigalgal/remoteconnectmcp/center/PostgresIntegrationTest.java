@@ -129,7 +129,8 @@ class PostgresIntegrationTest {
         // Center never opens the repository; completion of the generated Git
         // task is the only transition that makes a worktree selectable as a
         // task cwd.
-        var projectTasks = new TaskService(registry, jdbc, transactions);
+        var sessions = new ExecutionSessionService(jdbc, transactions);
+        var projectTasks = new TaskService(registry, jdbc, transactions, sessions);
         var projectService = new ProjectService(registry, projectTasks, jdbc, transactions);
         var project = projectService.register(new ProjectRegistrationRequest(agentId, "integration-project", "/tmp/rcm-it-project", null, "main"));
 
@@ -153,6 +154,8 @@ class PostgresIntegrationTest {
         org.junit.jupiter.api.Assertions.assertEquals(1, access.projectCount(aclPrincipalId));
 
         var worktree = projectService.createWorktree(project.id(), new ProjectWorktreeRequest("feature/integration", "project-worktree-1"));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rcm_execution_session WHERE principal_id = ? AND session_id = ?",
+                Integer.class, TaskOrigin.SHARED_PRINCIPAL, "internal"));
         assertNotNull(worktree.taskId());
         var worktreeTask = projectTasks.poll(agentId, new PollRequest(List.of(), 1, List.of("command"))).task();
         assertEquals(worktree.taskId(), worktreeTask.id());
