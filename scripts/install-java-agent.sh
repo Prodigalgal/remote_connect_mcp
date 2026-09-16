@@ -20,6 +20,7 @@ browser_profile_dir="${REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR:-}"
 browser_engine="${REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE:-playwright}"
 browser_name="${REMOTE_CONNECT_MCP_AGENT_BROWSER:-chromium}"
 browser_headless="${REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS:-1}"
+browser_browsers_path="${REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH:-}"
 
 verify_archive_checksum() {
   local artifact="$1" sidecar="${1}.sha256" expected listed actual
@@ -109,6 +110,9 @@ cgroup_path="${REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH:-}"
 }
 [[ "$browser_headless" == 0 || "$browser_headless" == 1 ]] || {
   echo "REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS must be 0 or 1" >&2; exit 1;
+}
+[[ "$browser_browsers_path" != *$'\r'* && "$browser_browsers_path" != *$'\n'* && "$browser_browsers_path" != *'"'* && ${#browser_browsers_path} -le 4096 ]] || {
+  echo "REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH must be a single path up to 4096 characters" >&2; exit 1;
 }
 [[ "$desktop_enabled" == true || "$desktop_enabled" == false ]] || {
   echo "REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED must be true or false" >&2; exit 1;
@@ -322,6 +326,7 @@ if [[ "$re_enroll" == true || ! -f "$identity" ]]; then
   REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE="$browser_engine" \
   REMOTE_CONNECT_MCP_AGENT_BROWSER="$browser_name" \
   REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS="$browser_headless" \
+  REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH="$browser_browsers_path" \
   REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED:-false}" \
   REMOTE_CONNECT_MCP_AGENT_STATE_DIR="$state_dir" \
   REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY="$max_concurrency" \
@@ -364,6 +369,7 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE=%s\n' "$browser_engine"
   printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER=%s\n' "$browser_name"
   printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS=%s\n' "$browser_headless"
+  printf 'REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH=%s\n' "$browser_browsers_path"
   printf 'REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=%s\n' "${REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED:-false}"
   printf 'REMOTE_CONNECT_MCP_AGENT_STATE_DIR=%s\n' "$state_dir"
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY=%s\n' "$max_concurrency"
@@ -385,6 +391,9 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   fi
   if [[ -n "$browser_source" ]]; then
     printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=%s\n' "$install_root/browser/rcm-browser-agent"
+  fi
+  if [[ -n "$browser_browsers_path" ]]; then
+    printf 'PLAYWRIGHT_BROWSERS_PATH=%s\n' "$browser_browsers_path"
   fi
  } > /etc/remote-connect-mcp-agent/agent.env
 

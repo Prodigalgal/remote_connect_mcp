@@ -67,6 +67,10 @@ Linux 完整 tar 包的根目录包含 `install-java-agent.sh` 和匹配版本�
 companion 放到隔离目录。Linux 同时设置 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=true`、
 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_USER=<登录用户名>` 后，安装器会为该账号创建
 systemd user companion unit，并仅通过 ACL 授予 `state_dir/desktop` 访问；没有 `acl` 或活动图形会话时只安装二进制，不伪造桌面在线状态。
+Linux Browser 目标还应将 `REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH` 指向 root
+和图形用户均可读的共享目录，并在该目录安装 Chromium；安装器会把该变量写入 systemd
+环境，command-agent 启动 browser worker 时自动继承，避免 systemd 服务使用 root profile
+时找不到按用户下载的浏览器。
 Windows 仍由 `-DesktopEnabled` 创建按用户登录触发的 Scheduled Task。安装器会在每个 ZIP 旁存在 `.sha256`
 时先校验，再复制 ELF 及其 `.so` 旁路库，并使用包内 systemd 模板（也可用
 `REMOTE_CONNECT_MCP_AGENT_SERVICE_FILE` 显式覆盖）。
