@@ -84,6 +84,13 @@ erDiagram
     MACHINE ||--o{ DESKTOP_LEASE : grants
 ```
 
+### 3.1 可视化关系图
+
+为了避免实体关系被表格和文字淹没，下面两张图分别展示身份/连接关系和执行车道关系：
+
+- [用户—对话—MCP 连接图（PNG）](diagrams/m2m-user-conversation-mcp.png) · [Mermaid 源码](diagrams/m2m-user-conversation-mcp.mmd)
+- [多窗口—任务—执行车道图（PNG）](diagrams/m2m-execution-lanes.png) · [Mermaid 源码](diagrams/m2m-execution-lanes.mmd)
+
 | 实体 | 关系 | 责任 | 重要约束 |
 | --- | --- | --- | --- |
 | `Principal` | 1:N Token、1:N 对话、M:N 项目 | RCM 内部的用户或服务主体 | 使用稳定内部 ID；不依赖 ChatGPT 账号字段 |

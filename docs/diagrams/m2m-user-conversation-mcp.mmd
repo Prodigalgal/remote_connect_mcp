@@ -1,0 +1,49 @@
+flowchart LR
+    subgraph web[Web 账号与对话]
+        direction TB
+        userA[用户 A]
+        convA1[对话 A-1]
+        convA2[对话 A-2]
+        userB[用户 B]
+        convB1[对话 B-1]
+        userA -->|1:N| convA1
+        userA -->|1:N| convA2
+        userB -->|1:N| convB1
+    end
+
+    subgraph identity[RCM 身份层]
+        direction TB
+        tokenA[用户 Token A]
+        principalA[Principal A]
+        tokenB[用户 Token B]
+        principalB[Principal B]
+        tokenA -->|映射| principalA
+        tokenB -->|映射| principalB
+    end
+
+    subgraph mcp[MCP 连接层]
+        direction TB
+        connA1[Connection A-1]
+        connA2[Connection A-2]
+        connB1[Connection B-1]
+        endpoint[MCP Endpoint<br/>固定 /mcp]
+        connA1 --> endpoint
+        connA2 --> endpoint
+        connB1 --> endpoint
+    end
+
+    userA -.使用.-> tokenA
+    userB -.使用.-> tokenB
+    convA1 --> connA1
+    convA2 --> connA2
+    convB1 --> connB1
+    principalA --> connA1
+    principalA --> connA2
+    principalB --> connB1
+
+    classDef user fill:#e7f0ff,stroke:#2d6cdf,color:#123;
+    classDef identity fill:#fff1d6,stroke:#c77b00,color:#4a2c00;
+    classDef connection fill:#e6f7ed,stroke:#238636,color:#123;
+    class userA,userB,convA1,convA2,convB1 user;
+    class tokenA,tokenB,principalA,principalB identity;
+    class connA1,connA2,connB1,endpoint connection;

@@ -1,0 +1,41 @@
+flowchart LR
+    subgraph callers[多个 Web 对话]
+        aWrite[用户 A / 对话 A-1<br/>写任务]
+        aRead[用户 A / 对话 A-2<br/>只读任务]
+        bWrite[用户 B / 对话 B-1<br/>写任务]
+    end
+
+    contract[Center 生成<br/>Execution Contract]
+    queue[(PostgreSQL<br/>持久化任务队列)]
+    derive[派生 lane_key<br/>machine + project/worktree/path + capability]
+    lane[(Execution Lane<br/>lease + 公平调度)]
+    serial[同一 worktree<br/>写任务串行]
+    parallel[不同 worktree<br/>允许有界并行]
+    agent[command-agent<br/>总并发/进程预算]
+    desktop[Desktop lease<br/>同一桌面会话独占]
+    browser[Browser Context<br/>按主体/对话隔离]
+    wait[task_wait / task_output<br/>事件唤醒与游标]
+
+    aWrite --> contract
+    aRead --> contract
+    bWrite --> contract
+    contract --> queue
+    queue --> derive
+    derive --> lane
+    lane --> serial
+    lane --> parallel
+    serial --> agent
+    parallel --> agent
+    agent --> desktop
+    agent --> browser
+    agent --> wait
+    wait -.->|状态/输出/工件摘要| callers
+
+    classDef caller fill:#e7f0ff,stroke:#2d6cdf,color:#123;
+    classDef center fill:#fff1d6,stroke:#c77b00,color:#4a2c00;
+    classDef laneStyle fill:#e6f7ed,stroke:#238636,color:#123;
+    classDef runtime fill:#f3e8ff,stroke:#8250df,color:#24103f;
+    class aWrite,aRead,bWrite caller;
+    class contract,queue center;
+    class derive,lane,serial,parallel laneStyle;
+    class agent,desktop,browser,wait runtime;
