@@ -4,7 +4,7 @@
 
 本文是 Remote Connect MCP 的可持续任务清单。第一列只表示代码交付状态：实现和自动化检查完成即可勾选；生产验收单独记录在 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)，不再阻止代码任务勾选。这样可以明确区分“代码没做完”和“代码已完成但尚未在目标环境验收”。
 
-需求基线：[`REQUIREMENTS.md`](REQUIREMENTS.md)；当前实现证据：[`STATUS.md`](STATUS.md)；架构约束：[`ARCHITECTURE.md`](ARCHITECTURE.md)；异步契约：[`ASYNC_CONTRACT.md`](ASYNC_CONTRACT.md)。
+需求基线：[`REQUIREMENTS.md`](REQUIREMENTS.md)；当前实现证据：[`STATUS.md`](STATUS.md)；架构约束：[`ARCHITECTURE.md`](ARCHITECTURE.md)；异步契约：[`ASYNC_CONTRACT.md`](ASYNC_CONTRACT.md)；M:M 用户/对话/MCP 设计：[`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)。
 
 ## 状态规则
 
@@ -16,15 +16,15 @@
 - 每项代码完成后，在“验收证据”列补充 CI run/测试证据，再将代码状态改为 `[x]`；生产目标机证据随后补到独立验收表。
 - 不在本机编译 Java、Native Image、React 或正式安装包；构建证据必须来自 GitHub Actions。
 
-## 当前阶段：选定 P2 实施，代码状态与生产验收分离
+## 当前阶段：P0/P1 生产验收与 P2 规模化收口
 
-截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程和兼容实现已经完成，选定的 P2-01/03/04/07 的代码与 CI 门禁已完成；P1-02/03/04/08、P2-06 仍有明确的平台/协议代码缺口，保留 `[~]`。生产验收记录见 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)：生产 Java Center、Console 与 9 台在线 Agent 已在 `v0.1.28` 收敛，Linux GUI canary 已用 GitHub Actions preview `v0.0.0-main.57` 完成 Desktop screens/截图和 Browser navigate；Windows Desktop 交互会话、更多 Browser 场景、升级故障/回滚、Center 重启重试和告警通知仍待验收。P2-02 和 P2-05 已按需求决策明确不做。
+截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程和兼容实现已经完成，选定的 P2-01/03/04/07 的代码与 CI 门禁已完成；P1-02/03/04/08、P2-06 仍有明确的平台/协议代码缺口，保留 `[~]`。生产验收记录见 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)：生产 Java Center、Console 与 9 台在线 Agent 已在 `v0.1.28` 收敛，Linux GUI canary 已用 GitHub Actions preview `v0.0.0-main.57` 完成 Desktop screens/截图和 Browser navigate；Windows Desktop 交互会话、更多 Browser 场景、升级故障/回滚、Center 重启重试和告警通知仍待验收。P2-02 仍明确不做；原 P2-05 的完整多租户不做，但已新增轻量 `P2-05-lite` 多主体/对话/连接设计与实现任务，设计文档见 [`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)。
 
 | 层级 | 当前判断 | 剩余工作 |
 | --- | --- | --- |
 | P0 | 核心可靠性与安全实现基本完成 | Center/Agent 重启、断线与重试、资源硬限额、工件卷备份恢复、离线升级等目标环境门禁 |
 | P1 | 主流程已具备，平台特性待实测 | Windows/Linux Desktop 与 Browser、Git/Console/升级/长连接真实矩阵，以及无障碍、视觉和代理故障验收 |
-| P2 | P2-01/03/04/06/07 已进入实施队列；P2-02/05 按决策移除 | QUIC/HTTP3 评估、集中日志与对象存储规模化、SLO/告警、桌面/浏览器平台增强和 Go 回滚路径退出 |
+| P2 | P2-01/03/04/06/07 已进入实施/验收队列；P2-02 和完整 SaaS 多租户按决策移除；P2-05-lite 处于设计完成、代码待实施 | QUIC/HTTP3 真实 Provider、集中日志与对象生命周期、SLO/告警通知、桌面/浏览器平台增强、Go 回滚路径退出，以及多主体 Token/ACL/车道 |
 
 当前证据基线：Java Native Release `35043403122`（tag `java-v0.1.28`）成功；稳定 `java-v0.1.29` Release `35064539692` 的三平台 Native、镜像、SBOM、签名和 release jobs 成功，Linux GUI canary 已使用其 arm64 Desktop 资产完成真实 screens/截图；GitOps revision `eee62d2` 已由 Argo 报告 `Synced/Healthy/Succeeded`；事件驱动检查、仓库敏感信息扫描和浏览器脚本静态检查均通过。本机没有执行 Java、Gradle、Native Image 或 React 构建。
 
@@ -79,9 +79,24 @@
 | [—] | P2-02 | Center 多副本与高可用 | **明确不做。** 当前保持单副本稳定路径，不建立多副本、PDB、HPA 或跨副本一致性门禁 | 需求决策记录 |
 | [x] | P2-03 | 集中日志与对象存储规模化 | 异步审计、`rcm.audit` JSON 行导出、filesystem/HTTPS 对象网关、GC 边界和容量指标已实现；生产采集器、对象生命周期/索引与成本压测属于独立生产验收 | `HttpArtifactStore`、StructuredLog、artifact gateway contract、GitHub Actions |
 | [x] | P2-04 | SLO、告警和升级通知 | 任务成功率、排队延迟、断线恢复、资源、升级失败和工件容量指标及 PrometheusRule 已实现；生产通知出口和演练属于独立生产验收 | MetricsController、PrometheusRule、GitHub Actions |
-| [—] | P2-05 | 多用户/多租户权限模型 | **明确不做。** 当前维持单管理域，不设计租户、角色、配额和组织隔离模型 | 需求决策记录 |
+| [ ] | P2-05 | 轻量多主体、对话与 MCP 连接模型 | **设计已完成，代码待实施。** 每个用户使用独立不透明 Bearer Token；对话、连接、任务、项目 ACL、执行车道和 Desktop/Browser 会话相互关联；不做完整 SaaS 多租户、跨组织计费或复杂 RBAC | [`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md) |
 | [~] | P2-06 | 更丰富的桌面和浏览器平台 | 已有受控桌面 companion 和 Browser Worker；补齐常用交互、平台适配、会话恢复和兼容性自描述，不扩大 MCP 原始工具面 | 平台兼容矩阵和资源报告 |
 | [x] | P2-07 | 旧 Go 回滚路径退出 | Java 已是生产路径，Go 自动发布/部署已降为兼容归档；旧 workflow、Deployment、Service/PVC 和旧代码的最终移除属于独立生产变更验收 | release workflow、GO_RETIREMENT 文档、GitHub Actions |
+
+### P2-05-lite：M:M 用户、对话与 MCP 实施清单
+
+本节是对原 P2-05 的收窄替代：只做轻量主体隔离和协同调度，不引入完整多租户平台。第一项为本轮已完成的设计交付，其余仍是代码任务。
+
+| 状态 | 子任务 | 完成条件 | 依赖/验收 |
+| --- | --- | --- | --- |
+| [x] | P2-05-D | 完成用户、Token、对话、MCP Connection、Session、Project ACL、Lane、Task、Desktop Lease、Browser Context 关系设计 | [`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md) |
+| [ ] | P2-05-01 | Liquibase 增加 `principal`、用户 MCP Token、机器/项目 ACL、Token 范围/配额和撤销字段；兼容全局 Token 映射为 owner/shared 主体 | PostgreSQL 集成、迁移回滚、Token 哈希与脱敏检查 |
+| [ ] | P2-05-02 | Center 从 Bearer 派生主体；机器、项目、任务、输出、工件和审计按主体/机器/项目 ACL 过滤 | 授权矩阵、越权拒绝、撤销后立即失效 |
+| [ ] | P2-05-03 | 幂等键加入主体和目标指纹；同一主体重试复用任务，不同主体相同键互不冲突 | 并发提交、参数变化拒绝、Center 重启恢复 |
+| [ ] | P2-05-04 | 实现按机器+项目/worktree/path+能力派生的执行车道、lease 和公平调度 | 同 worktree 写任务串行；不同 worktree 有界并行；无固定扫描 |
+| [ ] | P2-05-05 | Desktop 独占 lease、Browser 按主体/对话隔离 Context/Profile，任务结束回收或续租 | 两用户交错操作、Cookie/下载隔离、崩溃回收 |
+| [ ] | P2-05-06 | React Console 增加主体、Token、项目成员、范围、配额、撤销和任务归属页面 | UI E2E、a11y、脱敏和审计 |
+| [ ] | P2-05-07 | 双账号多窗口端到端验收；同 URL、不同 Token、同项目/不同 worktree、撤销和故障恢复 | ChatGPT Web/Console/Center/Agent 真实矩阵 |
 
 ## 当前最短生产验收路径
 
@@ -95,6 +110,7 @@
 6. P2-04/P2-03：可观测性、日志与对象生命周期；
 7. P2-06：桌面/浏览器平台增强；
 8. P2-01：传输基准、可选 QUIC/HTTP3 provider 和安全回退；
-9. P2-07：完成兼容窗口后退出 Go 回滚路径；P2-02/P2-05 不进入实施。
+9. P2-07：完成兼容窗口后退出 Go 回滚路径；P2-02 和完整 SaaS 多租户不进入实施。
+10. P2-05-lite：在不改变 `/mcp` URL、Agent 身份和 MCP 工具数量的前提下，实施多主体 Token、ACL、执行车道和会话隔离。
 
 未完成 P0 门禁前，不应宣称“完全替换旧版”；未完成 P1 门禁前，不应宣称“完整生产体验”；P2 是规模化路线，不阻塞单 Center 生产运行。

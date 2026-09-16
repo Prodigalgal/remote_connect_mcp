@@ -1,10 +1,10 @@
 # Remote Connect MCP 需求基线
 
-版本：1.0
+版本：1.1
 
-日期：2026-09-14（Asia/Shanghai）
+日期：2026-09-16（Asia/Shanghai）
 
-状态：已确认的产品与工程基线
+状态：已确认的产品与工程基线；新增 P2-05-lite 轻量多主体设计，代码尚未实施
 
 本文档定义 Remote Connect MCP（RCM）要解决的问题、必须具备的能力、明确的边界和验收标准。它是后续架构、协议、实现和发布决策的上游依据。
 
@@ -12,6 +12,7 @@
 - [`docs/ASYNC_CONTRACT.md`](ASYNC_CONTRACT.md)：描述异步任务的协议语义；
 - [`docs/TECH_STACK.md`](TECH_STACK.md)：描述语言、数据库、构建和前端选型；
 - [`docs/STATUS.md`](STATUS.md)：只记录已经有代码、CI 或生产探针证明的实现状态，不改变本文档的需求。
+- [`docs/MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)：描述轻量多主体、对话、MCP 连接和执行车道模型；不代表当前代码已经实现。
 
 ## 1. 产品定位
 
@@ -87,6 +88,22 @@ Center（Kubernetes，Java Native Image）
 
 目标机器上的 command-agent 作为系统服务运行，因此即使用户尚未登录，也可以执行命令和无人值守任务。桌面能力仅在用户会话可用时启用；Browser Worker 只在浏览器任务期间存在。
 
+### 3.5 多用户、多对话和多 MCP 连接
+
+一个稳定的 `/mcp` Endpoint 可以同时服务多个 Web 账号、多个对话和多个 MCP 连接：
+
+- Web 账号在 RCM 内映射为 `Principal`，由不透明 Bearer Token 识别；不依赖 ChatGPT
+  客户端传来的账号或对话字段；
+- 一个 Principal 可以拥有多个 Token、多个对话和多个连接；同一 Token 默认只属于一个
+  Principal，不鼓励跨用户共享；
+- 对话是上下文和生命周期边界，不直接授予权限；任务、日志和工件按 Principal、项目
+  ACL 和任务范围过滤；
+- 同一项目/worktree 的写任务使用持久化执行车道串行化，不同 worktree 才允许并行；
+- Desktop 使用独占用户会话 lease，Browser 使用按主体/对话隔离的 Profile/Context；
+- 该模型是轻量主体隔离，不扩展为完整 SaaS 多租户、跨组织计费或复杂 RBAC。
+
+详细关系、迁移顺序和验收矩阵见 [`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)。
+
 ## 4. 组件和身份边界
 
 ### 4.1 Center
@@ -106,6 +123,18 @@ Agent 是靠近操作系统和项目的执行信任边界，负责本机最终�
 - `browser-agent`：按任务启动的浏览器监督进程，可再启动 Playwright、Patchright 或 Comoufox Worker。
 
 桌面伴侣和 Browser Worker 不注册新的机器，不持有独立的 Center Token。确实需要权限或故障域隔离时，才显式运行多个 command-agent 实例，并为每个实例使用独立的 machine ID、Token、状态目录和能力集合。
+
+### 4.4 用户和连接身份层
+
+用户身份与机器身份分开：
+
+- `Principal` 表示 RCM 内部用户或服务主体；它不等同于 ChatGPT 账号，也不由模型文本声明；
+- `MCP Token` 只负责把请求映射到 Principal，并携带机器、项目、能力和配额范围；
+- `Conversation`、`MCP Connection` 和 `Execution Session` 记录上下文与生命周期，但不能
+  单独扩大权限；
+- Principal 对机器可以通过显式 machine grant 授权，也可以通过项目成员关系间接获得；
+- `Task`、`Attempt`、`Artifact` 和 `Audit Event` 必须保留主体关联；
+- Agent Token 仍然只用于 Agent 到 Center 的机器通道，不下发给 ChatGPT 或普通用户。
 
 ## 5. 能力要求
 
@@ -195,7 +224,7 @@ RCM 不要求所有任务运行在容器或虚拟机里。可信的整机模式�
 ## 8. 数据、隐私和存储
 
 - 生产 Center 使用 PostgreSQL，Liquibase 管理 schema；
-- PostgreSQL 是机器、任务、租约、Attempt、项目、worktree、Token 摘要、升级和工件元数据的唯一事实来源；
+- PostgreSQL 是 Principal、用户 MCP Token 摘要、对话/连接、机器、任务、租约、Attempt、项目、worktree、执行车道、升级和工件元数据的唯一事实来源；
 - 内存只保存可丢失的唤醒状态和短期缓存，不能双写或替代数据库；
 - 大日志、截图、下载和升级包使用受控工件存储，不放入任务 JSON 或 MCP 文本；
 - 文件内容、Cookie、Token、环境变量、私有路径和完整命令不进入指标标签；
@@ -208,12 +237,13 @@ RCM 不要求所有任务运行在容器或虚拟机里。可信的整机模式�
 
 | 凭据 | 用途 | 生命周期 |
 | --- | --- | --- |
-| MCP Token | ChatGPT 调用 `/mcp` | 管理员手动配置，保持稳定 |
+| 兼容 MCP Token（owner/shared） | 兼容旧连接器调用 `/mcp`；映射到 `owner/shared-domain` 主体 | 迁移期保留；确认用户 Token 已迁移后由管理员手动撤销 |
+| 用户 MCP Token | 把 Web 用户或服务主体映射到 `/mcp` 及其机器/项目/能力范围 | 不透明、可撤销；由 Console/Admin 签发，可设置有效期和配额；不要求 OAuth/JWT |
 | Admin Token | React 控制台和 Admin API | 与 MCP Token 分离，手动通过部署环境替换 |
 | Enrollment Token | 首次安装、重装或身份恢复 | 一次性、短期、绑定机器名称 |
 | Agent Token | Agent 日常连接 Center | 每台 Agent 独立，注册成功后换取 |
 
-生产不使用长期注册令牌，不把 Enrollment Token 写入长期服务配置，也不要求 OAuth 2.1 才能完成基本接入。紧急凭据替换通过受保护的环境变量/Kubernetes Secret 和受控重启完成，不把 Token 轮换做成普通模型工具。
+生产不使用长期注册令牌，不把 Enrollment Token 写入长期服务配置，也不要求 OAuth 2.1 才能完成基本接入。用户 MCP Token 使用不透明随机值，Center 只保存哈希并支持手动撤销/重新签发；不把 Token 轮换做成普通模型工具。紧急凭据替换通过受保护的环境变量/Kubernetes Secret 和受控重启完成。
 
 ### 9.2 公网和宿主机
 
@@ -234,13 +264,14 @@ RCM 不要求所有任务运行在容器或虚拟机里。可信的整机模式�
 
 ## 10. 控制台和 MCP 体验
 
-控制台采用经典后台布局，至少提供机器、项目、任务、输出、工件、升级、审计和设置导航。实时状态使用事件连接和有界重连，表格、日志、页面树和机器列表全部分页或虚拟化。
+控制台采用经典后台布局，至少提供主体/Token、机器、项目/成员、任务、输出、工件、升级、审计和设置导航。实时状态使用事件连接和有界重连，表格、日志、页面树和机器列表全部分页或虚拟化。用户 Token 只在生成时显示一次，支持范围、有效期、配额和撤销；主体和项目成员页面不把完整密钥写入浏览器持久存储。
 
 MCP 面遵循以下原则：
 
 - 工具按用户任务组织，而不是按内部类或每台机器复制；
 - 机器数量不增加工具元数据；
 - 目标 machine ID 必须显式、可审计；
+- 主体由 Bearer Token 在 Center 侧派生，模型不填写 `principal_id`；对话/连接 ID 只用于关联任务，不作为授权依据；
 - 默认返回下一步所需的最小结果；
 - 长输出、截图、DOM、错误和列表均有界；
 - 新能力优先扩展已有任务/能力协议，只有无法复用时才新增 MCP 工具；
@@ -268,7 +299,8 @@ MCP 面遵循以下原则：
 - 强制 OAuth 2.1；
 - 强制所有任务容器化；
 - 通用远程桌面/RMM 功能；
-- 多租户 SaaS、复杂 RBAC 和跨组织计费；
+- 完整多租户 SaaS、复杂 RBAC、跨组织计费和 Center 多副本高可用；
+- 把 ChatGPT 的私有账号/对话字段当作 RCM 的可信授权来源；
 - 把 ChatGPT 的每条动作审批策略写进 Center；
 - 暴露海量 Playwright、桌面或 Shell 底层 API；
 - 依赖固定频率轮询；
@@ -303,8 +335,9 @@ MCP 面遵循以下原则：
 - SLO、告警和升级通知；
 - 更丰富的桌面和浏览器平台适配。
 - 旧 Go 回滚路径退出。
+- 轻量多主体、对话、MCP 连接、项目 ACL、执行车道和 Desktop/Browser 会话隔离（`P2-05-lite`）。
 
-需求决策：当前不做 Center 多副本/高可用和多用户/多租户权限模型（原 P2-02、P2-05）。单 Center、单管理域和现有事件驱动唤醒保持为生产基线。
+需求决策：当前不做 Center 多副本/高可用和完整多租户 SaaS（原 P2-02 及 P2-05 的完整范围）。新增 `P2-05-lite`，只实现轻量 Principal、用户 Token、项目 ACL、执行车道、配额和桌面/浏览器会话隔离；单 Center、单 MCP Endpoint 和事件驱动唤醒仍保持为生产基线。
 
 ## 14. 需求变更规则
 

@@ -1,19 +1,20 @@
 # Remote Connect MCP 目标架构
 
-本文档定义 RCM 的长期架构边界和演进顺序。上游需求基线见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)；本文只说明组件如何实现这些需求。仓库同时保留 Go 兼容基线与 Java 25 Center/Agent 实现，React 控制台独立部署。文档中的“规划中”能力不会在没有协议、权限和兼容性评估时自动暴露给 MCP。Java/React 的具体技术选型见 [`docs/TECH_STACK.md`](TECH_STACK.md)。
+本文档定义 RCM 的长期架构边界和演进顺序。上游需求基线见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)；M:M 用户、对话、连接和执行关系见 [`docs/MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)；本文只说明组件如何实现这些需求。仓库同时保留 Go 兼容基线与 Java 25 Center/Agent 实现，React 控制台独立部署。文档中的“规划中”能力不会在没有协议、权限和兼容性评估时自动暴露给 MCP。Java/React 的具体技术选型见 [`docs/TECH_STACK.md`](TECH_STACK.md)。
 
 ## 1. 总体拓扑
 
 ```text
-ChatGPT / 其他 MCP 客户端
+多个 Web 账号 / 多个对话 / 其他 MCP 客户端
              |
-             | HTTPS + Bearer MCP Token
+             | 固定 /mcp + 各自的不透明 Bearer Token
              v
       Center（Kubernetes，目标 Java 25 Native Image）
         |  MCP Gateway
+        |  Principal / Token / Conversation / Connection
         |  Admin Console/API
         |  Agent Registry / Capability Router
-        |  Task Queue / Lease / Attempt / Artifact
+        |  Task Queue / Lane / Lease / Attempt / Artifact
         |  Upgrade Orchestrator / Audit / Metrics
         |
         +---- 主动 HTTPS / WebSocket / QUIC ----+
@@ -34,6 +35,11 @@ command-agent 实例，并为每个实例使用独立状态目录、一次性注
 注册后的 `machine_name`/`host_id` 也是不可由心跳修改的身份字段；机器改名或
 重新归组必须重新注册，心跳只更新平台、版本、能力和运行时自描述。
 
+多个主体和对话共享同一个 Center，但不共享默认授权：Bearer Token 在 Center 侧映射到
+`Principal`，再经过项目 ACL、机器能力和任务执行合同裁剪。MCP 连接或外部对话 ID 只作
+关联信息，不能替代 Token。一个主体可以打开多个对话和 MCP Connection；一个项目可以
+显式共享给多个主体；同一 worktree 的写任务通过执行车道串行，不同 worktree 才并行。
+
 ## 2. Center、Agent 与能力
 
 ### Center
@@ -47,6 +53,31 @@ Center 是唯一的公网入口和控制面；迁移目标为 Java 25 + Spring B
 - 升级编排：Center 保存 Release URL/SHA-256 和 canary/批次状态；Agent 通过 HTTPS 直取受校验资产，后续可把同一接口接到对象存储缓存，不改变 Agent 协议。升级活动读取有界的分段机器快照（最多 10000 台），Admin 机器列表仍按 200 台分页。
 
 Center 不扫描 Agent 文件系统，也不假设同一 `host_id` 的 Agent 权限相同。任务在排队时绑定目标 Agent，派发时再次检查能力和租约。
+
+### 2.1 用户、对话与 MCP 连接
+
+RCM 采用三层身份/上下文分离：
+
+1. `Principal` 是 RCM 内部用户或服务主体，由不透明 Bearer Token 识别；
+2. `Conversation` 和 `MCPConnection` 是 Web 对话与 Streamable HTTP 连接的生命周期记录，
+   一个主体可以拥有多个，多个对话也可以在授权后共同参与一个项目；
+3. `ExecutionSession` 和 `Task` 是真正的执行边界，绑定 machine、project/worktree/path、
+   capability、预算、幂等键和执行车道。
+
+MCP 工具不要求模型传入 `principal_id` 或用户账号。Center 从认证头派生主体，并在返回
+机器、项目、任务、输出和工件时做主体/项目 ACL 过滤。现有单一全局 MCP Token 在兼容阶段
+映射为 `owner/shared-domain`；启用多主体后，正式协作应为每个主体签发独立 Token。
+
+### 2.2 执行车道与公平调度
+
+`lane_key` 由 Center 根据目标机器、项目/worktree/path 和能力派生，调用方不能任意覆盖：
+
+- 同一车道的可能写操作只有一个活动任务；其余任务持久化排队并由事件唤醒；
+- 只读任务可以在 Agent 总预算允许时有限并行；Shell 默认按可能写操作处理；
+- 不同 worktree 使用不同车道，可以在 Agent 并发和资源上限内并行；
+- 每个主体有独立的排队/运行配额，调度器使用公平策略避免单一主体饿死其他主体；
+- 车道 lease、任务状态和幂等关系持久化在 PostgreSQL，通知丢失时通过任务 ID 和游标恢复，
+  不运行 Center 固定频率扫描。
 
 ### Agent
 
@@ -183,6 +214,6 @@ Agent 心跳自描述版本、平台、HostID、角色、能力、范围策略�
 4. **可靠性阶段**：完善 Task Attempt、死信/过期任务和 WebSocket；配置代次/热更新与心跳自描述已落地。
 5. **开发工作流阶段**：Project Registry 与 Git worktree 已落地基础闭环；继续补结构化文件/Git/检查、提交审阅和显式合并工具。
 6. **专用自动化阶段**：Browser Agent 的 Playwright/Patchright/Comoufox 完整 Worker 协议、会话生命周期和工件策略；桌面输入基础能力已落地，继续补窗口/焦点适配。
-7. **规模化阶段**：在 PostgreSQL + Liquibase 持久化已经成为默认生产路径后，继续扩展集中日志、S3 兼容对象存储、SLO/告警和可选 QUIC provider，保持 MCP URL 与工具契约不变；Center 多副本/多租户不属于当前路线，文件对象实现继续依赖独立持久卷。
+7. **规模化阶段**：在 PostgreSQL + Liquibase 持久化已经成为默认生产路径后，继续扩展轻量多主体/执行车道、集中日志、S3 兼容对象存储、SLO/告警和可选 QUIC provider，保持 MCP URL 与工具契约不变；Center 多副本、完整 SaaS 多租户和跨组织计费不属于当前路线，文件对象实现继续依赖独立持久卷。
 
 明确不在当前范围：OAuth 2.1 强制化、代理其他 MCP、把任意范围模式冒充 OS 沙箱、把 ChatGPT 的动作审批策略写入 Center、或一次性暴露海量浏览器/桌面底层工具。

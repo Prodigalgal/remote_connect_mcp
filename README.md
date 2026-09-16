@@ -5,7 +5,7 @@
 
 Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统。ChatGPT 只连接一个 MCP Gateway；每台目标机器运行一个主动连接 Center 的 Agent。Center 同时提供机器注册、持久化异步任务、断线续传、Web 控制台和 Agent 集群升级编排。
 
-产品需求基线见 [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md)，分级任务清单见 [`docs/TASKS.md`](docs/TASKS.md)。本文档说明使用和部署；需求基线、任务、架构、异步契约和实现状态分别维护，规划中的能力不会自动视为已上线。
+产品需求基线见 [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md)，分级任务清单见 [`docs/TASKS.md`](docs/TASKS.md)，M:M 用户/对话/MCP 设计见 [`docs/MULTI_USER_MODEL.md`](docs/MULTI_USER_MODEL.md)。本文档说明使用和部署；需求基线、任务、架构、异步契约和实现状态分别维护，规划中的能力不会自动视为已上线。
 
 目标架构和演进边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，异步调用契约见 [`docs/ASYNC_CONTRACT.md`](docs/ASYNC_CONTRACT.md)，详细语言、运行时、原生构建和前端选型见 [`docs/TECH_STACK.md`](docs/TECH_STACK.md)，Java/React 发布门禁见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)，当前实现/生产阻塞见 [`docs/STATUS.md`](docs/STATUS.md)，SLO/告警见 [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)，传输评估见 [`docs/TRANSPORT.md`](docs/TRANSPORT.md)，HTTP 工件网关接口见 [`docs/ARTIFACT_GATEWAY.md`](docs/ARTIFACT_GATEWAY.md)。Java 25 Center/Agent 与 React 控制台已经进入生产路径；Go 组件仅作为离线节点的兼容/回滚基线保留。一个物理终端默认只有一个向 Center 注册的 `command-agent` 身份；桌面能力由同安装包启动的用户会话 `desktop-companion` 提供，浏览器能力由有界的本机 Browser Worker 提供，不增加额外 machine ID 或 Token。确需隔离时才为同一终端显式注册多个 Agent。
 

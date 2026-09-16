@@ -2,7 +2,7 @@
 
 更新时间：2026-09-16（Asia/Shanghai）
 
-本文记录仓库代码与当前集群只读探针能够证明的状态。产品需求基线见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)，代码/生产分离的任务清单见 [`docs/TASKS.md`](TASKS.md)，逐项生产证据见 [`docs/PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)；未通过生产门禁的内容不会标记为“已上线”。
+本文记录仓库代码与当前集群只读探针能够证明的状态。产品需求基线见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)，代码/生产分离的任务清单见 [`docs/TASKS.md`](TASKS.md)，M:M 用户/对话/MCP 设计见 [`docs/MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)，逐项生产证据见 [`docs/PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)；未通过生产门禁的内容不会标记为“已上线”。
 
 ## 结论
 
@@ -70,5 +70,5 @@ Java 25 Center/Agent 与 React 控制台已经完成 v0.1.28 生产发布；9 �
 
 1. 先完成选定 P2：集中日志/对象生命周期接入、SLO/告警通知、Desktop/Browser 平台增强和 QUIC 基准/回退验证。
 2. 在维护窗口演练离线领取、安装失败、失败重排队和回滚；当前 v0.1.28 活动已完成，不再有 pending 目标。
-3. 在真实反向代理环境完成 WebSocket wake、LISTEN/NOTIFY、长任务和 Center 重启故障演练；不实施 P2-02 多副本和 P2-05 多租户。
+3. 在真实反向代理环境完成 WebSocket wake、LISTEN/NOTIFY、长任务和 Center 重启故障演练；不实施 P2-02 多副本和完整 SaaS 多租户，`P2-05-lite` 另按设计文档实施。
 4. 完成 PostgreSQL/工件恢复演练后按 `docs/GO_RETIREMENT.md` 关闭旧 Go 回滚资源。
