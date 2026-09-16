@@ -291,12 +291,7 @@
   },
   {
     "name": "java.awt.Toolkit",
-    "methods": [
-      {
-        "name": "getDefaultToolkit",
-        "parameterTypes": []
-      }
-    ]
+    "allDeclaredMethods": true
   },
   {
     "name": "java.awt.image.BufferedImage",
