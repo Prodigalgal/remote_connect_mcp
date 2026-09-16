@@ -559,8 +559,12 @@ public final class UpgradeService {
     }
 
     private Campaign loadActiveJdbc(boolean forUpdate) {
-        var suffix = forUpdate ? " FOR UPDATE" : "";
-        var ids = jdbc.query("SELECT campaign_id FROM rcm_upgrade_campaign WHERE status = ? ORDER BY created_at LIMIT 1" + suffix,
+        // Agent heartbeats arrive concurrently.  A poll that cannot acquire
+        // the campaign allocation lock must not consume a JDBC connection
+        // while waiting behind the current allocator; the next event/heartbeat
+        // will retry after the short transaction completes.
+        var lockClause = forUpdate ? " FOR UPDATE SKIP LOCKED" : "";
+        var ids = jdbc.query("SELECT campaign_id FROM rcm_upgrade_campaign WHERE status = ? ORDER BY created_at LIMIT 1" + lockClause,
                 ps -> ps.setString(1, RUNNING), (rs, row) -> rs.getString(1));
         return ids.isEmpty() ? null : loadJdbc(ids.get(0), forUpdate);
     }
