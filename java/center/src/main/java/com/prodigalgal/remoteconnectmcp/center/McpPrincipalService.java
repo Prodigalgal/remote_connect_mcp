@@ -68,6 +68,12 @@ public final class McpPrincipalService {
     public IssuedToken issue(IssueRequest request) {
         var value = request == null ? new IssueRequest("", "", null, Set.of()) : request;
         var principalId = normalizeIdentifier(value.principalId(), "principal_" + randomHex(16), 180);
+        if (TaskOrigin.SHARED_PRINCIPAL.equals(principalId)) {
+            // The compatibility principal owns legacy tasks during migration.
+            // Never let a newly-issued user token impersonate that reserved
+            // identity and thereby inherit every pre-migration task.
+            throw new IllegalArgumentException("principal_id is reserved");
+        }
         var displayName = value.displayName() == null || value.displayName().isBlank()
                 ? principalId : value.displayName().trim();
         if (displayName.length() > 256) throw new IllegalArgumentException("display_name is too long");

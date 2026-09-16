@@ -27,6 +27,8 @@ class McpPrincipalServiceTest {
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
                 () -> service.issue(new McpPrincipalService.IssueRequest("bad id", "", 3600L, Set.of())));
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> service.issue(new McpPrincipalService.IssueRequest(TaskOrigin.SHARED_PRINCIPAL, "", 3600L, Set.of())));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
                 () -> service.issue(new McpPrincipalService.IssueRequest("user-b", "", 60L, Set.of())));
     }
 }
