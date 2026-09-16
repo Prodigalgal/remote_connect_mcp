@@ -323,7 +323,13 @@ try {
         }
     }
     foreach ($file in $sourceFiles) {
-        Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $InstallRoot $file.Name) -Force
+        $destinationPath = Join-Path $InstallRoot $file.Name
+        try {
+            if ([IO.Path]::GetFullPath($file.FullName) -ieq [IO.Path]::GetFullPath($destinationPath)) {
+                continue
+            }
+        } catch { }
+        Copy-Item -LiteralPath $file.FullName -Destination $destinationPath -Force
     }
 } finally {
     if ($staging -and (Test-Path -LiteralPath $staging)) {
