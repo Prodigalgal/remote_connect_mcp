@@ -66,5 +66,55 @@
         "parameterTypes": []
       }
     ]
+  },
+  {
+    "name": "sun.awt.UNIXToolkit",
+    "methods": [
+      {
+        "name": "loadIconCallback",
+        "parameterTypes": ["byte[]", "int", "int", "int", "int", "int", "boolean"]
+      }
+    ]
+  },
+  {
+    "name": "sun.awt.X11.XBaseWindow",
+    "fields": [{"name": "window"}],
+    "methods": [{"name": "getWindow", "parameterTypes": []}]
+  },
+  {"name": "sun.awt.X11.XContentWindow"},
+  {
+    "name": "sun.awt.X11.XDesktopPeer",
+    "fields": [{"name": "supportedActions"}]
+  },
+  {"name": "sun.awt.X11.XDialogPeer"},
+  {
+    "name": "sun.awt.X11.XErrorHandlerUtil",
+    "methods": [
+      {"name": "globalErrorHandler", "parameterTypes": ["long", "long"]},
+      {"name": "init", "parameterTypes": ["long"]}
+    ]
+  },
+  {"name": "sun.awt.X11.XFramePeer"},
+  {
+    "name": "sun.awt.X11.XToolkit",
+    "fields": [{"name": "modLockIsShiftLock"}, {"name": "numLockMask"}]
+  },
+  {
+    "name": "sun.awt.X11.XWindow",
+    "fields": [{"name": "drawState"}, {"name": "graphicsConfig"}, {"name": "target"}]
+  },
+  {"name": "sun.awt.X11.XWindowPeer"},
+  {
+    "name": "sun.awt.X11GraphicsConfig",
+    "fields": [{"name": "aData"}, {"name": "bitsPerPixel"}, {"name": "screen"}]
+  },
+  {
+    "name": "sun.awt.X11GraphicsDevice",
+    "fields": [{"name": "screen"}],
+    "methods": [{"name": "addDoubleBufferVisual", "parameterTypes": ["int"]}]
+  },
+  {
+    "name": "sun.awt.X11InputMethodBase",
+    "fields": [{"name": "pData"}]
   }
 ]
