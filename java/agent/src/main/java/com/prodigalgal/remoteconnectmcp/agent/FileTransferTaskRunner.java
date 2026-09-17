@@ -13,6 +13,7 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.nio.file.LinkOption;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -82,6 +83,13 @@ final class FileTransferTaskRunner implements Runnable {
         var source = AgentPaths.resolveFilePath(config, identity.machineId(), task, action.sourcePath(), true);
         var parent = source.getParent();
         if (parent == null) throw new IOException("source file has no parent");
+        // Never stream directories, FIFOs, sockets, or symlink targets as a
+        // file-transfer body.  A regular-file snapshot is finite and can be
+        // resumed safely; special files could otherwise block a worker
+        // indefinitely or expose a moving device stream.
+        if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("source file is not a regular non-symlink file");
+        }
         var sourceBytes = Files.size(source);
         if (sourceBytes < 0 || sourceBytes > MAX_BYTES) throw new IOException("source file size is outside the allowed range");
         try {

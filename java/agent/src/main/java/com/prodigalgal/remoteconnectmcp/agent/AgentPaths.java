@@ -94,7 +94,9 @@ final class AgentPaths {
         var candidate = (input.isAbsolute() ? input : base.resolve(input)).toAbsolutePath().normalize();
         if (!bounded) {
             if (source) {
-                if (!Files.isRegularFile(candidate)) throw new IOException("source file is not a regular file: " + candidate);
+                if (Files.isSymbolicLink(candidate) || !Files.isRegularFile(candidate, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IOException("source file is not a regular non-symlink file: " + candidate);
+                }
                 return candidate.toRealPath();
             }
             var parent = candidate.getParent();
@@ -104,6 +106,9 @@ final class AgentPaths {
         if (!Files.isDirectory(base)) throw new IOException("configured execution scope root is not a directory: " + base);
         var rootReal = base.toRealPath();
         if (source) {
+            if (Files.isSymbolicLink(candidate)) {
+                throw new IOException("source file must not be a symbolic link");
+            }
             var real = candidate.toRealPath();
             if (!real.startsWith(rootReal) || !Files.isRegularFile(real)) {
                 throw new IOException("source file is outside the execution contract scope");
