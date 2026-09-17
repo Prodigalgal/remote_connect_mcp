@@ -526,7 +526,7 @@ public final class ArtifactTransferService {
                 // and leave the durable row in delivering state for the next
                 // Agent attempt instead of converting a transient failure to
                 // a terminal transfer error.
-                throw new IllegalArgumentException("resumable file transfer chunk interrupted: " + exception.getMessage(), exception);
+                throw new TransferTemporaryException("resumable file transfer chunk interrupted: " + exception.getMessage(), exception);
             }
         }
     }
@@ -1255,6 +1255,10 @@ public final class ArtifactTransferService {
     public record AgentDownload(String transferId, String fileName, String mimeType, long bytes, String sha256, InputStream body,
                                 long offset, long totalBytes) { }
     public record TransferResume(String transferId, long offset, long expectedBytes, String expectedSha256, String status) { }
+    /** HTTP 503 marker used to make a dropped chunk eligible for AgentRetry. */
+    public static final class TransferTemporaryException extends RuntimeException {
+        public TransferTemporaryException(String message, Throwable cause) { super(message, cause); }
+    }
     public record PublicArtifact(String artifactId, String fileName, String mimeType, long bytes, String sha256, String status, InputStream body) { }
     public record TransferMetrics(long active, long delivered, long failed, long canceled,
                                   long bytesTransferred, long expectedBytes,

@@ -74,8 +74,11 @@ final class FileTransferTaskRunner implements Runnable {
         if (Files.exists(destination) && !action.overwrite()) {
             throw new IOException("destination already exists and overwrite is false");
         }
-        transport.downloadTransfer(identity.machineId(), identity.token(), action.transferId(), destination,
-                action.expectedBytes(), action.expectedSha256(), task.attempt(), action.overwrite());
+        AgentRetry.call(LOG, "file transfer download " + task.id(), () -> {
+            transport.downloadTransfer(identity.machineId(), identity.token(), action.transferId(), destination,
+                    action.expectedBytes(), action.expectedSha256(), task.attempt(), action.overwrite());
+            return null;
+        });
         acknowledge(action, "delivered", action.expectedBytes(), action.expectedSha256(), null, true);
         sendOutput("received " + action.fileName() + " (" + action.expectedBytes() + " bytes, sha256=" + action.expectedSha256() + ")");
         sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
@@ -132,8 +135,9 @@ final class FileTransferTaskRunner implements Runnable {
             if (bytes < 0 || bytes > MAX_BYTES) throw new IOException("source file size is outside the allowed range");
             var digest = action.expectedSha256();
             if (digest == null || !digest.matches("(?i)[0-9a-f]{64}")) digest = sha256(snapshot);
-            var response = transport.uploadTransfer(identity.machineId(), identity.token(), action.transferId(), snapshot,
-                    action.fileName(), action.mimeType(), bytes, digest, task.attempt());
+            var response = AgentRetry.call(LOG, "file transfer upload " + task.id(), () ->
+                    transport.uploadTransfer(identity.machineId(), identity.token(), action.transferId(), snapshot,
+                            action.fileName(), action.mimeType(), bytes, digest, task.attempt()));
             var sha = response == null || response.sha256() == null || response.sha256().isBlank() ? digest : response.sha256();
             acknowledge(action, "delivered", bytes, sha, null, true);
             sendOutput("published " + action.fileName() + " (" + bytes + " bytes, sha256=" + sha + ")");

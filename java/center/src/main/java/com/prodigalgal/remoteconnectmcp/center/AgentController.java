@@ -430,6 +430,9 @@ public final class AgentController {
         if (exception instanceof SecurityException) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(java.util.Map.of("error", message(exception)));
         }
+        if (exception instanceof ArtifactTransferService.TransferTemporaryException) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(java.util.Map.of("error", message(exception)));
+        }
         if (exception instanceof IllegalArgumentException) {
             return ResponseEntity.badRequest().body(java.util.Map.of("error", message(exception)));
         }
