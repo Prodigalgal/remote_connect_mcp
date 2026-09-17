@@ -242,7 +242,7 @@ databaseChangeLog:
         - sql:
             sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_status CHECK (status IN ('pending', 'ready', 'delivered', 'failed', 'canceled'))
         - sql:
-            sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_bytes CHECK (expected_bytes >= 0 AND bytes_transferred >= 0 AND (expected_bytes = 0 OR bytes_transferred <= expected_bytes))
+            sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_bytes CHECK ((expected_bytes = 0 AND bytes_transferred = 0) OR (expected_bytes > 0 AND bytes_transferred >= 0 AND bytes_transferred <= expected_bytes))
       rollback:
         - sql:
             sql: ALTER TABLE rcm_file_transfer DROP CONSTRAINT ck_rcm_file_transfer_bytes

@@ -356,8 +356,10 @@ public class McpConfiguration {
                 .description(description)
                 .inputSchema(schema)
                 .annotations(annotations)
-                .meta(meta)
-                .build();
+                .meta(meta);
+        if (name.equals("artifact_put") || name.equals("artifact_get") || name.equals("artifact_read")) {
+            tool.outputSchema(artifactOutputSchema());
+        }
         return McpServerFeatures.AsyncToolSpecification.builder()
                 .tool(tool)
                 .callHandler((exchange, request) -> Mono.fromCallable(() -> handler.apply(exchange, request)).subscribeOn(scheduler))
@@ -401,6 +403,35 @@ public class McpConfiguration {
                 "required", List.of("download_url", "file_id"), "additionalProperties", false);
     }
 
+    /**
+     * Keep the file result machine-readable without placing bytes in the
+     * model transcript.  The optional file object is deliberately identical
+     * to the OpenAI file-bridge shape so a Host/Widget can render it directly.
+     */
+    private static Map<String, Object> artifactOutputSchema() {
+        var task = Map.of("type", "object", "additionalProperties", true);
+        var transfer = Map.of("type", "object", "additionalProperties", true);
+        var file = Map.of("type", "object", "properties", Map.of(
+                        "download_url", string("short-lived artifact URL"),
+                        "file_id", string("artifact identifier"),
+                        "mime_type", string("MIME type"),
+                        "file_name", string("file name")),
+                "required", List.of("download_url", "file_id"), "additionalProperties", false);
+        return Map.of("type", "object", "properties", Map.of(
+                        "task", task,
+                        "transfer", transfer,
+                        "next_action", string("next MCP action"),
+                        "artifact_id", string("artifact identifier"),
+                        "transfer_id", string("transfer identifier"),
+                        "status", string("artifact status"),
+                        "bytes", integer("artifact size"),
+                        "sha256", string("artifact SHA-256"),
+                        "mime_type", string("MIME type"),
+                        "file_name", string("file name"),
+                        "file", file),
+                "additionalProperties", true);
+    }
+
     private static McpSchema.CallToolResult artifactPut(AgentRegistry agents, ProjectService projects,
                                                         McpAccessService access, ArtifactTransferService transfers,
                                                         TaskOrigin origin, McpSchema.CallToolRequest request) {
@@ -419,7 +450,7 @@ public class McpConfiguration {
             var result = transfers.createWebToAgent(origin, create, file.fileId(), args.destinationPath(), name, mime,
                     URI.create(file.downloadUrl()), args.expectedBytes() == null ? file.bytes() : args.expectedBytes(),
                     firstNonBlank(args.expectedSha256(), file.sha256()), Boolean.TRUE.equals(args.overwrite()));
-            return json(Map.of("task", taskMap(result.task()), "transfer", transferMap(result.transfer()),
+            return structuredJson(Map.of("task", taskMap(result.task()), "transfer", transferMap(result.transfer()),
                     "next_action", "call task_wait, then artifact_read with the returned artifact_id"));
         } catch (Exception exception) {
             return error(exception);
@@ -438,7 +469,7 @@ public class McpConfiguration {
             var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(), args.projectId(), args.worktreeId(),
                     scope.mode(), scope.root(), args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin);
             var result = transfers.createAgentToWeb(origin, create, args.sourcePath(), args.fileName(), args.mimeType());
-            return json(Map.of("task", taskMap(result.task()), "transfer", transferMap(result.transfer()),
+            return structuredJson(Map.of("task", taskMap(result.task()), "transfer", transferMap(result.transfer()),
                     "next_action", "call task_wait until completed, then artifact_read with the returned artifact_id"));
         } catch (Exception exception) {
             return error(exception);
@@ -464,7 +495,7 @@ public class McpConfiguration {
                 payload.put("file", Map.of("file_id", descriptor.artifactId(), "download_url", descriptor.downloadUrl(),
                         "mime_type", descriptor.mimeType(), "file_name", descriptor.fileName()));
             }
-            return json(payload);
+            return structuredJson(payload);
         } catch (Exception exception) {
             return error(exception);
         }
@@ -1149,6 +1180,18 @@ public class McpConfiguration {
         try {
             var text = boundedJsonText(value);
             return McpSchema.CallToolResult.builder().addTextContent(text).build();
+        } catch (IOException exception) {
+            return error(exception);
+        }
+    }
+
+    private static McpSchema.CallToolResult structuredJson(Object value) {
+        try {
+            var text = boundedJsonText(value);
+            return McpSchema.CallToolResult.builder()
+                    .structuredContent(value)
+                    .addTextContent(text)
+                    .build();
         } catch (IOException exception) {
             return error(exception);
         }
