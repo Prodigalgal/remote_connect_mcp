@@ -203,7 +203,7 @@ public final class ArtifactTransferService {
             var task = tasks.create(withAction(request, action), "mcp", origin);
             var descriptor = new TransferDescriptor(ids.transferId(), artifactId, FileTransferAction.WEB_TO_AGENT,
                     task.id(), origin.principalId(), request.machineId(), fileName, safeMime, downloaded.bytes(), downloaded.sha256(),
-                    "ready", null, publicUrl(artifactId, origin));
+                    "ready", null, publicUrl(artifactId, origin, task.executionSessionId(), "download"));
             persistInbound(origin, descriptor, objectKey, destinationPath);
             memory.putIfAbsent(ids.transferId(), new MemoryTransfer(descriptor, objectKey, destinationPath, ""));
             return new TransferCreated(task, descriptor);
@@ -228,7 +228,7 @@ public final class ArtifactTransferService {
         if (task == null) return null;
         var descriptor = new TransferDescriptor(row.transferId(), row.artifactId(), row.direction(), row.taskId(), row.principalId(),
                 row.machineId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), row.status(), null,
-                downloadUrl(row.artifactId(), row.status(), origin));
+                downloadUrl(row.artifactId(), row.status(), task.executionSessionId(), origin));
         return new TransferCreated(task, descriptor);
     }
 
@@ -310,7 +310,7 @@ public final class ArtifactTransferService {
             completeInbound(origin, request.machineId(), taskId, ids, fileName, safeMime, downloaded, objectKey);
             var descriptor = new TransferDescriptor(ids.transferId(), ids.artifactId(), FileTransferAction.WEB_TO_AGENT,
                     taskId, origin.principalId(), request.machineId(), fileName, safeMime, downloaded.bytes(), downloaded.sha256(),
-                    "ready", null, publicUrl(ids.artifactId(), origin));
+                    "ready", null, publicUrl(ids.artifactId(), origin, taskSession(taskId), "download"));
             memory.put(ids.transferId(), new MemoryTransfer(descriptor, objectKey, destinationPath, ""));
         } catch (IOException | RuntimeException failure) {
             if (objectKey != null) {
@@ -467,7 +467,8 @@ public final class ArtifactTransferService {
             committed = true;
             memory.put(transferId, new MemoryTransfer(new TransferDescriptor(transferId, artifactId, row.direction(), row.taskId(),
                     row.principalId(), row.machineId(), safeName, safeMime, received.bytes(), received.sha256(), "delivered", null,
-                    publicUrl(artifactId, new TaskOrigin(row.principalId(), TaskOrigin.COMPAT_TOKEN, ""))), objectKey, "", row.sourcePath()));
+                    publicUrl(artifactId, new TaskOrigin(row.principalId(), TaskOrigin.COMPAT_TOKEN, ""), taskSession(row.taskId()), "download")),
+                    objectKey, "", row.sourcePath()));
             return response;
         } catch (IOException exception) {
             markFailed(row, exception.getMessage());
@@ -507,54 +508,84 @@ public final class ArtifactTransferService {
         if (row == null || !origin.principalId().equals(row.principalId())) return Optional.empty();
         return Optional.of(new TransferDescriptor(row.transferId(), row.artifactId(), row.direction(), row.taskId(), row.principalId(),
                 row.machineId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), row.status(), null,
-                downloadUrl(row.artifactId(), row.status(), origin)));
+                downloadUrl(row.artifactId(), row.status(), taskSession(row.taskId()), origin)));
     }
 
     private TransferDescriptor withDownloadUrl(TransferDescriptor value, TaskOrigin origin) {
         return new TransferDescriptor(value.transferId(), value.artifactId(), value.direction(), value.taskId(), value.principalId(),
                 value.machineId(), value.fileName(), value.mimeType(), value.bytes(), value.sha256(), value.status(), value.error(),
-                downloadUrl(value.artifactId(), value.status(), origin));
+                downloadUrl(value.artifactId(), value.status(), taskSession(value.taskId()), origin));
     }
 
     /** Do not advertise a file URL until the object is durably published. */
-    private String downloadUrl(String artifactId, String status, TaskOrigin origin) {
-        return ("ready".equals(status) || "delivered".equals(status)) ? publicUrl(artifactId, origin) : "";
+    private String downloadUrl(String artifactId, String status, String sessionId, TaskOrigin origin) {
+        return ("ready".equals(status) || "delivered".equals(status))
+                ? publicUrl(artifactId, origin, sessionId, "download") : "";
     }
 
-    /** Public file object endpoint URL; the URL carries only a short-lived HMAC. */
+    private String taskSession(String taskId) {
+        if (taskId == null || taskId.isBlank()) return "";
+        return tasks.find(taskId).map(TaskView::executionSessionId).orElse("");
+    }
+
+    /** Public file object endpoint URL; the URL carries a short-lived HMAC. */
     public String publicUrl(String artifactId, TaskOrigin origin) {
+        return publicUrl(artifactId, origin, "", "download");
+    }
+
+    /**
+     * Creates a URL bound to the execution session that produced the artifact.
+     * A session is intentionally part of the signed subject rather than an
+     * authorization header so ChatGPT/React can fetch the file directly.
+     */
+    public String publicUrl(String artifactId, TaskOrigin origin, String executionSessionId, String purpose) {
         if (artifactId == null || artifactId.isBlank() || origin == null) return "";
+        var safePurpose = purpose == null || purpose.isBlank() ? "download" : purpose.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of("download", "preview").contains(safePurpose)) return "";
+        var session = executionSessionId == null ? "" : executionSessionId.trim();
+        if (session.length() > 256) return "";
         var expires = Instant.now().plus(signedUrlTtl).getEpochSecond();
-        var purpose = "download";
-        var connection = origin.connectionId();
-        var subject = signatureSubject(artifactId, origin.principalId(), expires, purpose, connection);
+        var connection = origin.connectionId() == null ? "" : origin.connectionId();
+        if (connection.length() > 256) return "";
+        var subject = signatureSubject(artifactId, origin.principalId(), expires, safePurpose, connection, session);
         var signature = sign(subject);
         var base = publicBaseUrl.isBlank() ? "" : publicBaseUrl;
         return base + "/artifacts/" + artifactId + "/content?expires=" + expires + "&principal="
-                + encode(origin.principalId()) + "&purpose=" + purpose + "&connection=" + encode(connection)
-                + "&signature=" + encode(signature);
+                + encode(origin.principalId()) + "&purpose=" + safePurpose + "&connection=" + encode(connection)
+                + "&session=" + encode(session) + "&signature=" + encode(signature);
     }
 
     public PublicArtifact openPublic(String artifactId, long expires, String principal, String signature) {
-        return openPublic(artifactId, expires, principal, "", "download", signature);
+        return openPublic(artifactId, expires, principal, "", "", "download", signature);
+    }
+
+    /** Compatibility overload for links issued before session binding. */
+    public PublicArtifact openPublic(String artifactId, long expires, String principal, String connection,
+                                     String purpose, String signature) {
+        return openPublic(artifactId, expires, principal, connection, "", purpose, signature);
     }
 
     public PublicArtifact openPublic(String artifactId, long expires, String principal, String connection,
-                                     String purpose, String signature) {
+                                     String session, String purpose, String signature) {
         if (artifactId == null || artifactId.isBlank() || principal == null || principal.isBlank()
                 || expires < Instant.now().getEpochSecond() || signature == null
-                || purpose == null || !"download".equals(purpose)
-                || connection == null || connection.length() > 256) {
+                || purpose == null || !Set.of("download", "preview").contains(purpose)
+                || connection == null || connection.length() > 256
+                || session == null || session.length() > 256) {
             throw new SecurityException("invalid or expired artifact URL");
         }
-        var expectedSignature = sign(signatureSubject(artifactId, principal, expires, purpose, connection));
         var supplied = signature.trim().getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        var expectedSignature = sign(signatureSubject(artifactId, principal, expires, purpose, connection, session));
         var valid = MessageDigest.isEqual(expectedSignature.getBytes(java.nio.charset.StandardCharsets.US_ASCII), supplied);
-        // Keep already-issued pre-session links valid during a rolling
-        // deployment; all newly generated links include purpose and
-        // connection binding.  The compatibility path is only reachable when
-        // the caller omitted the new connection query parameter.
-        if (!valid && connection.isBlank()) {
+        // Keep already-issued connection-bound links valid during a rolling
+        // deployment.  The legacy fallback is only reachable when both new
+        // binding fields are omitted; newly generated links always include
+        // purpose, connection, and session.
+        if (!valid && session.isBlank()) {
+            valid = MessageDigest.isEqual(sign(signatureSubject(artifactId, principal, expires, purpose, connection, ""))
+                    .getBytes(java.nio.charset.StandardCharsets.US_ASCII), supplied);
+        }
+        if (!valid && connection.isBlank() && session.isBlank()) {
             valid = MessageDigest.isEqual(sign(artifactId + "\n" + principal + "\n" + expires)
                     .getBytes(java.nio.charset.StandardCharsets.US_ASCII), supplied);
         }
@@ -841,8 +872,9 @@ public final class ArtifactTransferService {
     }
 
     private static String encode(String value) { return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8); }
-    private static String signatureSubject(String artifactId, String principal, long expires, String purpose, String connection) {
-        return artifactId + "\n" + principal + "\n" + expires + "\n" + purpose + "\n" + connection;
+    private static String signatureSubject(String artifactId, String principal, long expires, String purpose,
+                                           String connection, String session) {
+        return artifactId + "\n" + principal + "\n" + expires + "\n" + purpose + "\n" + connection + "\n" + session;
     }
     private static String normalizeBase(String value) { return value == null ? "" : value.trim().replaceAll("/+$", ""); }
     private static Path spoolRoot() {

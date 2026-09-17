@@ -3,6 +3,7 @@ package com.prodigalgal.remoteconnectmcp.center;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
@@ -55,11 +56,16 @@ class ArtifactTransferServiceTest {
         var expires = queryValue(query, "expires");
         var principal = queryValue(query, "principal");
         var connection = queryValue(query, "connection");
+        var session = queryValue(query, "session");
         var purpose = queryValue(query, "purpose");
         var signature = queryValue(query, "signature");
-        try (var publicArtifact = service.openPublic(descriptor.artifactId(), Long.parseLong(expires), principal, connection, purpose, signature).body()) {
+        assertFalse(session.isBlank());
+        try (var publicArtifact = service.openPublic(descriptor.artifactId(), Long.parseLong(expires), principal, connection, session, purpose, signature).body()) {
             assertArrayEquals(data, publicArtifact.readAllBytes());
         }
+        assertThrows(SecurityException.class,
+                () -> service.openPublic(descriptor.artifactId(), Long.parseLong(expires), principal, connection,
+                        session + "-other", purpose, signature));
         assertThrows(java.util.NoSuchElementException.class,
                 () -> service.findByArtifact(descriptor.artifactId(), new TaskOrigin("principal-b", "token-b", "connection-b")).orElseThrow());
     }

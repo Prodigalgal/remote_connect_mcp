@@ -25,9 +25,10 @@ public final class ArtifactController {
                                                           @RequestParam long expires,
                                                           @RequestParam String principal,
                                                           @RequestParam(defaultValue = "") String connection,
+                                                          @RequestParam(defaultValue = "") String session,
                                                           @RequestParam(defaultValue = "download") String purpose,
                                                           @RequestParam String signature) {
-        var artifact = transfers.openPublic(artifactId, expires, principal, connection, purpose, signature);
+        var artifact = transfers.openPublic(artifactId, expires, principal, connection, session, purpose, signature);
         StreamingResponseBody body = output -> {
             try (var input = artifact.body()) {
                 input.transferTo(output);
