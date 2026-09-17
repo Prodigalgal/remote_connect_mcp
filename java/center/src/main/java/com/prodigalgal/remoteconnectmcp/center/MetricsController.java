@@ -3,6 +3,7 @@ package com.prodigalgal.remoteconnectmcp.center;
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -21,15 +22,24 @@ public final class MetricsController {
     private final UpgradeService upgrades;
     private final AuditService audit;
     private final CenterAsyncExecutor async;
+    private final ArtifactTransferService transfers;
 
     public MetricsController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                              UpgradeService upgrades, AuditService audit, CenterAsyncExecutor async) {
+        this(tokens, agents, tasks, upgrades, audit, async, null);
+    }
+
+    @Autowired
+    public MetricsController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
+                             UpgradeService upgrades, AuditService audit, CenterAsyncExecutor async,
+                             ArtifactTransferService transfers) {
         this.tokens = tokens;
         this.agents = agents;
         this.tasks = tasks;
         this.upgrades = upgrades;
         this.audit = audit;
         this.async = async;
+        this.transfers = transfers;
     }
 
     @GetMapping(value = "/metrics", produces = "text/plain")
@@ -74,6 +84,17 @@ public final class MetricsController {
         lineDouble(builder, "remote_connect_mcp_tasks_canceled_ratio", "Canceled tasks divided by terminal tasks.", ratio(taskSlo.canceled(), taskSlo.terminal()));
         line(builder, "remote_connect_mcp_artifacts_total", "Persisted task artifact objects.", "gauge", taskSlo.artifactObjects());
         line(builder, "remote_connect_mcp_artifact_bytes", "Bytes represented by persisted task artifact metadata.", "gauge", taskSlo.artifactBytes());
+        if (transfers != null) {
+            var transfer = transfers.transferMetrics();
+            line(builder, "remote_connect_mcp_file_transfers_active", "File transfers currently pending, ready or delivering.", "gauge", transfer.active());
+            line(builder, "remote_connect_mcp_file_transfers_delivered", "File transfers in delivered state.", "gauge", transfer.delivered());
+            line(builder, "remote_connect_mcp_file_transfers_failed", "File transfers in failed state.", "gauge", transfer.failed());
+            line(builder, "remote_connect_mcp_file_transfers_canceled", "File transfers in canceled state.", "gauge", transfer.canceled());
+            line(builder, "remote_connect_mcp_file_transfer_bytes_transferred", "Bytes currently recorded as transferred.", "gauge", transfer.bytesTransferred());
+            line(builder, "remote_connect_mcp_file_transfer_expected_bytes", "Bytes declared by file transfer metadata.", "gauge", transfer.expectedBytes());
+            lineDouble(builder, "remote_connect_mcp_file_transfer_average_duration_seconds", "Average terminal file transfer duration.", transfer.averageDurationSeconds());
+            lineDouble(builder, "remote_connect_mcp_file_transfer_max_duration_seconds", "Maximum terminal file transfer duration.", transfer.maxDurationSeconds());
+        }
         builder.append("# HELP remote_connect_mcp_upgrades_total Upgrade campaigns by status.\n");
         builder.append("# TYPE remote_connect_mcp_upgrades_total gauge\n");
         var upgradeCounts = upgrades.statusCounts();

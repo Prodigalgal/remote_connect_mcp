@@ -519,6 +519,49 @@ public final class ArtifactTransferService {
                 downloadUrl(row.artifactId(), row.status(), taskSession(row.taskId()), origin)));
     }
 
+    /**
+     * Low-cardinality transfer SLO projection.  It reads metadata counters
+     * only; payload bytes and paths never enter the metrics response.
+     */
+    public TransferMetrics transferMetrics() {
+        if (jdbc == null) {
+            var active = 0L;
+            var delivered = 0L;
+            var failed = 0L;
+            var canceled = 0L;
+            var bytes = 0L;
+            var expected = 0L;
+            for (var value : memory.values()) {
+                var descriptor = value.descriptor();
+                switch (descriptor.status()) {
+                    case "pending", "ready", "delivering" -> active++;
+                    case "delivered" -> delivered++;
+                    case "failed" -> failed++;
+                    case "canceled" -> canceled++;
+                    default -> { }
+                }
+                bytes = saturatingAdd(bytes, Math.max(0L, descriptor.bytes()));
+                expected = saturatingAdd(expected, Math.max(0L, descriptor.bytes()));
+            }
+            return new TransferMetrics(active, delivered, failed, canceled, bytes, expected, 0.0, 0.0);
+        }
+        return jdbc.query("""
+                SELECT COUNT(*) FILTER (WHERE status IN ('pending', 'ready', 'delivering')),
+                       COUNT(*) FILTER (WHERE status = 'delivered'),
+                       COUNT(*) FILTER (WHERE status = 'failed'),
+                       COUNT(*) FILTER (WHERE status = 'canceled'),
+                       COALESCE(SUM(bytes_transferred), 0),
+                       COALESCE(SUM(expected_bytes), 0),
+                       COALESCE(AVG(EXTRACT(EPOCH FROM (updated_at - created_at)))
+                                FILTER (WHERE status IN ('delivered', 'failed', 'canceled')), 0),
+                       COALESCE(MAX(EXTRACT(EPOCH FROM (updated_at - created_at)))
+                                FILTER (WHERE status IN ('delivered', 'failed', 'canceled')), 0)
+                  FROM rcm_file_transfer
+                """, rs -> rs.next() ? new TransferMetrics(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getLong(4),
+                rs.getLong(5), rs.getLong(6), rs.getDouble(7), rs.getDouble(8))
+                : new TransferMetrics(0, 0, 0, 0, 0, 0, 0.0, 0.0));
+    }
+
     private TransferDescriptor withDownloadUrl(TransferDescriptor value, TaskOrigin origin) {
         return new TransferDescriptor(value.transferId(), value.artifactId(), value.direction(), value.taskId(), value.principalId(),
                 value.machineId(), value.fileName(), value.mimeType(), value.bytes(), value.sha256(), value.status(), value.error(),
@@ -889,6 +932,11 @@ public final class ArtifactTransferService {
         memory.put(transferId, new MemoryTransfer(updated, current.objectKey(), current.destinationPath(), current.sourcePath()));
     }
 
+    private static long saturatingAdd(long left, long right) {
+        if (right <= 0 || Long.MAX_VALUE - left < right) return Long.MAX_VALUE;
+        return left + right;
+    }
+
     private static void requireRequest(TaskOrigin origin, CreateTaskRequest request) {
         if (origin == null || request == null || request.machineId().isBlank()) throw new IllegalArgumentException("transfer request is incomplete");
     }
@@ -982,6 +1030,9 @@ public final class ArtifactTransferService {
     }
     public record AgentDownload(String transferId, String fileName, String mimeType, long bytes, String sha256, InputStream body) { }
     public record PublicArtifact(String artifactId, String fileName, String mimeType, long bytes, String sha256, String status, InputStream body) { }
+    public record TransferMetrics(long active, long delivered, long failed, long canceled,
+                                  long bytesTransferred, long expectedBytes,
+                                  double averageDurationSeconds, double maxDurationSeconds) { }
     private record Downloaded(Path path, long bytes, String sha256) { }
     private record Ids(String transferId, String artifactId) { }
     private record TransferRow(String transferId, String artifactId, String taskId, String principalId, String machineId,

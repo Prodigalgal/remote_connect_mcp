@@ -11,7 +11,7 @@ RCM 的业务请求、Agent 通道和工件路径仍然是异步的。Center 不
 | Agent | `remote_connect_mcp_machines_total`、`remote_connect_mcp_machines_online`、`remote_connect_mcp_machines_online_ratio` | 注册规模和心跳可用率 |
 | 任务 | `remote_connect_mcp_tasks_queue_depth`、`remote_connect_mcp_tasks_oldest_queued_age_seconds`、`remote_connect_mcp_tasks_active`、`remote_connect_mcp_tasks_expired_leases` | 排队、恢复和卡住任务门禁 |
 | 任务结果 | `remote_connect_mcp_tasks_terminal`、`remote_connect_mcp_tasks_success_ratio`、`remote_connect_mcp_tasks_failure_ratio`、`remote_connect_mcp_tasks_canceled_ratio` | 任务成功率和失败率 |
-| 工件/审计 | `remote_connect_mcp_artifact_bytes`、`remote_connect_mcp_artifacts_total`、`remote_connect_mcp_audit_queue_depth`、`remote_connect_mcp_audit_events_dropped_total` | 存储容量、审计背压和丢弃可见性 |
+| 工件/传输/审计 | `remote_connect_mcp_artifact_bytes`、`remote_connect_mcp_artifacts_total`、`remote_connect_mcp_file_transfers_active`、`remote_connect_mcp_file_transfers_delivered`、`remote_connect_mcp_file_transfers_failed`、`remote_connect_mcp_file_transfer_bytes_transferred`、`remote_connect_mcp_file_transfer_average_duration_seconds`、`remote_connect_mcp_file_transfer_max_duration_seconds`、`remote_connect_mcp_audit_queue_depth`、`remote_connect_mcp_audit_events_dropped_total` | 存储容量、流式传输进度/时延、审计背压和丢弃可见性 |
 
 已有的 `remote_connect_mcp_tasks_total{status=...}` 和 `remote_connect_mcp_upgrades_total{status=...}` 保留，用于按状态观察，不把 machine ID、task ID 或 campaign ID 放进 label，避免高基数爆炸。
 
