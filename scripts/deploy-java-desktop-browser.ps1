@@ -162,7 +162,15 @@ $applyLines = @(
     '  $env:USERNAME = $desktopUser',
     '  $node = $nodePath',
     '  $worker = Join-Path $stage "browser-runtime\browser-worker.mjs"',
-    '  $adapter = ''"{0}" "{1}"'' -f $node, $worker',
+    # Keep the adapter executable invocation in a tiny .cmd shim.  Passing a
+    # quoted multi-path command as one ProcessBuilder argument is parsed twice
+    # by cmd.exe and fails on Windows when either path contains spaces.  The
+    # shim is stable inside the staged runtime directory and retains normal
+    # quoted paths for Node and the Worker.
+    '  $adapterWrapper = Join-Path $stage "browser-runtime\browser-adapter.cmd"',
+    '  $adapterContent = "@echo off`r`n`"$node`" `"$worker`"`r`n"',
+    '  Set-Content -LiteralPath $adapterWrapper -Value $adapterContent -Encoding ASCII -Force',
+    '  $adapter = $adapterWrapper',
     '  $installer = Join-Path $stage "install-java-agent.ps1"',
     ('  $agent = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $agentZip))),
     ('  $desktop = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $desktopZip))),
