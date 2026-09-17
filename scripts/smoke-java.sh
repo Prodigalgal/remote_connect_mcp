@@ -37,7 +37,16 @@ cleanup() {
   fi
   rm -rf "$tmp"
 }
-trap cleanup EXIT
+finish() {
+  local status=$?
+  # Preserve the script status explicitly.  This also prevents a command in
+  # the cleanup path from turning a successful smoke into a false failure.
+  trap - EXIT ERR
+  set +e
+  cleanup
+  exit "$status"
+}
+trap finish EXIT
 
 if [[ -n "$center_binary" ]]; then
   RCM_CENTER_PERSISTENCE_MODE=memory \
