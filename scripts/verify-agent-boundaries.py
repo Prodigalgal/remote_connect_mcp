@@ -118,6 +118,10 @@ def main() -> int:
             errors.append(
                 "desktop companion JNI metadata does not cover sun.awt.image.VolatileSurfaceManager"
             )
+        if "getButtonDownMasks" not in jni_text:
+            errors.append(
+                "desktop companion JNI metadata does not cover java.awt.event.InputEvent.getButtonDownMasks"
+            )
 
     for module in ("agent", "browser", "center"):
         resource_root = root / "java" / module / "src" / "main" / "resources"

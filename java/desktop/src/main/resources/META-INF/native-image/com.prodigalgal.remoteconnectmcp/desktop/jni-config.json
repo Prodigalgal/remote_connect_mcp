@@ -120,6 +120,12 @@
       {
         "name": "modifiers"
       }
+    ],
+    "methods": [
+      {
+        "name": "getButtonDownMasks",
+        "parameterTypes": []
+      }
     ]
   },
   {
