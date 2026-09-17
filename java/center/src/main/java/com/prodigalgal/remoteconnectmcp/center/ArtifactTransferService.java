@@ -662,7 +662,7 @@ public final class ArtifactTransferService {
         if (artifactId == null || artifactId.isBlank()) return Optional.empty();
         TransferDescriptor row = jdbc == null ? memory.values().stream().map(MemoryTransfer::descriptor)
                 .filter(value -> artifactId.equals(value.artifactId())).findFirst().orElse(null)
-                : jdbc.query("SELECT t.transfer_id, t.artifact_id, t.direction, t.task_id, t.machine_id, t.principal_id, t.file_name, t.mime_type, a.bytes, a.sha256, t.status, t.error_text FROM rcm_file_transfer t LEFT JOIN rcm_artifact a ON a.artifact_id = t.artifact_id WHERE t.artifact_id = ?",
+                : jdbc.query("SELECT t.transfer_id, t.artifact_id, t.direction, t.task_id, t.machine_id, t.principal_id, t.file_name, t.mime_type, COALESCE(a.bytes, t.bytes_transferred) AS bytes, a.sha256, t.status, t.error_text FROM rcm_file_transfer t LEFT JOIN rcm_artifact a ON a.artifact_id = t.artifact_id WHERE t.artifact_id = ?",
                 ps -> ps.setString(1, artifactId.trim()), rs -> rs.next() ? descriptor(rs) : null);
         if (row == null || origin == null || !origin.principalId().equals(row.principalId())) return Optional.empty();
         return Optional.of(withDownloadUrl(row, origin));
@@ -673,8 +673,15 @@ public final class ArtifactTransferService {
         var row = findTransfer(transferId).orElse(null);
         if (row == null || !origin.principalId().equals(row.principalId())) return Optional.empty();
         return Optional.of(new TransferDescriptor(row.transferId(), row.artifactId(), row.direction(), row.taskId(), row.principalId(),
-                row.machineId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), row.status(), row.error(),
+                row.machineId(), row.fileName(), row.mimeType(), progressBytes(row), row.sha256(), row.status(), row.error(),
                 downloadUrl(row.artifactId(), row.status(), taskSession(row.taskId()), origin)));
+    }
+
+    private long progressBytes(TransferRow row) {
+        if (jdbc == null) return row.bytes();
+        if ("delivered".equals(row.status())) return row.bytes();
+        var value = jdbc.queryForObject("SELECT bytes_transferred FROM rcm_file_transfer WHERE transfer_id = ?", Long.class, row.transferId());
+        return value == null ? 0L : Math.max(0L, value);
     }
 
     /**

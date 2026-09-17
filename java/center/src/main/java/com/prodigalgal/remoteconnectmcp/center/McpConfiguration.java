@@ -449,8 +449,9 @@ public class McpConfiguration {
                 Map.entry("artifact_id", string("artifact identifier")),
                 Map.entry("direction", string("transfer direction")),
                 Map.entry("task_id", nullable("string", "task identifier")),
-                Map.entry("status", string("transfer status")),
-                Map.entry("bytes", integer("transferred bytes")),
+                 Map.entry("status", string("transfer status")),
+                 Map.entry("bytes", integer("transferred bytes")),
+                 Map.entry("bytes_transferred", integer("confirmed transfer progress")),
                 Map.entry("sha256", nullable("string", "transfer SHA-256")),
                 Map.entry("file_name", string("file name")),
                 Map.entry("mime_type", nullable("string", "MIME type")),
@@ -562,6 +563,7 @@ public class McpConfiguration {
         payload.put("task_id", value.taskId());
         payload.put("status", value.status());
         payload.put("bytes", value.bytes());
+        payload.put("bytes_transferred", value.bytes());
         payload.put("sha256", value.sha256());
         payload.put("file_name", value.fileName());
         payload.put("mime_type", value.mimeType());

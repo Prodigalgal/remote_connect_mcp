@@ -54,6 +54,7 @@ MCP 只返回以下内容：
   "file_name": "result.pdf",
   "mime_type": "application/pdf",
   "bytes": 183920,
+  "bytes_transferred": 183920,
   "sha256": "...",
   "status": "ready"
 }
