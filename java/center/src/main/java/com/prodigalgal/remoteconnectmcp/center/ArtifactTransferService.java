@@ -484,6 +484,7 @@ public final class ArtifactTransferService {
                 var safeMime = normalizeMime(mimeType == null || mimeType.isBlank() ? row.mimeType() : mimeType);
                 initializeChunkMetadata(row, total, safeSha);
                 markDelivering(row);
+                resources.ensurePersistentSpoolCapacity(partial.getParent(), contentLength);
                 try (var reservation = resources.reserve(row.principalId(), row.machineId(), contentLength)) {
                     appendChunk(input, partial, contentLength, transferId);
                 }

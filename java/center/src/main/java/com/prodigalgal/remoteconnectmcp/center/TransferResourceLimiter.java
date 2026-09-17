@@ -82,6 +82,37 @@ final class TransferResourceLimiter {
         }
     }
 
+    /**
+     * Check persistent resumable partials before appending another chunk.
+     * Unlike the active-stream reservation, this accounts for bytes left on
+     * disk by a previous request or Center restart.  It is deliberately an
+     * admission check at chunk arrival, never a background polling sweep.
+     */
+    void ensurePersistentSpoolCapacity(Path directory, long additionalBytes) {
+        if (directory == null || additionalBytes < 0 || additionalBytes > MAX_BYTES) {
+            throw new IllegalArgumentException("invalid persistent spool reservation");
+        }
+        synchronized (monitor) {
+            try {
+                Files.createDirectories(directory);
+                long existing = 0L;
+                try (var entries = Files.list(directory)) {
+                    for (var path : entries.filter(value -> Files.isRegularFile(value, java.nio.file.LinkOption.NOFOLLOW_LINKS)).toList()) {
+                        var size = Files.size(path);
+                        if (size > MAX_BYTES - existing) throw new IllegalStateException("persistent transfer spool exceeds the allowed range");
+                        existing += size;
+                    }
+                }
+                if (existing > maxSpoolBytes || additionalBytes > maxSpoolBytes - existing) {
+                    throw new IllegalStateException("file transfer persistent spool quota reached");
+                }
+                ensureFreeSpace(additionalBytes);
+            } catch (IOException exception) {
+                throw new IllegalStateException("cannot inspect persistent transfer spool", exception);
+            }
+        }
+    }
+
     private void ensureFreeSpace(long bytes) {
         try {
             Files.createDirectories(tempDirectory);
