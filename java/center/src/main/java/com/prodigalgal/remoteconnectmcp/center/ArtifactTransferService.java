@@ -134,6 +134,30 @@ public final class ArtifactTransferService {
                 }
             }
         }
+        // A crash between task creation and the reservation INSERT leaves no
+        // transfer row to discover.  The pending action marker is deliberately
+        // queryable, so close this orphaned task once at startup as well.
+        var orphanTasks = jdbc.query("""
+                SELECT t.task_id, t.agent_id
+                  FROM rcm_task t
+                 WHERE t.kind = 'file_transfer' AND t.status = 'queued'
+                   AND COALESCE(t.file_transfer_action ->> 'direction', '') = 'web_to_agent'
+                   AND COALESCE(t.file_transfer_action ->> 'expected_sha256', '') = ''
+                   AND CASE WHEN COALESCE(t.file_transfer_action ->> 'expected_bytes', '') ~ '^[0-9]+$'
+                            THEN (t.file_transfer_action ->> 'expected_bytes')::bigint ELSE 0 END = 0
+                   AND NOT EXISTS (SELECT 1 FROM rcm_file_transfer f WHERE f.task_id = t.task_id)
+                 ORDER BY t.created_at
+                 LIMIT 10000
+                """, (rs, rowNum) -> new OrphanPreparedTask(rs.getString("task_id"), rs.getString("agent_id")));
+        for (var task : orphanTasks) {
+            try {
+                tasks.failPreparedFileTransfer(task.machineId(), task.taskId(),
+                        "Center restarted before file transfer reservation was persisted");
+            } catch (RuntimeException ignored) {
+                // Keep startup recovery best-effort and bounded; the next
+                // explicit task read still exposes the authoritative state.
+            }
+        }
     }
 
     public TransferCreated createWebToAgent(TaskOrigin origin, CreateTaskRequest request,
@@ -859,5 +883,6 @@ public final class ArtifactTransferService {
                                String direction, String sourcePath, String destinationPath, String fileName, String mimeType,
                                long bytes, String sha256, String status, String objectKey) { }
     private record PendingReservation(String transferId, String taskId, String machineId) { }
+    private record OrphanPreparedTask(String taskId, String machineId) { }
     private record MemoryTransfer(TransferDescriptor descriptor, String objectKey, String destinationPath, String sourcePath) { }
 }

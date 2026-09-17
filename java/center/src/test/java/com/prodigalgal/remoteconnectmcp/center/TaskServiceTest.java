@@ -288,6 +288,22 @@ class TaskServiceTest {
     }
 
     @Test
+    void storesAndReadsZeroByteTaskArtifacts() throws Exception {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "windows", "amd64", "dev", "C:\\", ScopeMode.UNRESTRICTED, null, List.of("desktop")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var task = tasks.create(new CreateTaskRequest(registration.machineId(), new TaskCommand("", TaskKind.DESKTOP, "desktop", null, null, Map.of(), 30,
+                new TaskCommand.DesktopAction("screenshot", null, List.of(), null), null), "empty-artifact"));
+        var digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(new byte[0]));
+
+        tasks.appendArtifact(registration.machineId(), task.id(), "application/octet-stream", digest, new byte[0]);
+
+        var artifact = tasks.readArtifact(task.id()).orElseThrow();
+        assertEquals(0, artifact.data().length);
+        assertEquals(digest, artifact.sha256());
+    }
+
+    @Test
     void enforcesArtifactBudgetFromTheCenterContract() throws Exception {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "windows", "amd64", "dev", "C:\\", ScopeMode.UNRESTRICTED, null, List.of("desktop")), "enroll-test");
