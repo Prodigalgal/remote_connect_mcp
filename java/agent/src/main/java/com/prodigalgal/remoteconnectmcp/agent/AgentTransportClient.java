@@ -672,6 +672,11 @@ public final class AgentTransportClient implements AgentTransport {
         selectedTransport = selected;
     }
 
+    private static void close(InputStream input) {
+        if (input == null) return;
+        try { input.close(); } catch (IOException ignored) { }
+    }
+
     /**
      * Prefer HTTP/2 for the long-lived HTTPS path while retaining the JDK's
      * negotiated HTTP/1.1 fallback.  This is the safe baseline measured by
