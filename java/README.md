@@ -44,6 +44,12 @@ Windows 开启 `-DesktopEnabled` 时，安装器还会注册一个当前用户�
 截图、区域截图、屏幕枚举、启动、单击/双击/右击、移动指针、拖拽、组合按键、剪贴板、窗口聚焦和文本输入，不会新增 Center 身份。若用户会话未登录，Desktop
 任务会明确返回不可用，而不会让 SYSTEM 会话伪装成桌面。
 
+Desktop Native 包采用“兼容优先”策略：桌面目标专用的 JNI 元数据会覆盖 AWT、Java2D、字体、图像
+和当前平台 Peer 的已声明构造器、方法与字段，连同 Native Image 生成的 AWT/Java2D 运行库 DLL 一起
+随 Desktop bundle 发布。这样不同 JDK 25 更新、显示驱动和 Windows 用户会话不会在首次截图时因
+私有成员未注册而失败；这些元数据和运行库只进入 `desktop-companion`，不会污染精简的 command-agent
+或 browser-agent。代价是 Desktop 包的构建时间和体积略有增加，这是桌面可用性优先于极限压缩的明确取舍。
+
 `nativeCompile` 需要 `JAVA_HOME` 指向带 `native-image` 的 GraalVM 25.x 或 Liberica NIK 25.x，但开发机和目标宿主机不执行该任务；正式构建由 GitHub Actions 在匹配 OS/CPU 架构的 runner 完成。Linux/Windows 发布的 command-agent、desktop-companion 和 browser-agent 都是各自包含 Native Image 运行库的平铺 ZIP：`remote-connect-mcp-agent-*`、`remote-connect-mcp-desktop-*`、`remote-connect-mcp-browser-*`。Browser Agent 不注册 Center 身份，由 command-agent 按 browser cap 按任务启动并在超时/取消时回收。Windows command-agent 可把 `remote-connect-mcp-agent-<version>-windows-amd64.zip` 传给 `scripts/install-java-agent.ps1 -BinaryPath`，并把 desktop/browser ZIP 分别传给对应的 companion 参数；Linux 可把三个 ZIP 分别通过 `REMOTE_CONNECT_MCP_AGENT_BINARY`、`REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY` 和 `REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY` 交给 `scripts/install-java-agent.sh`，安装器会先校验同目录 `.sha256`（若提供）再复制 ELF 与旁路库；桌面伴侣仍需在用户会话中通过桌面环境自启动。完整 Linux tar 包同时包含三个 bundle 目录和安装脚本；传入原始可执行文件时也会自动带上其同目录 `.so`/DLL。
 `scripts/build-java.*`、`scripts/build-native.*` 和 `scripts/build-all.*` 仅供 GitHub Actions 使用，
 在本机直接运行会安全退出并提示提交到 Actions；`java/Dockerfile.*.native` 与 `web/Dockerfile` 也要求

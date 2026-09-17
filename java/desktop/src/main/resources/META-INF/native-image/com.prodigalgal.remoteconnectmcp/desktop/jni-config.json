@@ -8,7 +8,10 @@
       {
         "name": "rule"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.AWTEvent",
@@ -22,7 +25,10 @@
       {
         "name": "id"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.Color",
@@ -36,7 +42,10 @@
         "name": "getRGB",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.Component",
@@ -84,7 +93,10 @@
         "name": "getParent_NoClientCode",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.Desktop$Action",
@@ -98,7 +110,10 @@
       {
         "name": "OPEN"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.Event",
@@ -112,7 +127,10 @@
       {
         "name": "id"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.event.InputEvent",
@@ -126,7 +144,10 @@
         "name": "getButtonDownMasks",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.event.KeyEvent",
@@ -140,13 +161,13 @@
       {
         "name": "keyCode"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.Font",
-    "allDeclaredConstructors": true,
-    "allDeclaredMethods": true,
-    "allDeclaredFields": true,
     "fields": [
       {
         "name": "pData"
@@ -167,7 +188,10 @@
         "name": "getFontPeer",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.geom.AffineTransform",
@@ -190,7 +214,10 @@
       {
         "name": "m12"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.geom.GeneralPath",
@@ -209,7 +236,10 @@
           "int"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.geom.Path2D",
@@ -223,7 +253,10 @@
       {
         "name": "windingRule"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.geom.Path2D$Float",
@@ -231,7 +264,10 @@
       {
         "name": "floatCoords"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.geom.Point2D$Float",
@@ -251,7 +287,10 @@
           "float"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.geom.Rectangle2D$Float",
@@ -283,11 +322,13 @@
           "float"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.GraphicsEnvironment",
-    "allDeclaredConstructors": true,
     "methods": [
       {
         "name": "isHeadless",
@@ -297,29 +338,37 @@
         "name": "getLocalGraphicsEnvironment",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.Toolkit",
     "allDeclaredConstructors": true,
-    "allDeclaredMethods": true
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.Robot",
     "allDeclaredConstructors": true,
-    "allDeclaredMethods": true
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.Dimension",
-    "allDeclaredConstructors": true
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.Point",
-    "allDeclaredConstructors": true
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.image.BufferedImage",
-    "allDeclaredConstructors": true,
     "fields": [
       {
         "name": "colorModel"
@@ -356,7 +405,10 @@
           "int"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.image.ColorModel",
@@ -394,7 +446,10 @@
         "name": "getRGBdefault",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.image.DirectColorModel",
@@ -409,7 +464,10 @@
           "int"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.image.IndexColorModel",
@@ -429,7 +487,10 @@
       {
         "name": "transparent_index"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.image.Raster",
@@ -464,7 +525,10 @@
       {
         "name": "width"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.image.SampleModel",
@@ -499,7 +563,10 @@
           "java.awt.image.DataBuffer"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.image.SinglePixelPackedSampleModel",
@@ -516,11 +583,13 @@
       {
         "name": "maxBitSize"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.Insets",
-    "allDeclaredConstructors": true,
     "fields": [
       {
         "name": "bottom"
@@ -534,11 +603,13 @@
       {
         "name": "top"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.awt.Rectangle",
-    "allDeclaredConstructors": true,
     "methods": [
       {
         "name": "<init>",
@@ -549,7 +620,10 @@
           "int"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "java.lang.Boolean",
@@ -651,7 +725,10 @@
           "long"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.image.ByteComponentRaster",
@@ -671,7 +748,10 @@
       {
         "name": "type"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.image.GifImageDecoder",
@@ -706,7 +786,10 @@
           "java.awt.image.ColorModel"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.image.ImageRepresentation",
@@ -717,12 +800,16 @@
       {
         "name": "srcLUTtransIndex"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.image.SunVolatileImage",
     "allDeclaredConstructors": true,
-    "allDeclaredMethods": true
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.image.VolatileSurfaceManager",
@@ -748,7 +835,10 @@
       {
         "name": "type"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.SunHints",
@@ -756,7 +846,10 @@
       {
         "name": "INTVAL_STROKE_PURE"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.SunToolkit",
@@ -799,7 +892,10 @@
         "name": "isTouchKeyboardAutoShowEnabled",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.UNIXToolkit",
@@ -816,7 +912,10 @@
           "boolean"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.Win32GraphicsEnvironment",
@@ -827,7 +926,10 @@
           "boolean"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.Win32GraphicsConfig",
@@ -885,7 +987,10 @@
           "java.awt.desktop.UserSessionEvent$Reason"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.windows.WToolkit",
@@ -898,7 +1003,10 @@
         "name": "windowsSettingChange",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.X11.XBaseWindow",
@@ -912,10 +1020,16 @@
         "name": "getWindow",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
-    "name": "sun.awt.X11.XContentWindow"
+    "name": "sun.awt.X11.XContentWindow",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.X11.XDesktopPeer",
@@ -923,10 +1037,16 @@
       {
         "name": "supportedActions"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
-    "name": "sun.awt.X11.XDialogPeer"
+    "name": "sun.awt.X11.XDialogPeer",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.X11.XErrorHandlerUtil",
@@ -944,10 +1064,16 @@
           "long"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
-    "name": "sun.awt.X11.XFramePeer"
+    "name": "sun.awt.X11.XFramePeer",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.X11.XToolkit",
@@ -958,7 +1084,10 @@
       {
         "name": "numLockMask"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.X11.XWindow",
@@ -972,10 +1101,16 @@
       {
         "name": "target"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
-    "name": "sun.awt.X11.XWindowPeer"
+    "name": "sun.awt.X11.XWindowPeer",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.X11GraphicsConfig",
@@ -989,7 +1124,10 @@
       {
         "name": "screen"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.X11GraphicsDevice",
@@ -1005,7 +1143,10 @@
           "int"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.awt.X11InputMethodBase",
@@ -1013,7 +1154,10 @@
       {
         "name": "pData"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.CharToGlyphMapper",
@@ -1024,7 +1168,10 @@
           "int"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.Font2D",
@@ -1058,7 +1205,10 @@
           "int"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.FontConfigManager$FcCompFont",
@@ -1072,7 +1222,10 @@
       {
         "name": "firstFont"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.FontConfigManager$FontConfigFont",
@@ -1095,7 +1248,10 @@
         "name": "<init>",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.FontConfigManager$FontConfigInfo",
@@ -1106,7 +1262,10 @@
       {
         "name": "fcVersion"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.FontStrike",
@@ -1117,7 +1276,10 @@
           "int"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.FreetypeFontScaler",
@@ -1126,7 +1288,10 @@
         "name": "invalidateScaler",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.GlyphList",
@@ -1155,7 +1320,10 @@
       {
         "name": "y"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.PhysicalStrike",
@@ -1178,7 +1346,10 @@
           "int"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.StrikeMetrics",
@@ -1198,7 +1369,10 @@
           "float"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.TrueTypeFont",
@@ -1218,7 +1392,10 @@
           "int"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.font.Type1Font",
@@ -1229,7 +1406,10 @@
           "java.nio.ByteBuffer"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.Disposer",
@@ -1242,10 +1422,16 @@
           "long"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
-    "name": "sun.java2d.InvalidPipeException"
+    "name": "sun.java2d.InvalidPipeException",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.Blit",
@@ -1259,7 +1445,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.BlitBg",
@@ -1273,7 +1462,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.CompositeType",
@@ -1296,7 +1488,10 @@
       {
         "name": "Xor"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.DrawGlyphList",
@@ -1310,7 +1505,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.DrawGlyphListAA",
@@ -1324,7 +1522,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.DrawGlyphListLCD",
@@ -1338,7 +1539,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.DrawLine",
@@ -1352,7 +1556,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.DrawParallelogram",
@@ -1366,7 +1573,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.DrawPath",
@@ -1380,7 +1590,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.DrawPolygons",
@@ -1394,7 +1607,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.DrawRect",
@@ -1408,7 +1624,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.FillParallelogram",
@@ -1422,7 +1641,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.FillPath",
@@ -1436,7 +1658,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.FillRect",
@@ -1450,7 +1675,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.FillSpans",
@@ -1464,7 +1692,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.GraphicsPrimitive",
@@ -1472,7 +1703,10 @@
       {
         "name": "pNativePrim"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.GraphicsPrimitive[]"
@@ -1486,7 +1720,10 @@
           "sun.java2d.loops.GraphicsPrimitive[]"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.MaskBlit",
@@ -1500,7 +1737,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.MaskFill",
@@ -1514,7 +1754,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.ScaledBlit",
@@ -1528,7 +1771,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.SurfaceType",
@@ -1623,7 +1869,10 @@
       {
         "name": "UshortIndexed"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.TransformHelper",
@@ -1637,7 +1886,10 @@
           "sun.java2d.loops.SurfaceType"
         ]
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.loops.XORComposite",
@@ -1651,10 +1903,16 @@
       {
         "name": "xorPixel"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
-    "name": "sun.java2d.NullSurfaceData"
+    "name": "sun.java2d.NullSurfaceData",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.pipe.Region",
@@ -1677,7 +1935,10 @@
       {
         "name": "loy"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.pipe.RegionIterator",
@@ -1691,7 +1952,10 @@
       {
         "name": "region"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.pipe.ShapeSpanIterator",
@@ -1699,7 +1963,10 @@
       {
         "name": "pData"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.SunGraphics2D",
@@ -1722,7 +1989,10 @@
       {
         "name": "strokeHint"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.SunGraphicsEnvironment",
@@ -1731,7 +2001,10 @@
         "name": "isDisplayLocal",
         "parameterTypes": []
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.SurfaceData",
@@ -1742,7 +2015,10 @@
       {
         "name": "valid"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.xr.XRBackendNative",
@@ -1756,7 +2032,10 @@
       {
         "name": "MASK_XIMG"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   },
   {
     "name": "sun.java2d.xr.XRSurfaceData",
@@ -1767,6 +2046,9 @@
       {
         "name": "xid"
       }
-    ]
+    ],
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
   }
 ]

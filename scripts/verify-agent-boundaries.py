@@ -8,6 +8,7 @@ interactive, and browser-agent limited to its supervisor/protocol contract.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -130,6 +131,23 @@ def main() -> int:
         for required in required_desktop_jni:
             if required not in jni_text:
                 errors.append(f"desktop companion JNI metadata does not cover {required}")
+        try:
+            jni_entries = json.loads(jni_text)
+        except json.JSONDecodeError as exception:
+            errors.append(f"desktop companion JNI metadata is not valid JSON: {exception}")
+            jni_entries = []
+        # The Desktop target intentionally keeps broad AWT/Java2D JNI access.
+        # JDK/driver combinations reach private members through native peers;
+        # requiring all three flags here prevents a future cleanup from
+        # reintroducing first-use screenshot failures.
+        awt_prefixes = ("java.awt", "sun.awt", "sun.font", "sun.java2d")
+        for entry in jni_entries:
+            name = entry.get("name") if isinstance(entry, dict) else None
+            if not isinstance(name, str) or name.endswith("[]") or not name.startswith(awt_prefixes):
+                continue
+            for flag in ("allDeclaredConstructors", "allDeclaredMethods", "allDeclaredFields"):
+                if entry.get(flag) is not True:
+                    errors.append(f"desktop companion JNI metadata for {name} must enable {flag}")
 
     for module in ("agent", "browser", "center"):
         resource_root = root / "java" / module / "src" / "main" / "resources"
