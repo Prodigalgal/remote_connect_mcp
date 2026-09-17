@@ -85,7 +85,7 @@
 | [~] | P1-AT-06 | Agent 源文件快照一致性 | 同目录快照用于 hash + upload，并有磁盘余量检查；文件持续写入语义待验收 |
 | [~] | P1-AT-07 | Stall timeout / progress watchdog | Center 流式读取已拆分 absolute lifetime 与无进展超时，按 4 MiB/1 秒节流更新 `bytes_transferred`；Agent 端和慢链路矩阵待 Actions/现场验收 |
 | [ ] | P2-AT-01 | READ / WRITE / EXCLUSIVE 执行车道 | 当前仍按 lane 串行；读写分类和共享读并发待实现 |
-| [~] | P2-AT-02 | 零字节与边缘文件语义 | Center filesystem/HTTP、协议、Agent 和 Browser 小工件已允许合法 0 字节；特殊文件/符号链接策略待补 |
+| [~] | P2-AT-02 | 零字节与边缘文件语义 | Center filesystem/HTTP、协议、Agent、Browser 小工件和 PostgreSQL `024` 迁移已允许合法 0 字节及未知大小上传进度；特殊文件/符号链接策略待补 |
 | [ ] | P2-AT-03 | destination path / file name 语义收敛 | 目前同时保留目标路径和展示文件名；需明确 API 契约及迁移兼容 |
 | [~] | P2-AT-04 | 传输容量、SLO 与生命周期指标 | `/metrics` 已增加 active/delivered/failed/canceled、传输/声明字节、平均/最大终态时长等低基数指标；resume 次数、GC bytes 与现场 SLO 面板待接入 |
 

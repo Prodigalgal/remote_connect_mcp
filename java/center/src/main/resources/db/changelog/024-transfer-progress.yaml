@@ -1,0 +1,26 @@
+databaseChangeLog:
+  - changeSet:
+      id: 024-transfer-progress
+      author: remote-connect-mcp
+      labels: artifact,transport
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        # expected_bytes=0 is also the durable marker for an Agent upload whose
+        # source size is not known until the stream begins.  Progress must be
+        # observable in that state; cap it by the same 4 GiB transport ceiling
+        # and let the final metadata update replace the expected size.
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer DROP CONSTRAINT IF EXISTS ck_rcm_file_transfer_bytes
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_bytes CHECK (expected_bytes >= 0 AND expected_bytes <= 4294967296 AND bytes_transferred >= 0 AND bytes_transferred <= CASE WHEN expected_bytes = 0 THEN 4294967296 ELSE expected_bytes END)
+      rollback:
+        - sql:
+            sql: UPDATE rcm_file_transfer SET bytes_transferred = 0 WHERE expected_bytes = 0 AND bytes_transferred > 0
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer DROP CONSTRAINT IF EXISTS ck_rcm_file_transfer_bytes
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_bytes CHECK ((expected_bytes = 0 AND bytes_transferred = 0) OR (expected_bytes > 0 AND bytes_transferred >= 0 AND bytes_transferred <= expected_bytes))
