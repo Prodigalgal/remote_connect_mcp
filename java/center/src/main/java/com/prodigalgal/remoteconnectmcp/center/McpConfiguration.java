@@ -101,7 +101,8 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         McpAccessService.ProjectMemberView.class, ExecutionSessionService.SessionView.class,
         ArtifactTransferService.TransferCreated.class, ArtifactTransferService.TransferDescriptor.class,
         ArtifactTransferService.AgentDownload.class, ArtifactTransferService.PublicArtifact.class,
-        ArtifactFile.class, ArtifactPutArgs.class, ArtifactGetArgs.class, ArtifactReadArgs.class,
+        McpConfiguration.ArtifactFile.class, McpConfiguration.ArtifactPutArgs.class,
+        McpConfiguration.ArtifactGetArgs.class, McpConfiguration.ArtifactReadArgs.class,
         TaskService.ArtifactGcResult.class})
 public class McpConfiguration {
     // MCP inventory responses are intentionally smaller than the Console
