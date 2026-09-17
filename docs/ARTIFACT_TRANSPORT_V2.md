@@ -16,7 +16,7 @@ ChatGPT Web 文件 → MCP Center → 目标终端 Agent → 终端文件系统
 ## 设计原则
 
 1. MCP 是控制面，只传文件引用、状态和有界元数据。
-2. Center 与 Agent 之间是二进制数据面，文件采用流式、分块和断点续传。
+2. Center 与 Agent 之间是二进制数据面，第一阶段采用带校验的流式传输；分块和断点续传作为后续兼容增强。
 3. PostgreSQL 只保存 Artifact/Transfer 元数据，不保存大块文件内容。
 4. Object Storage 保存实际文件；本地开发可以使用文件系统后端。
 5. Task Artifact 保留给截图、诊断等小型任务结果；通用文件使用 File Transfer。
@@ -61,6 +61,12 @@ MCP 只返回以下内容：
 
 React Artifact Viewer 按需读取文件：图片/PDF/媒体尝试预览，Office/压缩包/未知二进制提供下载。小型图片可以兼容返回 MCP `ImageContent`，但不把它作为网页附件显示的唯一机制。
 
+`artifact_put`、`artifact_get` 和 `artifact_read` 同时返回 MCP `structuredContent` 与一段
+有界文本摘要。`structuredContent.file` 使用 ChatGPT 文件对象的
+`download_url`、`file_id`、`mime_type`、`file_name` 形状；文本摘要只保留句柄、大小、哈希和
+下一步动作，绝不复制二进制。这样支持文件 Host/Widget 的机器读取，也不会把文件内容灌入
+模型上下文。
+
 ## 实体模型
 
 ```text
@@ -99,8 +105,8 @@ transfer_id 复用同一逻辑传输。断点分块（带偏移确认）是下�
 | --- | --- | --- |
 | `artifact_put` | Web 文件写入终端 | transfer_id、任务状态和摘要 |
 | `artifact_get` | 终端文件回传 Web | artifact_id、文件元数据 |
-| `artifact_read` | 按需读取元数据、文本或图片预览 | 有界内容和游标 |
-| `artifact_present` | 调起 Web Artifact Viewer | UI 展示，不把二进制写入模型文本 |
+| `artifact_read` | 按需读取元数据和短期文件对象 | `structuredContent.file`（仅句柄）和有界摘要 |
+| `artifact_present` | 调起 Web Artifact Viewer（P1 计划） | 当前未注册；待 UI 资源 URI 稳定后启用 |
 
 现有 `command`、`desktop`、`browser`、`task_wait` 工具保持不变；它们只引用 Artifact，不复制文件传输逻辑。
 
