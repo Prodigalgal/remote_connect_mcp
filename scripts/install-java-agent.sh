@@ -98,6 +98,7 @@ max_child_processes="${REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES:-32}"
 max_rss_bytes="${REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES:-0}"
 max_cpu_seconds="${REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS:-0}"
 resource_sample_interval="${REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS:-1000}"
+transfer_stall_timeout="${REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS:-120}"
 cgroup_path="${REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH:-}"
 [[ "$browser_profile_dir" != *$'\r'* && "$browser_profile_dir" != *$'\n'* && ${#browser_profile_dir} -le 4096 ]] || {
   echo "REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR must be a single path up to 4096 characters" >&2; exit 1;
@@ -166,7 +167,7 @@ fi
   (( max_total_child_processes >= 1 && max_total_child_processes <= 4096 )) || {
     echo "REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES must be between 1 and 4096" >&2; exit 1;
   }
-for value in "$max_task_duration" "$max_child_processes" "$max_rss_bytes" "$max_cpu_seconds" "$resource_sample_interval"; do
+for value in "$max_task_duration" "$max_child_processes" "$max_rss_bytes" "$max_cpu_seconds" "$resource_sample_interval" "$transfer_stall_timeout"; do
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "resource budget values must be non-negative integers" >&2; exit 1; }
 done
 (( max_task_duration <= 2592000 )) || { echo "REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS must be between 0 and 2592000" >&2; exit 1; }
@@ -174,6 +175,7 @@ done
 (( max_rss_bytes <= 17179869184 )) || { echo "REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES must be at most 16 GiB" >&2; exit 1; }
 (( max_cpu_seconds <= 2592000 )) || { echo "REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS must be between 0 and 2592000" >&2; exit 1; }
 (( resource_sample_interval >= 250 && resource_sample_interval <= 10000 )) || { echo "REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS must be between 250 and 10000" >&2; exit 1; }
+(( transfer_stall_timeout >= 5 && transfer_stall_timeout <= 3600 )) || { echo "REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS must be between 5 and 3600" >&2; exit 1; }
 
 install -d -m 0755 "$install_root"
 install -d -m 0700 "$state_dir"
@@ -356,6 +358,7 @@ if [[ "$re_enroll" == true || ! -f "$identity" ]]; then
   REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES="$max_rss_bytes" \
   REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS="$max_cpu_seconds" \
   REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS="$resource_sample_interval" \
+  REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS="$transfer_stall_timeout" \
   REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH="$cgroup_path" \
   "$install_root/rcm-agent" --register-once >"$tmp_log" 2>&1
   rc=$?
@@ -399,6 +402,7 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES=%s\n' "$max_rss_bytes"
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS=%s\n' "$max_cpu_seconds"
   printf 'REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS=%s\n' "$resource_sample_interval"
+  printf 'REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS=%s\n' "$transfer_stall_timeout"
   printf 'REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH=%s\n' "$cgroup_path"
   printf 'REMOTE_CONNECT_MCP_AGENT_BINARY_PATH=%s\n' "$install_root/rcm-agent"
   printf 'REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME=remote-connect-mcp-agent\n'

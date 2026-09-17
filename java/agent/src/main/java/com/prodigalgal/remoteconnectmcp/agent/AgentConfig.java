@@ -193,6 +193,12 @@ public record AgentConfig(
                 1800, 30, 24L * 60 * 60));
     }
 
+    /** Abort a streamed body that makes no read progress after the response starts. */
+    public Duration transferStallTimeout() {
+        return Duration.ofSeconds(parseLongEnv("REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS",
+                120, 5, 60 * 60));
+    }
+
     /**
      * Browser adapters are heavier than command tasks.  Keep their process
      * pool independently bounded even when a host increases the general task

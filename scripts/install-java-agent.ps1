@@ -46,6 +46,8 @@ param(
     [long]$MaxCpuSeconds = 0,
     [ValidateRange(250, 10000)]
     [long]$ResourceSampleIntervalMs = 1000,
+    [ValidateRange(5, 3600)]
+    [long]$TransferStallTimeoutSeconds = $(if ($env:REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS) { [long]$env:REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS } else { 120 }),
     [string]$CgroupPath = $env:REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH,
     [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
     [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent"
@@ -390,6 +392,7 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
         REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES = $MaxRssBytes.ToString()
         REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS = $MaxCpuSeconds.ToString()
         REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS = $ResourceSampleIntervalMs.ToString()
+        REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS = $TransferStallTimeoutSeconds.ToString()
         REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH = [string]$CgroupPath
     }
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
@@ -454,6 +457,7 @@ $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES=$MaxRssBytes",
     "REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS=$MaxCpuSeconds",
     "REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS=$ResourceSampleIntervalMs",
+    "REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS=$TransferStallTimeoutSeconds",
     "REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH=$CgroupPath",
     "REMOTE_CONNECT_MCP_AGENT_BINARY_PATH=$destination",
     "REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME=$serviceName"

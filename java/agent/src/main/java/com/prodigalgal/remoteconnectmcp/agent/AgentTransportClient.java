@@ -32,10 +32,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Asynchronous v1 HTTPS client used by the Java Agent runtime. */
 public final class AgentTransportClient implements AgentTransport {
+    private static final Duration DEFAULT_TRANSFER_STALL_TIMEOUT = Duration.ofMinutes(2);
+    private static final java.util.concurrent.ExecutorService TRANSFER_READ_EXECUTOR =
+            java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
     private final HttpClient http;
     private final URI centerUrl;
     private final Duration requestTimeout;
     private final Duration transferTimeout;
+    private final Duration transferStallTimeout;
     private final long longPollSeconds;
     private final AtomicBoolean longPollHonored = new AtomicBoolean();
     private volatile String selectedTransport = TransportNegotiation.HTTPS;
@@ -52,6 +56,12 @@ public final class AgentTransportClient implements AgentTransport {
         this(centerUrl, defaultHttpClient(), Duration.ofSeconds(30), longPollSeconds, transferTimeout);
     }
 
+    public AgentTransportClient(URI centerUrl, long longPollSeconds, Duration transferTimeout,
+                                Duration transferStallTimeout) {
+        this(centerUrl, defaultHttpClient(), Duration.ofSeconds(30), longPollSeconds, transferTimeout,
+                transferStallTimeout);
+    }
+
     AgentTransportClient(URI centerUrl, HttpClient http, Duration requestTimeout) {
         this(centerUrl, http, requestTimeout, 0L, Duration.ofMinutes(30));
     }
@@ -62,6 +72,11 @@ public final class AgentTransportClient implements AgentTransport {
 
     AgentTransportClient(URI centerUrl, HttpClient http, Duration requestTimeout, long longPollSeconds,
                          Duration transferTimeout) {
+        this(centerUrl, http, requestTimeout, longPollSeconds, transferTimeout, DEFAULT_TRANSFER_STALL_TIMEOUT);
+    }
+
+    AgentTransportClient(URI centerUrl, HttpClient http, Duration requestTimeout, long longPollSeconds,
+                         Duration transferTimeout, Duration transferStallTimeout) {
         this.centerUrl = stripTrailingSlash(centerUrl);
         this.http = http;
         if (requestTimeout == null || requestTimeout.isZero() || requestTimeout.isNegative()) {
@@ -74,6 +89,12 @@ public final class AgentTransportClient implements AgentTransport {
             throw new IllegalArgumentException("transferTimeout must be between 30 seconds and 24 hours");
         }
         this.transferTimeout = transferTimeout;
+        if (transferStallTimeout == null || transferStallTimeout.isZero() || transferStallTimeout.isNegative()
+                || transferStallTimeout.compareTo(Duration.ofSeconds(5)) < 0
+                || transferStallTimeout.compareTo(Duration.ofHours(1)) > 0) {
+            throw new IllegalArgumentException("transferStallTimeout must be between 5 seconds and 1 hour");
+        }
+        this.transferStallTimeout = transferStallTimeout;
         if (longPollSeconds < 0 || longPollSeconds > 25) {
             throw new IllegalArgumentException("longPollSeconds must be between 0 and 25");
         }
@@ -251,9 +272,10 @@ public final class AgentTransportClient implements AgentTransport {
                 var digest = MessageDigest.getInstance("SHA-256");
                 var buffer = new byte[1024 * 1024];
                 long count = 0;
+                var deadlineNanos = System.nanoTime() + transferTimeout.toNanos();
                 try (var output = Files.newOutputStream(temporary, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
                     int read;
-                    while ((read = input.read(buffer)) >= 0) {
+                    while ((read = readWithWatchdog(input, buffer, deadlineNanos)) >= 0) {
                         if (read == 0) continue;
                         count += read;
                         if (count > expectedBytes) throw new IOException("download exceeds declared size");
@@ -425,6 +447,43 @@ public final class AgentTransportClient implements AgentTransport {
                 throw runtime;
             }
             throw new IOException("file transfer request failed", cause == null ? exception : cause);
+        }
+    }
+
+    /**
+     * Enforce a no-progress deadline after the Center response starts. The
+     * absolute request timeout still bounds the whole transfer; this read
+     * watchdog prevents a dead response body from retaining the Agent task.
+     */
+    private int readWithWatchdog(InputStream input, byte[] buffer, long deadlineNanos) throws IOException {
+        var remaining = deadlineNanos - System.nanoTime();
+        if (remaining <= 0) throw new IOException("file transfer exceeded the maximum lifetime");
+        var waitNanos = Math.min(remaining, transferStallTimeout.toNanos());
+        var future = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try {
+                return input.read(buffer);
+            } catch (IOException exception) {
+                throw new java.util.concurrent.CompletionException(exception);
+            }
+        }, TRANSFER_READ_EXECUTOR);
+        try {
+            return future.get(waitNanos, TimeUnit.NANOSECONDS);
+        } catch (TimeoutException exception) {
+            future.cancel(true);
+            try { input.close(); } catch (IOException ignored) { }
+            throw new IOException("file transfer stalled without progress", exception);
+        } catch (InterruptedException exception) {
+            future.cancel(true);
+            try { input.close(); } catch (IOException ignored) { }
+            Thread.currentThread().interrupt();
+            throw new IOException("file transfer read interrupted", exception);
+        } catch (ExecutionException exception) {
+            var cause = exception.getCause();
+            if (cause instanceof java.util.concurrent.CompletionException completion && completion.getCause() != null) {
+                cause = completion.getCause();
+            }
+            if (cause instanceof IOException io) throw io;
+            throw new IOException("file transfer read failed", cause == null ? exception : cause);
         }
     }
 

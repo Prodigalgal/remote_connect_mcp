@@ -164,6 +164,9 @@ Java Center 的 memory 模式只用于协议回归/开发。生产必须同时�
 同时可用 `RCM_CENTER_TRANSFER_STALL_TIMEOUT_SECONDS`（默认 120 秒）限制已建立连接后
 连续无进展的读取；该值与 30 分钟绝对传输生命周期及进度节流独立。
 
+Agent 端可用 `REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS`（默认 120 秒，
+5 秒至 1 小时）收紧已建立文件流的无进展等待；它与 30 分钟绝对传输上限独立。
+
 审计记录默认只通过有界异步队列写入 PostgreSQL。保留清理由管理员或外部
 维护作业显式触发，不运行定时轮询线程：
 
