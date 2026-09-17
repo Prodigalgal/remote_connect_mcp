@@ -531,7 +531,7 @@ public final class ArtifactTransferService {
 
     private String taskSession(String taskId) {
         if (taskId == null || taskId.isBlank()) return "";
-        return tasks.find(taskId).map(TaskView::executionSessionId).orElse("");
+        return tasks.find(taskId).map(TaskView::new).map(TaskView::executionSessionId).orElse("");
     }
 
     /** Public file object endpoint URL; the URL carries a short-lived HMAC. */
