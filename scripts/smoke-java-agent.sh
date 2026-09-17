@@ -5,6 +5,21 @@ set -Eeuo pipefail
 # The script intentionally uses only a short-lived in-memory Center and
 # one-time enrollment token; it never reads production credentials.
 
+on_error() {
+  local status=$?
+  echo "Native Agent smoke failed (exit $status, line ${BASH_LINENO[0]}): ${BASH_COMMAND}" >&2
+  if [[ -n "${STATE_DIR:-}" ]]; then
+    echo "--- Center log (first 240 lines) ---" >&2
+    sed -n '1,240p' "${CENTER_LOG:-}" >&2 2>/dev/null || true
+    echo "--- Agent registration log (first 160 lines) ---" >&2
+    sed -n '1,160p' "${REGISTER_LOG:-}" >&2 2>/dev/null || true
+    echo "--- Agent runtime log (first 240 lines) ---" >&2
+    sed -n '1,240p' "${AGENT_LOG:-}" >&2 2>/dev/null || true
+  fi
+  exit "$status"
+}
+trap on_error ERR
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CENTER_BINARY="${1:-${RCM_SMOKE_CENTER_BINARY:-}}"
 AGENT_BINARY="${2:-${RCM_SMOKE_AGENT_BINARY:-}}"
@@ -80,7 +95,16 @@ cleanup() {
   write_resource_report || true
   rm -rf "$STATE_DIR"
 }
-trap cleanup EXIT INT TERM
+finish() {
+  local status=$?
+  # Preserve the test result even when a child exits via SIGTERM during
+  # cleanup. Clear traps first so cleanup cannot recurse or overwrite it.
+  trap - EXIT INT TERM ERR
+  set +e
+  cleanup
+  exit "$status"
+}
+trap finish EXIT INT TERM
 
 json_field() {
   local json="$1"
