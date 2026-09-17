@@ -115,4 +115,3 @@ bad_metrics_status="$(curl --silent --show-error --max-time 5 -o /dev/null -w '%
 implementation="jvm"
 if [[ -n "$center_binary" ]]; then implementation="native"; fi
 printf '{"health":"ok","initialize":"ok","tools":"ok","metrics":"ok","implementation":"%s","mcp":"http://127.0.0.1:%s/mcp"}\n' "$implementation" "$port"
-exit 0
