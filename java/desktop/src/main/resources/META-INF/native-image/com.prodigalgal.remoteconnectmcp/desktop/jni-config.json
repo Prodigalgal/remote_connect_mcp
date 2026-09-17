@@ -116,6 +116,18 @@
     "allDeclaredFields": true
   },
   {
+    "name": "java.awt.desktop.UserSessionEvent",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "java.awt.desktop.UserSessionEvent$Reason",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
     "name": "java.awt.Event",
     "fields": [
       {
