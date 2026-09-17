@@ -516,7 +516,35 @@ if ($DesktopEnabled) {
     # ProgramData path still points at the same protected IPC endpoint.
     $escapedStateDir = $StateDir.Replace('"', '\\"')
     if (-not $desktopDestination) { throw 'Desktop companion binary is not installed.' }
-    $action = New-ScheduledTaskAction -Execute $desktopDestination -Argument ('--desktop-companion "{0}"' -f $escapedStateDir)
+    # A console-subsystem Native Image started directly by an interactive
+    # scheduled task opens a visible black window.  Keep the companion in the
+    # user's desktop session but launch it through a hidden, no-shell process
+    # wrapper so screenshots and normal desktop use are not interrupted.
+    $desktopLauncherPath = Join-Path $InstallRoot 'run-desktop-companion.ps1'
+    $desktopLauncherLines = [System.Collections.Generic.List[string]]::new()
+    $desktopLauncherLines.Add('$ErrorActionPreference = "Stop"')
+    $desktopLauncherLines.Add('$psi = [System.Diagnostics.ProcessStartInfo]::new()')
+    $desktopLauncherLines.Add(('$psi.FileName = {0}' -f (ConvertTo-PowerShellLiteral $desktopDestination)))
+    $desktopLauncherLines.Add(('$psi.Arguments = {0}' -f (ConvertTo-PowerShellLiteral ('--desktop-companion "{0}"' -f $StateDir))))
+    $desktopLauncherLines.Add('$psi.UseShellExecute = $false')
+    $desktopLauncherLines.Add('$psi.CreateNoWindow = $true')
+    $desktopLauncherLines.Add('$psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden')
+    $desktopLauncherLines.Add('$process = [System.Diagnostics.Process]::Start($psi)')
+    $desktopLauncherLines.Add('if ($null -eq $process) { throw "could not start desktop companion" }')
+    $desktopLauncherLines.Add('$process.WaitForExit()')
+    $desktopLauncherLines.Add('exit $process.ExitCode')
+    # UTF-16LE keeps the wrapper parseable by inbox PowerShell 5.1 even when a
+    # localized install path or machine name contains non-ASCII characters.
+    Set-Content -LiteralPath $desktopLauncherPath -Value $desktopLauncherLines -Encoding Unicode -Force
+    & icacls.exe $desktopLauncherPath /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
+    if ($desktopSid) {
+        & icacls.exe $desktopLauncherPath /grant:r "*${desktopSid}:RX" | Out-Null
+    } else {
+        & icacls.exe $desktopLauncherPath /grant:r "$($env:COMPUTERNAME)\$($env:USERNAME):RX" | Out-Null
+    }
+    $hiddenPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $launcherArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $desktopLauncherPath
+    $action = New-ScheduledTaskAction -Execute $hiddenPowerShell -Argument $launcherArguments
     $desktopUserId = if ($env:USERNAME -like '*\*') { $env:USERNAME } else { "$($env:COMPUTERNAME)\$($env:USERNAME)" }
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $desktopUserId
     # Windows PowerShell 5.1 exposes the interactive logon type as `Interactive`;

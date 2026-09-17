@@ -42,7 +42,8 @@ Windows 开启 `-DesktopEnabled` 时，安装器还会注册一个当前用户�
 `STATE_DIR/desktop/desktop-companion.json` 发布本机端点；Windows 计划任务会显式传入同一
 `STATE_DIR`，command-agent 通过该端点请求
 截图、区域截图、屏幕枚举、启动、单击/双击/右击、移动指针、拖拽、组合按键、剪贴板、窗口聚焦和文本输入，不会新增 Center 身份。若用户会话未登录，Desktop
-任务会明确返回不可用，而不会让 SYSTEM 会话伪装成桌面。
+任务会明确返回不可用，而不会让 SYSTEM 会话伪装成桌面。为避免控制台程序弹出黑框，安装器会额外生成
+隐藏的 PowerShell 启动包装器，以无 Shell、隐藏窗口方式启动 companion，同时保留用户会话的 AWT 权限。
 
 Desktop Native 包采用“兼容优先”策略：桌面目标专用的 JNI 元数据会覆盖 AWT、Java2D、字体、图像
 和当前平台 Peer 的已声明构造器、方法与字段，连同 Native Image 生成的 AWT/Java2D 运行库 DLL 一起
