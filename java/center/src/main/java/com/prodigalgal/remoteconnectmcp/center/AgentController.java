@@ -27,6 +27,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -267,9 +268,11 @@ public final class AgentController {
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
             @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+            @RequestHeader(value = "Range", required = false) String rangeHeader,
             @PathVariable String transferId) {
         authenticate(machineId, authorization);
-        var download = transfers.openForAgent(machineId, transferId, parseAttempt(attemptHeader));
+        var requestedOffset = parseRangeStart(rangeHeader);
+        var download = transfers.openForAgent(machineId, transferId, parseAttempt(attemptHeader), requestedOffset);
         StreamingResponseBody body = output -> {
             try (var input = download.body()) {
                 input.transferTo(output);
@@ -281,7 +284,28 @@ public final class AgentController {
         headers.setContentLength(download.bytes());
         headers.setContentDisposition(ContentDisposition.attachment().filename(download.fileName()).build());
         headers.set("X-RCM-SHA256", download.sha256());
+        headers.set("Accept-Ranges", "bytes");
+        if (requestedOffset > 0) {
+            headers.set("Content-Range", "bytes " + requestedOffset + "-" + (download.totalBytes() - 1)
+                    + "/" + download.totalBytes());
+            return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT).headers(headers).body(body);
+        }
         return ResponseEntity.ok().headers(headers).body(body);
+    }
+
+    @RequestMapping(value = "/transfers/{transferId}/content", method = RequestMethod.HEAD)
+    public ResponseEntity<Void> transferResumeProbe(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
+            @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+            @PathVariable String transferId) {
+        authenticate(machineId, authorization);
+        var resume = transfers.resumeFromAgent(machineId, transferId, parseAttempt(attemptHeader));
+        var headers = new HttpHeaders();
+        headers.set("X-RCM-Resume-Offset", Long.toString(resume.offset()));
+        headers.set("X-RCM-Expected-Bytes", Long.toString(resume.expectedBytes()));
+        headers.set("X-RCM-Transfer-Status", resume.status());
+        return ResponseEntity.ok().headers(headers).build();
     }
 
     @PutMapping("/transfers/{transferId}/content")
@@ -291,12 +315,25 @@ public final class AgentController {
             @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
             @RequestHeader(value = "X-RCM-Expected-SHA256", required = false) String expectedSha256,
             @RequestHeader(value = "X-RCM-Expected-Bytes", required = false) String expectedBytesHeader,
+            @RequestHeader(value = "Content-Range", required = false) String contentRangeHeader,
             @RequestHeader(value = "X-RCM-File-Name", required = false) String fileName,
             @RequestHeader(value = "Content-Type", required = false) String mimeType,
             @PathVariable String transferId, HttpServletRequest request) {
         return execute(() -> {
             authenticate(machineId, authorization);
             var length = request.getContentLengthLong();
+            var range = parseContentRange(contentRangeHeader);
+            if (range != null) {
+                var rangeLength = range.end() - range.start() + 1;
+                if (rangeLength < 0 || rangeLength > ArtifactTransferService.MAX_BYTES
+                        || (length >= 0 && length != rangeLength)) {
+                    throw new IllegalArgumentException("Content-Range does not match the request body");
+                }
+                var response = transfers.receiveFromAgentChunk(machineId, transferId, request.getInputStream(),
+                        length < 0 ? rangeLength : length, range.start(), range.total(), expectedSha256, fileName,
+                        mimeType, parseAttempt(attemptHeader));
+                return ResponseEntity.ok(response);
+            }
             if (expectedBytesHeader != null && !expectedBytesHeader.isBlank()) {
                 long declared;
                 try {
@@ -357,6 +394,37 @@ public final class AgentController {
             throw new IllegalArgumentException("X-Task-Attempt must be a positive integer", exception);
         }
     }
+
+    private static long parseRangeStart(String value) {
+        if (value == null || value.isBlank()) return 0L;
+        var trimmed = value.trim();
+        if (!trimmed.matches("bytes=\\d+-")) {
+            throw new IllegalArgumentException("Range must use the bytes=start- form");
+        }
+        try {
+            return Long.parseLong(trimmed.substring("bytes=".length(), trimmed.length() - 1));
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException("Range start is invalid", exception);
+        }
+    }
+
+    private static ContentRange parseContentRange(String value) {
+        if (value == null || value.isBlank()) return null;
+        var trimmed = value.trim();
+        var matcher = java.util.regex.Pattern.compile("bytes (\\d+)-(\\d+)/(\\d+)").matcher(trimmed);
+        if (!matcher.matches()) throw new IllegalArgumentException("Content-Range must use bytes start-end/total");
+        try {
+            var start = Long.parseLong(matcher.group(1));
+            var end = Long.parseLong(matcher.group(2));
+            var total = Long.parseLong(matcher.group(3));
+            if (end < start || total <= end) throw new IllegalArgumentException("Content-Range values are invalid");
+            return new ContentRange(start, end, total);
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException("Content-Range values are invalid", exception);
+        }
+    }
+
+    private record ContentRange(long start, long end, long total) { }
 
     private static ResponseEntity<Map<String, String>> error(Throwable exception) {
         if (exception instanceof SecurityException) {

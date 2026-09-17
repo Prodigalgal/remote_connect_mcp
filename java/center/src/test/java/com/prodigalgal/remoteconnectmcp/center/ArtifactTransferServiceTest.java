@@ -83,6 +83,49 @@ class ArtifactTransferServiceTest {
                 () -> service.findByArtifact(descriptor.artifactId(), new TaskOrigin("principal-b", "token-b", "connection-b")).orElseThrow());
     }
 
+    @Test
+    void resumesAgentUploadByAcknowledgedOffset(@TempDir Path root) throws Exception {
+        var registry = AgentRegistry.forTest("enrollment");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-resume", "host-resume", "linux", "amd64",
+                "dev", root.toString(), ScopeMode.UNRESTRICTED, null, List.of("command", "file_transfer")), "enrollment");
+        var tasks = new TaskService(registry);
+        var store = new FileSystemArtifactStore(root.resolve("objects"));
+        var tokens = new CenterTokenConfig() {
+            @Override
+            public String artifactDownloadSecret() {
+                return "resume-signing-secret";
+            }
+        };
+        var service = new ArtifactTransferService(null, null, store, tasks, tokens);
+        var origin = new TaskOrigin("principal-resume", "token-resume", "connection-resume");
+        var request = new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "ignored", root.toString(), Map.of(), 0, null, Instant.now()),
+                "resume-transfer", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
+        var data = "resumable payload".getBytes(StandardCharsets.UTF_8);
+        var sha = sha256(data);
+        var transfer = service.createAgentToWeb(origin, request, root.resolve("resume.txt").toString(), "resume.txt", "text/plain");
+
+        var first = service.receiveFromAgentChunk(registration.machineId(), transfer.transfer().transferId(),
+                new ByteArrayInputStream(java.util.Arrays.copyOfRange(data, 0, 8)), 8, 0, data.length, sha,
+                "resume.txt", "text/plain", null);
+        assertEquals("delivering", first.status());
+        assertEquals(8, first.bytes());
+        assertEquals(8, service.resumeFromAgent(registration.machineId(), transfer.transfer().transferId(), null).offset());
+        var replay = service.receiveFromAgentChunk(registration.machineId(), transfer.transfer().transferId(),
+                new ByteArrayInputStream(java.util.Arrays.copyOfRange(data, 0, 8)), 8, 0, data.length, sha,
+                "resume.txt", "text/plain", null);
+        assertEquals(first.bytes(), replay.bytes());
+
+        var completed = service.receiveFromAgentChunk(registration.machineId(), transfer.transfer().transferId(),
+                new ByteArrayInputStream(java.util.Arrays.copyOfRange(data, 8, data.length)), data.length - 8, 8,
+                data.length, sha, "resume.txt", "text/plain", null);
+        assertEquals("delivered", completed.status());
+        assertEquals(data.length, completed.bytes());
+        var descriptor = service.findByArtifact(transfer.transfer().artifactId(), origin).orElseThrow();
+        assertEquals(data.length, descriptor.bytes());
+        assertEquals(sha, descriptor.sha256());
+    }
+
     private static String queryValue(String query, String key) {
         for (var item : query.split("&")) {
             var pair = item.split("=", 2);

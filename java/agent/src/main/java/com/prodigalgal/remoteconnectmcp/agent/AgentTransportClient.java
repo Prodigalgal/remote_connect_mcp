@@ -23,7 +23,6 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.util.HexFormat;
-import java.util.UUID;
 import java.util.Base64;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -33,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Asynchronous v1 HTTPS client used by the Java Agent runtime. */
 public final class AgentTransportClient implements AgentTransport {
     private static final Duration DEFAULT_TRANSFER_STALL_TIMEOUT = Duration.ofMinutes(2);
+    private static final int TRANSFER_CHUNK_BYTES = 8 * 1024 * 1024;
     private static final java.util.concurrent.ExecutorService TRANSFER_READ_EXECUTOR =
             java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
     private final HttpClient http;
@@ -240,6 +240,79 @@ public final class AgentTransportClient implements AgentTransport {
                 || expectedSha256 == null || !expectedSha256.matches("(?i)[0-9a-f]{64}")) {
             throw new IllegalArgumentException("invalid file transfer download metadata");
         }
+        var target = destination.toAbsolutePath().normalize();
+        var parent = target.getParent();
+        if (parent == null) throw new IOException("destination has no parent");
+        Files.createDirectories(parent);
+        if (Files.exists(target) && !overwrite) {
+            throw new IOException("destination already exists and overwrite is false");
+        }
+        // The partial name is stable across task retries.  A dropped HTTP
+        // stream therefore resumes the same bytes instead of allocating a
+        // fresh multi-GB temporary file on every retry.
+        var safeTransferId = transferId.replaceAll("[^A-Za-z0-9._-]", "_");
+        var temporary = parent.resolve(".rcm-part-" + target.getFileName() + "." + safeTransferId);
+        long offset = Files.exists(temporary) ? Files.size(temporary) : 0L;
+        if (offset > expectedBytes) {
+            Files.deleteIfExists(temporary);
+            offset = 0L;
+        }
+        if (offset == expectedBytes && Files.exists(temporary)) {
+            var existingSha = digestFile(temporary);
+            if (existingSha.equalsIgnoreCase(expectedSha256)) {
+                moveIntoPlace(temporary, target, overwrite);
+                return;
+            }
+            Files.deleteIfExists(temporary);
+            offset = 0L;
+        }
+
+        var response = requestDownload(machineId, token, transferId, expectedBytes, expectedSha256, attempt, offset);
+        // A rolling deployment may briefly route this request to an older
+        // Center which does not understand Range.  Restart once from zero so
+        // a 200 body can never be appended after an existing partial.
+        if (offset > 0 && response.statusCode() == 200) {
+            close(response.body());
+            Files.deleteIfExists(temporary);
+            offset = 0L;
+            response = requestDownload(machineId, token, transferId, expectedBytes, expectedSha256, attempt, 0L);
+        }
+        try (var input = response.body()) {
+            if (response.statusCode() != (offset > 0 ? 206 : 200)) {
+                throw new CenterTransportException("center file transfer download failed", response.statusCode());
+            }
+            if (offset > 0) validateContentRange(response, offset, expectedBytes);
+            var digest = MessageDigest.getInstance("SHA-256");
+            if (offset > 0) digestFileInto(temporary, digest);
+            var buffer = new byte[1024 * 1024];
+            long count = offset;
+            var deadlineNanos = System.nanoTime() + transferTimeout.toNanos();
+            var openOptions = offset > 0
+                    ? new StandardOpenOption[] { StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND }
+                    : new StandardOpenOption[] { StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING };
+            try (var output = Files.newOutputStream(temporary, openOptions)) {
+                int read;
+                while ((read = readWithWatchdog(input, buffer, deadlineNanos)) >= 0) {
+                    if (read == 0) continue;
+                    count += read;
+                    if (count > expectedBytes) throw new IOException("download exceeds declared size");
+                    output.write(buffer, 0, read);
+                    digest.update(buffer, 0, read);
+                }
+            }
+            var actual = HexFormat.of().formatHex(digest.digest());
+            if (count != expectedBytes || !actual.equalsIgnoreCase(expectedSha256)) {
+                throw new IOException("download size or SHA-256 does not match transfer metadata");
+            }
+            moveIntoPlace(temporary, target, overwrite);
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IOException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private HttpResponse<InputStream> requestDownload(String machineId, String token, String transferId,
+                                                       long expectedBytes, String expectedSha256, int attempt,
+                                                       long offset) throws IOException, InterruptedException {
         var endpoint = centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/content");
         var builder = newRequest(endpoint).timeout(transferTimeout)
                 .header("Authorization", "Bearer " + token)
@@ -247,12 +320,13 @@ public final class AgentTransportClient implements AgentTransport {
                 .header("Accept", "application/octet-stream")
                 .header("X-RCM-Expected-Bytes", Long.toString(expectedBytes))
                 .header("X-RCM-Expected-SHA256", expectedSha256.toLowerCase());
+        if (offset > 0) builder.header("Range", "bytes=" + offset + "-");
         addAttemptHeader(builder, attempt);
         var responseFuture = http.sendAsync(builder.GET().build(), HttpResponse.BodyHandlers.ofInputStream());
-        HttpResponse<InputStream> response;
         try {
-            response = responseFuture.get(transferTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            var response = responseFuture.get(transferTimeout.toMillis(), TimeUnit.MILLISECONDS);
             observeTransport(response);
+            return response;
         } catch (TimeoutException exception) {
             responseFuture.cancel(true);
             throw new IOException("file transfer download timed out", exception);
@@ -261,38 +335,33 @@ public final class AgentTransportClient implements AgentTransport {
             if (cause instanceof IOException io) throw io;
             throw new IOException("file transfer download failed", cause == null ? exception : cause);
         }
-        try (var input = response.body()) {
-            if (response.statusCode() != 200) throw new CenterTransportException("center file transfer download failed", response.statusCode());
-            var target = destination.toAbsolutePath().normalize();
-            var parent = target.getParent();
-            if (parent == null) throw new IOException("destination has no parent");
-            Files.createDirectories(parent);
-            var temporary = parent.resolve(".rcm-part-" + target.getFileName() + "." + UUID.randomUUID());
-            try {
-                var digest = MessageDigest.getInstance("SHA-256");
-                var buffer = new byte[1024 * 1024];
-                long count = 0;
-                var deadlineNanos = System.nanoTime() + transferTimeout.toNanos();
-                try (var output = Files.newOutputStream(temporary, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
-                    int read;
-                    while ((read = readWithWatchdog(input, buffer, deadlineNanos)) >= 0) {
-                        if (read == 0) continue;
-                        count += read;
-                        if (count > expectedBytes) throw new IOException("download exceeds declared size");
-                        output.write(buffer, 0, read);
-                        digest.update(buffer, 0, read);
-                    }
-                }
-                var actual = HexFormat.of().formatHex(digest.digest());
-                if (count != expectedBytes || !actual.equalsIgnoreCase(expectedSha256)) {
-                    throw new IOException("download size or SHA-256 does not match transfer metadata");
-                }
-                moveIntoPlace(temporary, target, overwrite);
-            } finally {
-                Files.deleteIfExists(temporary);
-            }
+    }
+
+    private static void validateContentRange(HttpResponse<?> response, long offset, long total) throws IOException {
+        var value = response.headers().firstValue("Content-Range").orElse("").trim();
+        var expectedPrefix = "bytes " + offset + "-";
+        if (!value.startsWith(expectedPrefix) || !value.endsWith("/" + total)) {
+            throw new IOException("center returned an invalid resumable content range");
+        }
+    }
+
+    private static String digestFile(Path path) throws IOException {
+        try {
+            var digest = MessageDigest.getInstance("SHA-256");
+            digestFileInto(path, digest);
+            return HexFormat.of().formatHex(digest.digest());
         } catch (java.security.NoSuchAlgorithmException exception) {
             throw new IOException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static void digestFileInto(Path path, MessageDigest digest) throws IOException {
+        try (var input = Files.newInputStream(path, StandardOpenOption.READ)) {
+            var buffer = new byte[1024 * 1024];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read > 0) digest.update(buffer, 0, read);
+            }
         }
     }
 
@@ -346,6 +415,65 @@ public final class AgentTransportClient implements AgentTransport {
         }
         var actualBytes = Files.size(source);
         if (actualBytes != expectedBytes) throw new IOException("source file size changed before upload");
+        var resumeOffset = queryTransferOffset(machineId, token, transferId, attempt);
+        if (resumeOffset < 0 || expectedBytes == 0) {
+            return uploadWholeTransfer(machineId, token, transferId, source, fileName, mimeType,
+                    expectedBytes, expectedSha256, attempt);
+        }
+        if (resumeOffset > expectedBytes) throw new IOException("center resume offset exceeds source size");
+        if (resumeOffset == expectedBytes) {
+            // The Center commits the metadata atomically with the final
+            // chunk.  A lost response can therefore be recovered by HEAD
+            // alone without retransmitting the complete file.
+            return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
+                    transferId, "", "delivered", expectedBytes,
+                    expectedSha256 == null ? "" : expectedSha256.toLowerCase(), null);
+        }
+        var offset = resumeOffset;
+        while (offset < expectedBytes) {
+            var size = (int) Math.min(TRANSFER_CHUNK_BYTES, expectedBytes - offset);
+            var chunk = readChunk(source, offset, size);
+            if (chunk.length != size) throw new IOException("source file ended during resumable upload");
+            var end = offset + chunk.length - 1;
+            var endpoint = centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/content");
+            var builder = newRequest(endpoint).timeout(transferTimeout)
+                    .header("Authorization", "Bearer " + token)
+                    .header("X-Machine-ID", machineId)
+                    .header("Content-Type", mimeType == null || mimeType.isBlank() ? "application/octet-stream" : mimeType)
+                    .header("X-RCM-File-Name", fileName == null ? source.getFileName().toString() : fileName)
+                    .header("X-RCM-Expected-Bytes", Long.toString(expectedBytes))
+                    .header("Content-Range", "bytes " + offset + "-" + end + "/" + expectedBytes)
+                    .header("X-RCM-Transfer-Chunk", "1");
+            if (expectedSha256 != null && expectedSha256.matches("(?i)[0-9a-f]{64}")) {
+                builder.header("X-RCM-Expected-SHA256", expectedSha256.toLowerCase());
+            }
+            addAttemptHeader(builder, attempt);
+            var response = sendTransfer(builder.PUT(HttpRequest.BodyPublishers.ofByteArray(chunk)).build());
+            if (response.statusCode() == 404 || response.statusCode() == 405) {
+                // A rolling upgrade can route this first chunk to a legacy
+                // Center.  Only an untouched offset is safe to replay as a
+                // legacy whole-stream request.
+                if (offset == 0) return uploadWholeTransfer(machineId, token, transferId, source, fileName,
+                        mimeType, expectedBytes, expectedSha256, attempt);
+            }
+            if (response.statusCode() != 200) {
+                throw new CenterTransportException("center file transfer chunk upload failed", response.statusCode());
+            }
+            var acknowledged = JsonCodec.read(response.body(), com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse.class);
+            var next = acknowledged == null ? -1L : acknowledged.bytes();
+            if ("delivered".equalsIgnoreCase(acknowledged == null ? "" : acknowledged.status())) return acknowledged;
+            if (next <= offset || next > expectedBytes) throw new IOException("center returned an invalid resumable offset");
+            offset = next;
+        }
+        return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
+                transferId, "", "delivered", expectedBytes,
+                expectedSha256 == null ? "" : expectedSha256.toLowerCase(), null);
+    }
+
+    private com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadWholeTransfer(
+            String machineId, String token, String transferId, Path source, String fileName,
+            String mimeType, long expectedBytes, String expectedSha256, int attempt)
+            throws IOException, InterruptedException {
         var endpoint = centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/content");
         var builder = newRequest(endpoint).timeout(transferTimeout)
                 .header("Authorization", "Bearer " + token)
@@ -367,6 +495,44 @@ public final class AgentTransportClient implements AgentTransport {
         var response = sendTransfer(builder.PUT(HttpRequest.BodyPublishers.ofFile(source)).build());
         if (response.statusCode() != 200) throw new CenterTransportException("center file transfer upload failed", response.statusCode());
         return JsonCodec.read(response.body(), com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse.class);
+    }
+
+    @Override
+    public long queryTransferOffset(String machineId, String token, String transferId, int attempt)
+            throws IOException, InterruptedException {
+        var endpoint = centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/content");
+        var builder = newRequest(endpoint).timeout(requestTimeout)
+                .header("Authorization", "Bearer " + token)
+                .header("X-Machine-ID", machineId)
+                .header("Accept", "application/json");
+        addAttemptHeader(builder, attempt);
+        var response = send(builder.method("HEAD", HttpRequest.BodyPublishers.noBody()).build());
+        if (response.statusCode() == 404 || response.statusCode() == 405) return -1L;
+        if (response.statusCode() != 200) {
+            throw new CenterTransportException("center file transfer resume probe failed", response.statusCode());
+        }
+        var value = response.headers().firstValue("X-RCM-Resume-Offset").orElse("").trim();
+        try {
+            var offset = Long.parseLong(value);
+            if (offset < 0) throw new NumberFormatException("negative offset");
+            return offset;
+        } catch (NumberFormatException exception) {
+            throw new IOException("center returned an invalid resumable offset", exception);
+        }
+    }
+
+    private static byte[] readChunk(Path source, long offset, int size) throws IOException {
+        var data = new byte[size];
+        try (var input = Files.newByteChannel(source, StandardOpenOption.READ)) {
+            input.position(offset);
+            var view = java.nio.ByteBuffer.wrap(data);
+            while (view.hasRemaining()) {
+                var read = input.read(view);
+                if (read < 0) break;
+            }
+            if (view.position() != size) return java.util.Arrays.copyOf(data, view.position());
+            return data;
+        }
     }
 
     @Override

@@ -60,7 +60,7 @@
 | [x] | P0-11-03 | Center filesystem/HTTP ObjectStore 支持流式写入/打开、临时文件和 SHA-256 校验 | `ArtifactStore`、`FileSystemArtifactStore`、`HttpArtifactStore` |
 | [x] | P0-11-04 | Agent 侧通过目标路径合同校验、`.rcm-part-*` 临时文件和原子改名收发文件 | `FileTransferTaskRunner`、`AgentPaths`、`AgentTransportClient` |
 | [x] | P0-11-05 | MCP 暴露精简 `artifact_put`/`artifact_get`/`artifact_read`，使用 `openai/fileParams`，文本只返回句柄 | `McpConfiguration`；连接器刷新和 Web 实测待验收 |
-| [ ] | P0-11-06 | 断点分块/偏移确认、断线续传和传输状态幂等恢复 | 需要 Center/Agent integration test 与 Actions |
+| [~] | P0-11-06 | 断点分块/偏移确认、断线续传和传输状态幂等恢复 | 已加入 Agent→Center `HEAD` 偏移探测、8 MiB `Content-Range` 分块、Center PVC partial spool、断线后按偏移重试，以及 Web→Agent 的 HTTP Range + 稳定 `.rcm-part-*` 文件；仍需 PostgreSQL/真实中断矩阵和 Actions 证明 |
 | [ ] | P0-11-07 | ChatGPT Web 文件对象真实渲染/下载闭环（图片、PDF、Office、未知二进制） | 依赖 P1-10 Artifact Viewer 和真实连接器 |
 
 ### Artifact Transport v2 补充风险清单
@@ -76,7 +76,7 @@
 | [~] | P0-AT-05 | 幂等预约前置 | pending durable reservation、同键短期 future hand-off 和重启失败收口已实现；跨实例/异常插入回归待补 |
 | [~] | P0-AT-06 | 并发与临时磁盘硬配额 | Center 进程内全局/主体/机器并发及可用空间 reservation 已实现；多进程容量演练待补 |
 | [~] | P0-AT-07 | Web→Center ingest 异步化 | MCP 只创建 pending 句柄，Center 虚拟线程完成下载、校验和发布；失败/重启恢复待 Actions 验证 |
-| [~] | P0-AT-08 | 端到端故障恢复矩阵 | PostgreSQL 集成门禁已覆盖独立 Center facade 重启读、流式 Agent→Web 状态/字节落库、重复上传幂等和签名对象恢复；Center/Agent 真重启、lease 过期、对象存储短暂失败和中断组合仍待现场矩阵 |
+| [~] | P0-AT-08 | 端到端故障恢复矩阵 | PostgreSQL 集成门禁已覆盖独立 Center facade 重启读、流式 Agent→Web 状态/字节落库、重复上传幂等和签名对象恢复；断点偏移路径已实现，Center/Agent 真重启、lease 过期、对象存储短暂失败和中断组合仍待现场矩阵 |
 | [ ] | P1-AT-01 | ChatGPT Web Artifact 真实 E2E | 需要真实连接器验证 Web 上传→终端、终端→当前会话 |
 | [~] | P1-AT-02 | React Artifact Viewer v1 | 任务记录页已支持图片、PDF、音视频、文本预览及通用下载，Office/压缩包/未知类型保持下载；真实连接器附件渲染仍待 E2E |
 | [~] | P1-AT-03 | MCP annotations 与严格 Output Schema | 文件工具 annotations、嵌套 task/transfer/file schema 已收紧；需 Actions 与连接器刷新验证 |
@@ -87,7 +87,7 @@
 | [ ] | P2-AT-01 | READ / WRITE / EXCLUSIVE 执行车道 | 当前仍按 lane 串行；读写分类和共享读并发待实现 |
 | [~] | P2-AT-02 | 零字节与边缘文件语义 | Center filesystem/HTTP、协议、Agent、Browser 小工件和 PostgreSQL `024` 迁移已允许合法 0 字节及未知大小上传进度；特殊文件/符号链接策略待补 |
 | [ ] | P2-AT-03 | destination path / file name 语义收敛 | 目前同时保留目标路径和展示文件名；需明确 API 契约及迁移兼容 |
-| [~] | P2-AT-04 | 传输容量、SLO 与生命周期指标 | `/metrics` 已增加 active/delivered/failed/canceled、传输/声明字节、平均/最大终态时长等低基数指标；resume 次数、GC bytes 与现场 SLO 面板待接入 |
+| [~] | P2-AT-04 | 传输容量、SLO 与生命周期指标 | `/metrics` 已增加 active/delivered/failed/canceled、传输/声明字节、平均/最大终态时长等低基数指标；resume 次数、partial spool/GC bytes 与现场 SLO 面板待接入 |
 
 ## P1：核心生产体验
 

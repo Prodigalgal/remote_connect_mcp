@@ -92,13 +92,31 @@ final class FileTransferTaskRunner implements Runnable {
         } catch (IOException exception) {
             throw new IOException("cannot inspect local disk space for transfer snapshot", exception);
         }
-        var snapshot = Files.createTempFile(parent, ".rcm-snapshot-", ".part");
+        var safeTransferId = action.transferId().replaceAll("[^A-Za-z0-9._-]", "_");
+        var snapshot = parent.resolve(".rcm-snapshot-" + safeTransferId + ".part");
+        var uploaded = false;
         try {
-            // Hash and upload the same immutable snapshot.  Reading the source
-            // once for the digest and opening it again for HTTP would permit a
-            // same-size replacement to pass the local check but fail remotely
-            // with an opaque SHA mismatch.
-            Files.copy(source, snapshot, StandardCopyOption.REPLACE_EXISTING);
+            // Hash and upload the same immutable snapshot.  Keep a stable
+            // snapshot across task retries so the Center can resume from its
+            // last acknowledged chunk without recopying a multi-GB source.
+            if (Files.exists(snapshot)) {
+                if (!Files.isRegularFile(snapshot) || Files.size(snapshot) > MAX_BYTES) {
+                    Files.deleteIfExists(snapshot);
+                }
+            }
+            if (!Files.exists(snapshot)) {
+                var snapshotTemp = parent.resolve(snapshot.getFileName() + ".new");
+                try {
+                    Files.copy(source, snapshotTemp, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+                    try {
+                        Files.move(snapshotTemp, snapshot, StandardCopyOption.ATOMIC_MOVE);
+                    } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                        Files.move(snapshotTemp, snapshot, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } finally {
+                    Files.deleteIfExists(snapshotTemp);
+                }
+            }
             var bytes = Files.size(snapshot);
             if (bytes < 0 || bytes > MAX_BYTES) throw new IOException("source file size is outside the allowed range");
             var digest = action.expectedSha256();
@@ -109,8 +127,15 @@ final class FileTransferTaskRunner implements Runnable {
             acknowledge(action, "delivered", bytes, sha, null, true);
             sendOutput("published " + action.fileName() + " (" + bytes + " bytes, sha256=" + sha + ")");
             sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
+            uploaded = true;
         } finally {
-            Files.deleteIfExists(snapshot);
+            // A successful upload is the only point at which the stable
+            // snapshot can be removed.  On a transient network failure it is
+            // intentionally retained for the next attempt; the normal Agent
+            // transfer GC removes stale snapshots after their task expires.
+            if (uploaded) {
+                Files.deleteIfExists(snapshot);
+            }
         }
     }
 

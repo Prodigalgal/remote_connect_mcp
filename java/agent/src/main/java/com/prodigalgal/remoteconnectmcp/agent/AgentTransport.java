@@ -80,6 +80,17 @@ public interface AgentTransport {
         // current Center receives the durable transfer state transition.
     }
 
+    /**
+     * Return the durable Center-side resume offset for an Agent upload.
+     * A negative value means that the connected Center predates the chunked
+     * transfer endpoint; callers must fall back to the legacy whole-stream
+     * PUT in that case.
+     */
+    default long queryTransferOffset(String machineId, String token, String transferId, int attempt)
+            throws IOException, InterruptedException {
+        return -1L;
+    }
+
     /** Stream a local file to the Center-owned artifact store. */
     default com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadTransfer(
             String machineId, String token, String transferId, Path source, String fileName,

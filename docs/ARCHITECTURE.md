@@ -136,8 +136,10 @@ SDK 的短期 `download_url`/`file_id` 引用，Center 只在当前请求中下�
 以 `file_transfer` 任务将对象流送到 Agent；`artifact_get` 反向读取 Agent 文件，Center
 校验大小与 SHA-256 后生成短期签名文件对象 URL。任务 JSON 只携带 transfer/artifact
 引用和路径，不携带 Base64 或文件内容。文件名、范围合同、来源 Agent、用户主体和会话
-均在 Center 与 Agent 两端校验。当前 v2 第一阶段使用 HTTP 流式传输和原子临时文件，
-断点分块与 React Artifact Viewer 作为后续验收项，详见 [`ARTIFACT_TRANSPORT_V2.md`](ARTIFACT_TRANSPORT_V2.md)。
+均在 Center 与 Agent 两端校验。v2 使用 HTTP 流式传输和原子临时文件；大文件通过
+`HEAD` 偏移确认、8 MiB `Content-Range` 分块和 Web→Agent `Range` 续传，partial
+spool 只在最终哈希提交后删除。React Artifact Viewer 和真实连接器渲染仍需独立验收，
+详见 [`ARTIFACT_TRANSPORT_V2.md`](ARTIFACT_TRANSPORT_V2.md)。
 
 ## 4. 范围与项目策略
 

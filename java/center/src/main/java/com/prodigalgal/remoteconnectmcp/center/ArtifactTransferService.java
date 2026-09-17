@@ -56,6 +56,7 @@ public final class ArtifactTransferService {
     private static final long PROGRESS_STEP_NANOS = Duration.ofSeconds(1).toNanos();
     private static final Duration DEFAULT_ARTIFACT_RETENTION = Duration.ofDays(7);
     private static final Duration DEFAULT_SIGNED_URL_TTL = Duration.ofMinutes(15);
+    private static final long MAX_RESUMABLE_CHUNK_BYTES = 8L * 1024 * 1024;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final ArtifactStore store;
@@ -64,6 +65,8 @@ public final class ArtifactTransferService {
     private final TransferResourceLimiter resources;
     private final CenterAsyncExecutor async;
     private final Map<String, MemoryTransfer> memory = new ConcurrentHashMap<>();
+    /** Single-Center transfer locks serialize overlapping chunk offsets. */
+    private final Map<String, Object> transferLocks = new ConcurrentHashMap<>();
     private final Map<String, Boolean> preparations = new ConcurrentHashMap<>();
     /** Short reservation hand-off for concurrent same-key MCP retries. */
     private final Map<String, CompletableFuture<TransferCreated>> asyncPreparations = new ConcurrentHashMap<>();
@@ -352,11 +355,16 @@ public final class ArtifactTransferService {
 
     /** Open a Center-owned inbound artifact for an authenticated Agent GET. */
     public AgentDownload openForAgent(String machineId, String transferId) {
-        return openForAgent(machineId, transferId, null);
+        return openForAgent(machineId, transferId, null, 0L);
     }
 
     /** Open an inbound artifact while fencing the Agent's task attempt. */
     public AgentDownload openForAgent(String machineId, String transferId, Integer attempt) {
+        return openForAgent(machineId, transferId, attempt, 0L);
+    }
+
+    /** Open an inbound artifact at a byte offset for a resumable Agent GET. */
+    public AgentDownload openForAgent(String machineId, String transferId, Integer attempt, long offset) {
         var row = findTransfer(transferId).orElseThrow(() -> new IllegalArgumentException("file transfer not found"));
         if (!machineId.equals(row.machineId())) throw new SecurityException("file transfer does not belong to this machine");
         if (!FileTransferAction.WEB_TO_AGENT.equals(row.direction())) throw new IllegalArgumentException("transfer is not an inbound file");
@@ -364,13 +372,162 @@ public final class ArtifactTransferService {
             throw new IllegalArgumentException("file transfer is not ready");
         }
         tasks.assertCurrentAttempt(machineId, row.taskId(), attempt);
+        if (offset < 0 || offset > row.bytes()) throw new IllegalArgumentException("resume offset is outside the transfer size");
         markDelivering(row);
+        InputStream input = null;
         try {
-            var input = store.open(row.objectKey());
-            return new AgentDownload(row.transferId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), input);
+            input = store.open(row.objectKey());
+            skipFully(input, offset);
+            return new AgentDownload(row.transferId(), row.fileName(), row.mimeType(), row.bytes() - offset, row.sha256(), input,
+                    offset, row.bytes());
         } catch (RuntimeException failure) {
+            close(input);
             markFailedByTransfer(row.transferId(), failure.getMessage());
             throw failure;
+        } catch (IOException failure) {
+            close(input);
+            markFailedByTransfer(row.transferId(), failure.getMessage());
+            throw new IllegalArgumentException("cannot seek file transfer", failure);
+        }
+    }
+
+    /**
+     * Return the durable offset for an Agent-to-Web upload.  The offset is
+     * reconciled against the Center spool file on every probe, so a process
+     * restart cannot advertise bytes that were only present in memory.
+     */
+    public TransferResume resumeFromAgent(String machineId, String transferId, Integer attempt) {
+        var row = findTransfer(transferId).orElseThrow(() -> new IllegalArgumentException("file transfer not found"));
+        if (!machineId.equals(row.machineId())) throw new SecurityException("file transfer does not belong to this machine");
+        if (!FileTransferAction.AGENT_TO_WEB.equals(row.direction())) throw new IllegalArgumentException("transfer is not an outbound file");
+        if ("failed".equals(row.status()) || "canceled".equals(row.status())) {
+            throw new IllegalArgumentException("file transfer is not resumable");
+        }
+        tasks.assertCurrentAttempt(machineId, row.taskId(), attempt);
+        synchronized (transferLocks.computeIfAbsent(transferId, ignored -> new Object())) {
+            try {
+                var partial = resumePath(transferId);
+                var offset = "delivered".equals(row.status()) ? row.bytes()
+                        : Files.exists(partial) ? Files.size(partial) : 0L;
+                if (offset < 0 || offset > MAX_BYTES || (jdbc != null && row.bytes() > 0 && offset > row.bytes())) {
+                    throw new IOException("Center resume spool is outside the transfer size");
+                }
+                if (jdbc != null && !"delivered".equals(row.status())) {
+                    jdbc.update("UPDATE rcm_file_transfer SET bytes_transferred = ?, updated_at = CURRENT_TIMESTAMP WHERE transfer_id = ? AND status NOT IN ('delivered', 'failed', 'canceled')",
+                            offset, transferId);
+                }
+                return new TransferResume(transferId, offset, row.bytes(), row.sha256(), row.status());
+            } catch (IOException exception) {
+                throw new IllegalArgumentException("cannot inspect Center transfer resume state", exception);
+            }
+        }
+    }
+
+    /**
+     * Append one Content-Range chunk.  Chunks are committed in offset order;
+     * a replay of an already stored range simply returns the current offset.
+     * The partial file is intentionally retained for transient failures and
+     * is promoted to the configured ArtifactStore only after the final hash
+     * check succeeds.
+     */
+    public FileTransferResponse receiveFromAgentChunk(String machineId, String transferId, InputStream input,
+                                                      long contentLength, long offset, long total,
+                                                      String expectedSha256, String fileName, String mimeType,
+                                                      Integer attempt) {
+        var row = findTransfer(transferId).orElseThrow(() -> new IllegalArgumentException("file transfer not found"));
+        if (!machineId.equals(row.machineId())) throw new SecurityException("file transfer does not belong to this machine");
+        if (!FileTransferAction.AGENT_TO_WEB.equals(row.direction())) throw new IllegalArgumentException("transfer is not an outbound file");
+        if (input == null || contentLength < 0 || contentLength > MAX_RESUMABLE_CHUNK_BYTES
+                || total < 0 || total > MAX_BYTES || offset < 0 || offset > total
+                || contentLength != total - offset && contentLength <= 0) {
+            throw new IllegalArgumentException("invalid resumable file transfer range");
+        }
+        if (jdbc != null && row.bytes() > 0 && row.bytes() != total) {
+            throw new IllegalArgumentException("resumable transfer size does not match its original metadata");
+        }
+        tasks.assertCurrentAttempt(machineId, row.taskId(), attempt);
+        synchronized (transferLocks.computeIfAbsent(transferId, ignored -> new Object())) {
+            try {
+                if ("delivered".equals(row.status())) {
+                    return new FileTransferResponse(row.transferId(), row.artifactId(), row.status(), row.bytes(), row.sha256(), null);
+                }
+                if ("failed".equals(row.status()) || "canceled".equals(row.status())) {
+                    throw new IllegalArgumentException("file transfer is not resumable");
+                }
+                var partial = resumePath(transferId);
+                var current = Files.exists(partial) ? Files.size(partial) : 0L;
+                if (current > total || current > MAX_BYTES) throw new IOException("Center resume spool exceeds the declared size");
+                if (offset < current) {
+                    if (current < total) {
+                        return new FileTransferResponse(row.transferId(), row.artifactId(), "delivering", current, "", null);
+                    }
+                    // The previous final response may have been lost after
+                    // the body reached the total size but before metadata
+                    // commit.  Re-enter the finalisation path without
+                    // appending the replayed bytes a second time.
+                    offset = current;
+                    contentLength = 0;
+                    input = InputStream.nullInputStream();
+                }
+                if (offset > current) throw new IllegalArgumentException("resumable transfer offset has a gap");
+                if (offset + contentLength > total) throw new IllegalArgumentException("resumable chunk exceeds declared size");
+                var safeSha = expectedSha256 == null ? "" : expectedSha256.trim().toLowerCase(java.util.Locale.ROOT);
+                if (!safeSha.isBlank() && !SHA256.matcher(safeSha).matches()) {
+                    throw new IllegalArgumentException("expected SHA-256 is invalid");
+                }
+                var declaredSha = row.sha256() == null ? "" : row.sha256().trim().toLowerCase(java.util.Locale.ROOT);
+                if (!declaredSha.isBlank() && !safeSha.isBlank() && !declaredSha.equals(safeSha)) {
+                    throw new IllegalArgumentException("resumable transfer SHA-256 does not match its original metadata");
+                }
+                var safeName = fileName == null || fileName.isBlank() ? row.fileName() : fileName;
+                validateFileName(safeName);
+                var safeMime = normalizeMime(mimeType == null || mimeType.isBlank() ? row.mimeType() : mimeType);
+                initializeChunkMetadata(row, total, safeSha);
+                markDelivering(row);
+                try (var reservation = resources.reserve(row.principalId(), row.machineId(), contentLength)) {
+                    appendChunk(input, partial, contentLength, transferId);
+                }
+                var next = Files.size(partial);
+                updateTransferProgress(transferId, next);
+                if (next < total) {
+                    return new FileTransferResponse(row.transferId(), row.artifactId(), "delivering", next, "", null);
+                }
+                if (next != total) throw new IOException("resumable transfer ended at an invalid offset");
+                var actualSha = sha256File(partial);
+                var finalSha = safeSha.isBlank() ? actualSha : safeSha;
+                if (!actualSha.equalsIgnoreCase(finalSha)) {
+                    markFailed(row, "resumable transfer SHA-256 mismatch");
+                    Files.deleteIfExists(partial);
+                    transferLocks.remove(transferId);
+                    throw new IllegalArgumentException("resumable transfer SHA-256 mismatch");
+                }
+                String objectKey = null;
+                try {
+                    try (var objectInput = Files.newInputStream(partial, StandardOpenOption.READ)) {
+                        objectKey = store.put(row.artifactId(), actualSha, objectInput, total);
+                    }
+                    tasks.assertCurrentAttempt(machineId, row.taskId(), attempt);
+                    completeOutbound(row, safeMime, safeName, total, actualSha, objectKey);
+                    memory.put(transferId, new MemoryTransfer(new TransferDescriptor(transferId, row.artifactId(), row.direction(), row.taskId(),
+                            row.principalId(), row.machineId(), safeName, safeMime, total, actualSha, "delivered", null,
+                            publicUrl(row.artifactId(), new TaskOrigin(row.principalId(), TaskOrigin.COMPAT_TOKEN, ""), taskSession(row.taskId()), "download")),
+                            objectKey, "", row.sourcePath()));
+                    Files.deleteIfExists(partial);
+                    transferLocks.remove(transferId);
+                    return new FileTransferResponse(transferId, row.artifactId(), "delivered", total, actualSha, null);
+                } catch (RuntimeException failure) {
+                    if (objectKey != null && !(failure instanceof SecurityException)) {
+                        try { store.delete(objectKey); } catch (RuntimeException ignored) { }
+                    }
+                    throw failure;
+                }
+            } catch (IOException exception) {
+                // A dropped connection is recoverable: keep the partial file
+                // and leave the durable row in delivering state for the next
+                // Agent attempt instead of converting a transient failure to
+                // a terminal transfer error.
+                throw new IllegalArgumentException("resumable file transfer chunk interrupted: " + exception.getMessage(), exception);
+            }
         }
     }
 
@@ -878,6 +1035,77 @@ public final class ArtifactTransferService {
         }
     }
 
+    private void initializeChunkMetadata(TransferRow row, long total, String expectedSha256) {
+        if (jdbc == null) return;
+        var safeSha = expectedSha256 == null || expectedSha256.isBlank() ? null : expectedSha256;
+        jdbc.update("""
+                UPDATE rcm_file_transfer
+                   SET expected_bytes = CASE WHEN expected_bytes = 0 THEN ? ELSE expected_bytes END,
+                       expected_sha256 = CASE WHEN COALESCE(expected_sha256, '') = '' THEN ? ELSE expected_sha256 END,
+                       updated_at = CURRENT_TIMESTAMP
+                 WHERE transfer_id = ? AND status NOT IN ('delivered', 'failed', 'canceled')
+                """, total, safeSha, row.transferId());
+    }
+
+    private void appendChunk(InputStream input, Path partial, long expectedBytes, String transferId) throws IOException {
+        Files.createDirectories(partial.getParent());
+        try (var output = Files.newOutputStream(partial, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                StandardOpenOption.APPEND)) {
+            var buffer = new byte[1024 * 1024];
+            var deadlineNanos = System.nanoTime() + DOWNLOAD_TIMEOUT.toNanos();
+            long count = 0;
+            int read;
+            while ((read = readWithWatchdog(input, buffer, deadlineNanos)) >= 0) {
+                if (read == 0) continue;
+                count += read;
+                if (count > expectedBytes) throw new IOException("resumable chunk exceeds its Content-Range length");
+                output.write(buffer, 0, read);
+            }
+            if (count != expectedBytes) throw new IOException("resumable chunk body is shorter than Content-Range");
+        }
+    }
+
+    private Path resumePath(String transferId) throws IOException {
+        if (transferId == null || transferId.isBlank()) throw new IOException("transfer id is required");
+        var resumeRoot = transferSpoolRoot.resolve("resume").normalize();
+        Files.createDirectories(resumeRoot);
+        var safe = transferId.replaceAll("[^A-Za-z0-9._-]", "_");
+        var path = resumeRoot.resolve(safe + ".part").normalize();
+        if (!path.startsWith(resumeRoot)) throw new IOException("unsafe transfer resume path");
+        return path;
+    }
+
+    private static long fileSize(Path path) throws IOException {
+        return Files.exists(path) ? Files.size(path) : 0L;
+    }
+
+    private static String sha256File(Path path) throws IOException {
+        try (var input = Files.newInputStream(path, StandardOpenOption.READ)) {
+            var digest = MessageDigest.getInstance("SHA-256");
+            var buffer = new byte[1024 * 1024];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read > 0) digest.update(buffer, 0, read);
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IOException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static void skipFully(InputStream input, long bytes) throws IOException {
+        var remaining = bytes;
+        while (remaining > 0) {
+            var skipped = input.skip(remaining);
+            if (skipped > 0) {
+                remaining -= skipped;
+                continue;
+            }
+            if (input.read() < 0) throw new IOException("artifact ended before the requested resume offset");
+            remaining--;
+        }
+    }
+
     /**
      * A request timeout covers connection establishment, but a streaming body
      * can otherwise remain blocked forever after the response has started. Run
@@ -1028,7 +1256,9 @@ public final class ArtifactTransferService {
                                      String principalId, String machineId, String fileName, String mimeType, long bytes,
                                      String sha256, String status, String error, String downloadUrl) {
     }
-    public record AgentDownload(String transferId, String fileName, String mimeType, long bytes, String sha256, InputStream body) { }
+    public record AgentDownload(String transferId, String fileName, String mimeType, long bytes, String sha256, InputStream body,
+                                long offset, long totalBytes) { }
+    public record TransferResume(String transferId, long offset, long expectedBytes, String expectedSha256, String status) { }
     public record PublicArtifact(String artifactId, String fileName, String mimeType, long bytes, String sha256, String status, InputStream body) { }
     public record TransferMetrics(long active, long delivered, long failed, long canceled,
                                   long bytesTransferred, long expectedBytes,

@@ -6,7 +6,7 @@
 
 ## 结论
 
-Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布；当前代码新增 Artifact Transport v2 第一阶段：`artifact_put`/`artifact_get`、流式对象存储、Agent 原子收发和短期签名文件对象 URL。它仍需要 GitHub Actions 编译/集成测试、数据库迁移和目标环境回归后才能宣称生产可用。既有生产数据库、Agent 升级和旧 Go 回滚事实保持不变；文件能力的 React Artifact Viewer、断点分块续传和 ChatGPT Web 真实附件渲染是后续 P1 门禁。 
+Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布；当前代码新增 Artifact Transport v2：`artifact_put`/`artifact_get`、流式对象存储、Agent 原子收发、短期签名文件对象 URL，以及 Agent→Center `Content-Range`/偏移确认和 Web→Agent HTTP Range 断线续传。它仍需要最新 GitHub Actions 编译/集成测试、数据库迁移和目标环境回归后才能宣称生产可用。既有生产数据库、Agent 升级和旧 Go 回滚事实保持不变；ChatGPT Web 真实附件渲染、跨重启故障矩阵和特殊文件边界仍是后续门禁。
 
 ## 已完成实现与历史证据
 
@@ -22,7 +22,7 @@ Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布�
 | 升级 | Center canary/批次状态机，HTTPS + SHA-256，Agent Helper 原子替换和回滚；offer/status 与 detached helper result 支持可选升级 attempt，迟到报告不会覆盖更新尝试；PostgreSQL offer/control/status 路径现在按 campaign/target 行锁串行化，避免并发 Agent 重复领取同一尝试；升级编排使用有界分段机器快照（最多 10000 台），不会因 Admin 单页 200 台而漏掉离线目标；发布工作流资产名已与解析器对齐 | `UpgradeServiceTest`；`.github/workflows/java-release.yml` 静态校验 |
 | 控制台 | React/Vite 经典后台布局，机器、项目/worktree、任务、令牌、升级、审计和设置页面；任务编排支持 command/desktop/browser、项目/worktree/path/unrestricted 显式范围、风险/提权/会话与幂等键；项目卡片支持有确认的 status/diff/log/commit/merge/merge-abort；全局搜索、机器在线筛选、任务状态筛选和任务输出 16 KiB 游标分页查看；机器、项目、任务、升级、审计列表按 `has_more` 增量加载；实时刷新与“下一页”并发时使用请求代次栅栏，升级页支持只重排队单个失败目标；Admin Token 只在当前标签页内存 | v0.1.28 GitHub Actions React 构建与生产 Console 路由验收通过；稳定 Release `java-v0.1.28` 与生产 digest 已收敛 |
 | 数据库 | PostgreSQL 适配器与 Liquibase `001`–`019` changelog；内存模式仍用于协议回归；发布工作流带 PostgreSQL 16 服务容器集成、备份和恢复门禁；`012` 增加异步审计事件表，`013` 持久化 Agent 运行时自描述，`014` 保存有限配置历史，`015` 增加主体/Token 归属，`016` 增加执行车道，`017` 固化执行会话与任务专属结果通道，`018` 增加机器授权与项目成员 ACL，`019` 持久化主体/连接执行会话合同与生命周期状态；审计保留通过显式、有界 Admin GC 入口执行，不运行定时清理线程 | Liquibase 资源/迁移单元测试通过；CI `PostgresIntegrationTest` 会覆盖注册、心跳自描述、项目/worktree、主体幂等任务、车道租约、会话、输出续传和工件往返，随后执行 custom-format dump/restore |
-| Artifact Transport v2 | 新增 `file_transfer` 协议记录、`020` Liquibase 元数据表、filesystem/HTTP 流式 ObjectStore、Agent GET/PUT、Agent 端真实路径/哈希校验，以及精简 `artifact_put`/`artifact_get`/`artifact_read` MCP 工具；文件内容不进入任务 JSON 或 MCP 文本 | 本机仅完成静态检查；GitHub Actions 需验证 Java/Native/JDBC 迁移、重试和对象流；React Artifact Viewer、断点分块与 ChatGPT Web 附件渲染尚待实现 |
+| Artifact Transport v2 | 新增 `file_transfer` 协议记录、`020` Liquibase 元数据表、filesystem/HTTP 流式 ObjectStore、Agent GET/PUT、真实路径/哈希校验、8 MiB `Content-Range` 分块、Center partial spool、Web→Agent HTTP Range 和精简 `artifact_put`/`artifact_get`/`artifact_read` MCP 工具；文件内容不进入任务 JSON 或 MCP 文本 | 本机仅完成静态检查；GitHub Actions 需验证 Java/Native/JDBC 迁移、重试、重复 chunk 和对象流；ChatGPT Web 附件渲染、跨重启故障矩阵与生产回归尚待实现 |
 | 发布脚本 | Java JVM 构建、Native Image 门禁脚本、Windows/Linux Agent 安装器、Java Center/Agent JVM/Native 烟测脚本，以及 Windows/Linux WebSocket wake 烟测 | 当前只做静态校验；Native Image、完整原生烟测、Agent RSS 资源报告和仓库卫生扫描交给 GitHub Actions，Windows/Linux 安装器均支持 CI 平铺 ZIP + 旁路库 |
 
 ## 部分实现或仍需补齐

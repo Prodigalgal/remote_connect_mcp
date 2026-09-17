@@ -16,7 +16,7 @@ ChatGPT Web 文件 → MCP Center → 目标终端 Agent → 终端文件系统
 ## 设计原则
 
 1. MCP 是控制面，只传文件引用、状态和有界元数据。
-2. Center 与 Agent 之间是二进制数据面，第一阶段采用带校验的流式传输；分块和断点续传作为后续兼容增强。
+2. Center 与 Agent 之间是二进制数据面，采用带校验的流式传输；大文件使用有界分块和偏移确认，断线后只重传未确认区间。
 3. PostgreSQL 只保存 Artifact/Transfer 元数据，不保存大块文件内容。
 4. Object Storage 保存实际文件；本地开发可以使用文件系统后端。
 5. Task Artifact 保留给截图、诊断等小型任务结果；通用文件使用 File Transfer。
@@ -94,10 +94,13 @@ pending → ready → delivering → delivered
    └─────────┴─────────┴────────────┴→ failed / canceled
 ```
 
-第一阶段使用带大小/SHA-256 校验的 HTTP 流和临时文件原子落盘；重复请求通过幂等键和
-transfer_id 复用同一逻辑传输。Agent 在本地落盘/上传成功后发送 Attempt-fenced ACK，
-Center 只有在 ACK 或已提交的对象元数据可证明成功时才进入终态。断点分块（带偏移确认）
-仍是下一阶段 P0 验收项，不能把一次完整流重试误称为断点续传。`pending` ingest 的
+当前使用带大小/SHA-256 校验的 HTTP 流和临时文件原子落盘；大文件的 Agent→Center
+方向使用 8 MiB `Content-Range` 分块，Agent 先通过 `HEAD` 取得 Center PVC partial
+spool 的确认偏移；Web→Agent 方向使用 HTTP `Range`，并把本地 `.rcm-part-*` 文件名
+绑定到 transfer_id。重复请求通过幂等键和 transfer_id 复用同一逻辑传输。Agent 在本地
+落盘/上传成功后发送 Attempt-fenced ACK，Center 只有在 ACK 或已提交的对象元数据可
+证明成功时才进入终态。中断后不会覆盖已确认字节，也不会把一次完整流重试误称为断点续传。
+`pending` ingest 的
 ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation 一次性标记失败，
 调用方需要使用新幂等键重新提交。
 
@@ -142,12 +145,13 @@ ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation
 - Center 对已建立的流同时执行绝对生命周期（默认 30 分钟）和无进展看门狗（默认 120 秒）；
   进度按 4 MiB 或 1 秒节流写入 `bytes_transferred`，超时会关闭输入流并将 Transfer/Task 收口为失败。
 - 日志只记录 transfer_id、artifact_id、大小、结果和错误摘要，不记录文件内容或长期凭据。
-- Center 重启、Agent 离线或网络中断不会产生重复文件或半成品目标文件。
+- Center 重启、Agent 离线或网络中断不会产生重复文件或半成品目标文件；partial spool
+  只在最终 SHA-256 校验和对象提交成功后删除，任务重试会从确认偏移继续。
 
 ## 实施顺序
 
-1. P0（当前）：协议记录、Artifact/Transfer 表、流式 Object Store、Agent 拉取/上传和完整流校验。
-2. P0（下一步）：`artifact_put`/`artifact_get` 最短闭环的 GitHub Actions/JDBC/Native 回归，以及带偏移确认的断点分块续传。
+1. P0（当前）：协议记录、Artifact/Transfer 表、流式 Object Store、Agent 拉取/上传、完整流校验和带偏移确认的断点分块。
+2. P0（下一步）：`artifact_put`/`artifact_get` 的 GitHub Actions/JDBC/Native 故障矩阵，覆盖 Center/Agent 重启、重复 chunk、lease 过期和对象存储短暂失败。
 3. P1：React Artifact Viewer、文件预览、下载和可选保存到 ChatGPT。
 4. P2：WebSocket/HTTP2 数据通道、对象生命周期、容量压测和多用户多会话矩阵。
 
