@@ -183,6 +183,17 @@ public record AgentConfig(
     }
 
     /**
+     * Wall-clock budget for one streamed file transfer.  Ordinary Center
+     * requests stay short, but a multi-gigabyte upload/download must not be
+     * aborted by the 30-second control-plane timeout.  The bound is still
+     * finite so a broken connection cannot retain a transfer worker forever.
+     */
+    public Duration transferTimeout() {
+        return Duration.ofSeconds(parseLongEnv("REMOTE_CONNECT_MCP_AGENT_TRANSFER_TIMEOUT_SECONDS",
+                1800, 30, 24L * 60 * 60));
+    }
+
+    /**
      * Browser adapters are heavier than command tasks.  Keep their process
      * pool independently bounded even when a host increases the general task
      * concurrency.  The value is intentionally boot-time/environment based;

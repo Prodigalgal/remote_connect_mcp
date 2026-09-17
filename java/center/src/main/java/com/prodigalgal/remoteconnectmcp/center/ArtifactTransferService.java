@@ -134,10 +134,16 @@ public final class ArtifactTransferService {
 
     /** Open a Center-owned inbound artifact for an authenticated Agent GET. */
     public AgentDownload openForAgent(String machineId, String transferId) {
+        return openForAgent(machineId, transferId, null);
+    }
+
+    /** Open an inbound artifact while fencing the Agent's task attempt. */
+    public AgentDownload openForAgent(String machineId, String transferId, Integer attempt) {
         var row = findTransfer(transferId).orElseThrow(() -> new IllegalArgumentException("file transfer not found"));
         if (!machineId.equals(row.machineId())) throw new SecurityException("file transfer does not belong to this machine");
         if (!FileTransferAction.WEB_TO_AGENT.equals(row.direction())) throw new IllegalArgumentException("transfer is not an inbound file");
         if (!"ready".equals(row.status()) && !"delivered".equals(row.status())) throw new IllegalArgumentException("file transfer is not ready");
+        tasks.assertCurrentAttempt(machineId, row.taskId(), attempt);
         var input = store.open(row.objectKey());
         return new AgentDownload(row.transferId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), input);
     }
@@ -146,6 +152,13 @@ public final class ArtifactTransferService {
     public FileTransferResponse receiveFromAgent(String machineId, String transferId, InputStream input,
                                                  long contentLength, String expectedSha256,
                                                  String fileName, String mimeType) {
+        return receiveFromAgent(machineId, transferId, input, contentLength, expectedSha256, fileName, mimeType, null);
+    }
+
+    /** Ingest an outbound upload and fence the final metadata commit. */
+    public FileTransferResponse receiveFromAgent(String machineId, String transferId, InputStream input,
+                                                 long contentLength, String expectedSha256,
+                                                 String fileName, String mimeType, Integer attempt) {
         var row = findTransfer(transferId).orElseThrow(() -> new IllegalArgumentException("file transfer not found"));
         if (!machineId.equals(row.machineId())) throw new SecurityException("file transfer does not belong to this machine");
         if (!FileTransferAction.AGENT_TO_WEB.equals(row.direction())) throw new IllegalArgumentException("transfer is not an outbound file");
@@ -154,16 +167,22 @@ public final class ArtifactTransferService {
         validateFileName(safeName);
         var safeMime = normalizeMime(mimeType == null || mimeType.isBlank() ? row.mimeType() : mimeType);
         Path temporary = null;
+        String objectKey = null;
+        var committed = false;
         try {
             var received = spool(input, contentLength, expectedSha256);
             temporary = received.path();
             var artifactId = row.artifactId();
-            String objectKey;
             try (var objectInput = Files.newInputStream(temporary, StandardOpenOption.READ)) {
                 objectKey = store.put(artifactId, received.sha256(), objectInput, received.bytes());
             }
+            // The lease can expire while the body is streaming.  Do this
+            // immediately before the durable metadata update so a reclaimed
+            // attempt cannot make an old Agent upload visible to the Web UI.
+            tasks.assertCurrentAttempt(machineId, row.taskId(), attempt);
             var response = new FileTransferResponse(transferId, artifactId, "ready", received.bytes(), received.sha256(), null);
             completeOutbound(row, safeMime, safeName, received.bytes(), received.sha256(), objectKey);
+            committed = true;
             memory.put(transferId, new MemoryTransfer(new TransferDescriptor(transferId, artifactId, row.direction(), row.taskId(),
                     row.principalId(), row.machineId(), safeName, safeMime, received.bytes(), received.sha256(), "ready", null,
                     publicUrl(artifactId, new TaskOrigin(row.principalId(), TaskOrigin.COMPAT_TOKEN, ""))), objectKey, "", row.sourcePath()));
@@ -171,6 +190,16 @@ public final class ArtifactTransferService {
         } catch (IOException exception) {
             markFailed(row, exception.getMessage());
             throw new IllegalArgumentException("could not store Agent file: " + exception.getMessage(), exception);
+        } catch (RuntimeException exception) {
+            // A stale attempt or a metadata transaction failure can happen
+            // after the stream has already been written to the object store.
+            // Do not leave that unreferenced object behind for the next GC
+            // cycle; a successful metadata commit is the only point at which
+            // the object becomes owned by the transfer.
+            if (!committed && objectKey != null) {
+                try { store.delete(objectKey); } catch (RuntimeException ignored) { }
+            }
+            throw exception;
         } finally {
             deleteTemporary(temporary);
         }

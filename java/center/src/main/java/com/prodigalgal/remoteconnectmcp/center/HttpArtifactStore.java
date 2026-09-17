@@ -29,6 +29,7 @@ public final class HttpArtifactStore implements ArtifactStore {
     private final URI baseUrl;
     private final String token;
     private final Duration timeout;
+    private final Duration streamTimeout;
     private final HttpClient client;
 
     public HttpArtifactStore(URI baseUrl, String token, Duration timeout) {
@@ -46,6 +47,10 @@ public final class HttpArtifactStore implements ArtifactStore {
         if (this.timeout.compareTo(Duration.ofSeconds(1)) < 0 || this.timeout.compareTo(Duration.ofMinutes(2)) > 0) {
             throw new IllegalArgumentException("artifact HTTP timeout must be between 1 and 120 seconds");
         }
+        // Control-plane requests stay short, while the data plane may carry
+        // multi-gigabyte files. Keep a finite upper bound so a dead gateway
+        // still releases its virtual thread and socket eventually.
+        this.streamTimeout = Duration.ofMinutes(30);
         this.client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_2)
                 .connectTimeout(this.timeout).build();
     }
@@ -81,8 +86,9 @@ public final class HttpArtifactStore implements ArtifactStore {
         var key = PREFIX + digest(taskId) + "/" + digest + ".blob";
         var request = request("PUT", key).header("Content-Type", "application/octet-stream")
                 .header("Content-Length", Long.toString(expectedBytes)).header("X-RCM-SHA256", digest)
+                .timeout(streamTimeout)
                 .PUT(HttpRequest.BodyPublishers.ofInputStream(() -> input)).build();
-        var response = send(request);
+        var response = send(request, streamTimeout);
         try {
             if (response.statusCode() != 200 && response.statusCode() != 201 && response.statusCode() != 204) {
                 throw failure("put", response.statusCode());
@@ -118,7 +124,7 @@ public final class HttpArtifactStore implements ArtifactStore {
     @Override
     public InputStream open(String objectKey) {
         var key = normalizeKey(objectKey);
-        var response = send(request("GET", key).GET().build());
+        var response = send(request("GET", key).timeout(streamTimeout).GET().build(), streamTimeout);
         if (response.statusCode() != 200) {
             closeQuietly(response.body());
             throw failure("read", response.statusCode());
@@ -160,9 +166,13 @@ public final class HttpArtifactStore implements ArtifactStore {
     }
 
     private HttpResponse<InputStream> send(HttpRequest request) {
+        return send(request, timeout);
+    }
+
+    private HttpResponse<InputStream> send(HttpRequest request, Duration waitTimeout) {
         try {
             return client.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream())
-                    .get(timeout.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+                    .get(waitTimeout.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
         } catch (Exception exception) {
             throw new ArtifactStore.StorageException("artifact HTTP request failed", exception);
         }

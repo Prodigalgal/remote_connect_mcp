@@ -487,6 +487,29 @@ public final class TaskService {
     }
 
     /**
+     * Fence a streaming side-channel operation against the task lease
+     * attempt.  File transfers can spend minutes outside the task-state
+     * endpoint; checking the attempt immediately before committing metadata
+     * prevents a stale Agent from publishing bytes after a lease reclaim.
+     * A null/zero attempt keeps first-dispatch compatibility with older
+     * Agents, while retries still require the current positive attempt.
+     */
+    public void assertCurrentAttempt(String machineId, String taskId, Integer attempt) {
+        if (jdbcStore != null) {
+            jdbcStore.assertCurrentAttempt(machineId, taskId, attempt);
+            return;
+        }
+        lock.lock();
+        try {
+            var task = required(taskId);
+            assertMachine(task, machineId);
+            assertAttempt(task, attempt);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
      * Apply a state update with an optional dispatch-attempt fence. A zero or
      * absent attempt preserves first-dispatch compatibility with older Go
      * Agents; after a lease retry the Center requires the fence so a stale

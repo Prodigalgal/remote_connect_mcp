@@ -35,29 +35,45 @@ public final class AgentTransportClient implements AgentTransport {
     private final HttpClient http;
     private final URI centerUrl;
     private final Duration requestTimeout;
+    private final Duration transferTimeout;
     private final long longPollSeconds;
     private final AtomicBoolean longPollHonored = new AtomicBoolean();
     private volatile String selectedTransport = TransportNegotiation.HTTPS;
 
     public AgentTransportClient(URI centerUrl) {
-        this(centerUrl, defaultHttpClient(), Duration.ofSeconds(30), 0L);
+        this(centerUrl, defaultHttpClient(), Duration.ofSeconds(30), 0L, Duration.ofMinutes(30));
     }
 
     public AgentTransportClient(URI centerUrl, long longPollSeconds) {
-        this(centerUrl, defaultHttpClient(), Duration.ofSeconds(30), longPollSeconds);
+        this(centerUrl, defaultHttpClient(), Duration.ofSeconds(30), longPollSeconds, Duration.ofMinutes(30));
+    }
+
+    public AgentTransportClient(URI centerUrl, long longPollSeconds, Duration transferTimeout) {
+        this(centerUrl, defaultHttpClient(), Duration.ofSeconds(30), longPollSeconds, transferTimeout);
     }
 
     AgentTransportClient(URI centerUrl, HttpClient http, Duration requestTimeout) {
-        this(centerUrl, http, requestTimeout, 0L);
+        this(centerUrl, http, requestTimeout, 0L, Duration.ofMinutes(30));
     }
 
     AgentTransportClient(URI centerUrl, HttpClient http, Duration requestTimeout, long longPollSeconds) {
+        this(centerUrl, http, requestTimeout, longPollSeconds, Duration.ofMinutes(30));
+    }
+
+    AgentTransportClient(URI centerUrl, HttpClient http, Duration requestTimeout, long longPollSeconds,
+                         Duration transferTimeout) {
         this.centerUrl = stripTrailingSlash(centerUrl);
         this.http = http;
         if (requestTimeout == null || requestTimeout.isZero() || requestTimeout.isNegative()) {
             throw new IllegalArgumentException("requestTimeout must be positive");
         }
         this.requestTimeout = requestTimeout;
+        if (transferTimeout == null || transferTimeout.isZero() || transferTimeout.isNegative()
+                || transferTimeout.compareTo(Duration.ofSeconds(30)) < 0
+                || transferTimeout.compareTo(Duration.ofHours(24)) > 0) {
+            throw new IllegalArgumentException("transferTimeout must be between 30 seconds and 24 hours");
+        }
+        this.transferTimeout = transferTimeout;
         if (longPollSeconds < 0 || longPollSeconds > 25) {
             throw new IllegalArgumentException("longPollSeconds must be between 0 and 25");
         }
@@ -197,7 +213,7 @@ public final class AgentTransportClient implements AgentTransport {
             throw new IllegalArgumentException("invalid file transfer download metadata");
         }
         var endpoint = centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/content");
-        var builder = newRequest(endpoint).timeout(requestTimeout)
+        var builder = newRequest(endpoint).timeout(transferTimeout)
                 .header("Authorization", "Bearer " + token)
                 .header("X-Machine-ID", machineId)
                 .header("Accept", "application/octet-stream")
@@ -207,7 +223,7 @@ public final class AgentTransportClient implements AgentTransport {
         var responseFuture = http.sendAsync(builder.GET().build(), HttpResponse.BodyHandlers.ofInputStream());
         HttpResponse<InputStream> response;
         try {
-            response = responseFuture.get(requestTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            response = responseFuture.get(transferTimeout.toMillis(), TimeUnit.MILLISECONDS);
             observeTransport(response);
         } catch (TimeoutException exception) {
             responseFuture.cancel(true);
@@ -267,7 +283,7 @@ public final class AgentTransportClient implements AgentTransport {
         var actualBytes = Files.size(source);
         if (actualBytes != expectedBytes) throw new IOException("source file size changed before upload");
         var endpoint = centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/content");
-        var builder = newRequest(endpoint).timeout(requestTimeout)
+        var builder = newRequest(endpoint).timeout(transferTimeout)
                 .header("Authorization", "Bearer " + token)
                 .header("X-Machine-ID", machineId)
                 .header("Content-Type", mimeType == null || mimeType.isBlank() ? "application/octet-stream" : mimeType)

@@ -269,7 +269,7 @@ public final class AgentController {
             @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
             @PathVariable String transferId) {
         authenticate(machineId, authorization);
-        var download = transfers.openForAgent(machineId, transferId);
+        var download = transfers.openForAgent(machineId, transferId, parseAttempt(attemptHeader));
         StreamingResponseBody body = output -> {
             try (var input = download.body()) {
                 input.transferTo(output);
@@ -297,7 +297,7 @@ public final class AgentController {
             authenticate(machineId, authorization);
             var length = request.getContentLengthLong();
             var response = transfers.receiveFromAgent(machineId, transferId, request.getInputStream(), length,
-                    expectedSha256, fileName, mimeType);
+                    expectedSha256, fileName, mimeType, parseAttempt(attemptHeader));
             return ResponseEntity.ok(response);
         });
     }

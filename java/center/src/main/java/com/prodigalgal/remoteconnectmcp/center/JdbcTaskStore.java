@@ -353,6 +353,16 @@ final class JdbcTaskStore {
         });
     }
 
+    void assertCurrentAttempt(String machineId, String taskId, Integer attempt) {
+        transactions.execute(status -> {
+            var task = findForUpdateMeta(taskId);
+            if (task == null) throw new IllegalArgumentException("task not found");
+            if (!task.machineId().equals(machineId)) throw new SecurityException("task does not belong to this machine");
+            assertAttempt(task, attempt);
+            return null;
+        });
+    }
+
     OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data) {
         return appendOutput(machineId, taskId, offset, data, null);
     }

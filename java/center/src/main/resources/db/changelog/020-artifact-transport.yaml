@@ -231,7 +231,28 @@ databaseChangeLog:
                   name: status
               - column:
                   name: updated_at
+        - createIndex:
+            tableName: rcm_file_transfer
+            indexName: idx_rcm_file_transfer_artifact
+            columns:
+              - column:
+                  name: artifact_id
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_direction CHECK (direction IN ('WEB_TO_AGENT', 'AGENT_TO_WEB'))
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_status CHECK (status IN ('pending', 'ready', 'delivered', 'failed', 'canceled'))
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_bytes CHECK (expected_bytes >= 0 AND bytes_transferred >= 0 AND (expected_bytes = 0 OR bytes_transferred <= expected_bytes))
       rollback:
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer DROP CONSTRAINT ck_rcm_file_transfer_bytes
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer DROP CONSTRAINT ck_rcm_file_transfer_status
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer DROP CONSTRAINT ck_rcm_file_transfer_direction
+        - dropIndex:
+            tableName: rcm_file_transfer
+            indexName: idx_rcm_file_transfer_artifact
         - dropIndex:
             tableName: rcm_file_transfer
             indexName: idx_rcm_file_transfer_machine_status

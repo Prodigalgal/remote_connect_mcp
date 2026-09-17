@@ -47,7 +47,7 @@ public final class RemoteConnectAgentApplication {
                 if (config.enrollmentToken() == null || config.enrollmentToken().isBlank()) {
                     throw new IllegalArgumentException("REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN is required for --register-once");
                 }
-                var response = new AgentTransportClient(config.centerUrl(), config.longPollSeconds()).register(config);
+                var response = new AgentTransportClient(config.centerUrl(), config.longPollSeconds(), config.transferTimeout()).register(config);
                 new AgentIdentityStore(config.stateDir()).save(new AgentIdentity(response.machineId(), response.token()));
                 LOG.info(() -> "java agent registration succeeded: machineId=" + response.machineId());
                 return;
@@ -64,7 +64,7 @@ public final class RemoteConnectAgentApplication {
             try {
                 var config = AgentConfig.fromEnvironment();
                 LOG.info(() -> "java agent heartbeat runtime starting: name=" + config.name() + ", center=" + config.centerUrl());
-                new AgentRuntime(config, new AgentTransportClient(config.centerUrl(), config.longPollSeconds())).run();
+                new AgentRuntime(config, new AgentTransportClient(config.centerUrl(), config.longPollSeconds(), config.transferTimeout())).run();
                 return;
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
