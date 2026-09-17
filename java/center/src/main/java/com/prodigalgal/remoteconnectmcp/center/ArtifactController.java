@@ -39,6 +39,9 @@ public final class ArtifactController {
         headers.setContentLength(artifact.bytes());
         headers.setContentDisposition(ContentDisposition.attachment().filename(artifact.fileName()).build());
         headers.set("X-RCM-Artifact-SHA256", artifact.sha256());
+        headers.setCacheControl("private, no-store");
+        headers.set("X-Content-Type-Options", "nosniff");
+        headers.set("Referrer-Policy", "no-referrer");
         return ResponseEntity.ok().headers(headers).body(body);
     }
 }

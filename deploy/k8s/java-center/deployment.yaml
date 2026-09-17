@@ -43,6 +43,21 @@ spec:
               value: filesystem
             - name: RCM_CENTER_ARTIFACT_ROOT
               value: /var/lib/remote-connect-mcp-center/artifacts
+            # Artifact retention is independent from the short-lived signed
+            # URL handed to the Web client.  An offline Agent can therefore
+            # wait for days without keeping a browser URL valid for days.
+            - name: RCM_CENTER_ARTIFACT_RETENTION_SECONDS
+              value: "604800"
+            - name: RCM_CENTER_ARTIFACT_URL_TTL_SECONDS
+              value: "900"
+            - name: RCM_CENTER_TRANSFER_MAX_CONCURRENT
+              value: "4"
+            - name: RCM_CENTER_TRANSFER_MAX_PER_PRINCIPAL
+              value: "2"
+            - name: RCM_CENTER_TRANSFER_MAX_PER_MACHINE
+              value: "1"
+            - name: RCM_CENTER_TRANSFER_MAX_SPOOL_BYTES
+              value: "8589934592"
             - name: RCM_CENTER_LIQUIBASE_ENABLED
               value: "false"
             - name: RCM_CENTER_VERSION

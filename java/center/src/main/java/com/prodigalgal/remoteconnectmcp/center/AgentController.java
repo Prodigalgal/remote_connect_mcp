@@ -302,6 +302,20 @@ public final class AgentController {
         });
     }
 
+    @PostMapping("/transfers/{transferId}/ack")
+    public CompletableFuture<ResponseEntity<?>> transferAcknowledgement(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
+            @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+            @PathVariable String transferId,
+            @RequestBody(required = false) FileTransferResponse acknowledgement) {
+        return execute(() -> {
+            authenticate(machineId, authorization);
+            return ResponseEntity.ok(transfers.acknowledgeFromAgent(machineId, transferId, acknowledgement,
+                    parseAttempt(attemptHeader)));
+        });
+    }
+
     private CompletableFuture<ResponseEntity<?>> execute(java.util.concurrent.Callable<ResponseEntity<?>> action) {
         return async.submit(action).exceptionally(failure -> error(unwrap(failure)));
     }

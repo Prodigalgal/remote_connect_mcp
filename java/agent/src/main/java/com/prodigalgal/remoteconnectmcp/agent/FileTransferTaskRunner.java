@@ -33,8 +33,9 @@ final class FileTransferTaskRunner implements Runnable {
 
     @Override
     public void run() {
+        FileTransferAction action = null;
         try {
-            var action = task.fileTransfer();
+            action = task.fileTransfer();
             if (action == null) throw new IOException("file transfer action is missing");
             sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
             if (action.webToAgent()) {
@@ -46,12 +47,14 @@ final class FileTransferTaskRunner implements Runnable {
             }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
+            acknowledge(action, "canceled", 0, "", "file transfer canceled");
             try {
                 sendState(new TaskUpdateRequest("canceled", null, "file transfer canceled", null, Instant.now(), false));
             } catch (Exception reportFailure) {
                 LOG.log(Level.FINE, "could not report canceled file transfer " + task.id(), reportFailure);
             }
         } catch (Exception exception) {
+            acknowledge(action, "failed", 0, "", compactError(exception.getMessage()));
             try {
                 sendState(new TaskUpdateRequest("failed", null, compactError(exception.getMessage()), null, Instant.now(), false));
             } catch (Exception reportFailure) {
@@ -66,7 +69,8 @@ final class FileTransferTaskRunner implements Runnable {
             throw new IOException("destination already exists and overwrite is false");
         }
         transport.downloadTransfer(identity.machineId(), identity.token(), action.transferId(), destination,
-                action.expectedBytes(), action.expectedSha256(), task.attempt());
+                action.expectedBytes(), action.expectedSha256(), task.attempt(), action.overwrite());
+        acknowledge(action, "delivered", action.expectedBytes(), action.expectedSha256(), null);
         sendOutput("received " + action.fileName() + " (" + action.expectedBytes() + " bytes, sha256=" + action.expectedSha256() + ")");
         sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
     }
@@ -80,6 +84,7 @@ final class FileTransferTaskRunner implements Runnable {
         var response = transport.uploadTransfer(identity.machineId(), identity.token(), action.transferId(), source,
                 action.fileName(), action.mimeType(), bytes, digest, task.attempt());
         var sha = response == null || response.sha256() == null || response.sha256().isBlank() ? digest : response.sha256();
+        acknowledge(action, "delivered", bytes, sha, null);
         sendOutput("published " + action.fileName() + " (" + bytes + " bytes, sha256=" + sha + ")");
         sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
     }
@@ -112,6 +117,20 @@ final class FileTransferTaskRunner implements Runnable {
             transport.updateState(identity.machineId(), identity.token(), task.id(), task.attempt(), state);
             return null;
         });
+    }
+
+    private void acknowledge(FileTransferAction action, String status, long bytes, String sha256, String error) {
+        if (action == null || action.transferId() == null || action.transferId().isBlank()) return;
+        try {
+            AgentRetry.call(LOG, "file transfer acknowledgement " + task.id(), () -> {
+                transport.acknowledgeTransfer(identity.machineId(), identity.token(), action.transferId(),
+                        new FileTransferResponse(action.transferId(), action.artifactId(), status, bytes,
+                                sha256 == null ? "" : sha256, error), task.attempt());
+                return null;
+            });
+        } catch (Exception acknowledgementFailure) {
+            LOG.log(Level.FINE, "could not report file transfer acknowledgement " + task.id(), acknowledgementFailure);
+        }
     }
 
     private static String compactError(String value) {

@@ -207,8 +207,15 @@ public final class AgentTransportClient implements AgentTransport {
     public void downloadTransfer(String machineId, String token, String transferId, Path destination,
                                  long expectedBytes, String expectedSha256, int attempt)
             throws IOException, InterruptedException {
+        downloadTransfer(machineId, token, transferId, destination, expectedBytes, expectedSha256, attempt, true);
+    }
+
+    @Override
+    public void downloadTransfer(String machineId, String token, String transferId, Path destination,
+                                 long expectedBytes, String expectedSha256, int attempt, boolean overwrite)
+            throws IOException, InterruptedException {
         if (transferId == null || transferId.isBlank() || destination == null
-                || expectedBytes <= 0 || expectedBytes > 4L * 1024 * 1024 * 1024
+                || expectedBytes < 0 || expectedBytes > 4L * 1024 * 1024 * 1024
                 || expectedSha256 == null || !expectedSha256.matches("(?i)[0-9a-f]{64}")) {
             throw new IllegalArgumentException("invalid file transfer download metadata");
         }
@@ -258,16 +265,51 @@ public final class AgentTransportClient implements AgentTransport {
                 if (count != expectedBytes || !actual.equalsIgnoreCase(expectedSha256)) {
                     throw new IOException("download size or SHA-256 does not match transfer metadata");
                 }
-                try {
-                    Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
-                    Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
-                }
+                moveIntoPlace(temporary, target, overwrite);
             } finally {
                 Files.deleteIfExists(temporary);
             }
         } catch (java.security.NoSuchAlgorithmException exception) {
             throw new IOException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static void moveIntoPlace(Path temporary, Path target, boolean overwrite) throws IOException {
+        if (overwrite) {
+            try {
+                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            return;
+        }
+        // Never pass REPLACE_EXISTING for overwrite=false.  The move itself
+        // is the final existence check, so a file created during a long
+        // download cannot be clobbered by a stale pre-flight Files.exists().
+        try {
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+            Files.move(temporary, target);
+        } catch (java.nio.file.FileAlreadyExistsException exists) {
+            throw new IOException("destination appeared during transfer and overwrite is false", exists);
+        }
+    }
+
+    @Override
+    public void acknowledgeTransfer(String machineId, String token, String transferId,
+                                    com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse acknowledgement,
+                                    int attempt) throws IOException, InterruptedException {
+        var builder = newRequest(centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/ack"))
+                .timeout(requestTimeout)
+                .header("Authorization", "Bearer " + token)
+                .header("X-Machine-ID", machineId)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json");
+        addAttemptHeader(builder, attempt);
+        var request = builder.POST(HttpRequest.BodyPublishers.ofByteArray(JsonCodec.write(acknowledgement))).build();
+        var response = send(request);
+        if (response.statusCode() != 200) {
+            throw new CenterTransportException("center file transfer acknowledgement failed", response.statusCode());
         }
     }
 
@@ -293,7 +335,12 @@ public final class AgentTransportClient implements AgentTransport {
             builder.header("X-RCM-Expected-SHA256", expectedSha256.toLowerCase());
         }
         addAttemptHeader(builder, attempt);
-        var response = send(builder.PUT(HttpRequest.BodyPublishers.ofFile(source)).build());
+        // A file body can legitimately take minutes or hours.  Do not send it
+        // through the ordinary control-plane helper: that helper deliberately
+        // uses the short request timeout used by poll/state/output calls.
+        // The transfer helper waits on the same asynchronous HTTP pipeline
+        // with the separately configured transfer timeout.
+        var response = sendTransfer(builder.PUT(HttpRequest.BodyPublishers.ofFile(source)).build());
         if (response.statusCode() != 200) throw new CenterTransportException("center file transfer upload failed", response.statusCode());
         return JsonCodec.read(response.body(), com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse.class);
     }
@@ -351,6 +398,31 @@ public final class AgentTransportClient implements AgentTransport {
                 throw runtime;
             }
             throw new IOException("center request failed", cause == null ? exception : cause);
+        }
+    }
+
+    /**
+     * Wait for a streaming file upload/download using the transfer deadline,
+     * never the short control-plane request deadline.
+     */
+    private HttpResponse<byte[]> sendTransfer(HttpRequest request) throws IOException, InterruptedException {
+        var future = http.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray());
+        try {
+            var response = future.get(transferTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            observeTransport(response);
+            return response;
+        } catch (TimeoutException exception) {
+            future.cancel(true);
+            throw new IOException("file transfer request timed out after " + transferTimeout, exception);
+        } catch (ExecutionException exception) {
+            var cause = exception.getCause();
+            if (cause instanceof IOException io) {
+                throw io;
+            }
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IOException("file transfer request failed", cause == null ? exception : cause);
         }
     }
 

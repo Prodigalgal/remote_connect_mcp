@@ -22,6 +22,7 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
@@ -43,16 +44,22 @@ public final class ArtifactTransferService {
     private static final int MAX_FILE_NAME = 512;
     private static final int MAX_PATH = 4096;
     private static final Duration DOWNLOAD_TIMEOUT = Duration.ofMinutes(30);
+    private static final Duration DEFAULT_ARTIFACT_RETENTION = Duration.ofDays(7);
+    private static final Duration DEFAULT_SIGNED_URL_TTL = Duration.ofMinutes(15);
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final ArtifactStore store;
     private final TaskService tasks;
     private final CenterTokenConfig tokens;
+    private final TransferResourceLimiter resources;
     private final Map<String, MemoryTransfer> memory = new ConcurrentHashMap<>();
+    private final Map<String, Boolean> preparations = new ConcurrentHashMap<>();
     private final HttpClient downloader = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NEVER)
             .connectTimeout(Duration.ofSeconds(10)).build();
     private final String publicBaseUrl;
+    private final Duration artifactRetention;
+    private final Duration signedUrlTtl;
 
     @Autowired
     public ArtifactTransferService(ObjectProvider<JdbcTemplate> jdbcProvider,
@@ -71,7 +78,12 @@ public final class ArtifactTransferService {
         this.store = store == null ? new InMemoryArtifactStore() : store;
         this.tasks = tasks;
         this.tokens = tokens;
+        this.resources = new TransferResourceLimiter();
         this.publicBaseUrl = normalizeBase(System.getenv("RCM_CENTER_PUBLIC_BASE_URL"));
+        this.artifactRetention = durationSetting("RCM_CENTER_ARTIFACT_RETENTION_SECONDS", DEFAULT_ARTIFACT_RETENTION,
+                Duration.ofHours(1), Duration.ofDays(365));
+        this.signedUrlTtl = durationSetting("RCM_CENTER_ARTIFACT_URL_TTL_SECONDS", DEFAULT_SIGNED_URL_TTL,
+                Duration.ofMinutes(1), Duration.ofDays(1));
     }
 
     public TransferCreated createWebToAgent(TaskOrigin origin, CreateTaskRequest request,
@@ -84,9 +96,21 @@ public final class ArtifactTransferService {
         validateDownloadUrl(downloadUrl);
         var safeMime = normalizeMime(mimeType);
         var ids = ids(origin, request.machineId(), request.idempotencyKey(), fileId, destinationPath);
+        var existing = existingCreated(ids.transferId(), origin);
+        if (existing != null) return existing;
+        if (preparations.putIfAbsent(ids.transferId(), Boolean.TRUE) != null) {
+            // A concurrent MCP retry must not download the same multi-GB
+            // ChatGPT file a second time.  The caller can retry after the
+            // original request has published its durable transfer row.
+            throw new IllegalStateException("file transfer preparation is already in progress");
+        }
         Path temporary = null;
         String objectKey = null;
-        try {
+        // When the remote file does not expose a length, reserve the maximum
+        // stream size before opening it.  This is conservative by design: it
+        // prevents an unknown-length retry from bypassing the spool quota.
+        var reservationBytes = expectedBytes != null && expectedBytes >= 0 ? expectedBytes : MAX_BYTES;
+        try (var reservation = resources.reserve(origin.principalId(), request.machineId(), reservationBytes)) {
             var downloaded = download(downloadUrl, expectedBytes, expectedSha256);
             temporary = downloaded.path();
             var artifactId = ids.artifactId();
@@ -111,7 +135,19 @@ public final class ArtifactTransferService {
             if (objectKey != null && !hasTransfer(ids(origin, request.machineId(), request.idempotencyKey(), fileId, destinationPath).transferId())) {
                 try { store.delete(objectKey); } catch (RuntimeException ignored) { }
             }
+            preparations.remove(ids.transferId());
         }
+    }
+
+    private TransferCreated existingCreated(String transferId, TaskOrigin origin) {
+        var row = findTransfer(transferId).orElse(null);
+        if (row == null || origin == null || !origin.principalId().equals(row.principalId()) || row.taskId() == null || row.taskId().isBlank()) return null;
+        var task = tasks.find(row.taskId()).map(TaskView::new).orElse(null);
+        if (task == null) return null;
+        var descriptor = new TransferDescriptor(row.transferId(), row.artifactId(), row.direction(), row.taskId(), row.principalId(),
+                row.machineId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), row.status(), null,
+                publicUrl(row.artifactId(), origin));
+        return new TransferCreated(task, descriptor);
     }
 
     public TransferCreated createAgentToWeb(TaskOrigin origin, CreateTaskRequest request,
@@ -142,10 +178,66 @@ public final class ArtifactTransferService {
         var row = findTransfer(transferId).orElseThrow(() -> new IllegalArgumentException("file transfer not found"));
         if (!machineId.equals(row.machineId())) throw new SecurityException("file transfer does not belong to this machine");
         if (!FileTransferAction.WEB_TO_AGENT.equals(row.direction())) throw new IllegalArgumentException("transfer is not an inbound file");
-        if (!"ready".equals(row.status()) && !"delivered".equals(row.status())) throw new IllegalArgumentException("file transfer is not ready");
+        if (!"ready".equals(row.status()) && !"delivering".equals(row.status()) && !"delivered".equals(row.status())) {
+            throw new IllegalArgumentException("file transfer is not ready");
+        }
         tasks.assertCurrentAttempt(machineId, row.taskId(), attempt);
+        markDelivering(row);
         var input = store.open(row.objectKey());
         return new AgentDownload(row.transferId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), input);
+    }
+
+    /**
+     * Persist the Agent's post-stream acknowledgement. The operation is
+     * idempotent and never downgrades a terminal delivered/canceled transfer.
+     */
+    public FileTransferResponse acknowledgeFromAgent(String machineId, String transferId,
+                                                     FileTransferResponse acknowledgement, Integer attempt) {
+        var row = findTransfer(transferId).orElseThrow(() -> new IllegalArgumentException("file transfer not found"));
+        if (!machineId.equals(row.machineId())) throw new SecurityException("file transfer does not belong to this machine");
+        if (acknowledgement == null) throw new IllegalArgumentException("file transfer acknowledgement is required");
+        var status = acknowledgement.status() == null ? "" : acknowledgement.status().trim().toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of("delivered", "failed", "canceled").contains(status)) {
+            throw new IllegalArgumentException("unsupported file transfer acknowledgement status");
+        }
+        tasks.assertCurrentAttempt(machineId, row.taskId(), attempt);
+        var bytes = acknowledgement.bytes() < 0 ? 0 : acknowledgement.bytes();
+        var sha = acknowledgement.sha256() == null ? "" : acknowledgement.sha256().trim().toLowerCase(java.util.Locale.ROOT);
+        if ("delivered".equals(status)) {
+            if (bytes != row.bytes()) throw new IllegalArgumentException("acknowledged byte count does not match transfer metadata");
+            if (!row.sha256().isBlank() && !row.sha256().equalsIgnoreCase(sha)) {
+                throw new IllegalArgumentException("acknowledged SHA-256 does not match transfer metadata");
+            }
+        }
+        var error = acknowledgement.error() == null || acknowledgement.error().isBlank()
+                ? null : acknowledgement.error().substring(0, Math.min(acknowledgement.error().length(), 4096));
+        if (jdbc == null) {
+            var current = memory.get(transferId);
+            if (current == null) return new FileTransferResponse(row.transferId(), row.artifactId(), row.status(), row.bytes(), row.sha256(), null);
+            var currentStatus = current.descriptor().status();
+            if (!"delivered".equals(currentStatus) && !"canceled".equals(currentStatus)) {
+                var descriptor = new TransferDescriptor(current.descriptor().transferId(), current.descriptor().artifactId(),
+                        current.descriptor().direction(), current.descriptor().taskId(), current.descriptor().principalId(),
+                        current.descriptor().machineId(), current.descriptor().fileName(), current.descriptor().mimeType(),
+                        "delivered".equals(status) ? bytes : current.descriptor().bytes(),
+                        sha.isBlank() ? current.descriptor().sha256() : sha, status, error,
+                        current.descriptor().downloadUrl());
+                memory.put(transferId, new MemoryTransfer(descriptor, current.objectKey(), current.destinationPath(), current.sourcePath()));
+            }
+            var effective = memory.get(transferId).descriptor();
+            return new FileTransferResponse(effective.transferId(), effective.artifactId(), effective.status(), effective.bytes(), effective.sha256(), effective.error());
+        }
+        jdbc.update("""
+                UPDATE rcm_file_transfer
+                   SET status = CASE WHEN status IN ('delivered', 'canceled') THEN status ELSE ? END,
+                       bytes_transferred = CASE WHEN ? = 'delivered' THEN ? ELSE bytes_transferred END,
+                       error_text = CASE WHEN status IN ('delivered', 'canceled') THEN error_text ELSE ? END,
+                       updated_at = CURRENT_TIMESTAMP
+                 WHERE transfer_id = ?
+                """, status, status, bytes, error, transferId);
+        var updated = findTransfer(transferId).orElse(row);
+        return new FileTransferResponse(updated.transferId(), updated.artifactId(), updated.status(),
+                updated.bytes(), updated.sha256(), updated.error());
     }
 
     /** Ingest an outbound Agent PUT without loading the body into the heap. */
@@ -163,13 +255,19 @@ public final class ArtifactTransferService {
         if (!machineId.equals(row.machineId())) throw new SecurityException("file transfer does not belong to this machine");
         if (!FileTransferAction.AGENT_TO_WEB.equals(row.direction())) throw new IllegalArgumentException("transfer is not an outbound file");
         if (input == null || contentLength <= 0 || contentLength > MAX_BYTES) throw new IllegalArgumentException("content length is outside the allowed range");
-        var safeName = fileName == null || fileName.isBlank() ? row.fileName() : fileName;
-        validateFileName(safeName);
-        var safeMime = normalizeMime(mimeType == null || mimeType.isBlank() ? row.mimeType() : mimeType);
-        Path temporary = null;
-        String objectKey = null;
-        var committed = false;
-        try {
+        if ("delivered".equals(row.status())) {
+            return new FileTransferResponse(row.transferId(), row.artifactId(), row.status(), row.bytes(), row.sha256(), null);
+        }
+        if ("canceled".equals(row.status())) throw new IllegalArgumentException("file transfer is canceled");
+        try (var reservation = resources.reserve(row.principalId(), row.machineId(), contentLength)) {
+            markDelivering(row);
+            var safeName = fileName == null || fileName.isBlank() ? row.fileName() : fileName;
+            validateFileName(safeName);
+            var safeMime = normalizeMime(mimeType == null || mimeType.isBlank() ? row.mimeType() : mimeType);
+            Path temporary = null;
+            String objectKey = null;
+            var committed = false;
+            try {
             var received = spool(input, contentLength, expectedSha256);
             temporary = received.path();
             var artifactId = row.artifactId();
@@ -180,11 +278,11 @@ public final class ArtifactTransferService {
             // immediately before the durable metadata update so a reclaimed
             // attempt cannot make an old Agent upload visible to the Web UI.
             tasks.assertCurrentAttempt(machineId, row.taskId(), attempt);
-            var response = new FileTransferResponse(transferId, artifactId, "ready", received.bytes(), received.sha256(), null);
+            var response = new FileTransferResponse(transferId, artifactId, "delivered", received.bytes(), received.sha256(), null);
             completeOutbound(row, safeMime, safeName, received.bytes(), received.sha256(), objectKey);
             committed = true;
             memory.put(transferId, new MemoryTransfer(new TransferDescriptor(transferId, artifactId, row.direction(), row.taskId(),
-                    row.principalId(), row.machineId(), safeName, safeMime, received.bytes(), received.sha256(), "ready", null,
+                    row.principalId(), row.machineId(), safeName, safeMime, received.bytes(), received.sha256(), "delivered", null,
                     publicUrl(artifactId, new TaskOrigin(row.principalId(), TaskOrigin.COMPAT_TOKEN, ""))), objectKey, "", row.sourcePath()));
             return response;
         } catch (IOException exception) {
@@ -200,8 +298,9 @@ public final class ArtifactTransferService {
                 try { store.delete(objectKey); } catch (RuntimeException ignored) { }
             }
             throw exception;
-        } finally {
-            deleteTemporary(temporary);
+            } finally {
+                deleteTemporary(temporary);
+            }
         }
     }
 
@@ -233,7 +332,7 @@ public final class ArtifactTransferService {
     /** Public file object endpoint URL; the URL carries only a short-lived HMAC. */
     public String publicUrl(String artifactId, TaskOrigin origin) {
         if (artifactId == null || artifactId.isBlank() || origin == null) return "";
-        var expires = Instant.now().plus(Duration.ofMinutes(15)).getEpochSecond();
+        var expires = Instant.now().plus(signedUrlTtl).getEpochSecond();
         var subject = artifactId + "\n" + origin.principalId() + "\n" + expires;
         var signature = sign(subject);
         var base = publicBaseUrl.isBlank() ? "" : publicBaseUrl;
@@ -260,6 +359,14 @@ public final class ArtifactTransferService {
                         ? new PublicArtifact(artifactId, rs.getString("file_name"), rs.getString("mime_type"), rs.getLong("bytes"), rs.getString("sha256"), rs.getString("status"), null)
                         : null);
         if (row == null) throw new IllegalArgumentException("artifact not found");
+        if (jdbc != null) {
+            var retainedUntil = jdbc.query("SELECT expires_at FROM rcm_artifact WHERE artifact_id = ? AND principal_id = ?",
+                    ps -> { ps.setString(1, artifactId); ps.setString(2, principal); },
+                    rs -> rs.next() ? rs.getTimestamp(1).toInstant() : null);
+            if (retainedUntil != null && !Instant.now().isBefore(retainedUntil)) {
+                throw new IllegalArgumentException("artifact retention has expired");
+            }
+        }
         var objectKey = jdbc == null ? memory.values().stream().filter(value -> artifactId.equals(value.descriptor().artifactId())).map(MemoryTransfer::objectKey).findFirst().orElse("")
                 : jdbc.queryForObject("SELECT object_key FROM rcm_artifact WHERE artifact_id = ?", String.class, artifactId);
         if (objectKey == null || objectKey.isBlank()) throw new IllegalArgumentException("artifact is not ready");
@@ -280,10 +387,11 @@ public final class ArtifactTransferService {
         Runnable write = () -> {
             jdbc.update("""
                     INSERT INTO rcm_artifact(artifact_id, principal_id, machine_id, task_id, transfer_id, file_name, mime_type, storage_backend, object_key, bytes, sha256, status, created_at, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '15 minutes')
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
                     ON CONFLICT (artifact_id) DO NOTHING
                     """, descriptor.artifactId(), origin.principalId(), descriptor.machineId(), descriptor.taskId(), descriptor.transferId(),
-                    descriptor.fileName(), descriptor.mimeType(), store.backend(), objectKey, descriptor.bytes(), descriptor.sha256(), "ready");
+                    descriptor.fileName(), descriptor.mimeType(), store.backend(), objectKey, descriptor.bytes(), descriptor.sha256(), "ready",
+                    java.sql.Timestamp.from(Instant.now().plus(artifactRetention)));
             jdbc.update("""
                     INSERT INTO rcm_file_transfer(transfer_id, artifact_id, task_id, principal_id, machine_id, direction, source_path, destination_path, file_name, mime_type, expected_bytes, expected_sha256, bytes_transferred, status, error_text, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 0, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -312,10 +420,11 @@ public final class ArtifactTransferService {
         Runnable write = () -> {
             jdbc.update("""
                     INSERT INTO rcm_artifact(artifact_id, principal_id, machine_id, task_id, transfer_id, file_name, mime_type, storage_backend, object_key, bytes, sha256, status, created_at, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '15 minutes')
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', CURRENT_TIMESTAMP, ?)
                     ON CONFLICT (artifact_id) DO UPDATE SET object_key = EXCLUDED.object_key, bytes = EXCLUDED.bytes, sha256 = EXCLUDED.sha256, mime_type = EXCLUDED.mime_type, file_name = EXCLUDED.file_name, status = 'ready'
-                    """, row.artifactId(), row.principalId(), row.machineId(), row.taskId(), row.transferId(), fileName, mime, store.backend(), objectKey, bytes, sha);
-            jdbc.update("UPDATE rcm_file_transfer SET file_name = ?, mime_type = ?, expected_bytes = ?, expected_sha256 = ?, bytes_transferred = ?, status = 'ready', error_text = NULL, updated_at = CURRENT_TIMESTAMP WHERE transfer_id = ?",
+                    """, row.artifactId(), row.principalId(), row.machineId(), row.taskId(), row.transferId(), fileName, mime, store.backend(), objectKey, bytes, sha,
+                    java.sql.Timestamp.from(Instant.now().plus(artifactRetention)));
+            jdbc.update("UPDATE rcm_file_transfer SET file_name = ?, mime_type = ?, expected_bytes = ?, expected_sha256 = ?, bytes_transferred = ?, status = 'delivered', error_text = NULL, updated_at = CURRENT_TIMESTAMP WHERE transfer_id = ?",
                     fileName, mime, bytes, sha, bytes, row.transferId());
         };
         if (transactions == null) write.run(); else transactions.execute(status -> { write.run(); return null; });
@@ -324,6 +433,21 @@ public final class ArtifactTransferService {
     private void markFailed(TransferRow row, String error) {
         if (jdbc != null) jdbc.update("UPDATE rcm_file_transfer SET status = 'failed', error_text = ?, updated_at = CURRENT_TIMESTAMP WHERE transfer_id = ?",
                 error == null ? "file transfer failed" : error.substring(0, Math.min(error.length(), 4096)), row.transferId());
+    }
+
+    private void markDelivering(TransferRow row) {
+        if (jdbc != null) {
+            jdbc.update("UPDATE rcm_file_transfer SET status = CASE WHEN status IN ('delivered', 'canceled') THEN status ELSE 'delivering' END, updated_at = CURRENT_TIMESTAMP WHERE transfer_id = ?",
+                    row.transferId());
+            return;
+        }
+        var current = memory.get(row.transferId());
+        if (current == null || "delivered".equals(current.descriptor().status()) || "canceled".equals(current.descriptor().status())) return;
+        var descriptor = new TransferDescriptor(current.descriptor().transferId(), current.descriptor().artifactId(), current.descriptor().direction(),
+                current.descriptor().taskId(), current.descriptor().principalId(), current.descriptor().machineId(), current.descriptor().fileName(),
+                current.descriptor().mimeType(), current.descriptor().bytes(), current.descriptor().sha256(), "delivering", current.descriptor().error(),
+                current.descriptor().downloadUrl());
+        memory.put(row.transferId(), new MemoryTransfer(descriptor, current.objectKey(), current.destinationPath(), current.sourcePath()));
     }
 
     private Optional<TransferRow> findTransfer(String transferId) {
@@ -459,6 +583,19 @@ public final class ArtifactTransferService {
 
     private static String encode(String value) { return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8); }
     private static String normalizeBase(String value) { return value == null ? "" : value.trim().replaceAll("/+$", ""); }
+    private static Duration durationSetting(String key, Duration fallback, Duration minimum, Duration maximum) {
+        var raw = System.getenv(key);
+        if (raw == null || raw.isBlank()) return fallback;
+        try {
+            var value = Duration.ofSeconds(Long.parseLong(raw.trim()));
+            if (value.compareTo(minimum) < 0 || value.compareTo(maximum) > 0) {
+                throw new IllegalStateException(key + " is outside the allowed range");
+            }
+            return value;
+        } catch (NumberFormatException exception) {
+            throw new IllegalStateException(key + " must be an integer number of seconds", exception);
+        }
+    }
     private static void deleteTemporary(Path path) { if (path != null) try { Files.deleteIfExists(path); } catch (IOException ignored) { } }
     private static void close(InputStream input) { if (input != null) try { input.close(); } catch (IOException ignored) { } }
 

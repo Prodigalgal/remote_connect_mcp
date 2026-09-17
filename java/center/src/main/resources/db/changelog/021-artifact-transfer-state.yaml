@@ -1,0 +1,20 @@
+databaseChangeLog:
+  - changeSet:
+      id: 021-artifact-transfer-state
+      author: remote-connect-mcp
+      labels: artifact,transport
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer DROP CONSTRAINT IF EXISTS ck_rcm_file_transfer_status
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_status CHECK (status IN ('pending', 'ready', 'delivering', 'delivered', 'failed', 'canceled'))
+      rollback:
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer DROP CONSTRAINT IF EXISTS ck_rcm_file_transfer_status
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_status CHECK (status IN ('pending', 'ready', 'delivered', 'failed', 'canceled'))

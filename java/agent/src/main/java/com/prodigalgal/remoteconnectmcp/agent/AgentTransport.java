@@ -60,6 +60,26 @@ public interface AgentTransport {
         throw new CenterTransportException("file transfer download is not supported by this Center", 404);
     }
 
+    /**
+     * Fenced download with an atomic overwrite policy.  The legacy overload
+     * remains available to old test/Go transports and keeps their historical
+     * replace-on-success behavior.
+     */
+    default void downloadTransfer(String machineId, String token, String transferId, Path destination,
+                                  long expectedBytes, String expectedSha256, int attempt, boolean overwrite)
+            throws IOException, InterruptedException {
+        downloadTransfer(machineId, token, transferId, destination, expectedBytes, expectedSha256, attempt);
+    }
+
+    /** Confirm the local side of a transfer without adding a second task. */
+    default void acknowledgeTransfer(String machineId, String token, String transferId,
+                                     com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse acknowledgement,
+                                     int attempt) throws IOException, InterruptedException {
+        // Older Centers do not expose an ACK endpoint.  Keeping this a
+        // compatibility no-op lets their transports finish the task while a
+        // current Center receives the durable transfer state transition.
+    }
+
     /** Stream a local file to the Center-owned artifact store. */
     default com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadTransfer(
             String machineId, String token, String transferId, Path source, String fileName,

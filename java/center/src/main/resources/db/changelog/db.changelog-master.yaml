@@ -39,3 +39,5 @@ databaseChangeLog:
       file: db/changelog/019-execution-sessions.yaml
   - include:
       file: db/changelog/020-artifact-transport.yaml
+  - include:
+      file: db/changelog/021-artifact-transfer-state.yaml
