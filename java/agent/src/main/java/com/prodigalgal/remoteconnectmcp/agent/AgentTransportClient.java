@@ -512,6 +512,10 @@ public final class AgentTransportClient implements AgentTransport {
             throw new CenterTransportException("center file transfer resume probe failed", response.statusCode());
         }
         var value = response.headers().firstValue("X-RCM-Resume-Offset").orElse("").trim();
+        // Spring can answer HEAD for an older GET mapping with 200 while
+        // suppressing the body.  Absence of the explicit resume header is the
+        // compatibility signal to use the legacy whole-stream upload.
+        if (value.isBlank()) return -1L;
         try {
             var offset = Long.parseLong(value);
             if (offset < 0) throw new NumberFormatException("negative offset");
