@@ -8,7 +8,7 @@ import java.time.Instant;
 final class TaskState {
     private final String id;
     private final String machineId;
-    private final TaskCommand command;
+    private TaskCommand command;
     private final String idempotencyKey;
     private final Instant createdAt;
     private final TaskOrigin origin;
@@ -137,6 +137,7 @@ final class TaskState {
     String id() { return id; }
     String machineId() { return machineId; }
     TaskCommand command() { return command; }
+    void command(TaskCommand value) { command = value; }
     String idempotencyKey() { return idempotencyKey; }
     Instant createdAt() { return createdAt; }
     TaskOrigin origin() { return origin; }

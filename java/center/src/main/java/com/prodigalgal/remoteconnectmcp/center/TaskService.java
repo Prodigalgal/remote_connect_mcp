@@ -460,6 +460,7 @@ public final class TaskService {
                 var candidate = tasks.values().stream()
                         .filter(value -> value.machineId().equals(machineId) && TaskStatus.QUEUED.equals(value.status()))
                         .filter(value -> capabilities.contains(value.command().requiredCapability()))
+                        .filter(TaskService::fileTransferReady)
                         .filter(value -> !laneBusy(value))
                         .sorted(Comparator.comparing(TaskState::createdAt))
                         .findFirst();
@@ -484,6 +485,73 @@ public final class TaskService {
 
     public TaskView updateState(String machineId, String taskId, TaskUpdateRequest update) {
         return updateState(machineId, taskId, update, null);
+    }
+
+    /**
+     * Replace the pending metadata marker of an asynchronously ingested
+     * Web-to-Agent transfer.  The task must still be queued; once this method
+     * commits, the normal event wake makes it eligible for the next Agent
+     * long-poll without a timer loop.
+     */
+    public TaskView updateFileTransferAction(String machineId, String taskId,
+                                             com.prodigalgal.remoteconnectmcp.protocol.FileTransferAction action) {
+        if (action == null) throw new IllegalArgumentException("file transfer action is required");
+        ProtocolValidation.validateTask(new TaskCommand("", TaskKind.FILE_TRANSFER,
+                AgentCapability.FILE_TRANSFER.wireValue(), null, ".", Map.of(), 0, null, Instant.now(), null, action));
+        if (jdbcStore != null) {
+            var view = jdbcStore.updateFileTransferAction(machineId, taskId, action);
+            signalChanged(taskId);
+            signalWake(machineId);
+            return view;
+        }
+        lock.lock();
+        try {
+            var task = required(taskId);
+            assertMachine(task, machineId);
+            if (!TaskStatus.QUEUED.equals(task.status())) throw new IllegalStateException("file transfer task is no longer queued");
+            if (task.command().kind() != TaskKind.FILE_TRANSFER) throw new IllegalArgumentException("task is not a file transfer");
+            var original = task.command();
+            task.command(new TaskCommand(original.id(), original.kind(), original.requiredCapability(), original.command(), original.cwd(),
+                    original.env(), original.timeoutSeconds(), original.desktop(), original.createdAt(), original.contract(),
+                    original.attempt(), action));
+            signalChanged(taskId);
+            signalWake(machineId);
+            return new TaskView(task);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Mark a queued asynchronous ingest as failed without pretending an Agent ran it. */
+    public TaskView failPreparedFileTransfer(String machineId, String taskId, String error) {
+        if (jdbcStore != null) {
+            var view = jdbcStore.failPreparedFileTransfer(machineId, taskId, error);
+            signalChanged(taskId);
+            signalWake(machineId);
+            return view;
+        }
+        lock.lock();
+        try {
+            var task = required(taskId);
+            assertMachine(task, machineId);
+            if (TaskStatus.QUEUED.equals(task.status())) {
+                task.status(TaskStatus.FAILED);
+                task.error(compactError(error == null || error.isBlank() ? "file transfer preparation failed" : error));
+                task.finishedAt(Instant.now());
+                task.leaseUntil(null);
+                signalChanged(taskId);
+                signalWake(machineId);
+            }
+            return new TaskView(task);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private static boolean fileTransferReady(TaskState task) {
+        var action = task.command() == null ? null : task.command().fileTransfer();
+        return action == null || !action.webToAgent()
+                || (action.expectedBytes() > 0 && action.expectedSha256().matches("(?i)[0-9a-f]{64}"));
     }
 
     /**

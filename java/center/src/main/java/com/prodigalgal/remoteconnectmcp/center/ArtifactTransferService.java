@@ -52,6 +52,7 @@ public final class ArtifactTransferService {
     private final TaskService tasks;
     private final CenterTokenConfig tokens;
     private final TransferResourceLimiter resources;
+    private final CenterAsyncExecutor async;
     private final Map<String, MemoryTransfer> memory = new ConcurrentHashMap<>();
     private final Map<String, Boolean> preparations = new ConcurrentHashMap<>();
     private final HttpClient downloader = HttpClient.newBuilder()
@@ -65,20 +66,26 @@ public final class ArtifactTransferService {
     public ArtifactTransferService(ObjectProvider<JdbcTemplate> jdbcProvider,
                                    ObjectProvider<TransactionTemplate> transactionProvider,
                                    ObjectProvider<ArtifactStore> storeProvider,
-                                   TaskService tasks, CenterTokenConfig tokens) {
+                                   TaskService tasks, CenterTokenConfig tokens, CenterAsyncExecutor async) {
         this(jdbcProvider == null ? null : jdbcProvider.getIfAvailable(),
                 transactionProvider == null ? null : transactionProvider.getIfAvailable(),
-                storeProvider == null ? null : storeProvider.getIfAvailable(), tasks, tokens);
+                storeProvider == null ? null : storeProvider.getIfAvailable(), tasks, tokens, async);
     }
 
     ArtifactTransferService(JdbcTemplate jdbc, TransactionTemplate transactions, ArtifactStore store,
                             TaskService tasks, CenterTokenConfig tokens) {
+        this(jdbc, transactions, store, tasks, tokens, null);
+    }
+
+    ArtifactTransferService(JdbcTemplate jdbc, TransactionTemplate transactions, ArtifactStore store,
+                            TaskService tasks, CenterTokenConfig tokens, CenterAsyncExecutor async) {
         this.jdbc = jdbc;
         this.transactions = transactions;
         this.store = store == null ? new InMemoryArtifactStore() : store;
         this.tasks = tasks;
         this.tokens = tokens;
         this.resources = new TransferResourceLimiter();
+        this.async = async;
         this.publicBaseUrl = normalizeBase(System.getenv("RCM_CENTER_PUBLIC_BASE_URL"));
         this.artifactRetention = durationSetting("RCM_CENTER_ARTIFACT_RETENTION_SECONDS", DEFAULT_ARTIFACT_RETENTION,
                 Duration.ofHours(1), Duration.ofDays(365));
@@ -98,6 +105,10 @@ public final class ArtifactTransferService {
         var ids = ids(origin, request.machineId(), request.idempotencyKey(), fileId, destinationPath);
         var existing = existingCreated(ids.transferId(), origin);
         if (existing != null) return existing;
+        if (async != null) {
+            return createWebToAgentAsync(origin, request, ids, destinationPath, fileName, safeMime, overwrite,
+                    downloadUrl, expectedBytes, expectedSha256);
+        }
         if (preparations.putIfAbsent(ids.transferId(), Boolean.TRUE) != null) {
             // A concurrent MCP retry must not download the same multi-GB
             // ChatGPT file a second time.  The caller can retry after the
@@ -141,13 +152,78 @@ public final class ArtifactTransferService {
 
     private TransferCreated existingCreated(String transferId, TaskOrigin origin) {
         var row = findTransfer(transferId).orElse(null);
-        if (row == null || origin == null || !origin.principalId().equals(row.principalId()) || row.taskId() == null || row.taskId().isBlank()) return null;
+        if (row == null || origin == null || !origin.principalId().equals(row.principalId()) || row.taskId() == null || row.taskId().isBlank()
+                || !Set.of("pending", "ready", "delivering", "delivered").contains(row.status())) return null;
         var task = tasks.find(row.taskId()).map(TaskView::new).orElse(null);
         if (task == null) return null;
         var descriptor = new TransferDescriptor(row.transferId(), row.artifactId(), row.direction(), row.taskId(), row.principalId(),
                 row.machineId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), row.status(), null,
                 publicUrl(row.artifactId(), origin));
         return new TransferCreated(task, descriptor);
+    }
+
+    private TransferCreated createWebToAgentAsync(TaskOrigin origin, CreateTaskRequest request, Ids ids,
+                                                  String destinationPath, String fileName, String safeMime,
+                                                  boolean overwrite, URI downloadUrl, Long expectedBytes,
+                                                  String expectedSha256) {
+        if (preparations.putIfAbsent(ids.transferId(), Boolean.TRUE) != null) {
+            throw new IllegalStateException("file transfer preparation is already in progress");
+        }
+        var pending = new FileTransferAction(FileTransferAction.WEB_TO_AGENT, ids.transferId(), ids.artifactId(),
+                "", destinationPath, fileName, safeMime, 0L, "", overwrite);
+        var task = tasks.create(withAction(request, pending), "mcp", origin);
+        var descriptor = new TransferDescriptor(ids.transferId(), ids.artifactId(), FileTransferAction.WEB_TO_AGENT,
+                task.id(), origin.principalId(), request.machineId(), fileName, safeMime, 0L, "", "pending", null,
+                publicUrl(ids.artifactId(), origin));
+        persistInboundReservation(origin, descriptor, destinationPath);
+        memory.putIfAbsent(ids.transferId(), new MemoryTransfer(descriptor, "", destinationPath, ""));
+        try {
+            async.submit(() -> {
+                prepareInbound(origin, request, ids, task.id(), destinationPath, fileName, safeMime, overwrite,
+                        downloadUrl, expectedBytes, expectedSha256);
+                return null;
+            });
+        } catch (RuntimeException failure) {
+            preparations.remove(ids.transferId());
+            markFailedByTransfer(ids.transferId(), failure.getMessage());
+            tasks.failPreparedFileTransfer(request.machineId(), task.id(), failure.getMessage());
+            throw failure;
+        }
+        return new TransferCreated(task, descriptor);
+    }
+
+    private void prepareInbound(TaskOrigin origin, CreateTaskRequest request, Ids ids, String taskId,
+                                String destinationPath, String fileName, String safeMime, boolean overwrite,
+                                URI downloadUrl, Long expectedBytes, String expectedSha256) {
+        Path temporary = null;
+        String objectKey = null;
+        try (var reservation = resources.reserve(origin.principalId(), request.machineId(),
+                expectedBytes != null && expectedBytes >= 0 ? expectedBytes : MAX_BYTES)) {
+            var downloaded = download(downloadUrl, expectedBytes, expectedSha256);
+            temporary = downloaded.path();
+            try (var objectInput = Files.newInputStream(temporary, StandardOpenOption.READ)) {
+                objectKey = store.put(ids.artifactId(), downloaded.sha256(), objectInput, downloaded.bytes());
+            }
+            var action = new FileTransferAction(FileTransferAction.WEB_TO_AGENT, ids.transferId(), ids.artifactId(),
+                    "", destinationPath, fileName, safeMime, downloaded.bytes(), downloaded.sha256(), overwrite);
+            // The action is published first; the JDBC poll gate still sees a
+            // pending transfer row and cannot dispatch until metadata commits.
+            tasks.updateFileTransferAction(request.machineId(), taskId, action);
+            completeInbound(origin, request.machineId(), taskId, ids, fileName, safeMime, downloaded, objectKey);
+            var descriptor = new TransferDescriptor(ids.transferId(), ids.artifactId(), FileTransferAction.WEB_TO_AGENT,
+                    taskId, origin.principalId(), request.machineId(), fileName, safeMime, downloaded.bytes(), downloaded.sha256(),
+                    "ready", null, publicUrl(ids.artifactId(), origin));
+            memory.put(ids.transferId(), new MemoryTransfer(descriptor, objectKey, destinationPath, ""));
+        } catch (IOException | RuntimeException failure) {
+            if (objectKey != null) {
+                try { store.delete(objectKey); } catch (RuntimeException ignored) { }
+            }
+            markFailedByTransfer(ids.transferId(), failure.getMessage());
+            try { tasks.failPreparedFileTransfer(request.machineId(), taskId, failure.getMessage()); } catch (RuntimeException ignored) { }
+        } finally {
+            deleteTemporary(temporary);
+            preparations.remove(ids.transferId());
+        }
     }
 
     public TransferCreated createAgentToWeb(TaskOrigin origin, CreateTaskRequest request,
@@ -237,7 +313,7 @@ public final class ArtifactTransferService {
                 """, status, status, bytes, error, transferId);
         var updated = findTransfer(transferId).orElse(row);
         return new FileTransferResponse(updated.transferId(), updated.artifactId(), updated.status(),
-                updated.bytes(), updated.sha256(), updated.error());
+                updated.bytes(), updated.sha256(), error);
     }
 
     /** Ingest an outbound Agent PUT without loading the body into the heap. */
@@ -380,6 +456,53 @@ public final class ArtifactTransferService {
         return new CreateTaskRequest(request.machineId(), command, request.idempotencyKey(), request.projectId(),
                 request.worktreeId(), request.scopeMode(), request.scopeRoot(), request.sessionId(), request.risk(),
                 request.elevationRequired(), request.origin());
+    }
+
+    private void persistInboundReservation(TaskOrigin origin, TransferDescriptor descriptor, String destinationPath) {
+        if (jdbc == null) return;
+        Runnable write = () -> jdbc.update("""
+                INSERT INTO rcm_file_transfer(transfer_id, artifact_id, task_id, principal_id, machine_id, direction, source_path, destination_path, file_name, mime_type, expected_bytes, expected_sha256, bytes_transferred, status, error_text, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 0, NULL, 0, 'pending', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (transfer_id) DO NOTHING
+                """, descriptor.transferId(), descriptor.artifactId(), descriptor.taskId(), origin.principalId(), descriptor.machineId(),
+                descriptor.direction(), destinationPath, descriptor.fileName(), descriptor.mimeType());
+        if (transactions == null) write.run(); else transactions.execute(status -> { write.run(); return null; });
+    }
+
+    private void completeInbound(TaskOrigin origin, String machineId, String taskId, Ids ids, String fileName, String mimeType,
+                                 Downloaded downloaded, String objectKey) {
+        if (jdbc == null) return;
+        Runnable write = () -> {
+            jdbc.update("""
+                    INSERT INTO rcm_artifact(artifact_id, principal_id, machine_id, task_id, transfer_id, file_name, mime_type, storage_backend, object_key, bytes, sha256, status, created_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', CURRENT_TIMESTAMP, ?)
+                    ON CONFLICT (artifact_id) DO UPDATE SET object_key = EXCLUDED.object_key, bytes = EXCLUDED.bytes, sha256 = EXCLUDED.sha256, mime_type = EXCLUDED.mime_type, file_name = EXCLUDED.file_name, status = 'ready', expires_at = EXCLUDED.expires_at
+                    """, ids.artifactId(), origin.principalId(), machineId, taskId, ids.transferId(), fileName, mimeType,
+                    store.backend(), objectKey, downloaded.bytes(), downloaded.sha256(), java.sql.Timestamp.from(Instant.now().plus(artifactRetention)));
+            jdbc.update("""
+                    UPDATE rcm_file_transfer
+                       SET artifact_id = ?, expected_bytes = ?, expected_sha256 = ?, bytes_transferred = 0,
+                           status = 'ready', error_text = NULL, updated_at = CURRENT_TIMESTAMP
+                     WHERE transfer_id = ?
+                    """, ids.artifactId(), downloaded.bytes(), downloaded.sha256(), ids.transferId());
+        };
+        if (transactions == null) write.run(); else transactions.execute(status -> { write.run(); return null; });
+    }
+
+    private void markFailedByTransfer(String transferId, String error) {
+        var safe = error == null || error.isBlank() ? "file transfer preparation failed" : error.substring(0, Math.min(error.length(), 4096));
+        if (jdbc != null) {
+            jdbc.update("UPDATE rcm_file_transfer SET status = 'failed', error_text = ?, updated_at = CURRENT_TIMESTAMP WHERE transfer_id = ? AND status NOT IN ('delivered', 'canceled')",
+                    safe, transferId);
+            return;
+        }
+        var current = memory.get(transferId);
+        if (current == null) return;
+        var descriptor = new TransferDescriptor(current.descriptor().transferId(), current.descriptor().artifactId(), current.descriptor().direction(),
+                current.descriptor().taskId(), current.descriptor().principalId(), current.descriptor().machineId(), current.descriptor().fileName(),
+                current.descriptor().mimeType(), current.descriptor().bytes(), current.descriptor().sha256(), "failed", safe,
+                current.descriptor().downloadUrl());
+        memory.put(transferId, new MemoryTransfer(descriptor, current.objectKey(), current.destinationPath(), current.sourcePath()));
     }
 
     private void persistInbound(TaskOrigin origin, TransferDescriptor descriptor, String objectKey, String destinationPath) {

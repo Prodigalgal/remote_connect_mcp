@@ -176,8 +176,15 @@ public final class ProtocolValidation {
         if (action.webToAgent()) {
             requireText(action.artifactId(), "artifact id", 180);
             requireText(action.destinationPath(), "destination path", MAX_CWD_BYTES);
-            if (action.expectedBytes() <= 0) throw new IllegalArgumentException("web_to_agent expected bytes must be positive");
-            if (!action.expectedSha256().matches("(?i)[0-9a-f]{64}")) {
+            // A Web->Agent transfer may be admitted before the remote Web
+            // file is downloaded.  The Center keeps that task queued with a
+            // zero/blank metadata marker and fills the immutable action once
+            // ingest completes; such a task is never dispatchable.
+            var pending = action.expectedBytes() == 0 && action.expectedSha256().isBlank();
+            if (action.expectedBytes() < 0 || (!pending && action.expectedBytes() <= 0)) {
+                throw new IllegalArgumentException("web_to_agent expected bytes must be positive or pending");
+            }
+            if (!pending && !action.expectedSha256().matches("(?i)[0-9a-f]{64}")) {
                 throw new IllegalArgumentException("web_to_agent expected sha256 is invalid");
             }
         } else {

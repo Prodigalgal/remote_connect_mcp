@@ -246,6 +246,13 @@ final class JdbcTaskStore {
             var queued = jdbc.query((SELECT_TASK_META + """
                      WHERE t.agent_id = ? AND t.status = ?
                        AND t.required_capability IN (%s)
+                       AND (t.kind <> 'file_transfer'
+                            OR COALESCE(t.file_transfer_action ->> 'direction', '') <> 'web_to_agent'
+                            OR EXISTS (
+                                SELECT 1 FROM rcm_file_transfer inbound
+                                 WHERE inbound.task_id = t.task_id
+                                   AND inbound.status IN ('ready', 'delivering', 'delivered')
+                            ))
                        AND NOT EXISTS (
                            SELECT 1 FROM rcm_task active
                             WHERE active.lane_key = t.lane_key
@@ -349,6 +356,43 @@ final class JdbcTaskStore {
             task.finishedAt(finished);
             task.outputTruncated(truncated);
             if (TaskStatus.terminal(next)) task.leaseUntil(null);
+            return new TaskView(task);
+        });
+    }
+
+    TaskView updateFileTransferAction(String machineId, String taskId,
+                                      com.prodigalgal.remoteconnectmcp.protocol.FileTransferAction action) {
+        return transactions.execute(status -> {
+            var task = findForUpdateMeta(taskId);
+            if (task == null) throw new IllegalArgumentException("task not found");
+            if (!task.machineId().equals(machineId)) throw new SecurityException("task does not belong to this machine");
+            if (task.command().kind() != TaskKind.FILE_TRANSFER) throw new IllegalArgumentException("task is not a file transfer");
+            if (!TaskStatus.QUEUED.equals(task.status())) throw new IllegalStateException("file transfer task is no longer queued");
+            var json = new String(JsonCodec.write(action), StandardCharsets.UTF_8);
+            jdbc.update("UPDATE rcm_task SET file_transfer_action = CAST(? AS jsonb), updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND agent_id = ? AND status = ?",
+                    json, taskId, machineId, TaskStatus.QUEUED);
+            var command = task.command();
+            task.command(new TaskCommand(command.id(), command.kind(), command.requiredCapability(), command.command(), command.cwd(),
+                    command.env(), command.timeoutSeconds(), command.desktop(), command.createdAt(), command.contract(), command.attempt(), action));
+            return new TaskView(task);
+        });
+    }
+
+    TaskView failPreparedFileTransfer(String machineId, String taskId, String error) {
+        return transactions.execute(status -> {
+            var task = findForUpdateMeta(taskId);
+            if (task == null) throw new IllegalArgumentException("task not found");
+            if (!task.machineId().equals(machineId)) throw new SecurityException("task does not belong to this machine");
+            if (TaskStatus.QUEUED.equals(task.status())) {
+                var safe = error == null || error.isBlank() ? "file transfer preparation failed" : compactError(error);
+                var now = Instant.now();
+                jdbc.update("UPDATE rcm_task SET status = ?, error_text = ?, finished_at = ?, lease_until = NULL, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND agent_id = ? AND status = ?",
+                        TaskStatus.FAILED, safe, timestamp(now), taskId, machineId, TaskStatus.QUEUED);
+                task.status(TaskStatus.FAILED);
+                task.error(safe);
+                task.finishedAt(now);
+                task.leaseUntil(null);
+            }
             return new TaskView(task);
         });
     }
