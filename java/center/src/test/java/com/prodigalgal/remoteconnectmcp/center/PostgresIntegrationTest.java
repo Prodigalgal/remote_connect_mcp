@@ -226,7 +226,9 @@ class PostgresIntegrationTest {
             }
         };
         var transfers = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
-        var transferOrigin = new TaskOrigin(aclPrincipalId, "acl-token", "transfer-session");
+        // Use the built-in shared principal so transfer-only rows do not make
+        // the ACL fixture's principal undeletable during @AfterAll cleanup.
+        var transferOrigin = TaskOrigin.shared();
         var transferRequest = new CreateTaskRequest(agentId,
                 new TaskCommand("", TaskKind.COMMAND, "command", "printf transfer", "/tmp", Map.of(), 0, null, Instant.now()),
                 "transfer-v2-key", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, transferOrigin);
