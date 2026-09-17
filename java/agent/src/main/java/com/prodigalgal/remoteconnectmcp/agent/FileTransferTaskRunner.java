@@ -135,10 +135,11 @@ final class FileTransferTaskRunner implements Runnable {
             if (bytes < 0 || bytes > MAX_BYTES) throw new IOException("source file size is outside the allowed range");
             var digest = action.expectedSha256();
             if (digest == null || !digest.matches("(?i)[0-9a-f]{64}")) digest = sha256(snapshot);
+            var uploadDigest = digest;
             var response = AgentRetry.call(LOG, "file transfer upload " + task.id(), () ->
                     transport.uploadTransfer(identity.machineId(), identity.token(), action.transferId(), snapshot,
-                            action.fileName(), action.mimeType(), bytes, digest, task.attempt()));
-            var sha = response == null || response.sha256() == null || response.sha256().isBlank() ? digest : response.sha256();
+                            action.fileName(), action.mimeType(), bytes, uploadDigest, task.attempt()));
+            var sha = response == null || response.sha256() == null || response.sha256().isBlank() ? uploadDigest : response.sha256();
             acknowledge(action, "delivered", bytes, sha, null, true);
             sendOutput("published " + action.fileName() + " (" + bytes + " bytes, sha256=" + sha + ")");
             sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
