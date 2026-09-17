@@ -42,6 +42,8 @@ class ArtifactTransferServiceTest {
                 ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
 
         var created = service.createAgentToWeb(origin, request, root.resolve("report.txt").toString(), "report.txt", "text/plain");
+        var retried = service.createAgentToWeb(origin, request, root.resolve("report.txt").toString(), "report.txt", "text/plain");
+        assertEquals(created.transfer().transferId(), retried.transfer().transferId());
         var data = "artifact payload".getBytes(StandardCharsets.UTF_8);
         var sha = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
         var uploaded = service.receiveFromAgent(registration.machineId(), created.transfer().transferId(),

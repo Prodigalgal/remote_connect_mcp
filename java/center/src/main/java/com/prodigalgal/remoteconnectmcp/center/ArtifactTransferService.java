@@ -337,6 +337,8 @@ public final class ArtifactTransferService {
         validateFileName(fileName);
         var safeMime = normalizeMime(mimeType);
         var ids = ids(origin, request.machineId(), request.idempotencyKey(), "", sourcePath);
+        var existing = existingCreated(ids.transferId(), origin);
+        if (existing != null) return existing;
         var action = new FileTransferAction(FileTransferAction.AGENT_TO_WEB, ids.transferId(), ids.artifactId(),
                 sourcePath, "", fileName, safeMime, 0L, "", false);
         var task = tasks.create(withAction(request, action), "mcp", origin);
