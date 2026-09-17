@@ -551,7 +551,7 @@ public final class TaskService {
     private static boolean fileTransferReady(TaskState task) {
         var action = task.command() == null ? null : task.command().fileTransfer();
         return action == null || !action.webToAgent()
-                || (action.expectedBytes() > 0 && action.expectedSha256().matches("(?i)[0-9a-f]{64}"));
+                || (action.expectedBytes() >= 0 && action.expectedSha256().matches("(?i)[0-9a-f]{64}"));
     }
 
     /**

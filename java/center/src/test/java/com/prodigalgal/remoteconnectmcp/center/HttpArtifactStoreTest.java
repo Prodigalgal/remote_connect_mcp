@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -54,6 +55,37 @@ class HttpArtifactStoreTest {
             assertArrayEquals(data, store.read(key));
             store.delete(key);
             assertEquals(null, stored.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void preservesZeroByteObjectsThroughTheStreamingGateway() throws Exception {
+        var stored = new AtomicReference<byte[]>();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/objects/", exchange -> {
+            try (exchange) {
+                if ("PUT".equals(exchange.getRequestMethod())) {
+                    stored.set(exchange.getRequestBody().readAllBytes());
+                    exchange.sendResponseHeaders(201, -1);
+                } else if ("GET".equals(exchange.getRequestMethod())) {
+                    var data = stored.get();
+                    exchange.sendResponseHeaders(200, data == null ? 0 : data.length);
+                    if (data != null) exchange.getResponseBody().write(data);
+                } else {
+                    exchange.sendResponseHeaders(405, -1);
+                }
+            }
+        });
+        server.start();
+        try {
+            var store = new HttpArtifactStore(
+                    URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
+                    "gateway-token", Duration.ofSeconds(5));
+            var digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(new byte[0]));
+            var key = store.put("task-http-empty", digest, new ByteArrayInputStream(new byte[0]), 0);
+            assertArrayEquals(new byte[0], store.read(key));
         } finally {
             server.stop(0);
         }

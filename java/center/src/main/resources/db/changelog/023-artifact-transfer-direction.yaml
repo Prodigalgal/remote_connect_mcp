@@ -1,0 +1,27 @@
+databaseChangeLog:
+  - changeSet:
+      id: 023-artifact-transfer-direction
+      author: remote-connect-mcp
+      labels: artifact,transport
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        # 020 used the SQL-style upper-case values while the wire protocol and
+        # Java records intentionally use lower-case values.  Align the durable
+        # constraint with the protocol before the first JDBC transfer insert.
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer DROP CONSTRAINT IF EXISTS ck_rcm_file_transfer_direction
+        - sql:
+            sql: UPDATE rcm_file_transfer SET direction = lower(direction)
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_direction CHECK (direction IN ('web_to_agent', 'agent_to_web'))
+      rollback:
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer DROP CONSTRAINT IF EXISTS ck_rcm_file_transfer_direction
+        - sql:
+            sql: UPDATE rcm_file_transfer SET direction = upper(direction)
+        - sql:
+            sql: ALTER TABLE rcm_file_transfer ADD CONSTRAINT ck_rcm_file_transfer_direction CHECK (direction IN ('WEB_TO_AGENT', 'AGENT_TO_WEB'))

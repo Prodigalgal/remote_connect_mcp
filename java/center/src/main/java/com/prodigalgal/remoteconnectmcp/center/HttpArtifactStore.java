@@ -81,7 +81,7 @@ public final class HttpArtifactStore implements ArtifactStore {
     public String put(String taskId, String sha256, InputStream input, long expectedBytes) {
         if (taskId == null || taskId.isBlank()) throw new IllegalArgumentException("artifact task/transfer id is required");
         if (sha256 == null || !sha256.matches("(?i)[0-9a-f]{64}")) throw new IllegalArgumentException("artifact sha256 must be a 64-character hex digest");
-        if (input == null || expectedBytes <= 0 || expectedBytes > MAX_STREAM_BYTES) throw new IllegalArgumentException("artifact stream size is outside the allowed range");
+        if (input == null || expectedBytes < 0 || expectedBytes > MAX_STREAM_BYTES) throw new IllegalArgumentException("artifact stream size is outside the allowed range");
         var digest = sha256.trim().toLowerCase();
         var key = PREFIX + digest(taskId) + "/" + digest + ".blob";
         var request = request("PUT", key).header("Content-Type", "application/octet-stream")
@@ -111,7 +111,7 @@ public final class HttpArtifactStore implements ArtifactStore {
         } catch (IOException exception) {
             throw new ArtifactStore.StorageException("could not read artifact HTTP response", exception);
         }
-        if (data.length == 0 || data.length > MAX_BYTES) {
+        if (data.length > MAX_BYTES) {
             throw new ArtifactStore.StorageException("artifact HTTP response exceeds store limit");
         }
         var expected = digestFromKey(key);

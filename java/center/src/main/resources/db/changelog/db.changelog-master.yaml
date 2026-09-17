@@ -43,3 +43,5 @@ databaseChangeLog:
       file: db/changelog/021-artifact-transfer-state.yaml
   - include:
       file: db/changelog/022-empty-artifacts.yaml
+  - include:
+      file: db/changelog/023-artifact-transfer-direction.yaml

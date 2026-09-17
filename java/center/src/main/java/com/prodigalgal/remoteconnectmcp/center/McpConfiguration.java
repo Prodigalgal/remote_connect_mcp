@@ -413,6 +413,13 @@ public class McpConfiguration {
      * to the OpenAI file-bridge shape so a Host/Widget can render it directly.
      */
     private static Map<String, Object> artifactOutputSchema() {
+        var executionScope = objectSchema(Map.ofEntries(
+                Map.entry("mode", string("scope mode")),
+                Map.entry("project_id", nullable("string", "project identifier")),
+                Map.entry("worktree_id", nullable("string", "worktree identifier")),
+                Map.entry("root", nullable("string", "bounded scope root")),
+                Map.entry("risk", nullable("string", "risk level")),
+                Map.entry("expires_at", nullable("string", "contract expiry"))));
         var task = objectSchema(Map.ofEntries(
                 Map.entry("id", string("task identifier")),
                 Map.entry("machine_id", string("machine identifier")),
@@ -436,13 +443,7 @@ public class McpConfiguration {
                 Map.entry("artifact_sha256", nullable("string", "artifact SHA-256")),
                 Map.entry("execution_session_id", string("execution session")),
                 Map.entry("result_channel", string("task result channel")),
-                Map.entry("execution_scope", objectSchema(Map.ofEntries(
-                        Map.entry("mode", string("scope mode")),
-                        Map.entry("project_id", nullable("string", "project identifier")),
-                        Map.entry("worktree_id", nullable("string", "worktree identifier")),
-                        Map.entry("root", nullable("string", "bounded scope root")),
-                        Map.entry("risk", nullable("string", "risk level")),
-                        Map.entry("expires_at", nullable("string", "contract expiry"))))));
+                Map.entry("execution_scope", executionScope)));
         var transfer = objectSchema(Map.ofEntries(
                 Map.entry("transfer_id", string("transfer identifier")),
                 Map.entry("artifact_id", string("artifact identifier")),

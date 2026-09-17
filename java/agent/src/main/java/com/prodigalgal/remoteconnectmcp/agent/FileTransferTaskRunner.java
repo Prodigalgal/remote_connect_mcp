@@ -48,14 +48,16 @@ final class FileTransferTaskRunner implements Runnable {
             }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            acknowledge(action, "canceled", 0, "", "file transfer canceled");
+            try { acknowledge(action, "canceled", 0, "", "file transfer canceled", false); }
+            catch (IOException ignored) { }
             try {
                 sendState(new TaskUpdateRequest("canceled", null, "file transfer canceled", null, Instant.now(), false));
             } catch (Exception reportFailure) {
                 LOG.log(Level.FINE, "could not report canceled file transfer " + task.id(), reportFailure);
             }
         } catch (Exception exception) {
-            acknowledge(action, "failed", 0, "", compactError(exception.getMessage()));
+            try { acknowledge(action, "failed", 0, "", compactError(exception.getMessage()), false); }
+            catch (IOException ignored) { }
             try {
                 sendState(new TaskUpdateRequest("failed", null, compactError(exception.getMessage()), null, Instant.now(), false));
             } catch (Exception reportFailure) {
@@ -71,7 +73,7 @@ final class FileTransferTaskRunner implements Runnable {
         }
         transport.downloadTransfer(identity.machineId(), identity.token(), action.transferId(), destination,
                 action.expectedBytes(), action.expectedSha256(), task.attempt(), action.overwrite());
-        acknowledge(action, "delivered", action.expectedBytes(), action.expectedSha256(), null);
+        acknowledge(action, "delivered", action.expectedBytes(), action.expectedSha256(), null, true);
         sendOutput("received " + action.fileName() + " (" + action.expectedBytes() + " bytes, sha256=" + action.expectedSha256() + ")");
         sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
     }
@@ -80,6 +82,16 @@ final class FileTransferTaskRunner implements Runnable {
         var source = AgentPaths.resolveFilePath(config, identity.machineId(), task, action.sourcePath(), true);
         var parent = source.getParent();
         if (parent == null) throw new IOException("source file has no parent");
+        var sourceBytes = Files.size(source);
+        if (sourceBytes < 0 || sourceBytes > MAX_BYTES) throw new IOException("source file size is outside the allowed range");
+        try {
+            var free = Files.getFileStore(parent).getUsableSpace();
+            if (free < sourceBytes + 64L * 1024 * 1024) {
+                throw new IOException("insufficient local disk space for transfer snapshot");
+            }
+        } catch (IOException exception) {
+            throw new IOException("cannot inspect local disk space for transfer snapshot", exception);
+        }
         var snapshot = Files.createTempFile(parent, ".rcm-snapshot-", ".part");
         try {
             // Hash and upload the same immutable snapshot.  Reading the source
@@ -94,7 +106,7 @@ final class FileTransferTaskRunner implements Runnable {
             var response = transport.uploadTransfer(identity.machineId(), identity.token(), action.transferId(), snapshot,
                     action.fileName(), action.mimeType(), bytes, digest, task.attempt());
             var sha = response == null || response.sha256() == null || response.sha256().isBlank() ? digest : response.sha256();
-            acknowledge(action, "delivered", bytes, sha, null);
+            acknowledge(action, "delivered", bytes, sha, null, true);
             sendOutput("published " + action.fileName() + " (" + bytes + " bytes, sha256=" + sha + ")");
             sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
         } finally {
@@ -132,7 +144,8 @@ final class FileTransferTaskRunner implements Runnable {
         });
     }
 
-    private void acknowledge(FileTransferAction action, String status, long bytes, String sha256, String error) {
+    private void acknowledge(FileTransferAction action, String status, long bytes, String sha256, String error,
+                             boolean required) throws IOException {
         if (action == null || action.transferId() == null || action.transferId().isBlank()) return;
         try {
             AgentRetry.call(LOG, "file transfer acknowledgement " + task.id(), () -> {
@@ -143,6 +156,7 @@ final class FileTransferTaskRunner implements Runnable {
             });
         } catch (Exception acknowledgementFailure) {
             LOG.log(Level.FINE, "could not report file transfer acknowledgement " + task.id(), acknowledgementFailure);
+            if (required) throw new IOException("file transfer acknowledgement was not accepted", acknowledgementFailure);
         }
     }
 
