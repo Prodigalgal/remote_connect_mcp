@@ -33,8 +33,8 @@ class JdbcTaskStoreTest {
 
         assertEquals("task_1", view.id());
         assertEquals(2, jdbc.calls.size());
-        assertEquals(24, jdbc.calls.get(0).arguments.length,
-                "rcm_task now binds principal/connection/lane/session/channel ownership plus the existing task columns");
+        assertEquals(25, jdbc.calls.get(0).arguments.length,
+                "rcm_task binds file-transfer metadata in addition to principal/connection/lane/session/channel ownership and task columns");
         assertTrue(jdbc.calls.get(0).sql.contains("INSERT INTO rcm_task"));
         assertTrue(jdbc.calls.get(1).sql.contains("rcm_task_output"));
     }
