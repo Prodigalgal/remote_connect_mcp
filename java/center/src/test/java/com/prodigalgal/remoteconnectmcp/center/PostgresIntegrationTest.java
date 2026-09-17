@@ -16,6 +16,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -101,7 +102,7 @@ class PostgresIntegrationTest {
                 "/tmp",
                 ScopeMode.UNRESTRICTED,
                 null,
-                List.of("command", "durable_tasks"));
+                List.of("command", "durable_tasks", "file_transfer"));
         var registration = registry.register(request, "integration-enrollment");
         agentId = registration.machineId();
         assertNotNull(jdbc.queryForObject("SELECT agent_id FROM rcm_agent WHERE agent_id = ?", String.class, agentId));
@@ -117,7 +118,7 @@ class PostgresIntegrationTest {
                 32L * 1024 * 1024, 96L * 1024 * 1024, 12, 900, 0, 0, false, true);
         var heartbeat = new AgentMetadata(request.name(), request.hostId(),
                 "postgres-it-host", "linux", "amd64", "integration-2", "/tmp",
-                ScopeMode.UNRESTRICTED, null, List.of("command", "browser"), runtime);
+                ScopeMode.UNRESTRICTED, null, List.of("command", "browser", "file_transfer"), runtime);
         registry.poll(agentId, registration.token(), new PollRequest(List.of(), 1,
                 List.of("command", "browser"), heartbeat));
         var persistedRuntime = restartedRegistry.findMachine(agentId, Instant.now()).orElseThrow().runtime();
@@ -211,6 +212,41 @@ class PostgresIntegrationTest {
         store.updateState(agentId, taskId, new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
         assertEquals(TaskStatus.COMPLETED, store.find(taskId).orElseThrow().status());
         assertEquals(0, store.find(taskId).orElseThrow().exitCode());
+
+        // File-transfer v2 uses a separate streaming object and metadata row.
+        // Exercise the durable state machine, an idempotent upload replay, and
+        // a new Center facade reading the same signed artifact after restart.
+        var transferStore = new FileSystemArtifactStore(Path.of(System.getProperty("java.io.tmpdir"),
+                "rcm-postgres-transfer-" + UUID.randomUUID()));
+        var transferTokens = new CenterTokenConfig() {
+            @Override
+            public String artifactDownloadSecret() {
+                return "postgres-transfer-test-secret";
+            }
+        };
+        var transfers = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
+        var transferOrigin = new TaskOrigin(aclPrincipalId, "acl-token", "transfer-session");
+        var transferRequest = new CreateTaskRequest(agentId,
+                new TaskCommand("", TaskKind.COMMAND, "command", "printf transfer", "/tmp", Map.of(), 0, null, Instant.now()),
+                "transfer-v2-key", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, transferOrigin);
+        var transfer = transfers.createAgentToWeb(transferOrigin, transferRequest, "/tmp/transfer-report.txt",
+                "transfer-report.txt", "text/plain");
+        var transferData = "postgres transfer".getBytes(StandardCharsets.UTF_8);
+        var transferHash = sha256(transferData);
+        var delivered = transfers.receiveFromAgent(agentId, transfer.transfer().transferId(),
+                new ByteArrayInputStream(transferData), transferData.length, transferHash,
+                "transfer-report.txt", "text/plain");
+        assertEquals("delivered", delivered.status());
+        assertEquals("delivered", jdbc.queryForObject("SELECT status FROM rcm_file_transfer WHERE transfer_id = ?", String.class,
+                transfer.transfer().transferId()));
+        assertEquals(transferData.length, jdbc.queryForObject("SELECT bytes_transferred FROM rcm_file_transfer WHERE transfer_id = ?", Long.class,
+                transfer.transfer().transferId()));
+        var replay = transfers.receiveFromAgent(agentId, transfer.transfer().transferId(),
+                new ByteArrayInputStream(transferData), transferData.length, transferHash,
+                "transfer-report.txt", "text/plain");
+        assertEquals(delivered.status(), replay.status());
+        var restartedTransfers = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
+        assertEquals("delivered", restartedTransfers.findByTransfer(transfer.transfer().transferId(), transferOrigin).orElseThrow().status());
 
         // A transport retry can race with the original request.  The unique
         // (agent_id, idempotency_key) constraint plus the adapter's duplicate

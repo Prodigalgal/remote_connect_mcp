@@ -76,7 +76,7 @@
 | [~] | P0-AT-05 | 幂等预约前置 | pending durable reservation、同键短期 future hand-off 和重启失败收口已实现；跨实例/异常插入回归待补 |
 | [~] | P0-AT-06 | 并发与临时磁盘硬配额 | Center 进程内全局/主体/机器并发及可用空间 reservation 已实现；多进程容量演练待补 |
 | [~] | P0-AT-07 | Web→Center ingest 异步化 | MCP 只创建 pending 句柄，Center 虚拟线程完成下载、校验和发布；失败/重启恢复待 Actions 验证 |
-| [ ] | P0-AT-08 | 端到端故障恢复矩阵 | Center/Agent 重启、lease 过期、旧 attempt、重复 MCP、对象存储短暂失败和中断组合测试待补 |
+| [~] | P0-AT-08 | 端到端故障恢复矩阵 | PostgreSQL 集成门禁已覆盖独立 Center facade 重启读、流式 Agent→Web 状态/字节落库、重复上传幂等和签名对象恢复；Center/Agent 真重启、lease 过期、对象存储短暂失败和中断组合仍待现场矩阵 |
 | [ ] | P1-AT-01 | ChatGPT Web Artifact 真实 E2E | 需要真实连接器验证 Web 上传→终端、终端→当前会话 |
 | [ ] | P1-AT-02 | React Artifact Viewer v1 | 图片/PDF/媒体预览，Office/压缩包/未知类型下载界面待实现 |
 | [~] | P1-AT-03 | MCP annotations 与严格 Output Schema | 文件工具 annotations、嵌套 task/transfer/file schema 已收紧；需 Actions 与连接器刷新验证 |
