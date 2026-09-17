@@ -1075,10 +1075,6 @@ public final class ArtifactTransferService {
         return path;
     }
 
-    private static long fileSize(Path path) throws IOException {
-        return Files.exists(path) ? Files.size(path) : 0L;
-    }
-
     private static String sha256File(Path path) throws IOException {
         try (var input = Files.newInputStream(path, StandardOpenOption.READ)) {
             var digest = MessageDigest.getInstance("SHA-256");

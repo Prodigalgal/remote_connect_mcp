@@ -44,5 +44,11 @@ RCM_CENTER_ARTIFACT_HTTP_TIMEOUT_SECONDS=30
 传输的绝对生命周期上限。Center 按 4 MiB 或 1 秒节流写入 `bytes_transferred`，因此控制台
 可以显示有界的进度而不会为每个数据块执行一次数据库写入。
 
+Agent→Center 大文件还可使用 `HEAD /agent/v1/transfers/{id}/content` 查询已确认偏移，
+随后以 `Content-Range: bytes start-end/total` 分块上传。Center 将 partial spool 放在
+`RCM_CENTER_TRANSFER_SPOOL_ROOT/resume` 下，只有完整 SHA-256 校验并提交对象后才删除；
+请求重试会复用该偏移。Web→Agent 方向使用相同 transfer_id 绑定的 HTTP `Range`，因此
+代理或 Agent 重启不会重复写入已经确认的字节。
+
 生产必须使用 HTTPS；HTTP 仅允许 loopback 开发测试。网关不可用时，Center
 就绪检查应失败或切回已验证的 filesystem 后端，不能悄悄把工件放回数据库。
