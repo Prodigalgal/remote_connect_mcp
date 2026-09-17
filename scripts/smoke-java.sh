@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep a failing native smoke diagnostic actionable.  The script is executed
+# under `bash -e` in GitHub Actions, so an early command failure used to leave
+# only an exit code in the job log (especially when a newly-started native
+# Center was still binding its port).  Do not print credentials or response
+# bodies here; only the command and the bounded Center stderr are emitted.
+on_error() {
+  local status=$?
+  echo "Java Center smoke failed (exit $status, line ${BASH_LINENO[0]}): ${BASH_COMMAND}" >&2
+  if [[ -n "${tmp:-}" && -f "$tmp/err" ]]; then
+    echo "--- Center stderr (first 120 lines) ---" >&2
+    sed -n '1,120p' "$tmp/err" >&2 || true
+  fi
+  exit "$status"
+}
+trap on_error ERR
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 port="${RCM_SMOKE_PORT:-18180}"
 center_binary="${1:-${RCM_SMOKE_CENTER_BINARY:-}}"
@@ -40,8 +56,12 @@ else
 fi
 pid=$!
 
+healthy="false"
 for _ in {1..120}; do
-  if curl --silent --show-error --fail --max-time 1 "http://127.0.0.1:$port/api/v1/healthz" >/dev/null; then break; fi
+  if curl --silent --fail --max-time 1 "http://127.0.0.1:$port/api/v1/healthz" >/dev/null 2>&1; then
+    healthy="true"
+    break
+  fi
   if ! kill -0 "$pid" 2>/dev/null; then
     echo "Java Center exited before health check:" >&2
     sed -n '1,120p' "$tmp/err" >&2
@@ -49,7 +69,8 @@ for _ in {1..120}; do
   fi
   sleep 0.25
 done
-curl --silent --show-error --fail --max-time 5 "http://127.0.0.1:$port/api/v1/healthz" >/dev/null
+[[ "$healthy" == "true" ]] || { echo "Java Center health check timed out" >&2; exit 1; }
+curl --silent --fail --max-time 5 "http://127.0.0.1:$port/api/v1/healthz" >/dev/null 2>&1
 
 rpc() {
   local id="$1" method="$2" session="${3:-}"
@@ -94,3 +115,4 @@ bad_metrics_status="$(curl --silent --show-error --max-time 5 -o /dev/null -w '%
 implementation="jvm"
 if [[ -n "$center_binary" ]]; then implementation="native"; fi
 printf '{"health":"ok","initialize":"ok","tools":"ok","metrics":"ok","implementation":"%s","mcp":"http://127.0.0.1:%s/mcp"}\n' "$implementation" "$port"
+exit 0
