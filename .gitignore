@@ -25,3 +25,4 @@ private/
 /web/node_modules/
 /web/dist/
 /backups/
+scripts/reinstall-local-zzp-agent.ps1
