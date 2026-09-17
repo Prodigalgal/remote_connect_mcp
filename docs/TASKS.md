@@ -80,12 +80,12 @@
 | [ ] | P1-AT-01 | ChatGPT Web Artifact 真实 E2E | 需要真实连接器验证 Web 上传→终端、终端→当前会话 |
 | [ ] | P1-AT-02 | React Artifact Viewer v1 | 图片/PDF/媒体预览，Office/压缩包/未知类型下载界面待实现 |
 | [~] | P1-AT-03 | MCP annotations 与严格 Output Schema | 文件工具 annotations、嵌套 task/transfer/file schema 已收紧；需 Actions 与连接器刷新验证 |
-| [~] | P1-AT-04 | 签名 URL Session/Purpose 绑定 | 已绑定主体、connection、purpose；精确 execution session 绑定仍待补 |
+| [~] | P1-AT-04 | 签名 URL Session/Purpose 绑定 | HMAC subject 已绑定主体、connection、purpose 和 execution session，并保留滚动发布兼容路径；需 Actions/代理回归 |
 | [~] | P1-AT-05 | Artifact 下载安全 Header | `private/no-store`、`nosniff`、`no-referrer` 已加入；需代理缓存回归 |
 | [~] | P1-AT-06 | Agent 源文件快照一致性 | 同目录快照用于 hash + upload，并有磁盘余量检查；文件持续写入语义待验收 |
-| [ ] | P1-AT-07 | Stall timeout / progress watchdog | 目前有 connect/absolute transfer timeout；无进展超时和进度 watchdog 待实现 |
+| [~] | P1-AT-07 | Stall timeout / progress watchdog | Center 流式读取已拆分 absolute lifetime 与无进展超时，按 4 MiB/1 秒节流更新 `bytes_transferred`；Agent 端和慢链路矩阵待 Actions/现场验收 |
 | [ ] | P2-AT-01 | READ / WRITE / EXCLUSIVE 执行车道 | 当前仍按 lane 串行；读写分类和共享读并发待实现 |
-| [~] | P2-AT-02 | 零字节与边缘文件语义 | Center filesystem/HTTP、协议和 Agent 已允许合法 0 字节；Browser 小工件仍拒绝空文件，特殊文件策略待补 |
+| [~] | P2-AT-02 | 零字节与边缘文件语义 | Center filesystem/HTTP、协议、Agent 和 Browser 小工件已允许合法 0 字节；特殊文件/符号链接策略待补 |
 | [ ] | P2-AT-03 | destination path / file name 语义收敛 | 目前同时保留目标路径和展示文件名；需明确 API 契约及迁移兼容 |
 | [ ] | P2-AT-04 | 传输容量、SLO 与生命周期指标 | 任务/工件基础指标已有；active transfer、失败率、字节、时长、resume、GC 指标待接入 |
 

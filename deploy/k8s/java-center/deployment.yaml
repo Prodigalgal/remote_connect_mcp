@@ -60,6 +60,10 @@ spec:
               value: "1"
             - name: RCM_CENTER_TRANSFER_MAX_SPOOL_BYTES
               value: "8589934592"
+            # Abort a body that makes no read progress while preserving the
+            # separate 30-minute absolute transfer lifetime.
+            - name: RCM_CENTER_TRANSFER_STALL_TIMEOUT_SECONDS
+              value: "120"
             - name: RCM_CENTER_LIQUIBASE_ENABLED
               value: "false"
             - name: RCM_CENTER_VERSION

@@ -39,5 +39,10 @@ RCM_CENTER_ARTIFACT_HTTP_TOKEN=<从 Secret/env 注入>
 RCM_CENTER_ARTIFACT_HTTP_TIMEOUT_SECONDS=30
 ```
 
+文件传输的数据流还受 `RCM_CENTER_TRANSFER_STALL_TIMEOUT_SECONDS` 保护。它只限制
+“已经建立连接后连续无读取进展”的时间（默认 120 秒，允许 5 秒至 1 小时），不替代
+传输的绝对生命周期上限。Center 按 4 MiB 或 1 秒节流写入 `bytes_transferred`，因此控制台
+可以显示有界的进度而不会为每个数据块执行一次数据库写入。
+
 生产必须使用 HTTPS；HTTP 仅允许 loopback 开发测试。网关不可用时，Center
 就绪检查应失败或切回已验证的 filesystem 后端，不能悄悄把工件放回数据库。

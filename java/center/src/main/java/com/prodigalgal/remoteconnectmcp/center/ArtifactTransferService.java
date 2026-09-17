@@ -51,6 +51,9 @@ public final class ArtifactTransferService {
     private static final int MAX_FILE_NAME = 512;
     private static final int MAX_PATH = 4096;
     private static final Duration DOWNLOAD_TIMEOUT = Duration.ofMinutes(30);
+    private static final Duration DEFAULT_TRANSFER_STALL_TIMEOUT = Duration.ofMinutes(2);
+    private static final long PROGRESS_STEP_BYTES = 4L * 1024 * 1024;
+    private static final long PROGRESS_STEP_NANOS = Duration.ofSeconds(1).toNanos();
     private static final Duration DEFAULT_ARTIFACT_RETENTION = Duration.ofDays(7);
     private static final Duration DEFAULT_SIGNED_URL_TTL = Duration.ofMinutes(15);
     private final JdbcTemplate jdbc;
@@ -70,6 +73,7 @@ public final class ArtifactTransferService {
     private final String publicBaseUrl;
     private final Duration artifactRetention;
     private final Duration signedUrlTtl;
+    private final Duration transferStallTimeout;
     private final Path transferSpoolRoot;
 
     @Autowired
@@ -102,6 +106,8 @@ public final class ArtifactTransferService {
                 Duration.ofHours(1), Duration.ofDays(365));
         this.signedUrlTtl = durationSetting("RCM_CENTER_ARTIFACT_URL_TTL_SECONDS", DEFAULT_SIGNED_URL_TTL,
                 Duration.ofMinutes(1), Duration.ofDays(1));
+        this.transferStallTimeout = durationSetting("RCM_CENTER_TRANSFER_STALL_TIMEOUT_SECONDS",
+                DEFAULT_TRANSFER_STALL_TIMEOUT, Duration.ofSeconds(5), Duration.ofHours(1));
     }
 
     /**
@@ -192,7 +198,7 @@ public final class ArtifactTransferService {
         // prevents an unknown-length retry from bypassing the spool quota.
         var reservationBytes = expectedBytes != null && expectedBytes >= 0 ? expectedBytes : MAX_BYTES;
         try (var reservation = resources.reserve(origin.principalId(), request.machineId(), reservationBytes)) {
-            var downloaded = download(downloadUrl, expectedBytes, expectedSha256);
+            var downloaded = download(downloadUrl, expectedBytes, expectedSha256, ids.transferId());
             temporary = downloaded.path();
             var artifactId = ids.artifactId();
             try (var objectInput = Files.newInputStream(temporary, StandardOpenOption.READ)) {
@@ -297,7 +303,7 @@ public final class ArtifactTransferService {
         String objectKey = null;
         try (var reservation = resources.reserve(origin.principalId(), request.machineId(),
                 expectedBytes != null && expectedBytes >= 0 ? expectedBytes : MAX_BYTES)) {
-            var downloaded = download(downloadUrl, expectedBytes, expectedSha256);
+            var downloaded = download(downloadUrl, expectedBytes, expectedSha256, ids.transferId());
             temporary = downloaded.path();
             try (var objectInput = Files.newInputStream(temporary, StandardOpenOption.READ)) {
                 objectKey = store.put(ids.artifactId(), downloaded.sha256(), objectInput, downloaded.bytes());
@@ -452,7 +458,7 @@ public final class ArtifactTransferService {
             String objectKey = null;
             var committed = false;
             try {
-            var received = spool(input, contentLength, expectedSha256);
+            var received = spool(input, contentLength, expectedSha256, transferId);
             temporary = received.path();
             var artifactId = row.artifactId();
             try (var objectInput = Files.newInputStream(temporary, StandardOpenOption.READ)) {
@@ -766,7 +772,7 @@ public final class ArtifactTransferService {
                 rs.getString("status"), rs.getString("error_text"), "");
     }
 
-    private Downloaded download(URI uri, Long expectedBytes, String expectedSha256) throws IOException {
+    private Downloaded download(URI uri, Long expectedBytes, String expectedSha256, String transferId) throws IOException {
         try {
             var request = HttpRequest.newBuilder(uri).timeout(DOWNLOAD_TIMEOUT).header("Accept", "application/octet-stream").GET().build();
             var response = downloader.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -779,14 +785,14 @@ public final class ArtifactTransferService {
                 close(response.body());
                 throw new IOException("download size is outside the declared limit");
             }
-            return spool(response.body(), expectedBytes == null ? length : expectedBytes, expectedSha256);
+            return spool(response.body(), expectedBytes == null ? length : expectedBytes, expectedSha256, transferId);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IOException("download interrupted", exception);
         }
     }
 
-    private Downloaded spool(InputStream input, long expectedBytes, String expectedSha256) throws IOException {
+    private Downloaded spool(InputStream input, long expectedBytes, String expectedSha256, String transferId) throws IOException {
         if (expectedBytes > MAX_BYTES) throw new IOException("file size is outside the allowed range");
         Files.createDirectories(transferSpoolRoot);
         var temporary = Files.createTempFile(transferSpoolRoot, "rcm-transfer-", ".part");
@@ -794,14 +800,25 @@ public final class ArtifactTransferService {
             var digest = MessageDigest.getInstance("SHA-256");
             var buffer = new byte[1024 * 1024];
             long count = 0;
+            long lastProgress = 0;
+            long lastProgressNanos = System.nanoTime();
+            var deadlineNanos = System.nanoTime() + DOWNLOAD_TIMEOUT.toNanos();
             int read;
-            while ((read = input.read(buffer)) >= 0) {
+            while ((read = readWithWatchdog(input, buffer, deadlineNanos)) >= 0) {
                 if (read == 0) continue;
                 count += read;
                 if ((expectedBytes >= 0 && count > expectedBytes) || count > MAX_BYTES) throw new IOException("file exceeds declared size");
                 output.write(buffer, 0, read);
                 digest.update(buffer, 0, read);
+                var now = System.nanoTime();
+                if (transferId != null && !transferId.isBlank()
+                        && (count - lastProgress >= PROGRESS_STEP_BYTES || now - lastProgressNanos >= PROGRESS_STEP_NANOS)) {
+                    updateTransferProgress(transferId, count);
+                    lastProgress = count;
+                    lastProgressNanos = now;
+                }
             }
+            if (transferId != null && !transferId.isBlank()) updateTransferProgress(transferId, count);
             var sha = HexFormat.of().formatHex(digest.digest());
             if ((expectedBytes >= 0 && count != expectedBytes) || (expectedSha256 != null && !expectedSha256.isBlank() && !sha.equalsIgnoreCase(expectedSha256.trim()))) {
                 throw new IOException("file size or SHA-256 does not match metadata");
@@ -814,6 +831,60 @@ public final class ArtifactTransferService {
             deleteTemporary(temporary);
             throw exception;
         }
+    }
+
+    /**
+     * A request timeout covers connection establishment, but a streaming body
+     * can otherwise remain blocked forever after the response has started. Run
+     * each potentially blocking read on the existing virtual-thread executor;
+     * cancellation closes the body and enforces both the no-progress and
+     * absolute transfer deadlines without a polling timer.
+     */
+    private int readWithWatchdog(InputStream input, byte[] buffer, long deadlineNanos) throws IOException {
+        if (async == null) return input.read(buffer);
+        var remaining = deadlineNanos - System.nanoTime();
+        if (remaining <= 0) throw new IOException("file transfer exceeded the maximum lifetime");
+        var waitNanos = Math.min(remaining, transferStallTimeout.toNanos());
+        var read = async.submit(() -> input.read(buffer));
+        try {
+            return read.get(waitNanos, TimeUnit.NANOSECONDS);
+        } catch (TimeoutException exception) {
+            read.cancel(true);
+            close(input);
+            throw new IOException("file transfer stalled without progress", exception);
+        } catch (InterruptedException exception) {
+            read.cancel(true);
+            close(input);
+            Thread.currentThread().interrupt();
+            throw new IOException("file transfer read interrupted", exception);
+        } catch (ExecutionException exception) {
+            var cause = exception.getCause();
+            if (cause instanceof java.util.concurrent.CompletionException completion && completion.getCause() != null) {
+                cause = completion.getCause();
+            }
+            if (cause instanceof IOException io) throw io;
+            throw new IOException("file transfer read failed", cause == null ? exception : cause);
+        }
+    }
+
+    private void updateTransferProgress(String transferId, long bytes) {
+        if (jdbc != null) {
+            jdbc.update("""
+                    UPDATE rcm_file_transfer
+                       SET bytes_transferred = CASE WHEN status IN ('pending', 'ready', 'delivering') THEN ? ELSE bytes_transferred END,
+                           updated_at = CURRENT_TIMESTAMP
+                     WHERE transfer_id = ?
+                    """, bytes, transferId);
+            return;
+        }
+        var current = memory.get(transferId);
+        if (current == null) return;
+        var descriptor = current.descriptor();
+        if (Set.of("delivered", "failed", "canceled").contains(descriptor.status())) return;
+        var updated = new TransferDescriptor(descriptor.transferId(), descriptor.artifactId(), descriptor.direction(), descriptor.taskId(),
+                descriptor.principalId(), descriptor.machineId(), descriptor.fileName(), descriptor.mimeType(), Math.max(descriptor.bytes(), bytes),
+                descriptor.sha256(), descriptor.status(), descriptor.error(), descriptor.downloadUrl());
+        memory.put(transferId, new MemoryTransfer(updated, current.objectKey(), current.destinationPath(), current.sourcePath()));
     }
 
     private static void requireRequest(TaskOrigin origin, CreateTaskRequest request) {

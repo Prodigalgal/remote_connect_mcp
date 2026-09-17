@@ -139,6 +139,8 @@ ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation
 - 上传、下载、并发、spool 磁盘和保留周期均为可配置硬上限，用于资源保护而不是限制模型能力。
   生产可用 `RCM_CENTER_TRANSFER_SPOOL_ROOT` 把 spool 放到工件持久卷，避免容器 `/tmp`
   小配额与 4 GiB 单文件上限互相冲突。
+- Center 对已建立的流同时执行绝对生命周期（默认 30 分钟）和无进展看门狗（默认 120 秒）；
+  进度按 4 MiB 或 1 秒节流写入 `bytes_transferred`，超时会关闭输入流并将 Transfer/Task 收口为失败。
 - 日志只记录 transfer_id、artifact_id、大小、结果和错误摘要，不记录文件内容或长期凭据。
 - Center 重启、Agent 离线或网络中断不会产生重复文件或半成品目标文件。
 

@@ -161,6 +161,8 @@ Java Center 的 memory 模式只用于协议回归/开发。生产必须同时�
 `RCM_CENTER_TRANSFER_SPOOL_ROOT` 指向工件持久卷上的独立子目录，并让
 `RCM_CENTER_TRANSFER_MAX_SPOOL_BYTES` 小于该卷的可用容量。这样 4 GiB 单文件上限
 不会被 512 MiB 的容器 `/tmp` 配额意外截断，实际仍受可用磁盘 reservation 保护。
+同时可用 `RCM_CENTER_TRANSFER_STALL_TIMEOUT_SECONDS`（默认 120 秒）限制已建立连接后
+连续无进展的读取；该值与 30 分钟绝对传输生命周期及进度节流独立。
 
 审计记录默认只通过有界异步队列写入 PostgreSQL。保留清理由管理员或外部
 维护作业显式触发，不运行定时轮询线程：
