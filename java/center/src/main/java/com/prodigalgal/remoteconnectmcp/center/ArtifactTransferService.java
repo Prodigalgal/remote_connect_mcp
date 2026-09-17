@@ -178,10 +178,8 @@ public final class ArtifactTransferService {
 
     public Optional<TransferDescriptor> findByArtifact(String artifactId, TaskOrigin origin) {
         if (artifactId == null || artifactId.isBlank()) return Optional.empty();
-        var row = jdbc == null ? memory.values().stream().map(MemoryTransfer::descriptor)
-                .filter(value -> artifactId.equals(value.artifactId()) && principal.equals(value.principalId()))
-                .map(value -> new PublicArtifact(value.artifactId(), value.fileName(), value.mimeType(), value.bytes(), value.sha256(), value.status(), null))
-                .findFirst().orElse(null)
+        TransferDescriptor row = jdbc == null ? memory.values().stream().map(MemoryTransfer::descriptor)
+                .filter(value -> artifactId.equals(value.artifactId())).findFirst().orElse(null)
                 : jdbc.query("SELECT t.transfer_id, t.artifact_id, t.direction, t.task_id, t.machine_id, t.principal_id, t.file_name, t.mime_type, a.bytes, a.sha256, t.status, t.error_text FROM rcm_file_transfer t LEFT JOIN rcm_artifact a ON a.artifact_id = t.artifact_id WHERE t.artifact_id = ?",
                 ps -> ps.setString(1, artifactId.trim()), rs -> rs.next() ? descriptor(rs) : null);
         if (row == null || origin == null || !origin.principalId().equals(row.principalId())) return Optional.empty();
