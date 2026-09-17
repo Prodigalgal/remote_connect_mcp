@@ -251,6 +251,28 @@ class PostgresIntegrationTest {
         var restartedTransfers = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
         assertEquals("delivered", restartedTransfers.findByTransfer(transfer.transfer().transferId(), transferOrigin).orElseThrow().status());
 
+        var resumable = transfers.createAgentToWeb(transferOrigin,
+                new CreateTaskRequest(agentId,
+                        new TaskCommand("", TaskKind.COMMAND, "command", "printf resumable", "/tmp", Map.of(), 0, null, Instant.now()),
+                        "transfer-v2-resume-key", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, transferOrigin),
+                "/tmp/transfer-resumable.txt", "transfer-resumable.txt", "text/plain");
+        var resumableData = "postgres resumable transfer".getBytes(StandardCharsets.UTF_8);
+        var resumableHash = sha256(resumableData);
+        var split = 9;
+        var partial = transfers.receiveFromAgentChunk(agentId, resumable.transfer().transferId(),
+                new ByteArrayInputStream(java.util.Arrays.copyOfRange(resumableData, 0, split)), split, 0,
+                resumableData.length, resumableHash, "transfer-resumable.txt", "text/plain", null);
+        assertEquals("delivering", partial.status());
+        var restartedResumable = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
+        assertEquals(split, restartedResumable.resumeFromAgent(agentId, resumable.transfer().transferId(), null).offset());
+        var resumed = restartedResumable.receiveFromAgentChunk(agentId, resumable.transfer().transferId(),
+                new ByteArrayInputStream(java.util.Arrays.copyOfRange(resumableData, split, resumableData.length)),
+                resumableData.length - split, split, resumableData.length, resumableHash,
+                "transfer-resumable.txt", "text/plain", null);
+        assertEquals("delivered", resumed.status());
+        assertEquals(resumableData.length, jdbc.queryForObject("SELECT bytes_transferred FROM rcm_file_transfer WHERE transfer_id = ?", Long.class,
+                resumable.transfer().transferId()));
+
         // A transport retry can race with the original request.  The unique
         // (agent_id, idempotency_key) constraint plus the adapter's duplicate
         // recovery must return one committed task to every caller.
