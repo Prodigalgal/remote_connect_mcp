@@ -352,14 +352,15 @@ public class McpConfiguration {
                 .destructiveHint(name.equals("command_start") || name.equals("task_cancel") || name.equals("project"))
                 .openWorldHint(name.equals("command_start") || name.equals("project"))
                 .build();
-        var tool = McpSchema.Tool.builder(name)
+        var toolBuilder = McpSchema.Tool.builder(name)
                 .description(description)
                 .inputSchema(schema)
                 .annotations(annotations)
                 .meta(meta);
         if (name.equals("artifact_put") || name.equals("artifact_get") || name.equals("artifact_read")) {
-            tool.outputSchema(artifactOutputSchema());
+            toolBuilder.outputSchema(artifactOutputSchema());
         }
+        var tool = toolBuilder.build();
         return McpServerFeatures.AsyncToolSpecification.builder()
                 .tool(tool)
                 .callHandler((exchange, request) -> Mono.fromCallable(() -> handler.apply(exchange, request)).subscribeOn(scheduler))
@@ -417,18 +418,18 @@ public class McpConfiguration {
                         "mime_type", string("MIME type"),
                         "file_name", string("file name")),
                 "required", List.of("download_url", "file_id"), "additionalProperties", false);
-        return Map.of("type", "object", "properties", Map.of(
-                        "task", task,
-                        "transfer", transfer,
-                        "next_action", string("next MCP action"),
-                        "artifact_id", string("artifact identifier"),
-                        "transfer_id", string("transfer identifier"),
-                        "status", string("artifact status"),
-                        "bytes", integer("artifact size"),
-                        "sha256", string("artifact SHA-256"),
-                        "mime_type", string("MIME type"),
-                        "file_name", string("file name"),
-                        "file", file),
+        return Map.of("type", "object", "properties", Map.ofEntries(
+                        Map.entry("task", task),
+                        Map.entry("transfer", transfer),
+                        Map.entry("next_action", string("next MCP action")),
+                        Map.entry("artifact_id", string("artifact identifier")),
+                        Map.entry("transfer_id", string("transfer identifier")),
+                        Map.entry("status", string("artifact status")),
+                        Map.entry("bytes", integer("artifact size")),
+                        Map.entry("sha256", string("artifact SHA-256")),
+                        Map.entry("mime_type", string("MIME type")),
+                        Map.entry("file_name", string("file name")),
+                        Map.entry("file", file)),
                 "additionalProperties", true);
     }
 
