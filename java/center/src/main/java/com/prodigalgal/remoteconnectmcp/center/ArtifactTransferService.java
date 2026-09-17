@@ -243,8 +243,12 @@ public final class ArtifactTransferService {
 
     public PublicArtifact openPublic(String artifactId, long expires, String principal, String signature) {
         if (artifactId == null || artifactId.isBlank() || principal == null || principal.isBlank()
-                || expires < Instant.now().getEpochSecond() || !MessageDigest.isEqual(sign(artifactId + "\n" + principal + "\n" + expires).getBytes(java.nio.charset.StandardCharsets.US_ASCII),
-                decode(signature))) {
+                || expires < Instant.now().getEpochSecond() || signature == null) {
+            throw new SecurityException("invalid or expired artifact URL");
+        }
+        var expectedSignature = sign(artifactId + "\n" + principal + "\n" + expires);
+        if (!MessageDigest.isEqual(expectedSignature.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                signature.trim().getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
             throw new SecurityException("invalid or expired artifact URL");
         }
         PublicArtifact row = jdbc == null ? memory.values().stream().map(MemoryTransfer::descriptor)
@@ -451,11 +455,6 @@ public final class ArtifactTransferService {
             mac.init(new javax.crypto.spec.SecretKeySpec(tokens.artifactDownloadSecret().getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
             return Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         } catch (Exception exception) { throw new IllegalStateException("artifact URL signing is unavailable", exception); }
-    }
-
-    private static byte[] decode(String value) {
-        try { return Base64.getUrlDecoder().decode(value == null ? "" : value); }
-        catch (IllegalArgumentException exception) { return new byte[0]; }
     }
 
     private static String encode(String value) { return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8); }
