@@ -100,7 +100,9 @@ pending → ready → delivering → delivered
 spool 的确认偏移；Web→Agent 方向使用 HTTP `Range`，并把本地 `.rcm-part-*` 文件名
 绑定到 transfer_id。重复请求通过幂等键和 transfer_id 复用同一逻辑传输。Agent 在本地
 落盘/上传成功后发送 Attempt-fenced ACK，Center 只有在 ACK 或已提交的对象元数据可
-证明成功时才进入终态。中断后不会覆盖已确认字节，也不会把一次完整流重试误称为断点续传。
+证明成功时才进入终态。Center 在确认每个 8 MiB 分块前强制刷新 PVC 文件；`HEAD` 同时返回偏移和
+`X-RCM-Transfer-Status`，只有 `delivered` 才允许 Agent 仅凭最终偏移恢复，完整但仍处于
+`delivering` 的暂存会走一次幂等整流收口，避免伪造成功 ACK。中断后不会覆盖已确认字节，也不会把一次完整流重试误称为断点续传。
 `pending` ingest 的
 ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation 一次性标记失败，
 调用方需要使用新幂等键重新提交。

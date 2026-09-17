@@ -13,6 +13,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -1057,19 +1058,36 @@ public final class ArtifactTransferService {
 
     private void appendChunk(InputStream input, Path partial, long expectedBytes, String transferId) throws IOException {
         Files.createDirectories(partial.getParent());
-        try (var output = Files.newOutputStream(partial, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
-                StandardOpenOption.APPEND)) {
+        // A confirmed offset must survive a Center process restart (and be as
+        // reliable as the PVC allows across a host crash). Force each bounded
+        // chunk before acknowledging it; otherwise the file length could be
+        // visible while its last bytes still exist only in the page cache and
+        // a resume probe could skip data after a crash.
+        try (var output = java.nio.channels.FileChannel.open(partial, StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
             var buffer = new byte[1024 * 1024];
             var deadlineNanos = System.nanoTime() + DOWNLOAD_TIMEOUT.toNanos();
             long count = 0;
-            int read;
-            while ((read = readWithWatchdog(input, buffer, deadlineNanos)) >= 0) {
-                if (read == 0) continue;
-                count += read;
-                if (count > expectedBytes) throw new IOException("resumable chunk exceeds its Content-Range length");
-                output.write(buffer, 0, read);
+            try {
+                int read;
+                while ((read = readWithWatchdog(input, buffer, deadlineNanos)) >= 0) {
+                    if (read == 0) continue;
+                    count += read;
+                    if (count > expectedBytes) throw new IOException("resumable chunk exceeds its Content-Range length");
+                    var view = ByteBuffer.wrap(buffer, 0, read);
+                    while (view.hasRemaining()) output.write(view);
+                }
+                if (count != expectedBytes) throw new IOException("resumable chunk body is shorter than Content-Range");
+            } catch (IOException failure) {
+                // The partial length is used as the next resume offset even
+                // after an interrupted request. Flush that prefix before the
+                // connection is reported as temporary failure, otherwise a
+                // crash could advertise page-cache bytes that were never
+                // durable on the PVC.
+                try { output.force(true); } catch (IOException ignored) { }
+                throw failure;
             }
-            if (count != expectedBytes) throw new IOException("resumable chunk body is shorter than Content-Range");
+            output.force(true);
         }
     }
 

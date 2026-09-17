@@ -415,19 +415,28 @@ public final class AgentTransportClient implements AgentTransport {
         }
         var actualBytes = Files.size(source);
         if (actualBytes != expectedBytes) throw new IOException("source file size changed before upload");
-        var resumeOffset = queryTransferOffset(machineId, token, transferId, attempt);
+        var resume = queryTransferResume(machineId, token, transferId, attempt);
+        var resumeOffset = resume.offset();
         if (resumeOffset < 0 || expectedBytes == 0) {
             return uploadWholeTransfer(machineId, token, transferId, source, fileName, mimeType,
                     expectedBytes, expectedSha256, attempt);
         }
         if (resumeOffset > expectedBytes) throw new IOException("center resume offset exceeds source size");
         if (resumeOffset == expectedBytes) {
-            // The Center commits the metadata atomically with the final
-            // chunk.  A lost response can therefore be recovered by HEAD
-            // alone without retransmitting the complete file.
-            return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
-                    transferId, "", "delivered", expectedBytes,
-                    expectedSha256 == null ? "" : expectedSha256.toLowerCase(), null);
+            if ("delivered".equalsIgnoreCase(resume.status())) {
+                // The Center commits the metadata atomically with the final
+                // chunk.  A lost response can therefore be recovered by HEAD
+                // alone without retransmitting the complete file.
+                return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
+                        transferId, "", "delivered", expectedBytes,
+                        expectedSha256 == null ? "" : expectedSha256.toLowerCase(), null);
+            }
+            // A full partial spool in `delivering` state means the previous
+            // request lost its response before the metadata commit.  Replay
+            // through the legacy whole-stream path, which atomically
+            // finalizes the object, instead of fabricating a delivered ACK.
+            return uploadWholeTransfer(machineId, token, transferId, source, fileName, mimeType,
+                    expectedBytes, expectedSha256, attempt);
         }
         var offset = resumeOffset;
         while (offset < expectedBytes) {
@@ -500,6 +509,12 @@ public final class AgentTransportClient implements AgentTransport {
     @Override
     public long queryTransferOffset(String machineId, String token, String transferId, int attempt)
             throws IOException, InterruptedException {
+        return queryTransferResume(machineId, token, transferId, attempt).offset();
+    }
+
+    @Override
+    public AgentTransport.TransferResume queryTransferResume(String machineId, String token, String transferId, int attempt)
+            throws IOException, InterruptedException {
         var endpoint = centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/content");
         var builder = newRequest(endpoint).timeout(requestTimeout)
                 .header("Authorization", "Bearer " + token)
@@ -507,7 +522,7 @@ public final class AgentTransportClient implements AgentTransport {
                 .header("Accept", "application/json");
         addAttemptHeader(builder, attempt);
         var response = send(builder.method("HEAD", HttpRequest.BodyPublishers.noBody()).build());
-        if (response.statusCode() == 404 || response.statusCode() == 405) return -1L;
+        if (response.statusCode() == 404 || response.statusCode() == 405) return new AgentTransport.TransferResume(-1L, "");
         if (response.statusCode() != 200) {
             throw new CenterTransportException("center file transfer resume probe failed", response.statusCode());
         }
@@ -515,11 +530,12 @@ public final class AgentTransportClient implements AgentTransport {
         // Spring can answer HEAD for an older GET mapping with 200 while
         // suppressing the body.  Absence of the explicit resume header is the
         // compatibility signal to use the legacy whole-stream upload.
-        if (value.isBlank()) return -1L;
+        if (value.isBlank()) return new AgentTransport.TransferResume(-1L, "");
         try {
             var offset = Long.parseLong(value);
             if (offset < 0) throw new NumberFormatException("negative offset");
-            return offset;
+            var status = response.headers().firstValue("X-RCM-Transfer-Status").orElse("").trim();
+            return new AgentTransport.TransferResume(offset, status);
         } catch (NumberFormatException exception) {
             throw new IOException("center returned an invalid resumable offset", exception);
         }

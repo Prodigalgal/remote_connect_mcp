@@ -91,6 +91,20 @@ public interface AgentTransport {
         return -1L;
     }
 
+    /**
+     * Return the Center resume offset together with its durable transfer
+     * status.  The status matters when a connection was lost after the final
+     * chunk reached the Center but before the metadata transaction committed:
+     * an offset equal to the expected size is not, by itself, proof that an
+     * artifact is available.  The default keeps old transports source and
+     * binary compatible while exposing only the small control-plane record
+     * needed by current clients.
+     */
+    default TransferResume queryTransferResume(String machineId, String token, String transferId, int attempt)
+            throws IOException, InterruptedException {
+        return new TransferResume(queryTransferOffset(machineId, token, transferId, attempt), "");
+    }
+
     /** Stream a local file to the Center-owned artifact store. */
     default com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadTransfer(
             String machineId, String token, String transferId, Path source, String fileName,
@@ -98,6 +112,8 @@ public interface AgentTransport {
             throws IOException, InterruptedException {
         throw new CenterTransportException("file transfer upload is not supported by this Center", 404);
     }
+
+    record TransferResume(long offset, String status) { }
 
     /** Optional upgrade progress channel; old test transports remain compatible. */
     default void reportUpgrade(String machineId, String token, UpgradeStatusRequest request)
