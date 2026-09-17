@@ -110,6 +110,14 @@ def main() -> int:
         jni_text = desktop_jni.read_text(encoding="utf-8")
         if "java.awt.Toolkit" not in jni_text:
             errors.append("desktop companion JNI metadata does not cover java.awt.Toolkit")
+        # Robot-based screen capture initializes the AWT volatile-image path
+        # through JNI.  Keep this class in the checked-in metadata so a
+        # Native Image release cannot regress to a binary that starts but
+        # fails on the first screenshot request.
+        if "sun.awt.image.VolatileSurfaceManager" not in jni_text:
+            errors.append(
+                "desktop companion JNI metadata does not cover sun.awt.image.VolatileSurfaceManager"
+            )
 
     for module in ("agent", "browser", "center"):
         resource_root = root / "java" / module / "src" / "main" / "resources"

@@ -717,6 +717,12 @@
     "allDeclaredMethods": true
   },
   {
+    "name": "sun.awt.image.VolatileSurfaceManager",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
     "name": "sun.awt.image.IntegerComponentRaster",
     "fields": [
       {

@@ -78,12 +78,21 @@ $agentZip = Download-Verified "remote-connect-mcp-agent-$Version-windows-amd64.z
 $desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-windows-amd64.zip"
 $browserZip = Download-Verified "remote-connect-mcp-browser-$Version-windows-amd64.zip"
 $installer = Join-Path $StageRoot "install-java-agent.ps1"
-Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-java-agent.ps1" -OutFile $installer -TimeoutSec 30
+# Prefer the installer shipped beside this deployment script.  This keeps a
+# staged SYSTEM apply in lockstep with local compatibility fixes (notably the
+# PowerShell 5.1 ProcessStartInfo fallback) instead of silently downloading an
+# older tag copy from GitHub.  The remote tag remains the fallback for a
+# standalone script downloaded without the repository.
+$localInstaller = Join-Path $PSScriptRoot 'install-java-agent.ps1'
+if (Test-Path -LiteralPath $localInstaller -PathType Leaf) {
+    Copy-Item -LiteralPath $localInstaller -Destination $installer -Force
+} else {
+    Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-java-agent.ps1" -OutFile $installer -TimeoutSec 30
+}
 
 $runtime = Join-Path $StageRoot "browser-runtime"
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
 $worker = Join-Path $runtime "browser-worker.mjs"
-Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-java-agent.ps1" -OutFile $installer -TimeoutSec 30
 Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/browser-worker.mjs" -OutFile $worker -TimeoutSec 30
 $packageJson = Join-Path $runtime "package.json"
 if (-not (Test-Path -LiteralPath $packageJson)) {

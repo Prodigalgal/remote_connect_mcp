@@ -394,12 +394,25 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
     }
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $destination
-    $psi.ArgumentList.Add('--register-once')
+    # Windows PowerShell 5.1 runs on the .NET Framework, whose
+    # ProcessStartInfo does not expose the .NET Core ArgumentList/Environment
+    # properties.  The installer is often launched from an elevated Windows
+    # PowerShell window even when PowerShell 7 is installed, so keep the
+    # registration path compatible with both runtimes.
+    if ($null -ne $psi.GetType().GetProperty('ArgumentList')) {
+        $psi.ArgumentList.Add('--register-once')
+    } else {
+        $psi.Arguments = '--register-once'
+    }
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-    foreach ($entry in $bootstrap.GetEnumerator()) { $psi.Environment[$entry.Key] = [string]$entry.Value }
+    if ($null -ne $psi.GetType().GetProperty('Environment')) {
+        foreach ($entry in $bootstrap.GetEnumerator()) { $psi.Environment[$entry.Key] = [string]$entry.Value }
+    } else {
+        foreach ($entry in $bootstrap.GetEnumerator()) { $psi.EnvironmentVariables[$entry.Key] = [string]$entry.Value }
+    }
     $registration = [System.Diagnostics.Process]::new()
     $registration.StartInfo = $psi
     if (-not $registration.Start()) { throw "could not start Java Agent registration" }
@@ -480,18 +493,36 @@ if ($DesktopEnabled) {
     # AWT/User32 can see the desktop; it communicates through the protected
     # state/desktop loopback endpoint and never registers another Agent.
     $desktopDir = Join-Path $StateDir 'desktop'
-    & icacls.exe $desktopDir /grant:r "$env:USERNAME:(OI)(CI)M" | Out-Null
+    # The apply helper runs as SYSTEM and sets USERNAME to the interactive
+    # account.  Resolve that account to a SID so a bare name cannot silently
+    # produce an unusable ACL on localized/domain Windows installations.  The
+    # user gets traverse-only access to the state root and modify access only
+    # to the desktop IPC directory; the Agent identity/token files remain
+    # inaccessible.
+    $desktopSid = $null
+    try {
+        $account = [Security.Principal.NTAccount]::new($env:COMPUTERNAME, $env:USERNAME)
+        $desktopSid = $account.Translate([Security.Principal.SecurityIdentifier]).Value
+    } catch { }
+    if ($desktopSid) {
+        & icacls.exe $StateDir /grant:r "*${desktopSid}:(X)" | Out-Null
+        & icacls.exe $desktopDir /grant:r "*${desktopSid}:(OI)(CI)M" | Out-Null
+    } else {
+        & icacls.exe $StateDir /grant:r "$($env:COMPUTERNAME)\$($env:USERNAME):(X)" | Out-Null
+        & icacls.exe $desktopDir /grant:r "$($env:COMPUTERNAME)\$($env:USERNAME):(OI)(CI)M" | Out-Null
+    }
     # Scheduled tasks do not inherit the SCM service's registry Environment
     # block. Pass the resolved state directory explicitly so a custom
     # ProgramData path still points at the same protected IPC endpoint.
     $escapedStateDir = $StateDir.Replace('"', '\\"')
     if (-not $desktopDestination) { throw 'Desktop companion binary is not installed.' }
     $action = New-ScheduledTaskAction -Execute $desktopDestination -Argument ('--desktop-companion "{0}"' -f $escapedStateDir)
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $desktopUserId = if ($env:USERNAME -like '*\*') { $env:USERNAME } else { "$($env:COMPUTERNAME)\$($env:USERNAME)" }
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $desktopUserId
     # Windows PowerShell 5.1 exposes the interactive logon type as `Interactive`;
     # `InteractiveToken` is not a valid enum value there and prevents the
     # desktop companion task from being registered on GUI hosts.
-    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    $principal = New-ScheduledTaskPrincipal -UserId $desktopUserId -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $companionTaskName -Action $action -Trigger $trigger -Principal $principal -Description "Interactive desktop companion for Remote Connect MCP" -Force | Out-Null
 } else {
     Unregister-ScheduledTask -TaskName $companionTaskName -Confirm:$false -ErrorAction SilentlyContinue
