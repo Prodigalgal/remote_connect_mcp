@@ -18,6 +18,7 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.List;
@@ -241,10 +242,10 @@ class PostgresIntegrationTest {
                 transfer.transfer().transferId()));
         assertEquals(transferData.length, jdbc.queryForObject("SELECT bytes_transferred FROM rcm_file_transfer WHERE transfer_id = ?", Long.class,
                 transfer.transfer().transferId()));
-        var replay = transfers.receiveFromAgent(agentId, transfer.transfer().transferId(),
+        var transferReplay = transfers.receiveFromAgent(agentId, transfer.transfer().transferId(),
                 new ByteArrayInputStream(transferData), transferData.length, transferHash,
                 "transfer-report.txt", "text/plain");
-        assertEquals(delivered.status(), replay.status());
+        assertEquals(delivered.status(), transferReplay.status());
         var restartedTransfers = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
         assertEquals("delivered", restartedTransfers.findByTransfer(transfer.transfer().transferId(), transferOrigin).orElseThrow().status());
 
