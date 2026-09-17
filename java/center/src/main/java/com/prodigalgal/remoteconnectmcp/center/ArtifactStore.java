@@ -30,8 +30,8 @@ public interface ArtifactStore {
      * exists only for the in-memory/test adapter.
      */
     default String put(String taskId, String sha256, InputStream input, long expectedBytes) {
-        if (input == null || expectedBytes <= 0 || expectedBytes > MAX_STREAM_BYTES) {
-            throw new IllegalArgumentException("artifact stream and a positive bounded size are required");
+        if (input == null || expectedBytes < 0 || expectedBytes > MAX_STREAM_BYTES) {
+            throw new IllegalArgumentException("artifact stream size is outside the allowed range");
         }
         if (expectedBytes > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("legacy artifact backend cannot materialise files larger than 2 GiB");
@@ -76,7 +76,7 @@ public interface ArtifactStore {
         if (sha256 == null || !sha256.matches("(?i)[0-9a-f]{64}")) {
             throw new IllegalArgumentException("artifact sha256 must be a 64-character hex digest");
         }
-        if (data == null || data.length == 0) throw new IllegalArgumentException("artifact data is required");
+        if (data == null) throw new IllegalArgumentException("artifact data is required");
     }
 
     static String normalizeKey(String objectKey) {

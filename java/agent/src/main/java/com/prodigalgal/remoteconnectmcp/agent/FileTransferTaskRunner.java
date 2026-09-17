@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.HexFormat;
@@ -77,16 +78,28 @@ final class FileTransferTaskRunner implements Runnable {
 
     private void publish(FileTransferAction action) throws IOException, InterruptedException {
         var source = AgentPaths.resolveFilePath(config, identity.machineId(), task, action.sourcePath(), true);
-        var bytes = Files.size(source);
-        if (bytes <= 0 || bytes > MAX_BYTES) throw new IOException("source file size is outside the allowed range");
-        var digest = action.expectedSha256();
-        if (digest == null || !digest.matches("(?i)[0-9a-f]{64}")) digest = sha256(source);
-        var response = transport.uploadTransfer(identity.machineId(), identity.token(), action.transferId(), source,
-                action.fileName(), action.mimeType(), bytes, digest, task.attempt());
-        var sha = response == null || response.sha256() == null || response.sha256().isBlank() ? digest : response.sha256();
-        acknowledge(action, "delivered", bytes, sha, null);
-        sendOutput("published " + action.fileName() + " (" + bytes + " bytes, sha256=" + sha + ")");
-        sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
+        var parent = source.getParent();
+        if (parent == null) throw new IOException("source file has no parent");
+        var snapshot = Files.createTempFile(parent, ".rcm-snapshot-", ".part");
+        try {
+            // Hash and upload the same immutable snapshot.  Reading the source
+            // once for the digest and opening it again for HTTP would permit a
+            // same-size replacement to pass the local check but fail remotely
+            // with an opaque SHA mismatch.
+            Files.copy(source, snapshot, StandardCopyOption.REPLACE_EXISTING);
+            var bytes = Files.size(snapshot);
+            if (bytes < 0 || bytes > MAX_BYTES) throw new IOException("source file size is outside the allowed range");
+            var digest = action.expectedSha256();
+            if (digest == null || !digest.matches("(?i)[0-9a-f]{64}")) digest = sha256(snapshot);
+            var response = transport.uploadTransfer(identity.machineId(), identity.token(), action.transferId(), snapshot,
+                    action.fileName(), action.mimeType(), bytes, digest, task.attempt());
+            var sha = response == null || response.sha256() == null || response.sha256().isBlank() ? digest : response.sha256();
+            acknowledge(action, "delivered", bytes, sha, null);
+            sendOutput("published " + action.fileName() + " (" + bytes + " bytes, sha256=" + sha + ")");
+            sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
+        } finally {
+            Files.deleteIfExists(snapshot);
+        }
     }
 
     private String sha256(Path source) throws IOException {

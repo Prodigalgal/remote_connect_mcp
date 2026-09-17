@@ -81,4 +81,15 @@ class FileSystemArtifactStoreTest {
         store.delete(key);
         assertTrue(Files.notExists(legacy));
     }
+
+    @Test
+    void preservesZeroByteArtifacts(@TempDir Path root) throws Exception {
+        var store = new FileSystemArtifactStore(root);
+        var digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(new byte[0]));
+        var key = store.put("empty-task", digest, new byte[0]);
+        assertArrayEquals(new byte[0], store.read(key));
+        try (var input = store.open(key)) {
+            assertEquals(-1, input.read());
+        }
+    }
 }

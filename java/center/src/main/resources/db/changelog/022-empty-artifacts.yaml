@@ -1,0 +1,20 @@
+databaseChangeLog:
+  - changeSet:
+      id: 022-empty-artifacts
+      author: remote-connect-mcp
+      labels: artifact,transport
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - sql:
+            sql: ALTER TABLE rcm_artifact DROP CONSTRAINT IF EXISTS ck_rcm_artifact_bytes
+        - sql:
+            sql: ALTER TABLE rcm_artifact ADD CONSTRAINT ck_rcm_artifact_bytes CHECK (bytes >= 0)
+      rollback:
+        - sql:
+            sql: ALTER TABLE rcm_artifact DROP CONSTRAINT IF EXISTS ck_rcm_artifact_bytes
+        - sql:
+            sql: ALTER TABLE rcm_artifact ADD CONSTRAINT ck_rcm_artifact_bytes CHECK (bytes > 0)

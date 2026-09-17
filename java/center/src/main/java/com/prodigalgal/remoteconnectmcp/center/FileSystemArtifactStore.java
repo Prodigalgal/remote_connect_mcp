@@ -86,7 +86,7 @@ public final class FileSystemArtifactStore implements ArtifactStore {
         if (sha256 == null || !sha256.matches("(?i)[0-9a-f]{64}")) {
             throw new IllegalArgumentException("artifact sha256 must be a 64-character hex digest");
         }
-        if (input == null || expectedBytes <= 0 || expectedBytes > MAX_STREAM_BYTES) {
+        if (input == null || expectedBytes < 0 || expectedBytes > MAX_STREAM_BYTES) {
             throw new IllegalArgumentException("artifact stream size is outside the allowed range");
         }
         var normalizedDigest = sha256.trim().toLowerCase();
@@ -134,7 +134,7 @@ public final class FileSystemArtifactStore implements ArtifactStore {
         var target = existingPathFor(normalizedKey);
         try {
             var size = Files.size(target);
-            if (size <= 0 || size > MAX_BYTES) throw new IOException("artifact object exceeds store limit");
+            if (size < 0 || size > MAX_BYTES) throw new IOException("artifact object exceeds store limit");
             var data = Files.readAllBytes(target);
             verify(target, digestFromKey(objectKey), data.length);
             return data;
@@ -147,7 +147,7 @@ public final class FileSystemArtifactStore implements ArtifactStore {
     public InputStream open(String objectKey) {
         var target = existingPathFor(ArtifactStore.normalizeKey(objectKey));
         try {
-            if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) || Files.size(target) <= 0) {
+            if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) || Files.size(target) < 0) {
                 throw new IOException("artifact object is missing");
             }
             return Files.newInputStream(target, StandardOpenOption.READ);

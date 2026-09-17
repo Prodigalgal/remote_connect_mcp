@@ -348,9 +348,12 @@ public class McpConfiguration {
                                                                    BiFunction<McpAsyncServerExchange, McpSchema.CallToolRequest, McpSchema.CallToolResult> handler,
                                                                    reactor.core.scheduler.Scheduler scheduler) {
         var annotations = McpSchema.ToolAnnotations.builder()
-                .readOnlyHint(name.equals("machines_list") || name.equals("machine_info") || name.equals("task_wait") || name.equals("task_output"))
-                .destructiveHint(name.equals("command_start") || name.equals("task_cancel") || name.equals("project"))
-                .openWorldHint(name.equals("command_start") || name.equals("project"))
+                .readOnlyHint(name.equals("machines_list") || name.equals("machine_info") || name.equals("task_wait")
+                        || name.equals("task_output") || name.equals("artifact_read"))
+                .destructiveHint(name.equals("command_start") || name.equals("task_cancel") || name.equals("project")
+                        || name.equals("artifact_put") || name.equals("artifact_get"))
+                .openWorldHint(name.equals("command_start") || name.equals("project")
+                        || name.equals("artifact_put") || name.equals("artifact_get"))
                 .build();
         var toolBuilder = McpSchema.Tool.builder(name)
                 .description(description)
@@ -410,8 +413,48 @@ public class McpConfiguration {
      * to the OpenAI file-bridge shape so a Host/Widget can render it directly.
      */
     private static Map<String, Object> artifactOutputSchema() {
-        var task = Map.of("type", "object", "additionalProperties", true);
-        var transfer = Map.of("type", "object", "additionalProperties", true);
+        var task = objectSchema(Map.ofEntries(
+                Map.entry("id", string("task identifier")),
+                Map.entry("machine_id", string("machine identifier")),
+                Map.entry("kind", string("task kind")),
+                Map.entry("required_capability", string("required capability")),
+                Map.entry("command", string("bounded command summary")),
+                Map.entry("cwd", string("bounded working directory")),
+                Map.entry("timeout_seconds", integer("task timeout")),
+                Map.entry("status", string("task status")),
+                Map.entry("attempt", integer("dispatch attempt")),
+                Map.entry("exit_code", nullable("integer", "process exit code")),
+                Map.entry("error", nullable("string", "bounded error")),
+                Map.entry("output_bytes", integer("output bytes")),
+                Map.entry("output_truncated", Map.of("type", "boolean")),
+                Map.entry("created_at", nullable("string", "creation time")),
+                Map.entry("dispatched_at", nullable("string", "dispatch time")),
+                Map.entry("started_at", nullable("string", "start time")),
+                Map.entry("finished_at", nullable("string", "finish time")),
+                Map.entry("artifact_bytes", integer("artifact bytes")),
+                Map.entry("artifact_mime", nullable("string", "artifact MIME")),
+                Map.entry("artifact_sha256", nullable("string", "artifact SHA-256")),
+                Map.entry("execution_session_id", string("execution session")),
+                Map.entry("result_channel", string("task result channel")),
+                Map.entry("execution_scope", objectSchema(Map.ofEntries(
+                        Map.entry("mode", string("scope mode")),
+                        Map.entry("project_id", nullable("string", "project identifier")),
+                        Map.entry("worktree_id", nullable("string", "worktree identifier")),
+                        Map.entry("root", nullable("string", "bounded scope root")),
+                        Map.entry("risk", nullable("string", "risk level")),
+                        Map.entry("expires_at", nullable("string", "contract expiry"))))));
+        var transfer = objectSchema(Map.ofEntries(
+                Map.entry("transfer_id", string("transfer identifier")),
+                Map.entry("artifact_id", string("artifact identifier")),
+                Map.entry("direction", string("transfer direction")),
+                Map.entry("task_id", nullable("string", "task identifier")),
+                Map.entry("status", string("transfer status")),
+                Map.entry("bytes", integer("transferred bytes")),
+                Map.entry("sha256", nullable("string", "transfer SHA-256")),
+                Map.entry("file_name", string("file name")),
+                Map.entry("mime_type", nullable("string", "MIME type")),
+                Map.entry("download_url", nullable("string", "short-lived download URL")),
+                Map.entry("error", nullable("string", "bounded transfer error"))));
         var file = Map.of("type", "object", "properties", Map.of(
                         "download_url", string("short-lived artifact URL"),
                         "file_id", string("artifact identifier"),
@@ -430,7 +473,15 @@ public class McpConfiguration {
                         Map.entry("mime_type", string("MIME type")),
                         Map.entry("file_name", string("file name")),
                         Map.entry("file", file)),
-                "additionalProperties", true);
+                "additionalProperties", false);
+    }
+
+    private static Map<String, Object> objectSchema(Map<String, Object> properties) {
+        return Map.of("type", "object", "properties", properties, "required", List.of(), "additionalProperties", false);
+    }
+
+    private static Map<String, Object> nullable(String type, String description) {
+        return Map.of("type", List.of(type, "null"), "description", description);
     }
 
     private static McpSchema.CallToolResult artifactPut(AgentRegistry agents, ProjectService projects,

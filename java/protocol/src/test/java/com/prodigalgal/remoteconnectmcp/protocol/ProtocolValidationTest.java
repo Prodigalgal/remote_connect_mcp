@@ -121,4 +121,13 @@ class ProtocolValidationTest {
         assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateTask(desktopAsCommand));
         assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateTask(browserAsDesktop));
     }
+
+    @Test
+    void acceptsPendingWebToAgentTransferMarker() {
+        var action = new FileTransferAction(FileTransferAction.WEB_TO_AGENT, "transfer-pending", "artifact-pending",
+                "", "/srv/incoming", "payload.bin", "application/octet-stream", 0L, "", false);
+        assertDoesNotThrow(() -> ProtocolValidation.validateTask(new TaskCommand(
+                "task-pending", TaskKind.FILE_TRANSFER, "file_transfer", null, "/srv", Map.of(), 0, null,
+                Instant.now(), null, action)));
+    }
 }

@@ -181,8 +181,8 @@ public final class ProtocolValidation {
             // zero/blank metadata marker and fills the immutable action once
             // ingest completes; such a task is never dispatchable.
             var pending = action.expectedBytes() == 0 && action.expectedSha256().isBlank();
-            if (action.expectedBytes() < 0 || (!pending && action.expectedBytes() <= 0)) {
-                throw new IllegalArgumentException("web_to_agent expected bytes must be positive or pending");
+            if (action.expectedBytes() < 0) {
+                throw new IllegalArgumentException("web_to_agent expected bytes must be non-negative");
             }
             if (!pending && !action.expectedSha256().matches("(?i)[0-9a-f]{64}")) {
                 throw new IllegalArgumentException("web_to_agent expected sha256 is invalid");

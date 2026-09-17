@@ -259,8 +259,13 @@ public final class ArtifactTransferService {
         }
         tasks.assertCurrentAttempt(machineId, row.taskId(), attempt);
         markDelivering(row);
-        var input = store.open(row.objectKey());
-        return new AgentDownload(row.transferId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), input);
+        try {
+            var input = store.open(row.objectKey());
+            return new AgentDownload(row.transferId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), input);
+        } catch (RuntimeException failure) {
+            markFailedByTransfer(row.transferId(), failure.getMessage());
+            throw failure;
+        }
     }
 
     /**
@@ -330,16 +335,16 @@ public final class ArtifactTransferService {
         var row = findTransfer(transferId).orElseThrow(() -> new IllegalArgumentException("file transfer not found"));
         if (!machineId.equals(row.machineId())) throw new SecurityException("file transfer does not belong to this machine");
         if (!FileTransferAction.AGENT_TO_WEB.equals(row.direction())) throw new IllegalArgumentException("transfer is not an outbound file");
-        if (input == null || contentLength <= 0 || contentLength > MAX_BYTES) throw new IllegalArgumentException("content length is outside the allowed range");
+        if (input == null || contentLength < 0 || contentLength > MAX_BYTES) throw new IllegalArgumentException("content length is outside the allowed range");
         if ("delivered".equals(row.status())) {
             return new FileTransferResponse(row.transferId(), row.artifactId(), row.status(), row.bytes(), row.sha256(), null);
         }
         if ("canceled".equals(row.status())) throw new IllegalArgumentException("file transfer is canceled");
         try (var reservation = resources.reserve(row.principalId(), row.machineId(), contentLength)) {
-            markDelivering(row);
             var safeName = fileName == null || fileName.isBlank() ? row.fileName() : fileName;
             validateFileName(safeName);
             var safeMime = normalizeMime(mimeType == null || mimeType.isBlank() ? row.mimeType() : mimeType);
+            markDelivering(row);
             Path temporary = null;
             String objectKey = null;
             var committed = false;
@@ -409,21 +414,40 @@ public final class ArtifactTransferService {
     public String publicUrl(String artifactId, TaskOrigin origin) {
         if (artifactId == null || artifactId.isBlank() || origin == null) return "";
         var expires = Instant.now().plus(signedUrlTtl).getEpochSecond();
-        var subject = artifactId + "\n" + origin.principalId() + "\n" + expires;
+        var purpose = "download";
+        var connection = origin.connectionId();
+        var subject = signatureSubject(artifactId, origin.principalId(), expires, purpose, connection);
         var signature = sign(subject);
         var base = publicBaseUrl.isBlank() ? "" : publicBaseUrl;
         return base + "/artifacts/" + artifactId + "/content?expires=" + expires + "&principal="
-                + encode(origin.principalId()) + "&signature=" + encode(signature);
+                + encode(origin.principalId()) + "&purpose=" + purpose + "&connection=" + encode(connection)
+                + "&signature=" + encode(signature);
     }
 
     public PublicArtifact openPublic(String artifactId, long expires, String principal, String signature) {
+        return openPublic(artifactId, expires, principal, "", "download", signature);
+    }
+
+    public PublicArtifact openPublic(String artifactId, long expires, String principal, String connection,
+                                     String purpose, String signature) {
         if (artifactId == null || artifactId.isBlank() || principal == null || principal.isBlank()
-                || expires < Instant.now().getEpochSecond() || signature == null) {
+                || expires < Instant.now().getEpochSecond() || signature == null
+                || purpose == null || !"download".equals(purpose)
+                || connection == null || connection.length() > 256) {
             throw new SecurityException("invalid or expired artifact URL");
         }
-        var expectedSignature = sign(artifactId + "\n" + principal + "\n" + expires);
-        if (!MessageDigest.isEqual(expectedSignature.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
-                signature.trim().getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
+        var expectedSignature = sign(signatureSubject(artifactId, principal, expires, purpose, connection));
+        var supplied = signature.trim().getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        var valid = MessageDigest.isEqual(expectedSignature.getBytes(java.nio.charset.StandardCharsets.US_ASCII), supplied);
+        // Keep already-issued pre-session links valid during a rolling
+        // deployment; all newly generated links include purpose and
+        // connection binding.  The compatibility path is only reachable when
+        // the caller omitted the new connection query parameter.
+        if (!valid && connection.isBlank()) {
+            valid = MessageDigest.isEqual(sign(artifactId + "\n" + principal + "\n" + expires)
+                    .getBytes(java.nio.charset.StandardCharsets.US_ASCII), supplied);
+        }
+        if (!valid) {
             throw new SecurityException("invalid or expired artifact URL");
         }
         PublicArtifact row = jdbc == null ? memory.values().stream().map(MemoryTransfer::descriptor)
@@ -554,8 +578,7 @@ public final class ArtifactTransferService {
     }
 
     private void markFailed(TransferRow row, String error) {
-        if (jdbc != null) jdbc.update("UPDATE rcm_file_transfer SET status = 'failed', error_text = ?, updated_at = CURRENT_TIMESTAMP WHERE transfer_id = ?",
-                error == null ? "file transfer failed" : error.substring(0, Math.min(error.length(), 4096)), row.transferId());
+        markFailedByTransfer(row.transferId(), error);
     }
 
     private void markDelivering(TransferRow row) {
@@ -705,6 +728,9 @@ public final class ArtifactTransferService {
     }
 
     private static String encode(String value) { return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8); }
+    private static String signatureSubject(String artifactId, String principal, long expires, String purpose, String connection) {
+        return artifactId + "\n" + principal + "\n" + expires + "\n" + purpose + "\n" + connection;
+    }
     private static String normalizeBase(String value) { return value == null ? "" : value.trim().replaceAll("/+$", ""); }
     private static Duration durationSetting(String key, Duration fallback, Duration minimum, Duration maximum) {
         var raw = System.getenv(key);

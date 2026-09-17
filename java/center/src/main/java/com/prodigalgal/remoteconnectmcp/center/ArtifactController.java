@@ -24,8 +24,10 @@ public final class ArtifactController {
     public ResponseEntity<StreamingResponseBody> content(@PathVariable String artifactId,
                                                           @RequestParam long expires,
                                                           @RequestParam String principal,
+                                                          @RequestParam(defaultValue = "") String connection,
+                                                          @RequestParam(defaultValue = "download") String purpose,
                                                           @RequestParam String signature) {
-        var artifact = transfers.openPublic(artifactId, expires, principal, signature);
+        var artifact = transfers.openPublic(artifactId, expires, principal, connection, purpose, signature);
         StreamingResponseBody body = output -> {
             try (var input = artifact.body()) {
                 input.transferTo(output);

@@ -319,7 +319,7 @@ public final class AgentTransportClient implements AgentTransport {
             String mimeType, long expectedBytes, String expectedSha256, int attempt)
             throws IOException, InterruptedException {
         if (transferId == null || transferId.isBlank() || source == null || !Files.isRegularFile(source)
-                || expectedBytes <= 0 || expectedBytes > 4L * 1024 * 1024 * 1024) {
+                || expectedBytes < 0 || expectedBytes > 4L * 1024 * 1024 * 1024) {
             throw new IllegalArgumentException("invalid file transfer upload metadata");
         }
         var actualBytes = Files.size(source);

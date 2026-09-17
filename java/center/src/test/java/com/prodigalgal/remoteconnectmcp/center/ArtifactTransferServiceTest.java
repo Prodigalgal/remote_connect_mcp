@@ -46,7 +46,7 @@ class ArtifactTransferServiceTest {
         var uploaded = service.receiveFromAgent(registration.machineId(), created.transfer().transferId(),
                 new ByteArrayInputStream(data), data.length, sha, "report.txt", "text/plain");
 
-        assertEquals("ready", uploaded.status());
+        assertEquals("delivered", uploaded.status());
         var descriptor = service.findByArtifact(created.transfer().artifactId(), origin).orElseThrow();
         assertEquals(data.length, descriptor.bytes());
         assertEquals(sha, descriptor.sha256());
@@ -54,8 +54,10 @@ class ArtifactTransferServiceTest {
         var query = signed.getRawQuery();
         var expires = queryValue(query, "expires");
         var principal = queryValue(query, "principal");
+        var connection = queryValue(query, "connection");
+        var purpose = queryValue(query, "purpose");
         var signature = queryValue(query, "signature");
-        try (var publicArtifact = service.openPublic(descriptor.artifactId(), Long.parseLong(expires), principal, signature).body()) {
+        try (var publicArtifact = service.openPublic(descriptor.artifactId(), Long.parseLong(expires), principal, connection, purpose, signature).body()) {
             assertArrayEquals(data, publicArtifact.readAllBytes());
         }
         assertThrows(java.util.NoSuchElementException.class,
