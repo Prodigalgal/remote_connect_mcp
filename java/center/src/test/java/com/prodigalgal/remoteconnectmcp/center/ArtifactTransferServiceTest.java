@@ -126,6 +126,33 @@ class ArtifactTransferServiceTest {
         assertEquals(sha, descriptor.sha256());
     }
 
+    @Test
+    void keepsPartialSpoolWhenAChunkEndsBeforeItsDeclaredLength(@TempDir Path root) throws Exception {
+        var registry = AgentRegistry.forTest("enrollment");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-stall", "host-stall", "linux", "amd64",
+                "dev", root.toString(), ScopeMode.UNRESTRICTED, null, List.of("command", "file_transfer")), "enrollment");
+        var tasks = new TaskService(registry);
+        var store = new FileSystemArtifactStore(root.resolve("objects"));
+        var tokens = new CenterTokenConfig() {
+            @Override
+            public String artifactDownloadSecret() {
+                return "stall-signing-secret";
+            }
+        };
+        var service = new ArtifactTransferService(null, null, store, tasks, tokens);
+        var origin = new TaskOrigin("principal-stall", "token-stall", "connection-stall");
+        var data = "partial payload".getBytes(StandardCharsets.UTF_8);
+        var request = new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "ignored", root.toString(), Map.of(), 0, null, Instant.now()),
+                "stall-transfer", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
+        var transfer = service.createAgentToWeb(origin, request, root.resolve("stall.txt").toString(), "stall.txt", "text/plain");
+        assertThrows(ArtifactTransferService.TransferTemporaryException.class,
+                () -> service.receiveFromAgentChunk(registration.machineId(), transfer.transfer().transferId(),
+                        new ByteArrayInputStream(java.util.Arrays.copyOfRange(data, 0, 3)), 6, 0, data.length,
+                        sha256(data), "stall.txt", "text/plain", null));
+        assertEquals(3, service.resumeFromAgent(registration.machineId(), transfer.transfer().transferId(), null).offset());
+    }
+
     private static String queryValue(String query, String key) {
         for (var item : query.split("&")) {
             var pair = item.split("=", 2);
