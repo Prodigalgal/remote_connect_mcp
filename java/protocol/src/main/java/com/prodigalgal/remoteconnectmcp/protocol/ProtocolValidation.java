@@ -59,6 +59,9 @@ public final class ProtocolValidation {
         if (task.kind() != TaskKind.DESKTOP && task.desktop() != null) {
             throw new IllegalArgumentException("desktop action is only valid for desktop tasks");
         }
+        if (task.kind() != TaskKind.FILE_TRANSFER && task.fileTransfer() != null) {
+            throw new IllegalArgumentException("file transfer action is only valid for file transfer tasks");
+        }
         if (task.kind() == TaskKind.DESKTOP && !AgentCapability.DESKTOP.wireValue().equalsIgnoreCase(task.requiredCapability())) {
             throw new IllegalArgumentException("desktop tasks require the desktop capability");
         }
@@ -70,6 +73,10 @@ public final class ProtocolValidation {
                 && !AgentCapability.COMMAND.wireValue().equalsIgnoreCase(task.requiredCapability())
                 && !AgentCapability.DURABLE_TASKS.wireValue().equalsIgnoreCase(task.requiredCapability())) {
             throw new IllegalArgumentException("command tasks require command or durable_tasks capability");
+        }
+        if (task.kind() == TaskKind.FILE_TRANSFER
+                && !AgentCapability.FILE_TRANSFER.wireValue().equalsIgnoreCase(task.requiredCapability())) {
+            throw new IllegalArgumentException("file transfer tasks require the file_transfer capability");
         }
         if (task.kind() == TaskKind.DESKTOP) {
             if (task.desktop() == null || task.desktop().operation() == null || task.desktop().operation().isBlank()) {
@@ -151,6 +158,43 @@ public final class ProtocolValidation {
         }
         if (task.kind() == TaskKind.BROWSER && (task.command() == null || task.command().isBlank())) {
             throw new IllegalArgumentException("browser adapter command is required for browser tasks");
+        }
+        if (task.kind() == TaskKind.FILE_TRANSFER) {
+            validateFileTransfer(task.fileTransfer());
+        }
+    }
+
+    private static void validateFileTransfer(FileTransferAction action) {
+        if (action == null) throw new IllegalArgumentException("file transfer action is required");
+        if (!action.webToAgent() && !action.agentToWeb()) {
+            throw new IllegalArgumentException("file transfer direction must be web_to_agent or agent_to_web");
+        }
+        requireText(action.transferId(), "transfer id", 180);
+        if (!action.transferId().matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,179}")) {
+            throw new IllegalArgumentException("transfer id has invalid characters");
+        }
+        if (action.webToAgent()) {
+            requireText(action.artifactId(), "artifact id", 180);
+            requireText(action.destinationPath(), "destination path", MAX_CWD_BYTES);
+            if (action.expectedBytes() <= 0) throw new IllegalArgumentException("web_to_agent expected bytes must be positive");
+            if (!action.expectedSha256().matches("(?i)[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("web_to_agent expected sha256 is invalid");
+            }
+        } else {
+            requireText(action.sourcePath(), "source path", MAX_CWD_BYTES);
+        }
+        if (action.fileName() != null && !action.fileName().isBlank()) {
+            requireText(action.fileName(), "file name", 512);
+            if (action.fileName().indexOf('/') >= 0 || action.fileName().indexOf('\\') >= 0) {
+                throw new IllegalArgumentException("file name must not contain a path separator");
+            }
+        }
+        if (action.mimeType() != null && !action.mimeType().isBlank()) {
+            requireText(action.mimeType(), "file mime type", 128);
+        }
+        if (!action.expectedSha256().isBlank()
+                && !action.expectedSha256().matches("(?i)[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("expected sha256 is invalid");
         }
     }
 

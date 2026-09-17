@@ -46,6 +46,13 @@ public class CenterTokenConfig {
         return accepts(adminToken, candidate);
     }
 
+    /** Key used only to sign short-lived browser artifact URLs. */
+    public String artifactDownloadSecret() {
+        if (mcpToken != null && !mcpToken.isBlank()) return mcpToken;
+        if (adminToken != null && !adminToken.isBlank()) return adminToken;
+        throw new IllegalStateException("an MCP or admin token is required to sign artifact URLs");
+    }
+
     private static boolean accepts(String expectedValue, String candidate) {
         if (expectedValue == null || candidate == null) {
             return false;

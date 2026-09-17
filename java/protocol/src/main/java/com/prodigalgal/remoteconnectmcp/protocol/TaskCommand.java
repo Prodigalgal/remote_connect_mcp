@@ -15,19 +15,34 @@ public record TaskCommand(
         DesktopAction desktop,
         Instant createdAt,
         ExecutionContract contract,
-        int attempt) {
+        int attempt,
+        FileTransferAction fileTransfer) {
 
     /** Compatibility constructor for the pre-contract wire shape. */
     public TaskCommand(String id, TaskKind kind, String requiredCapability, String command, String cwd,
                        Map<String, String> env, int timeoutSeconds, DesktopAction desktop, Instant createdAt) {
-        this(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, null, 0);
+        this(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, null, 0, null);
     }
 
     /** Compatibility constructor for callers that already carry a contract. */
     public TaskCommand(String id, TaskKind kind, String requiredCapability, String command, String cwd,
                        Map<String, String> env, int timeoutSeconds, DesktopAction desktop, Instant createdAt,
                        ExecutionContract contract) {
-        this(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, contract, 0);
+        this(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, contract, 0, null);
+    }
+
+    /** Compatibility constructor for callers that carry an attempt fence. */
+    public TaskCommand(String id, TaskKind kind, String requiredCapability, String command, String cwd,
+                       Map<String, String> env, int timeoutSeconds, DesktopAction desktop, Instant createdAt,
+                       ExecutionContract contract, int attempt) {
+        this(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, contract, attempt, null);
+    }
+
+    /** Constructor for a Center-issued file transfer task. */
+    public TaskCommand(String id, TaskKind kind, String requiredCapability, String command, String cwd,
+                       Map<String, String> env, int timeoutSeconds, DesktopAction desktop, Instant createdAt,
+                       ExecutionContract contract, FileTransferAction fileTransfer) {
+        this(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, contract, 0, fileTransfer);
     }
 
     public TaskCommand {
@@ -38,12 +53,12 @@ public record TaskCommand(
     }
 
     public TaskCommand withContract(ExecutionContract value) {
-        return new TaskCommand(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, value, attempt);
+        return new TaskCommand(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, value, attempt, fileTransfer);
     }
 
     /** Center sets the dispatch attempt on the leased wire command. */
     public TaskCommand withAttempt(int value) {
-        return new TaskCommand(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, contract, value);
+        return new TaskCommand(id, kind, requiredCapability, command, cwd, env, timeoutSeconds, desktop, createdAt, contract, value, fileTransfer);
     }
 
     public record DesktopAction(String operation, String executable, List<String> args, String cwd,

@@ -24,6 +24,7 @@ import java.util.Set;
 public final class HttpArtifactStore implements ArtifactStore {
     private static final String PREFIX = "http-v1/";
     private static final long MAX_BYTES = 64L * 1024 * 1024;
+    private static final long MAX_STREAM_BYTES = ArtifactStore.MAX_STREAM_BYTES;
 
     private final URI baseUrl;
     private final String token;
@@ -72,6 +73,28 @@ public final class HttpArtifactStore implements ArtifactStore {
     }
 
     @Override
+    public String put(String taskId, String sha256, InputStream input, long expectedBytes) {
+        if (taskId == null || taskId.isBlank()) throw new IllegalArgumentException("artifact task/transfer id is required");
+        if (sha256 == null || !sha256.matches("(?i)[0-9a-f]{64}")) throw new IllegalArgumentException("artifact sha256 must be a 64-character hex digest");
+        if (input == null || expectedBytes <= 0 || expectedBytes > MAX_STREAM_BYTES) throw new IllegalArgumentException("artifact stream size is outside the allowed range");
+        var digest = sha256.trim().toLowerCase();
+        var key = PREFIX + digest(taskId) + "/" + digest + ".blob";
+        var request = request("PUT", key).header("Content-Type", "application/octet-stream")
+                .header("Content-Length", Long.toString(expectedBytes)).header("X-RCM-SHA256", digest)
+                .PUT(HttpRequest.BodyPublishers.ofInputStream(() -> input)).build();
+        var response = send(request);
+        try {
+            if (response.statusCode() != 200 && response.statusCode() != 201 && response.statusCode() != 204) {
+                throw failure("put", response.statusCode());
+            }
+        } finally {
+            closeQuietly(response.body());
+            closeQuietly(input);
+        }
+        return key;
+    }
+
+    @Override
     public byte[] read(String objectKey) {
         var key = normalizeKey(objectKey);
         var response = send(request("GET", key).GET().build());
@@ -90,6 +113,17 @@ public final class HttpArtifactStore implements ArtifactStore {
             throw new ArtifactStore.StorageException("artifact HTTP response SHA-256 mismatch");
         }
         return data;
+    }
+
+    @Override
+    public InputStream open(String objectKey) {
+        var key = normalizeKey(objectKey);
+        var response = send(request("GET", key).GET().build());
+        if (response.statusCode() != 200) {
+            closeQuietly(response.body());
+            throw failure("read", response.statusCode());
+        }
+        return response.body();
     }
 
     @Override

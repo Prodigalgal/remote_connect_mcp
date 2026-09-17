@@ -259,7 +259,7 @@ public record AgentConfig(
         var workspace = System.getenv("REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT");
         if (scope.bounded() && (workspace == null || workspace.isBlank())) workspace = cwd;
         var desktop = Boolean.parseBoolean(env("REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED", "false"));
-        var capabilities = Arrays.stream(System.getenv().getOrDefault("REMOTE_CONNECT_MCP_AGENT_CAPABILITIES", "command,durable_tasks").split(","))
+        var capabilities = Arrays.stream(System.getenv().getOrDefault("REMOTE_CONNECT_MCP_AGENT_CAPABILITIES", "command,durable_tasks,file_transfer").split(","))
                 .map(String::trim)
                 .filter(value -> !value.isBlank())
                 .toList();

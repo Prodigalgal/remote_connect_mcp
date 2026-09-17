@@ -8,6 +8,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import java.io.IOException;
+import java.nio.file.Path;
 
 /** Transport seam used by the runtime and deterministic reconnect tests. */
 public interface AgentTransport {
@@ -50,6 +51,21 @@ public interface AgentTransport {
     default ArtifactResponse appendArtifact(String machineId, String token, String taskId, int attempt,
                                             String mimeType, String sha256, byte[] data) throws IOException, InterruptedException {
         return appendArtifact(machineId, token, taskId, mimeType, sha256, data);
+    }
+
+    /** Stream a Center-owned inbound artifact to a local file. */
+    default void downloadTransfer(String machineId, String token, String transferId, Path destination,
+                                  long expectedBytes, String expectedSha256, int attempt)
+            throws IOException, InterruptedException {
+        throw new CenterTransportException("file transfer download is not supported by this Center", 404);
+    }
+
+    /** Stream a local file to the Center-owned artifact store. */
+    default com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadTransfer(
+            String machineId, String token, String transferId, Path source, String fileName,
+            String mimeType, long expectedBytes, String expectedSha256, int attempt)
+            throws IOException, InterruptedException {
+        throw new CenterTransportException("file transfer upload is not supported by this Center", 404);
     }
 
     /** Optional upgrade progress channel; old test transports remain compatible. */

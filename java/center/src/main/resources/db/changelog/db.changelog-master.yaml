@@ -37,3 +37,5 @@ databaseChangeLog:
       file: db/changelog/018-principal-access.yaml
   - include:
       file: db/changelog/019-execution-sessions.yaml
+  - include:
+      file: db/changelog/020-artifact-transport.yaml

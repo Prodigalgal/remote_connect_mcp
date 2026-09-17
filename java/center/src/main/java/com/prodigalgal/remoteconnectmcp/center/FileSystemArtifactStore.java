@@ -1,6 +1,7 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -33,6 +34,7 @@ import java.util.UUID;
 public final class FileSystemArtifactStore implements ArtifactStore {
     private static final String PREFIX = "fs-v1/";
     private static final long MAX_BYTES = 64L * 1024 * 1024;
+    private static final long MAX_STREAM_BYTES = ArtifactStore.MAX_STREAM_BYTES;
     private final Path root;
 
     public FileSystemArtifactStore(Path root) {
@@ -79,6 +81,54 @@ public final class FileSystemArtifactStore implements ArtifactStore {
     }
 
     @Override
+    public String put(String taskId, String sha256, InputStream input, long expectedBytes) {
+        if (taskId == null || taskId.isBlank()) throw new IllegalArgumentException("artifact task/transfer id is required");
+        if (sha256 == null || !sha256.matches("(?i)[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("artifact sha256 must be a 64-character hex digest");
+        }
+        if (input == null || expectedBytes <= 0 || expectedBytes > MAX_STREAM_BYTES) {
+            throw new IllegalArgumentException("artifact stream size is outside the allowed range");
+        }
+        var normalizedDigest = sha256.trim().toLowerCase();
+        var objectKey = PREFIX + digest(taskId) + "/" + normalizedDigest + ".blob";
+        var target = pathFor(objectKey);
+        try {
+            Files.createDirectories(target.getParent());
+            if (Files.exists(target)) {
+                verify(target, normalizedDigest, expectedBytes);
+                return objectKey;
+            }
+            var temporary = target.resolveSibling("." + target.getFileName() + "." + UUID.randomUUID() + ".part");
+            try (var output = Files.newOutputStream(temporary, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                var digest = MessageDigest.getInstance("SHA-256");
+                var buffer = new byte[1024 * 1024];
+                long count = 0;
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    if (read == 0) continue;
+                    count += read;
+                    if (count > expectedBytes || count > MAX_STREAM_BYTES) {
+                        throw new IOException("artifact stream exceeds declared size");
+                    }
+                    output.write(buffer, 0, read);
+                    digest.update(buffer, 0, read);
+                }
+                var actual = HexFormat.of().formatHex(digest.digest());
+                if (count != expectedBytes) throw new IOException("artifact stream size does not match metadata");
+                if (!actual.equalsIgnoreCase(normalizedDigest)) throw new IOException("artifact stream SHA-256 mismatch");
+                restrictOwner(temporary, false);
+                moveAtomically(temporary, target);
+                restrictOwner(target, false);
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
+            return objectKey;
+        } catch (NoSuchAlgorithmException | IOException exception) {
+            throw new ArtifactStore.StorageException("cannot write streamed artifact object", exception);
+        }
+    }
+
+    @Override
     public byte[] read(String objectKey) {
         var normalizedKey = ArtifactStore.normalizeKey(objectKey);
         var target = existingPathFor(normalizedKey);
@@ -90,6 +140,19 @@ public final class FileSystemArtifactStore implements ArtifactStore {
             return data;
         } catch (IOException exception) {
             throw new ArtifactStore.StorageException("cannot read artifact object", exception);
+        }
+    }
+
+    @Override
+    public InputStream open(String objectKey) {
+        var target = existingPathFor(ArtifactStore.normalizeKey(objectKey));
+        try {
+            if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) || Files.size(target) <= 0) {
+                throw new IOException("artifact object is missing");
+            }
+            return Files.newInputStream(target, StandardOpenOption.READ);
+        } catch (IOException exception) {
+            throw new ArtifactStore.StorageException("cannot open artifact object", exception);
         }
     }
 
@@ -188,8 +251,22 @@ public final class FileSystemArtifactStore implements ArtifactStore {
 
     private static void verify(Path target, String expectedDigest, long expectedBytes) throws IOException {
         if (Files.size(target) != expectedBytes) throw new IOException("artifact object size mismatch");
-        var actual = sha256(Files.readAllBytes(target));
-        if (!actual.equalsIgnoreCase(expectedDigest)) throw new IOException("artifact object SHA-256 mismatch");
+        try (var input = Files.newInputStream(target, StandardOpenOption.READ)) {
+            var digest = MessageDigest.getInstance("SHA-256");
+            var buffer = new byte[1024 * 1024];
+            int read;
+            long count = 0;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read == 0) continue;
+                count += read;
+                digest.update(buffer, 0, read);
+            }
+            if (count != expectedBytes || !HexFormat.of().formatHex(digest.digest()).equalsIgnoreCase(expectedDigest)) {
+                throw new IOException("artifact object SHA-256 mismatch");
+            }
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IOException("SHA-256 is unavailable", exception);
+        }
     }
 
     private static void moveAtomically(Path source, Path target) throws IOException {

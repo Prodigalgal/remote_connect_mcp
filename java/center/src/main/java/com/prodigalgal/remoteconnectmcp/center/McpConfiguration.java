@@ -33,6 +33,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -79,7 +80,8 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         AgentConfigUpdate.class,
         OutputRequest.class, OutputResponse.class, PollRequest.class, PollResponse.class,
         RegisterRequest.class, RegisterResponse.class, TaskCommand.class,
-        TaskCommand.DesktopAction.class, TaskUpdateRequest.class,
+        TaskCommand.DesktopAction.class, com.prodigalgal.remoteconnectmcp.protocol.FileTransferAction.class,
+        com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse.class, TaskUpdateRequest.class,
         UpgradeArtifact.class, UpgradePlan.class, UpgradeStatusRequest.class,
         // Admin API projections/requests are also Java records.  They are
         // serialized outside the MCP handler (for example /machines and
@@ -97,6 +99,9 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         McpPrincipalService.IssueRequest.class, McpPrincipalService.IssuedToken.class,
         McpTokenView.class, McpAccessService.MachineGrantView.class,
         McpAccessService.ProjectMemberView.class, ExecutionSessionService.SessionView.class,
+        ArtifactTransferService.TransferCreated.class, ArtifactTransferService.TransferDescriptor.class,
+        ArtifactTransferService.AgentDownload.class, ArtifactTransferService.PublicArtifact.class,
+        ArtifactFile.class, ArtifactPutArgs.class, ArtifactGetArgs.class, ArtifactReadArgs.class,
         TaskService.ArtifactGcResult.class})
 public class McpConfiguration {
     // MCP inventory responses are intentionally smaller than the Console
@@ -171,15 +176,16 @@ public class McpConfiguration {
                                     TaskService tasks,
                                     ProjectService projects,
                                     McpAccessService access,
+                                    ArtifactTransferService transfers,
                                     ExecutorService mcpVirtualThreadExecutor,
                                     @Value("${rcm.version:dev}") String version) {
         var server = McpServer.async(transport)
                 .serverInfo("remote-connect-mcp-center", version)
-                .instructions("Use machines_list first and always pass an explicit machine_id and scope. Inventory lists are compact summaries: use machine_info or an explicit project operation for details instead of asking for everything at once. Prefer project/worktree or workspace/path; unrestricted must be explicit. Tasks are asynchronous and bounded; report task_id for long work and read output with cursors. Large artifacts are returned as metadata and must be opened through the authenticated Console when needed.")
+                .instructions("Use machines_list first and always pass an explicit machine_id and scope. Inventory lists are compact summaries: use machine_info or an explicit project operation for details instead of asking for everything at once. Prefer project/worktree or workspace/path; unrestricted must be explicit. Tasks are asynchronous and bounded; report task_id for long work and read output with cursors. Use artifact_put for a ChatGPT file to Agent and artifact_get for an Agent file to ChatGPT; file tools return compact handles and never put binary data in MCP text. Call artifact_read only when the file handle or short-lived download URL is needed.")
                 .strictToolNameValidation(true)
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
-                .tools(toolSpecs(agents, tasks, projects, access, mcpVirtualThreadExecutor))
+                .tools(toolSpecs(agents, tasks, projects, access, transfers, mcpVirtualThreadExecutor))
                 .build();
         return server;
     }
@@ -187,6 +193,7 @@ public class McpConfiguration {
     private static List<McpServerFeatures.AsyncToolSpecification> toolSpecs(AgentRegistry agents, TaskService tasks,
                                                                              ProjectService projects,
                                                                              McpAccessService access,
+                                                                             ArtifactTransferService transfers,
                                                                              ExecutorService mcpVirtualThreadExecutor) {
         var scheduler = Schedulers.fromExecutor(mcpVirtualThreadExecutor);
         return List.of(
@@ -283,10 +290,60 @@ public class McpConfiguration {
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskOutput(tasks, origin(exchange), request); }, scheduler),
                 tool("task_cancel", "Cancel a queued or running task.", schema(
                         Map.of("task_id", string("task ID")), List.of("task_id")),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancel(tasks, origin(exchange), request); }, scheduler));
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancel(tasks, origin(exchange), request); }, scheduler),
+                tool("artifact_put", "Transfer one ChatGPT file to a target Agent path. Returns only a task/transfer handle; bytes never enter MCP text.",
+                        schema(Map.ofEntries(
+                                Map.entry("machine_id", string("target machine ID")),
+                                Map.entry("file", fileObjectSchema()),
+                                Map.entry("destination_path", string("target path on the Agent; relative paths use the explicit scope root")),
+                                Map.entry("file_name", string("safe destination file name")),
+                                Map.entry("mime_type", string("optional MIME type")),
+                                Map.entry("expected_bytes", integer("optional file size")),
+                                Map.entry("expected_sha256", string("optional SHA-256")),
+                                Map.entry("overwrite", Map.of("type", "boolean", "description", "replace an existing file")),
+                                Map.entry("cwd", string("optional working directory")),
+                                Map.entry("idempotency_key", string("stable retry key")),
+                                Map.entry("project_id", string("registered project ID")),
+                                Map.entry("worktree_id", string("registered worktree ID")),
+                                Map.entry("scope_mode", string("project, worktree, path, workspace, or explicit unrestricted")),
+                                Map.entry("scope_root", string("absolute root for path/workspace scope")),
+                                Map.entry("session_id", string("optional stable user/session identifier")),
+                                Map.entry("risk", string("low, high, or critical")),
+                                Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
+                                List.of("machine_id", "file", "destination_path")),
+                        Map.of("openai/fileParams", List.of("file")),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return artifactPut(agents, projects, access, transfers, origin(exchange), request); }, scheduler),
+                tool("artifact_get", "Transfer one Agent file back to ChatGPT. Returns a compact file handle and a task ID; call artifact_read after task completion.",
+                        schema(Map.ofEntries(
+                                Map.entry("machine_id", string("source machine ID")),
+                                Map.entry("source_path", string("file path on the Agent")),
+                                Map.entry("file_name", string("download file name")),
+                                Map.entry("mime_type", string("optional MIME type")),
+                                Map.entry("cwd", string("optional working directory")),
+                                Map.entry("idempotency_key", string("stable retry key")),
+                                Map.entry("project_id", string("registered project ID")),
+                                Map.entry("worktree_id", string("registered worktree ID")),
+                                Map.entry("scope_mode", string("project, worktree, path, workspace, or explicit unrestricted")),
+                                Map.entry("scope_root", string("absolute root for path/workspace scope")),
+                                Map.entry("session_id", string("optional stable user/session identifier")),
+                                Map.entry("risk", string("low, high, or critical")),
+                                Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
+                                List.of("machine_id", "source_path", "file_name")),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return artifactGet(agents, projects, access, transfers, origin(exchange), request); }, scheduler),
+                tool("artifact_read", "Read compact artifact metadata and a short-lived downloadable file object. It never inlines binary content.",
+                        schema(Map.of("artifact_id", string("artifact ID returned by artifact_get or artifact_put"),
+                                "transfer_id", string("optional transfer ID")), List.of()),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return artifactRead(transfers, origin(exchange), request); }, scheduler));
     }
 
     private static McpServerFeatures.AsyncToolSpecification tool(String name, String description, Map<String, Object> schema,
+                                                                   BiFunction<McpAsyncServerExchange, McpSchema.CallToolRequest, McpSchema.CallToolResult> handler,
+                                                                   reactor.core.scheduler.Scheduler scheduler) {
+        return tool(name, description, schema, Map.of(), handler, scheduler);
+    }
+
+    private static McpServerFeatures.AsyncToolSpecification tool(String name, String description, Map<String, Object> schema,
+                                                                   Map<String, Object> meta,
                                                                    BiFunction<McpAsyncServerExchange, McpSchema.CallToolRequest, McpSchema.CallToolResult> handler,
                                                                    reactor.core.scheduler.Scheduler scheduler) {
         var annotations = McpSchema.ToolAnnotations.builder()
@@ -298,6 +355,7 @@ public class McpConfiguration {
                 .description(description)
                 .inputSchema(schema)
                 .annotations(annotations)
+                .meta(meta)
                 .build();
         return McpServerFeatures.AsyncToolSpecification.builder()
                 .tool(tool)
@@ -328,6 +386,103 @@ public class McpConfiguration {
 
     private static Map<String, Object> objectArray(String description) {
         return Map.of("type", "array", "description", description, "items", Map.of("type", "string"));
+    }
+
+    private static Map<String, Object> fileObjectSchema() {
+        return Map.of("type", "object", "description", "ChatGPT file object supplied by the host",
+                "properties", Map.of(
+                        "download_url", string("HTTPS URL the Center downloads once"),
+                        "file_id", string("host file identifier"),
+                        "file_name", string("original file name"),
+                        "mime_type", string("MIME type"),
+                        "bytes", integer("optional byte size"),
+                        "sha256", string("optional SHA-256")),
+                "required", List.of("download_url", "file_id"), "additionalProperties", false);
+    }
+
+    private static McpSchema.CallToolResult artifactPut(AgentRegistry agents, ProjectService projects,
+                                                        McpAccessService access, ArtifactTransferService transfers,
+                                                        TaskOrigin origin, McpSchema.CallToolRequest request) {
+        try {
+            var args = args(request, ArtifactPutArgs.class);
+            if (args.file() == null) throw new IllegalArgumentException("file is required");
+            access.authorizeExecution(origin, args.machineId(), args.projectId());
+            var scope = resolveScope(agents, projects, args.machineId(), args.projectId(), args.worktreeId(),
+                    args.scopeMode(), args.scopeRoot(), args.cwd());
+            var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, scope.cwd(), Map.of(), 0, null, Instant.now());
+            var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(), args.projectId(), args.worktreeId(),
+                    scope.mode(), scope.root(), args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin);
+            var file = args.file();
+            var name = firstNonBlank(args.fileName(), file.fileName());
+            var mime = firstNonBlank(args.mimeType(), file.mimeType());
+            var result = transfers.createWebToAgent(origin, create, file.fileId(), args.destinationPath(), name, mime,
+                    URI.create(file.downloadUrl()), args.expectedBytes() == null ? file.bytes() : args.expectedBytes(),
+                    firstNonBlank(args.expectedSha256(), file.sha256()), Boolean.TRUE.equals(args.overwrite()));
+            return json(Map.of("task", taskMap(result.task()), "transfer", transferMap(result.transfer()),
+                    "next_action", "call task_wait, then artifact_read with the returned artifact_id"));
+        } catch (Exception exception) {
+            return error(exception);
+        }
+    }
+
+    private static McpSchema.CallToolResult artifactGet(AgentRegistry agents, ProjectService projects,
+                                                        McpAccessService access, ArtifactTransferService transfers,
+                                                        TaskOrigin origin, McpSchema.CallToolRequest request) {
+        try {
+            var args = args(request, ArtifactGetArgs.class);
+            access.authorizeExecution(origin, args.machineId(), args.projectId());
+            var scope = resolveScope(agents, projects, args.machineId(), args.projectId(), args.worktreeId(),
+                    args.scopeMode(), args.scopeRoot(), args.cwd());
+            var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, scope.cwd(), Map.of(), 0, null, Instant.now());
+            var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(), args.projectId(), args.worktreeId(),
+                    scope.mode(), scope.root(), args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin);
+            var result = transfers.createAgentToWeb(origin, create, args.sourcePath(), args.fileName(), args.mimeType());
+            return json(Map.of("task", taskMap(result.task()), "transfer", transferMap(result.transfer()),
+                    "next_action", "call task_wait until completed, then artifact_read with the returned artifact_id"));
+        } catch (Exception exception) {
+            return error(exception);
+        }
+    }
+
+    private static McpSchema.CallToolResult artifactRead(ArtifactTransferService transfers, TaskOrigin origin,
+                                                         McpSchema.CallToolRequest request) {
+        try {
+            var args = args(request, ArtifactReadArgs.class);
+            var descriptor = args.artifactId() == null || args.artifactId().isBlank()
+                    ? transfers.findByTransfer(args.transferId(), origin).orElseThrow(() -> new IllegalArgumentException("artifact or transfer id is required"))
+                    : transfers.findByArtifact(args.artifactId(), origin).orElseThrow(() -> new IllegalArgumentException("artifact not found"));
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("artifact_id", descriptor.artifactId());
+            payload.put("transfer_id", descriptor.transferId());
+            payload.put("status", descriptor.status());
+            payload.put("bytes", descriptor.bytes());
+            payload.put("sha256", descriptor.sha256());
+            payload.put("mime_type", descriptor.mimeType());
+            payload.put("file_name", descriptor.fileName());
+            if (descriptor.downloadUrl() != null && !descriptor.downloadUrl().isBlank()) {
+                payload.put("file", Map.of("file_id", descriptor.artifactId(), "download_url", descriptor.downloadUrl(),
+                        "mime_type", descriptor.mimeType(), "file_name", descriptor.fileName()));
+            }
+            return json(payload);
+        } catch (Exception exception) {
+            return error(exception);
+        }
+    }
+
+    private static Map<String, Object> transferMap(ArtifactTransferService.TransferDescriptor value) {
+        var payload = new LinkedHashMap<String, Object>();
+        payload.put("transfer_id", value.transferId());
+        payload.put("artifact_id", value.artifactId());
+        payload.put("direction", value.direction());
+        payload.put("task_id", value.taskId());
+        payload.put("status", value.status());
+        payload.put("bytes", value.bytes());
+        payload.put("sha256", value.sha256());
+        payload.put("file_name", value.fileName());
+        payload.put("mime_type", value.mimeType());
+        if (value.downloadUrl() != null && !value.downloadUrl().isBlank()) payload.put("download_url", value.downloadUrl());
+        if (value.error() != null && !value.error().isBlank()) payload.put("error", value.error());
+        return payload;
     }
 
     private static McpSchema.CallToolResult machinesList(AgentRegistry agents, McpAccessService access,
@@ -1116,6 +1271,57 @@ public class McpConfiguration {
     record TaskCancelArgs(@JsonProperty("task_id") String taskId) {
     }
 
+    record ArtifactFile(@JsonProperty("download_url") String downloadUrl,
+                        @JsonProperty("file_id") String fileId,
+                        @JsonProperty("file_name") String fileName,
+                        @JsonProperty("mime_type") String mimeType,
+                        Long bytes,
+                        String sha256) {
+    }
+
+    record ArtifactPutArgs(@JsonProperty("machine_id") String machineId,
+                           ArtifactFile file,
+                           @JsonProperty("destination_path") String destinationPath,
+                           @JsonProperty("file_name") String fileName,
+                           @JsonProperty("mime_type") String mimeType,
+                           @JsonProperty("expected_bytes") Long expectedBytes,
+                           @JsonProperty("expected_sha256") String expectedSha256,
+                           Boolean overwrite,
+                           String cwd,
+                           @JsonProperty("idempotency_key") String idempotencyKey,
+                           @JsonProperty("project_id") String projectId,
+                           @JsonProperty("worktree_id") String worktreeId,
+                           @JsonProperty("scope_mode") String scopeMode,
+                           @JsonProperty("scope_root") String scopeRoot,
+                           @JsonProperty("session_id") String sessionId,
+                           String risk,
+                           @JsonProperty("elevation_required") Boolean elevationRequired) {
+    }
+
+    record ArtifactGetArgs(@JsonProperty("machine_id") String machineId,
+                           @JsonProperty("source_path") String sourcePath,
+                           @JsonProperty("file_name") String fileName,
+                           @JsonProperty("mime_type") String mimeType,
+                           String cwd,
+                           @JsonProperty("idempotency_key") String idempotencyKey,
+                           @JsonProperty("project_id") String projectId,
+                           @JsonProperty("worktree_id") String worktreeId,
+                           @JsonProperty("scope_mode") String scopeMode,
+                           @JsonProperty("scope_root") String scopeRoot,
+                           @JsonProperty("session_id") String sessionId,
+                           String risk,
+                           @JsonProperty("elevation_required") Boolean elevationRequired) {
+    }
+
+    record ArtifactReadArgs(@JsonProperty("artifact_id") String artifactId,
+                            @JsonProperty("transfer_id") String transferId) {
+    }
+
     private record ResolvedScope(String cwd, String root, ScopeMode mode) {
+    }
+
+    private static String firstNonBlank(String primary, String fallback) {
+        return primary != null && !primary.isBlank() ? primary.trim()
+                : fallback != null && !fallback.isBlank() ? fallback.trim() : null;
     }
 }

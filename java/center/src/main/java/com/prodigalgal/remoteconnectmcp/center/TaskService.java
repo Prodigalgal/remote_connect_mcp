@@ -154,11 +154,11 @@ public final class TaskService {
         var safeEnvironment = sanitizeEnvironment(original.env());
         original = new TaskCommand(original.id(), original.kind(), original.requiredCapability(), original.command(),
                 original.cwd(), safeEnvironment, original.timeoutSeconds(), original.desktop(), original.createdAt(),
-                original.contract(), original.attempt());
+                original.contract(), original.attempt(), original.fileTransfer());
         var id = "task_" + UUID.randomUUID().toString().replace("-", "");
         var createdAt = Instant.now();
         var contract = buildContract(request, machine, original, capability, id, createdAt, origin);
-        var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), createdAt, contract);
+        var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), createdAt, contract, original.fileTransfer());
         ProtocolValidation.validateTask(command);
         if (sessions != null) sessions.ensure(origin, contract);
 
@@ -1100,6 +1100,9 @@ public final class TaskService {
             if (kind == TaskKind.BROWSER && !AgentCapability.BROWSER.wireValue().equals(requested)) {
                 throw new IllegalArgumentException("browser tasks require the browser capability");
             }
+            if (kind == TaskKind.FILE_TRANSFER && !AgentCapability.FILE_TRANSFER.wireValue().equals(requested)) {
+                throw new IllegalArgumentException("file transfer tasks require the file_transfer capability");
+            }
             if (kind == TaskKind.COMMAND
                     && !AgentCapability.COMMAND.wireValue().equals(requested)
                     && !AgentCapability.DURABLE_TASKS.wireValue().equals(requested)) {
@@ -1110,6 +1113,7 @@ public final class TaskService {
         return switch (kind) {
             case DESKTOP -> AgentCapability.DESKTOP.wireValue();
             case BROWSER -> AgentCapability.BROWSER.wireValue();
+            case FILE_TRANSFER -> AgentCapability.FILE_TRANSFER.wireValue();
             case COMMAND -> AgentCapability.COMMAND.wireValue();
         };
     }
@@ -1126,6 +1130,7 @@ public final class TaskService {
                 && java.util.Objects.equals(left.env(), right.env())
                 && left.timeoutSeconds() == right.timeoutSeconds()
                 && java.util.Objects.equals(left.desktop(), right.desktop())
+                && java.util.Objects.equals(left.fileTransfer(), right.fileTransfer())
                 && (left.contract() == null ? right.contract() == null : left.contract().sameIntent(right.contract()));
     }
 

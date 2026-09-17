@@ -94,7 +94,7 @@ Agent 是执行信任边界；迁移目标为不带 Spring 的 Java 25 模块化
 - 以指数退避、抖动和租约恢复连接；
 - 在升级时保留可恢复任务并报告实际版本。
 
-系统服务 Agent 默认只声明 `command,durable_tasks`。启用桌面能力时，服务仍可声明
+系统服务 Agent 默认声明 `command,durable_tasks,file_transfer`。启用桌面能力时，服务仍可声明
 `desktop`，但真正的 GUI 操作由同一身份的用户会话 companion 代办；浏览器 Agent
 必须显式声明 `browser`，不把浏览器 Cookie 或调试端口凭据上传到 Center。
 
@@ -112,7 +112,7 @@ queued -> dispatching -> running -> completed
 - `idempotency_key` 防止 ChatGPT 超时重试造成重复执行；
 - 无超时命令使用可恢复进程和输出游标；本地 durable 日志仍有硬上限，超过上限会停止任务并保留有界前缀；
 - 有超时命令使用附着进程，Agent 重启后明确报告中断；
-- 输出和图片等二进制工件与任务状态分离存储，MCP 只返回有界页或图片内容；
+- 输出和图片等二进制工件与任务状态分离存储，通用文件通过 Artifact Transport v2 的独立流式数据面传输；MCP 只返回有界页、文件句柄或图片内容；
 - Center 重启、Agent 断线、单次 HTTP 超时都不会自动创建第二个逻辑任务。
 - `DISPATCHING` 租约过期会回到队列；无超时持久任务只有在同一 Agent 带着恢复任务 ID 重连时才续租，定时任务租约过期则标记失败，避免不确定的重复执行。
 
@@ -128,6 +128,16 @@ memory adapter 只用于协议测试/开发，不能在生产与 PostgreSQL 并�
 短期只读快照。所有读热点缓存都必须有界、可按事件失效，缓存丢失时直接回源 PostgreSQL；
 不会把租约、Attempt、Token、输出或工件作为“只在内存中”的事实。当前使用 PostgreSQL
 共享缓冲区、Hikari 连接池和阻塞式 `LISTEN/NOTIFY`，不额外引入 Redis/Kafka 第二状态层。
+
+### 3.2 Artifact Transport v2
+
+文件传输是独立于命令输出的二进制数据面。`artifact_put` 接收 ChatGPT Apps
+SDK 的短期 `download_url`/`file_id` 引用，Center 只在当前请求中下载并写入对象存储，随后
+以 `file_transfer` 任务将对象流送到 Agent；`artifact_get` 反向读取 Agent 文件，Center
+校验大小与 SHA-256 后生成短期签名文件对象 URL。任务 JSON 只携带 transfer/artifact
+引用和路径，不携带 Base64 或文件内容。文件名、范围合同、来源 Agent、用户主体和会话
+均在 Center 与 Agent 两端校验。当前 v2 第一阶段使用 HTTP 流式传输和原子临时文件，
+断点分块与 React Artifact Viewer 作为后续验收项，详见 [`ARTIFACT_TRANSPORT_V2.md`](ARTIFACT_TRANSPORT_V2.md)。
 
 ## 4. 范围与项目策略
 

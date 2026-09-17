@@ -11,11 +11,19 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.TransportNegotiation;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.util.UUID;
 import java.util.Base64;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -177,6 +185,101 @@ public final class AgentTransportClient implements AgentTransport {
             throw new CenterTransportException("center task artifact update failed", response.statusCode());
         }
         return JsonCodec.read(response.body(), ArtifactResponse.class);
+    }
+
+    @Override
+    public void downloadTransfer(String machineId, String token, String transferId, Path destination,
+                                 long expectedBytes, String expectedSha256, int attempt)
+            throws IOException, InterruptedException {
+        if (transferId == null || transferId.isBlank() || destination == null
+                || expectedBytes <= 0 || expectedBytes > 4L * 1024 * 1024 * 1024
+                || expectedSha256 == null || !expectedSha256.matches("(?i)[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("invalid file transfer download metadata");
+        }
+        var endpoint = centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/content");
+        var builder = newRequest(endpoint).timeout(requestTimeout)
+                .header("Authorization", "Bearer " + token)
+                .header("X-Machine-ID", machineId)
+                .header("Accept", "application/octet-stream")
+                .header("X-RCM-Expected-Bytes", Long.toString(expectedBytes))
+                .header("X-RCM-Expected-SHA256", expectedSha256.toLowerCase());
+        addAttemptHeader(builder, attempt);
+        var responseFuture = http.sendAsync(builder.GET().build(), HttpResponse.BodyHandlers.ofInputStream());
+        HttpResponse<InputStream> response;
+        try {
+            response = responseFuture.get(requestTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            observeTransport(response);
+        } catch (TimeoutException exception) {
+            responseFuture.cancel(true);
+            throw new IOException("file transfer download timed out", exception);
+        } catch (ExecutionException exception) {
+            var cause = exception.getCause();
+            if (cause instanceof IOException io) throw io;
+            throw new IOException("file transfer download failed", cause == null ? exception : cause);
+        }
+        try (var input = response.body()) {
+            if (response.statusCode() != 200) throw new CenterTransportException("center file transfer download failed", response.statusCode());
+            var target = destination.toAbsolutePath().normalize();
+            var parent = target.getParent();
+            if (parent == null) throw new IOException("destination has no parent");
+            Files.createDirectories(parent);
+            var temporary = parent.resolve(".rcm-part-" + target.getFileName() + "." + UUID.randomUUID());
+            try {
+                var digest = MessageDigest.getInstance("SHA-256");
+                var buffer = new byte[1024 * 1024];
+                long count = 0;
+                try (var output = Files.newOutputStream(temporary, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                    int read;
+                    while ((read = input.read(buffer)) >= 0) {
+                        if (read == 0) continue;
+                        count += read;
+                        if (count > expectedBytes) throw new IOException("download exceeds declared size");
+                        output.write(buffer, 0, read);
+                        digest.update(buffer, 0, read);
+                    }
+                }
+                var actual = HexFormat.of().formatHex(digest.digest());
+                if (count != expectedBytes || !actual.equalsIgnoreCase(expectedSha256)) {
+                    throw new IOException("download size or SHA-256 does not match transfer metadata");
+                }
+                try {
+                    Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                    Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IOException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    @Override
+    public com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadTransfer(
+            String machineId, String token, String transferId, Path source, String fileName,
+            String mimeType, long expectedBytes, String expectedSha256, int attempt)
+            throws IOException, InterruptedException {
+        if (transferId == null || transferId.isBlank() || source == null || !Files.isRegularFile(source)
+                || expectedBytes <= 0 || expectedBytes > 4L * 1024 * 1024 * 1024) {
+            throw new IllegalArgumentException("invalid file transfer upload metadata");
+        }
+        var actualBytes = Files.size(source);
+        if (actualBytes != expectedBytes) throw new IOException("source file size changed before upload");
+        var endpoint = centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/content");
+        var builder = newRequest(endpoint).timeout(requestTimeout)
+                .header("Authorization", "Bearer " + token)
+                .header("X-Machine-ID", machineId)
+                .header("Content-Type", mimeType == null || mimeType.isBlank() ? "application/octet-stream" : mimeType)
+                .header("X-RCM-File-Name", fileName == null ? source.getFileName().toString() : fileName)
+                .header("Content-Length", Long.toString(expectedBytes));
+        if (expectedSha256 != null && expectedSha256.matches("(?i)[0-9a-f]{64}")) {
+            builder.header("X-RCM-Expected-SHA256", expectedSha256.toLowerCase());
+        }
+        addAttemptHeader(builder, attempt);
+        var response = send(builder.PUT(HttpRequest.BodyPublishers.ofFile(source)).build());
+        if (response.statusCode() != 200) throw new CenterTransportException("center file transfer upload failed", response.statusCode());
+        return JsonCodec.read(response.body(), com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse.class);
     }
 
     @Override

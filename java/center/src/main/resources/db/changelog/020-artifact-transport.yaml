@@ -1,0 +1,278 @@
+databaseChangeLog:
+  - changeSet:
+      id: 020-artifact-transport
+      author: remote-connect-mcp
+      labels: artifact,transport
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: file_transfer_action
+                  type: jsonb
+                  remarks: Center-issued bidirectional file transfer action; payload bytes never live in the task row
+        - createTable:
+            tableName: rcm_artifact
+            columns:
+              - column:
+                  name: artifact_id
+                  type: varchar(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: machine_id
+                  type: varchar(128)
+              - column:
+                  name: task_id
+                  type: varchar(128)
+              - column:
+                  name: transfer_id
+                  type: varchar(128)
+              - column:
+                  name: file_name
+                  type: varchar(512)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: mime_type
+                  type: varchar(128)
+              - column:
+                  name: storage_backend
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: object_key
+                  type: varchar(1024)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: bytes
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sha256
+                  type: char(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addPrimaryKey:
+            tableName: rcm_artifact
+            columnNames: artifact_id
+            constraintName: pk_rcm_artifact
+        - addForeignKeyConstraint:
+            baseTableName: rcm_artifact
+            baseColumnNames: principal_id
+            constraintName: fk_rcm_artifact_principal
+            referencedTableName: rcm_principal
+            referencedColumnNames: principal_id
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: rcm_artifact
+            baseColumnNames: machine_id
+            constraintName: fk_rcm_artifact_agent
+            referencedTableName: rcm_agent
+            referencedColumnNames: agent_id
+            onDelete: SET NULL
+        - addForeignKeyConstraint:
+            baseTableName: rcm_artifact
+            baseColumnNames: task_id
+            constraintName: fk_rcm_artifact_task
+            referencedTableName: rcm_task
+            referencedColumnNames: task_id
+            onDelete: SET NULL
+        - addUniqueConstraint:
+            tableName: rcm_artifact
+            columnNames: transfer_id
+            constraintName: uq_rcm_artifact_transfer
+        - sql:
+            sql: ALTER TABLE rcm_artifact ADD CONSTRAINT ck_rcm_artifact_bytes CHECK (bytes > 0)
+        - sql:
+            sql: ALTER TABLE rcm_artifact ADD CONSTRAINT ck_rcm_artifact_sha256 CHECK (sha256 ~ '^[0-9a-fA-F]{64}$')
+        - createIndex:
+            tableName: rcm_artifact
+            indexName: idx_rcm_artifact_principal_created
+            columns:
+              - column:
+                  name: principal_id
+              - column:
+                  name: created_at
+        - createTable:
+            tableName: rcm_file_transfer
+            columns:
+              - column:
+                  name: transfer_id
+                  type: varchar(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: artifact_id
+                  type: varchar(128)
+              - column:
+                  name: task_id
+                  type: varchar(128)
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: machine_id
+                  type: varchar(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: direction
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: source_path
+                  type: varchar(4096)
+              - column:
+                  name: destination_path
+                  type: varchar(4096)
+              - column:
+                  name: file_name
+                  type: varchar(512)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: mime_type
+                  type: varchar(128)
+              - column:
+                  name: expected_bytes
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expected_sha256
+                  type: char(64)
+              - column:
+                  name: bytes_transferred
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: error_text
+                  type: varchar(4096)
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addPrimaryKey:
+            tableName: rcm_file_transfer
+            columnNames: transfer_id
+            constraintName: pk_rcm_file_transfer
+        - addForeignKeyConstraint:
+            baseTableName: rcm_file_transfer
+            baseColumnNames: task_id
+            constraintName: fk_rcm_file_transfer_task
+            referencedTableName: rcm_task
+            referencedColumnNames: task_id
+            onDelete: SET NULL
+        - addForeignKeyConstraint:
+            baseTableName: rcm_file_transfer
+            baseColumnNames: principal_id
+            constraintName: fk_rcm_file_transfer_principal
+            referencedTableName: rcm_principal
+            referencedColumnNames: principal_id
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: rcm_file_transfer
+            baseColumnNames: machine_id
+            constraintName: fk_rcm_file_transfer_agent
+            referencedTableName: rcm_agent
+            referencedColumnNames: agent_id
+            onDelete: CASCADE
+        - createIndex:
+            tableName: rcm_file_transfer
+            indexName: idx_rcm_file_transfer_machine_status
+            columns:
+              - column:
+                  name: machine_id
+              - column:
+                  name: status
+              - column:
+                  name: updated_at
+      rollback:
+        - dropIndex:
+            tableName: rcm_file_transfer
+            indexName: idx_rcm_file_transfer_machine_status
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_file_transfer
+            constraintName: fk_rcm_file_transfer_agent
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_file_transfer
+            constraintName: fk_rcm_file_transfer_principal
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_file_transfer
+            constraintName: fk_rcm_file_transfer_task
+        - dropPrimaryKey:
+            tableName: rcm_file_transfer
+            constraintName: pk_rcm_file_transfer
+        - dropTable:
+            tableName: rcm_file_transfer
+        - dropIndex:
+            tableName: rcm_artifact
+            indexName: idx_rcm_artifact_principal_created
+        - sql:
+            sql: ALTER TABLE rcm_artifact DROP CONSTRAINT ck_rcm_artifact_sha256
+        - sql:
+            sql: ALTER TABLE rcm_artifact DROP CONSTRAINT ck_rcm_artifact_bytes
+        - dropUniqueConstraint:
+            tableName: rcm_artifact
+            constraintName: uq_rcm_artifact_transfer
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_artifact
+            constraintName: fk_rcm_artifact_task
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_artifact
+            constraintName: fk_rcm_artifact_agent
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_artifact
+            constraintName: fk_rcm_artifact_principal
+        - dropPrimaryKey:
+            tableName: rcm_artifact
+            constraintName: pk_rcm_artifact
+        - dropTable:
+            tableName: rcm_artifact
+        - dropColumn:
+            tableName: rcm_task
+            columnName: file_transfer_action

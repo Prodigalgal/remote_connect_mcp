@@ -74,6 +74,51 @@ final class AgentPaths {
         return candidate;
     }
 
+    /** Resolve a file-transfer endpoint and repeat the Center contract check locally. */
+    static Path resolveFilePath(AgentConfig config, String machineId, TaskCommand task,
+                                String requested, boolean source) throws IOException {
+        if (task == null || task.fileTransfer() == null) throw new IOException("file transfer action is missing");
+        var contract = task.contract();
+        if (contract == null) throw new IOException("file transfer execution contract is missing");
+        validateContract(config, machineId, task, contract);
+        var bounded = contract.scopeMode().bounded();
+        var base = (bounded ? Path.of(contract.scopeRoot()) : Path.of(config.defaultCwd())).toAbsolutePath().normalize();
+        var raw = requested == null || requested.isBlank() ? null : requested.trim();
+        if (raw == null) throw new IOException(source ? "source_path is required" : "destination_path is required");
+        final Path input;
+        try {
+            input = Path.of(raw);
+        } catch (RuntimeException exception) {
+            throw new IOException("file path is not valid", exception);
+        }
+        var candidate = (input.isAbsolute() ? input : base.resolve(input)).toAbsolutePath().normalize();
+        if (!bounded) {
+            if (source) {
+                if (!Files.isRegularFile(candidate)) throw new IOException("source file is not a regular file: " + candidate);
+                return candidate.toRealPath();
+            }
+            var parent = candidate.getParent();
+            if (parent == null || !Files.isDirectory(parent)) throw new IOException("destination parent is not a directory: " + parent);
+            return candidate;
+        }
+        if (!Files.isDirectory(base)) throw new IOException("configured execution scope root is not a directory: " + base);
+        var rootReal = base.toRealPath();
+        if (source) {
+            var real = candidate.toRealPath();
+            if (!real.startsWith(rootReal) || !Files.isRegularFile(real)) {
+                throw new IOException("source file is outside the execution contract scope");
+            }
+            return real;
+        }
+        var parent = candidate.getParent();
+        if (parent == null) throw new IOException("destination has no parent");
+        var parentReal = resolveThroughExistingParents(parent);
+        if (!parentReal.startsWith(rootReal) || !Files.isDirectory(parentReal)) {
+            throw new IOException("destination parent is outside the execution contract scope");
+        }
+        return parentReal.resolve(candidate.getFileName()).normalize();
+    }
+
     private static void validateContract(AgentConfig config, String machineId, TaskCommand task,
                                          ExecutionContract contract) throws IOException {
         if (machineId == null || !machineId.equals(contract.machineId())) {

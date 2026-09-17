@@ -13,6 +13,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.OutputRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ArtifactRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse;
 import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -21,6 +22,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -28,6 +31,11 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 import java.time.Duration;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ContentDisposition;
 
 @RestController
 @RequestMapping("/agent/v1")
@@ -42,23 +50,26 @@ public final class AgentController {
     private final AgentConfigurationService configurations;
     private final CenterAsyncExecutor async;
     private final AgentWakeRegistry wakes;
+    private final ArtifactTransferService transfers;
 
     @Autowired
     public AgentController(AgentRegistry registry, TaskService tasks, UpgradeService upgrades,
                            AgentConfigurationService configurations, CenterAsyncExecutor async,
+                           ArtifactTransferService transfers,
                            org.springframework.beans.factory.ObjectProvider<AgentWakeRegistry> wakeProvider) {
         this.registry = registry;
         this.tasks = tasks;
         this.upgrades = upgrades;
         this.configurations = configurations;
         this.async = async;
+        this.transfers = transfers;
         this.wakes = wakeProvider == null ? null : wakeProvider.getIfAvailable();
     }
 
     /** Compatibility constructor for direct protocol/controller tests. */
     AgentController(AgentRegistry registry, TaskService tasks, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
-        this(registry, tasks, upgrades, configurations, async, null);
+        this(registry, tasks, upgrades, configurations, async, null, null);
     }
 
     @PostMapping("/register")
@@ -248,6 +259,46 @@ public final class AgentController {
             var data = Base64.getDecoder().decode(request.data());
             return ResponseEntity.ok(tasks.appendArtifact(machineId, taskId, request.mimeType(), request.sha256(), data,
                     parseAttempt(attemptHeader)));
+        });
+    }
+
+    @GetMapping("/transfers/{transferId}/content")
+    public ResponseEntity<StreamingResponseBody> transferDownload(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
+            @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+            @PathVariable String transferId) {
+        authenticate(machineId, authorization);
+        var download = transfers.openForAgent(machineId, transferId);
+        StreamingResponseBody body = output -> {
+            try (var input = download.body()) {
+                input.transferTo(output);
+            }
+        };
+        var headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType(download.mimeType() == null || download.mimeType().isBlank()
+                ? MediaType.APPLICATION_OCTET_STREAM_VALUE : download.mimeType()));
+        headers.setContentLength(download.bytes());
+        headers.setContentDisposition(ContentDisposition.attachment().filename(download.fileName()).build());
+        headers.set("X-RCM-SHA256", download.sha256());
+        return ResponseEntity.ok().headers(headers).body(body);
+    }
+
+    @PutMapping("/transfers/{transferId}/content")
+    public CompletableFuture<ResponseEntity<?>> transferUpload(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
+            @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+            @RequestHeader(value = "X-RCM-Expected-SHA256", required = false) String expectedSha256,
+            @RequestHeader(value = "X-RCM-File-Name", required = false) String fileName,
+            @RequestHeader(value = "Content-Type", required = false) String mimeType,
+            @PathVariable String transferId, HttpServletRequest request) {
+        return execute(() -> {
+            authenticate(machineId, authorization);
+            var length = request.getContentLengthLong();
+            var response = transfers.receiveFromAgent(machineId, transferId, request.getInputStream(), length,
+                    expectedSha256, fileName, mimeType);
+            return ResponseEntity.ok(response);
         });
     }
 

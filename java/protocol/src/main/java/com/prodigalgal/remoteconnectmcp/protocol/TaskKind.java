@@ -6,7 +6,8 @@ import com.fasterxml.jackson.annotation.JsonValue;
 public enum TaskKind {
     COMMAND("command"),
     DESKTOP("desktop"),
-    BROWSER("browser");
+    BROWSER("browser"),
+    FILE_TRANSFER("file_transfer");
 
     private final String wireValue;
 

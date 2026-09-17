@@ -1,0 +1,140 @@
+# Artifact Transport v2
+
+更新时间：2026-09-17（Asia/Shanghai）
+
+## 目标
+
+Artifact Transport v2 只解决一条明确链路：
+
+```text
+ChatGPT Web 文件 → MCP Center → 目标终端 Agent → 终端文件系统
+终端文件系统 → Agent → MCP Center → ChatGPT Web 展示/下载
+```
+
+它不是终端之间的文件同步，也不是把终端文件系统全量暴露给模型。
+
+## 设计原则
+
+1. MCP 是控制面，只传文件引用、状态和有界元数据。
+2. Center 与 Agent 之间是二进制数据面，文件采用流式、分块和断点续传。
+3. PostgreSQL 只保存 Artifact/Transfer 元数据，不保存大块文件内容。
+4. Object Storage 保存实际文件；本地开发可以使用文件系统后端。
+5. Task Artifact 保留给截图、诊断等小型任务结果；通用文件使用 File Transfer。
+6. 文件内容不进入 command stdout、任务 JSON 或模型上下文。
+7. 所有文件传输都绑定用户主体、MCP 会话、任务和目标 Agent。
+
+## 两条业务链路
+
+### ChatGPT Web → 终端
+
+ChatGPT Apps SDK 通过 `fileParams` 将用户文件作为短期文件引用传给 `artifact_put`。Center 立即消费 `download_url`，不把临时 URL 写入 durable task；下载过程中写入临时文件并计算大小、SHA-256，校验通过后上传 Object Storage。
+
+随后 Center 创建一个 `WEB_TO_AGENT` transfer task。任务只携带：
+
+```text
+transfer_id
+artifact_id
+destination_path
+expected_bytes
+expected_sha256
+overwrite
+```
+
+Agent 使用自身 Agent Token 从 Center 流式读取文件，写入目标路径旁路的 `.rcm-part-*` 临时文件，完成大小、哈希和本地 scope 校验后再原子改名。
+
+### 终端 → ChatGPT Web
+
+模型通过 `artifact_get` 请求目标 Agent 的 `source_path`。Agent 先在本机校验 scope 和文件属性，再把文件流式上传到 Center。Center 生成 Artifact 元数据和短期签名读取地址。
+
+MCP 只返回以下内容：
+
+```json
+{
+  "artifact_id": "artifact_xxx",
+  "file_name": "result.pdf",
+  "mime_type": "application/pdf",
+  "bytes": 183920,
+  "sha256": "...",
+  "status": "ready"
+}
+```
+
+React Artifact Viewer 按需读取文件：图片/PDF/媒体尝试预览，Office/压缩包/未知二进制提供下载。小型图片可以兼容返回 MCP `ImageContent`，但不把它作为网页附件显示的唯一机制。
+
+## 实体模型
+
+```text
+artifacts
+---------
+artifact_id, principal_id, machine_id, task_id, transfer_id
+file_name, mime_type, storage_backend, object_key
+bytes, sha256, status, created_at, expires_at
+
+file_transfers
+--------------
+transfer_id, artifact_id, task_id, principal_id, machine_id
+direction, source_path, destination_path
+expected_bytes, expected_sha256, bytes_transferred
+status, error, created_at, started_at, finished_at
+```
+
+Artifact 是可复用的文件对象；Transfer 是一次方向明确、可恢复、可审计的传输实例。
+
+## 传输状态
+
+```text
+created → uploading → ready → delivering → delivered → acknowledged
+                    ↘ failed / expired / canceled
+```
+
+第一阶段使用带大小/SHA-256 校验的 HTTP 流和临时文件原子落盘；重复请求通过幂等键和
+transfer_id 复用同一逻辑传输。断点分块（带偏移确认）是下一阶段 P0 验收项，不能把一次
+完整流重试误称为断点续传。
+
+## MCP 工具面
+
+工具数量保持精简：
+
+| 工具 | 用途 | 默认返回 |
+| --- | --- | --- |
+| `artifact_put` | Web 文件写入终端 | transfer_id、任务状态和摘要 |
+| `artifact_get` | 终端文件回传 Web | artifact_id、文件元数据 |
+| `artifact_read` | 按需读取元数据、文本或图片预览 | 有界内容和游标 |
+| `artifact_present` | 调起 Web Artifact Viewer | UI 展示，不把二进制写入模型文本 |
+
+现有 `command`、`desktop`、`browser`、`task_wait` 工具保持不变；它们只引用 Artifact，不复制文件传输逻辑。
+
+## ChatGPT Web 兼容策略
+
+首次接入文件能力时，工具声明需要增加：
+
+```json
+{
+  "_meta": {
+    "openai/fileParams": ["file"],
+    "ui": { "resourceUri": "ui://remote-connect/artifact-viewer-v1.html" },
+    "openai/outputTemplate": "ui://remote-connect/artifact-viewer-v1.html"
+  }
+}
+```
+
+连接器需要刷新一次以获取新的工具声明。之后保持 `/mcp` 地址、工具 schema 和 UI URI 稳定，Center/Agent 普通版本升级不需要重复配置。
+
+## 安全与资源边界
+
+- `download_url` 只在 Center 内存活于当前上传请求，不能进入持久任务。
+- 签名读取地址短期有效，并绑定主体、会话、Artifact 和用途。
+- 文件名不能携带目录分隔符、NUL 或控制字符。
+- Agent 最终校验真实路径、scope、覆盖策略、大小和 SHA-256。
+- 上传、下载、并发、磁盘和保留周期均为可配置硬上限，用于资源保护而不是限制模型能力。
+- 日志只记录 transfer_id、artifact_id、大小、结果和错误摘要，不记录文件内容或长期凭据。
+- Center 重启、Agent 离线或网络中断不会产生重复文件或半成品目标文件。
+
+## 实施顺序
+
+1. P0（当前）：协议记录、Artifact/Transfer 表、流式 Object Store、Agent 拉取/上传和完整流校验。
+2. P0（下一步）：`artifact_put`/`artifact_get` 最短闭环的 GitHub Actions/JDBC/Native 回归，以及带偏移确认的断点分块续传。
+3. P1：React Artifact Viewer、文件预览、下载和可选保存到 ChatGPT。
+4. P2：WebSocket/HTTP2 数据通道、对象生命周期、容量压测和多用户多会话矩阵。
+
+本项目禁止在开发机执行 Java、Native Image 或 React 构建；所有编译和集成测试由 GitHub Actions 完成。
