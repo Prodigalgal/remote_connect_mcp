@@ -557,8 +557,15 @@ final class JdbcTaskStore {
         if (row == null) return Optional.empty();
         byte[] data = row.artifactData();
         if (data == null || data.length == 0) {
-            if (row.objectKey() == null || row.objectKey().isBlank()) return Optional.empty();
-            data = artifactStore.read(row.objectKey());
+            if (row.objectKey() == null || row.objectKey().isBlank()) {
+                // A legacy inline row can represent a valid zero-byte
+                // artifact without an object key.  Preserve that edge
+                // semantic instead of treating it as "not found".
+                if (row.bytes() != 0) return Optional.empty();
+                data = new byte[0];
+            } else {
+                data = artifactStore.read(row.objectKey());
+            }
         } else {
             // Backfill legacy inline rows without making the read path depend
             // on a second query while the JDBC ResultSet is still open.

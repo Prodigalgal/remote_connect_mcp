@@ -293,8 +293,8 @@ final class BrowserTaskRunner implements Runnable {
         }
         var data = Files.readAllBytes(candidate);
         var maxArtifactBytes = TaskLimits.artifactBytes(task, 8L * 1024 * 1024);
-        if (data.length == 0 || data.length > maxArtifactBytes) {
-            throw new IOException("browser artifact is empty or exceeds " + maxArtifactBytes + " bytes");
+        if (data.length > maxArtifactBytes) {
+            throw new IOException("browser artifact exceeds " + maxArtifactBytes + " bytes");
         }
         final String sha256;
         try {

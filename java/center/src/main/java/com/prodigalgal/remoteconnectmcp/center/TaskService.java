@@ -719,8 +719,8 @@ public final class TaskService {
     public ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256,
                                            byte[] data, Integer attempt) {
         var normalizedMime = normalizeMimeType(mimeType);
-        if (data == null || data.length == 0) {
-            throw new IllegalArgumentException("artifact mimeType and data are required");
+        if (data == null) {
+            throw new IllegalArgumentException("artifact data is required");
         }
         if (data.length > MAX_ARTIFACT_BYTES) {
             throw new IllegalArgumentException("artifact exceeds " + MAX_ARTIFACT_BYTES + " bytes");
@@ -790,7 +790,7 @@ public final class TaskService {
         try {
             var task = required(taskId);
             var data = task.artifactData();
-            return data.length == 0 ? Optional.empty() : Optional.of(new ArtifactData(task.artifactMime(), task.artifactSha256(), data));
+            return data == null ? Optional.empty() : Optional.of(new ArtifactData(task.artifactMime(), task.artifactSha256(), data));
         } finally {
             lock.unlock();
         }
