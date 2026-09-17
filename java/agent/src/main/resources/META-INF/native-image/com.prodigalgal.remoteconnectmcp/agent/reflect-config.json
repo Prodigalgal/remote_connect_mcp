@@ -8,6 +8,8 @@
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.ArtifactRequest","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.ArtifactResponse","allDeclaredConstructors":true,"allDeclaredMethods":true},
+  {"name":"com.prodigalgal.remoteconnectmcp.protocol.FileTransferAction","allDeclaredConstructors":true,"allDeclaredMethods":true},
+  {"name":"com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.OutputRequest","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.OutputResponse","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.PollRequest","allDeclaredConstructors":true,"allDeclaredMethods":true},
