@@ -330,7 +330,9 @@ public final class AgentTransportClient implements AgentTransport {
                 .header("X-Machine-ID", machineId)
                 .header("Content-Type", mimeType == null || mimeType.isBlank() ? "application/octet-stream" : mimeType)
                 .header("X-RCM-File-Name", fileName == null ? source.getFileName().toString() : fileName)
-                .header("Content-Length", Long.toString(expectedBytes));
+                // BodyPublishers.ofFile supplies the real Content-Length. The
+                // JDK forbids callers from setting that restricted header.
+                .header("X-RCM-Expected-Bytes", Long.toString(expectedBytes));
         if (expectedSha256 != null && expectedSha256.matches("(?i)[0-9a-f]{64}")) {
             builder.header("X-RCM-Expected-SHA256", expectedSha256.toLowerCase());
         }

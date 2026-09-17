@@ -63,6 +63,32 @@
 | [ ] | P0-11-06 | 断点分块/偏移确认、断线续传和传输状态幂等恢复 | 需要 Center/Agent integration test 与 Actions |
 | [ ] | P0-11-07 | ChatGPT Web 文件对象真实渲染/下载闭环（图片、PDF、Office、未知二进制） | 依赖 P1-10 Artifact Viewer 和真实连接器 |
 
+### Artifact Transport v2 补充风险清单
+
+以下条目对应本轮文件传输审查提出的 20 个具体风险。状态仍按“代码实现 + GitHub Actions”判定；真实 Web/生产验收继续记录在 `PRODUCTION_ACCEPTANCE.md`，不会用静态检查代替现场证据。
+
+| 状态 | 编号 | 风险/任务 | 当前实现与剩余门禁 |
+| --- | --- | --- | --- |
+| [~] | P0-AT-01 | Agent→Center 大文件上传超时 | Agent 上传已使用独立 transfer timeout；需 Actions 原生/长流回归 |
+| [~] | P0-AT-02 | Artifact 保留期限与签名 URL TTL 解耦 | 保留期与 URL TTL 分开配置；需 JDBC 生命周期/GC 回归 |
+| [~] | P0-AT-03 | Transfer 状态机与 Agent ACK | `pending→ready→delivering→delivered/failed/canceled`、Attempt 栅栏和 ACK 已接入；需重启/重复 ACK 矩阵 |
+| [~] | P0-AT-04 | `overwrite=false` 原子覆盖竞争 | Agent 最终 move 不带 `REPLACE_EXISTING`；需 Windows/Linux 文件系统回归 |
+| [~] | P0-AT-05 | 幂等预约前置 | pending durable reservation、同键短期 future hand-off 和重启失败收口已实现；跨实例/异常插入回归待补 |
+| [~] | P0-AT-06 | 并发与临时磁盘硬配额 | Center 进程内全局/主体/机器并发及可用空间 reservation 已实现；多进程容量演练待补 |
+| [~] | P0-AT-07 | Web→Center ingest 异步化 | MCP 只创建 pending 句柄，Center 虚拟线程完成下载、校验和发布；失败/重启恢复待 Actions 验证 |
+| [ ] | P0-AT-08 | 端到端故障恢复矩阵 | Center/Agent 重启、lease 过期、旧 attempt、重复 MCP、对象存储短暂失败和中断组合测试待补 |
+| [ ] | P1-AT-01 | ChatGPT Web Artifact 真实 E2E | 需要真实连接器验证 Web 上传→终端、终端→当前会话 |
+| [ ] | P1-AT-02 | React Artifact Viewer v1 | 图片/PDF/媒体预览，Office/压缩包/未知类型下载界面待实现 |
+| [~] | P1-AT-03 | MCP annotations 与严格 Output Schema | 文件工具 annotations、嵌套 task/transfer/file schema 已收紧；需 Actions 与连接器刷新验证 |
+| [~] | P1-AT-04 | 签名 URL Session/Purpose 绑定 | 已绑定主体、connection、purpose；精确 execution session 绑定仍待补 |
+| [~] | P1-AT-05 | Artifact 下载安全 Header | `private/no-store`、`nosniff`、`no-referrer` 已加入；需代理缓存回归 |
+| [~] | P1-AT-06 | Agent 源文件快照一致性 | 同目录快照用于 hash + upload，并有磁盘余量检查；文件持续写入语义待验收 |
+| [ ] | P1-AT-07 | Stall timeout / progress watchdog | 目前有 connect/absolute transfer timeout；无进展超时和进度 watchdog 待实现 |
+| [ ] | P2-AT-01 | READ / WRITE / EXCLUSIVE 执行车道 | 当前仍按 lane 串行；读写分类和共享读并发待实现 |
+| [~] | P2-AT-02 | 零字节与边缘文件语义 | Center filesystem/HTTP、协议和 Agent 已允许合法 0 字节；Browser 小工件仍拒绝空文件，特殊文件策略待补 |
+| [ ] | P2-AT-03 | destination path / file name 语义收敛 | 目前同时保留目标路径和展示文件名；需明确 API 契约及迁移兼容 |
+| [ ] | P2-AT-04 | 传输容量、SLO 与生命周期指标 | 任务/工件基础指标已有；active transfer、失败率、字节、时长、resume、GC 指标待接入 |
+
 ## P1：核心生产体验
 
 | 代码状态 | 编号 | 任务 | 当前情况与完成条件 | 代码验收证据 |

@@ -85,7 +85,10 @@ public final class HttpArtifactStore implements ArtifactStore {
         var digest = sha256.trim().toLowerCase();
         var key = PREFIX + digest(taskId) + "/" + digest + ".blob";
         var request = request("PUT", key).header("Content-Type", "application/octet-stream")
-                .header("Content-Length", Long.toString(expectedBytes)).header("X-RCM-SHA256", digest)
+                // BodyPublishers.ofInputStream is intentionally chunked and
+                // Content-Length is a restricted JDK header. The gateway
+                // receives the expected size through an application header.
+                .header("X-RCM-Expected-Bytes", Long.toString(expectedBytes)).header("X-RCM-SHA256", digest)
                 .timeout(streamTimeout)
                 .PUT(HttpRequest.BodyPublishers.ofInputStream(() -> input)).build();
         var response = send(request, streamTimeout);

@@ -290,12 +290,25 @@ public final class AgentController {
             @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
             @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
             @RequestHeader(value = "X-RCM-Expected-SHA256", required = false) String expectedSha256,
+            @RequestHeader(value = "X-RCM-Expected-Bytes", required = false) String expectedBytesHeader,
             @RequestHeader(value = "X-RCM-File-Name", required = false) String fileName,
             @RequestHeader(value = "Content-Type", required = false) String mimeType,
             @PathVariable String transferId, HttpServletRequest request) {
         return execute(() -> {
             authenticate(machineId, authorization);
             var length = request.getContentLengthLong();
+            if (expectedBytesHeader != null && !expectedBytesHeader.isBlank()) {
+                long declared;
+                try {
+                    declared = Long.parseLong(expectedBytesHeader.trim());
+                } catch (NumberFormatException exception) {
+                    throw new IllegalArgumentException("X-RCM-Expected-Bytes must be a non-negative integer", exception);
+                }
+                if (declared < 0 || (length >= 0 && length != declared)) {
+                    throw new IllegalArgumentException("declared transfer size does not match the request body");
+                }
+                if (length < 0) length = declared;
+            }
             var response = transfers.receiveFromAgent(machineId, transferId, request.getInputStream(), length,
                     expectedSha256, fileName, mimeType, parseAttempt(attemptHeader));
             return ResponseEntity.ok(response);
