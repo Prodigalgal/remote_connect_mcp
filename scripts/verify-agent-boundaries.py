@@ -117,6 +117,10 @@ def main() -> int:
         required_desktop_jni = (
             "sun.awt.image.VolatileSurfaceManager",
             "getButtonDownMasks",
+            # Font metadata is needed by Windows Java2D during Robot capture;
+            # JDK 25 resolves the backing name through a private field.
+            '"name": "java.awt.Font"',
+            '"allDeclaredFields": true',
             # Windows Robot/Toolkit reaches these peer classes through JNI;
             # keeping the platform entries here avoids a release that only
             # works on Linux while still passing the generic AWT check.
