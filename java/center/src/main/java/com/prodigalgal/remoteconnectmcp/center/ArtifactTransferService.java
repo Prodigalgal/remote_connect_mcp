@@ -70,6 +70,7 @@ public final class ArtifactTransferService {
     private final String publicBaseUrl;
     private final Duration artifactRetention;
     private final Duration signedUrlTtl;
+    private final Path transferSpoolRoot;
 
     @Autowired
     public ArtifactTransferService(ObjectProvider<JdbcTemplate> jdbcProvider,
@@ -96,6 +97,7 @@ public final class ArtifactTransferService {
         this.resources = new TransferResourceLimiter();
         this.async = async;
         this.publicBaseUrl = normalizeBase(System.getenv("RCM_CENTER_PUBLIC_BASE_URL"));
+        this.transferSpoolRoot = spoolRoot();
         this.artifactRetention = durationSetting("RCM_CENTER_ARTIFACT_RETENTION_SECONDS", DEFAULT_ARTIFACT_RETENTION,
                 Duration.ofHours(1), Duration.ofDays(365));
         this.signedUrlTtl = durationSetting("RCM_CENTER_ARTIFACT_URL_TTL_SECONDS", DEFAULT_SIGNED_URL_TTL,
@@ -731,7 +733,8 @@ public final class ArtifactTransferService {
 
     private Downloaded spool(InputStream input, long expectedBytes, String expectedSha256) throws IOException {
         if (expectedBytes > MAX_BYTES) throw new IOException("file size is outside the allowed range");
-        var temporary = Files.createTempFile("rcm-transfer-", ".part");
+        Files.createDirectories(transferSpoolRoot);
+        var temporary = Files.createTempFile(transferSpoolRoot, "rcm-transfer-", ".part");
         try (input; var output = Files.newOutputStream(temporary, StandardOpenOption.TRUNCATE_EXISTING)) {
             var digest = MessageDigest.getInstance("SHA-256");
             var buffer = new byte[1024 * 1024];
@@ -818,6 +821,15 @@ public final class ArtifactTransferService {
         return artifactId + "\n" + principal + "\n" + expires + "\n" + purpose + "\n" + connection;
     }
     private static String normalizeBase(String value) { return value == null ? "" : value.trim().replaceAll("/+$", ""); }
+    private static Path spoolRoot() {
+        var configured = System.getenv(TransferResourceLimiter.SPOOL_ROOT_ENV);
+        var value = configured == null || configured.isBlank()
+                ? System.getProperty("java.io.tmpdir", ".") : configured.trim();
+        if (value.indexOf('\u0000') >= 0 || value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0) {
+            throw new IllegalStateException(TransferResourceLimiter.SPOOL_ROOT_ENV + " contains invalid path characters");
+        }
+        return Path.of(value).toAbsolutePath().normalize();
+    }
     private static Duration durationSetting(String key, Duration fallback, Duration minimum, Duration maximum) {
         var raw = System.getenv(key);
         if (raw == null || raw.isBlank()) return fallback;

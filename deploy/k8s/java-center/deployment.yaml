@@ -43,6 +43,8 @@ spec:
               value: filesystem
             - name: RCM_CENTER_ARTIFACT_ROOT
               value: /var/lib/remote-connect-mcp-center/artifacts
+            - name: RCM_CENTER_TRANSFER_SPOOL_ROOT
+              value: /var/lib/remote-connect-mcp-center/artifacts/.transfer-spool
             # Artifact retention is independent from the short-lived signed
             # URL handed to the Web client.  An offline Agent can therefore
             # wait for days without keeping a browser URL valid for days.

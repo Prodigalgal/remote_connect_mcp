@@ -26,6 +26,7 @@ final class TransferResourceLimiter {
     private static final int DEFAULT_PER_MACHINE = 1;
     private static final long DEFAULT_SPOOL = 8L * 1024 * 1024 * 1024;
     private static final long MIN_FREE_BYTES = 64L * 1024 * 1024;
+    static final String SPOOL_ROOT_ENV = "RCM_CENTER_TRANSFER_SPOOL_ROOT";
 
     private final Object monitor = new Object();
     private final int maxGlobal;
@@ -43,7 +44,7 @@ final class TransferResourceLimiter {
                 intSetting("RCM_CENTER_TRANSFER_MAX_PER_PRINCIPAL", DEFAULT_PER_PRINCIPAL, 1, 32),
                 intSetting("RCM_CENTER_TRANSFER_MAX_PER_MACHINE", DEFAULT_PER_MACHINE, 1, 16),
                 longSetting("RCM_CENTER_TRANSFER_MAX_SPOOL_BYTES", DEFAULT_SPOOL, MIN_FREE_BYTES, MAX_BYTES * 2),
-                Path.of(System.getProperty("java.io.tmpdir", ".")));
+                spoolRoot());
     }
 
     TransferResourceLimiter(int maxGlobal, int maxPerPrincipal, int maxPerMachine, long maxSpoolBytes, Path tempDirectory) {
@@ -146,5 +147,15 @@ final class TransferResourceLimiter {
         } catch (NumberFormatException exception) {
             throw new IllegalStateException(key + " must be an integer", exception);
         }
+    }
+
+    private static Path spoolRoot() {
+        var configured = System.getenv(SPOOL_ROOT_ENV);
+        var value = configured == null || configured.isBlank()
+                ? System.getProperty("java.io.tmpdir", ".") : configured.trim();
+        if (value.indexOf('\u0000') >= 0 || value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0) {
+            throw new IllegalStateException(SPOOL_ROOT_ENV + " contains invalid path characters");
+        }
+        return Path.of(value);
     }
 }

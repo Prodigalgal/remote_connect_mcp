@@ -148,7 +148,7 @@ Linux/Windows 原生二进制还会由 GitHub OIDC 生成 Artifact Attestation�
 rcm-center --migrate
 ```
 
-该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`、`009-task-lease-index`、`010-execution-contract`、`011-artifact-storage`、`012-audit-events`、`013-agent-runtime-descriptor`、`014-agent-config-history`、`015-mcp-principals`、`016-execution-lanes`、`017-task-session-channel`、`018-principal-access`、`019-execution-sessions`；仓库不使用 Flyway。
+该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`、`009-task-lease-index`、`010-execution-contract`、`011-artifact-storage`、`012-audit-events`、`013-agent-runtime-descriptor`、`014-agent-config-history`、`015-mcp-principals`、`016-execution-lanes`、`017-task-session-channel`、`018-principal-access`、`019-execution-sessions`、`020-artifact-transport`、`021-artifact-transfer-state`、`022-empty-artifacts`、`023-artifact-transfer-direction`；仓库不使用 Flyway。
 
 Java Center 的 memory 模式只用于协议回归/开发。生产必须同时设置
 `RCM_CENTER_PERSISTENCE_MODE=postgres` 和
@@ -156,6 +156,11 @@ Java Center 的 memory 模式只用于协议回归/开发。生产必须同时�
 `RCM_CENTER_ARTIFACT_STORE=filesystem`、`RCM_CENTER_ARTIFACT_ROOT` 指向持久卷，或配置
 `http` 后端的 HTTPS 对象网关；后者会让 `/api/v1/readyz` 在模式或工件存储错误时返回
 503，即使进程本身仍能响应 `/api/v1/healthz`，从而阻止错误实例被 Service 接收流量。
+
+文件传输的临时 spool 默认使用 JVM 临时目录；生产建议把
+`RCM_CENTER_TRANSFER_SPOOL_ROOT` 指向工件持久卷上的独立子目录，并让
+`RCM_CENTER_TRANSFER_MAX_SPOOL_BYTES` 小于该卷的可用容量。这样 4 GiB 单文件上限
+不会被 512 MiB 的容器 `/tmp` 配额意外截断，实际仍受可用磁盘 reservation 保护。
 
 审计记录默认只通过有界异步队列写入 PostgreSQL。保留清理由管理员或外部
 维护作业显式触发，不运行定时轮询线程：

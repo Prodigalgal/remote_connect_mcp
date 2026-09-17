@@ -89,13 +89,17 @@ Artifact 是可复用的文件对象；Transfer 是一次方向明确、可恢�
 ## 传输状态
 
 ```text
-created → uploading → ready → delivering → delivered → acknowledged
-                    ↘ failed / expired / canceled
+pending → ready → delivering → delivered
+   │         │         │            │
+   └─────────┴─────────┴────────────┴→ failed / canceled
 ```
 
 第一阶段使用带大小/SHA-256 校验的 HTTP 流和临时文件原子落盘；重复请求通过幂等键和
-transfer_id 复用同一逻辑传输。断点分块（带偏移确认）是下一阶段 P0 验收项，不能把一次
-完整流重试误称为断点续传。
+transfer_id 复用同一逻辑传输。Agent 在本地落盘/上传成功后发送 Attempt-fenced ACK，
+Center 只有在 ACK 或已提交的对象元数据可证明成功时才进入终态。断点分块（带偏移确认）
+仍是下一阶段 P0 验收项，不能把一次完整流重试误称为断点续传。`pending` ingest 的
+ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation 一次性标记失败，
+调用方需要使用新幂等键重新提交。
 
 ## MCP 工具面
 
@@ -132,7 +136,9 @@ transfer_id 复用同一逻辑传输。断点分块（带偏移确认）是下�
 - 签名读取地址短期有效，并绑定主体、会话、Artifact 和用途。
 - 文件名不能携带目录分隔符、NUL 或控制字符。
 - Agent 最终校验真实路径、scope、覆盖策略、大小和 SHA-256。
-- 上传、下载、并发、磁盘和保留周期均为可配置硬上限，用于资源保护而不是限制模型能力。
+- 上传、下载、并发、spool 磁盘和保留周期均为可配置硬上限，用于资源保护而不是限制模型能力。
+  生产可用 `RCM_CENTER_TRANSFER_SPOOL_ROOT` 把 spool 放到工件持久卷，避免容器 `/tmp`
+  小配额与 4 GiB 单文件上限互相冲突。
 - 日志只记录 transfer_id、artifact_id、大小、结果和错误摘要，不记录文件内容或长期凭据。
 - Center 重启、Agent 离线或网络中断不会产生重复文件或半成品目标文件。
 

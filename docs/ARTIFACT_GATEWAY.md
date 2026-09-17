@@ -17,7 +17,9 @@ DELETE {base_url}/v1/objects/{url-encoded-object-key}
 ## 请求与响应
 
 - `PUT` 请求体是原始字节，带 `Content-Type: application/octet-stream`、
-  `X-RCM-Object-Key` 和 `X-RCM-SHA256`；成功返回 `200`、`201` 或 `204`。
+  `X-RCM-Object-Key`、`X-RCM-SHA256` 和 `X-RCM-Expected-Bytes`；成功返回 `200`、`201` 或 `204`。
+  Center 使用 JDK 流式 BodyPublisher，不能手工设置受限的 `Content-Length` 标头，
+  网关应以 `X-RCM-Expected-Bytes` 作为预期大小并同时校验实际请求体。
 - `GET` 成功返回 `200` 和原始字节；不存在返回 `404`。Center 会把响应限制在
   64 MiB 内，并再次计算 SHA-256，网关不能返回不完整或改变内容的 200。
 - `DELETE` 成功返回 `200`、`202` 或 `204`；重复删除可返回 `404`。
