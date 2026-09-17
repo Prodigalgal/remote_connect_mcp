@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.time.Duration;
 import java.util.HexFormat;
 import java.nio.file.LinkOption;
 import java.util.logging.Level;
@@ -21,6 +22,7 @@ import java.util.logging.Logger;
 final class FileTransferTaskRunner implements Runnable {
     private static final Logger LOG = Logger.getLogger(FileTransferTaskRunner.class.getName());
     private static final long MAX_BYTES = 4L * 1024 * 1024 * 1024;
+    private static final Duration SNAPSHOT_RETENTION = Duration.ofHours(24);
     private final AgentConfig config;
     private final AgentIdentity identity;
     private final TaskCommand task;
@@ -90,6 +92,7 @@ final class FileTransferTaskRunner implements Runnable {
         if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("source file is not a regular non-symlink file");
         }
+        cleanupStaleSnapshots(parent);
         var sourceBytes = Files.size(source);
         if (sourceBytes < 0 || sourceBytes > MAX_BYTES) throw new IOException("source file size is outside the allowed range");
         try {
@@ -159,6 +162,28 @@ final class FileTransferTaskRunner implements Runnable {
             return HexFormat.of().formatHex(digest.digest());
         } catch (java.security.NoSuchAlgorithmException exception) {
             throw new IOException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static void cleanupStaleSnapshots(Path parent) {
+        var cutoff = Instant.now().minus(SNAPSHOT_RETENTION);
+        try (var entries = Files.newDirectoryStream(parent, ".rcm-snapshot-*.part*")) {
+            var checked = 0;
+            for (var entry : entries) {
+                if (checked++ >= 64) break;
+                try {
+                    if (Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS)
+                            && Files.getLastModifiedTime(entry, LinkOption.NOFOLLOW_LINKS).toInstant().isBefore(cutoff)) {
+                        Files.deleteIfExists(entry);
+                    }
+                } catch (IOException ignored) {
+                    // A concurrent task may own the snapshot; leave it for
+                    // that task rather than turning cleanup into a failure.
+                }
+            }
+        } catch (IOException ignored) {
+            // Cleanup is a bounded best-effort hygiene step, never a reason
+            // to skip a valid transfer.
         }
     }
 
