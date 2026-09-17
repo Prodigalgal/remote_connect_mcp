@@ -542,6 +542,10 @@ function TaskRow({ task, token, onRefresh }: { task: Task; token: string; onRefr
   const [loadingOutput, setLoadingOutput] = useState(false)
   const [outputError, setOutputError] = useState('')
   const [artifactUrl, setArtifactUrl] = useState('')
+  const [artifactMime, setArtifactMime] = useState(task.artifactMime ?? '')
+  const [artifactSha256, setArtifactSha256] = useState(task.artifactSha256 ?? '')
+  const [artifactBytes, setArtifactBytes] = useState(task.artifactBytes)
+  const [artifactText, setArtifactText] = useState<string | null>(null)
   const [artifactError, setArtifactError] = useState('')
   const [loadingArtifact, setLoadingArtifact] = useState(false)
   const terminal = ['completed', 'failed', 'canceled'].includes(task.status)
@@ -569,6 +573,14 @@ function TaskRow({ task, token, onRefresh }: { task: Task; token: string; onRefr
     try {
       const result = await readTaskArtifact(token, task.id)
       const nextUrl = URL.createObjectURL(result.blob)
+      const nextMime = result.mimeType || task.artifactMime || 'application/octet-stream'
+      setArtifactMime(nextMime)
+      setArtifactSha256(result.sha256 || task.artifactSha256 || '')
+      setArtifactBytes(result.blob.size)
+      setArtifactText(null)
+      if (nextMime.toLowerCase().startsWith('text/') && result.blob.size <= 512 * 1024) {
+        setArtifactText(await result.blob.text())
+      }
       setArtifactUrl((previous) => {
         if (previous) URL.revokeObjectURL(previous)
         return nextUrl
@@ -600,7 +612,7 @@ function TaskRow({ task, token, onRefresh }: { task: Task; token: string; onRefr
           {loadingOutput ? '读取中…' : expanded ? '收起输出' : '查看输出'}
         </button>
         {!terminal && <button className="secondary" onClick={() => void cancel()} disabled={canceling}>{canceling ? '取消中…' : '取消'}</button>}
-        {task.artifactBytes > 0 && <button className="secondary" onClick={() => void loadArtifact()} disabled={loadingArtifact}>{loadingArtifact ? '读取中…' : artifactUrl ? '重新读取工件' : '查看工件'}</button>}
+        {(task.artifactBytes > 0 || Boolean(task.artifactSha256) || Boolean(task.artifactMime)) && <button className="secondary" onClick={() => void loadArtifact()} disabled={loadingArtifact}>{loadingArtifact ? '读取中…' : artifactUrl ? '重新读取工件' : '查看工件'}</button>}
       </div>
     </div>
     {expanded && <div className="task-output-row">
@@ -611,9 +623,14 @@ function TaskRow({ task, token, onRefresh }: { task: Task; token: string; onRefr
       </div>
       {artifactError && <div className="output-error" role="alert">{artifactError}</div>}
       {artifactUrl && <div className="task-artifact-preview">
-        {task.artifactMime?.toLowerCase().startsWith('image/') && <img src={artifactUrl} alt={`任务 ${task.id} 工件预览`} />}
+        {artifactMime.toLowerCase().startsWith('image/') && <img src={artifactUrl} alt={`任务 ${task.id} 工件预览`} />}
+        {artifactMime.toLowerCase() === 'application/pdf' && <iframe className="artifact-frame" src={artifactUrl} title={`任务 ${task.id} PDF 预览`} />}
+        {artifactMime.toLowerCase().startsWith('audio/') && <audio className="artifact-media" controls src={artifactUrl} />}
+        {artifactMime.toLowerCase().startsWith('video/') && <video className="artifact-media" controls src={artifactUrl} />}
+        {artifactText !== null && <pre className="artifact-text-preview">{artifactText || '（空文本文件）'}</pre>}
         <a className="secondary" href={artifactUrl} download={`${task.id}-artifact`}>下载工件</a>
-        {task.artifactSha256 && <span className="mono">SHA-256 {task.artifactSha256}</span>}
+        <span className="mono">{artifactMime} · {artifactBytes} B</span>
+        <span className="mono">SHA-256 {artifactSha256 || '由 Center 响应提供'}</span>
       </div>}
     </div>}
   </>
