@@ -114,14 +114,18 @@ def main() -> int:
         # through JNI.  Keep this class in the checked-in metadata so a
         # Native Image release cannot regress to a binary that starts but
         # fails on the first screenshot request.
-        if "sun.awt.image.VolatileSurfaceManager" not in jni_text:
-            errors.append(
-                "desktop companion JNI metadata does not cover sun.awt.image.VolatileSurfaceManager"
-            )
-        if "getButtonDownMasks" not in jni_text:
-            errors.append(
-                "desktop companion JNI metadata does not cover java.awt.event.InputEvent.getButtonDownMasks"
-            )
+        required_desktop_jni = (
+            "sun.awt.image.VolatileSurfaceManager",
+            "getButtonDownMasks",
+            # Windows Robot/Toolkit reaches these peer classes through JNI;
+            # keeping the platform entries here avoids a release that only
+            # works on Linux while still passing the generic AWT check.
+            "sun.awt.windows.WComponentPeer",
+            "sun.awt.windows.WRobotPeer",
+        )
+        for required in required_desktop_jni:
+            if required not in jni_text:
+                errors.append(f"desktop companion JNI metadata does not cover {required}")
 
     for module in ("agent", "browser", "center"):
         resource_root = root / "java" / module / "src" / "main" / "resources"
