@@ -135,4 +135,8 @@ class ArtifactTransferServiceTest {
         }
         throw new AssertionError("missing query parameter: " + key);
     }
+
+    private static String sha256(byte[] data) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
+    }
 }
