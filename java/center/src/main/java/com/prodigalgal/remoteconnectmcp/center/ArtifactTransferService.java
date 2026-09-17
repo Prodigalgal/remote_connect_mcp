@@ -233,7 +233,7 @@ public final class ArtifactTransferService {
         var task = tasks.find(row.taskId()).map(TaskView::new).orElse(null);
         if (task == null) return null;
         var descriptor = new TransferDescriptor(row.transferId(), row.artifactId(), row.direction(), row.taskId(), row.principalId(),
-                row.machineId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), row.status(), null,
+                row.machineId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), row.status(), row.error(),
                 downloadUrl(row.artifactId(), row.status(), task.executionSessionId(), origin));
         return new TransferCreated(task, descriptor);
     }
@@ -515,7 +515,7 @@ public final class ArtifactTransferService {
         var row = findTransfer(transferId).orElse(null);
         if (row == null || !origin.principalId().equals(row.principalId())) return Optional.empty();
         return Optional.of(new TransferDescriptor(row.transferId(), row.artifactId(), row.direction(), row.taskId(), row.principalId(),
-                row.machineId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), row.status(), null,
+                row.machineId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), row.status(), row.error(),
                 downloadUrl(row.artifactId(), row.status(), taskSession(row.taskId()), origin)));
     }
 
@@ -795,7 +795,7 @@ public final class ArtifactTransferService {
         if (jdbc == null) {
             return Optional.ofNullable(memory.get(transferId.trim())).map(value -> new TransferRow(value.descriptor().transferId(), value.descriptor().artifactId(),
                     value.descriptor().taskId(), value.descriptor().principalId(), value.descriptor().machineId(), value.descriptor().direction(),
-                    value.sourcePath(), value.destinationPath(), value.descriptor().fileName(), value.descriptor().mimeType(), value.descriptor().bytes(), value.descriptor().sha256(), value.descriptor().status(), value.objectKey()));
+                    value.sourcePath(), value.destinationPath(), value.descriptor().fileName(), value.descriptor().mimeType(), value.descriptor().bytes(), value.descriptor().sha256(), value.descriptor().status(), value.descriptor().error(), value.objectKey()));
         }
         return jdbc.query("SELECT t.transfer_id, t.artifact_id, t.task_id, t.principal_id, t.machine_id, t.direction, t.source_path, t.destination_path, t.file_name, t.mime_type, t.expected_bytes, t.expected_sha256, t.status, t.error_text, a.object_key FROM rcm_file_transfer t LEFT JOIN rcm_artifact a ON a.artifact_id = t.artifact_id WHERE t.transfer_id = ?",
                 ps -> ps.setString(1, transferId.trim()), rs -> rs.next() ? Optional.of(transfer(rs)) : Optional.empty());
@@ -808,7 +808,7 @@ public final class ArtifactTransferService {
     private static TransferRow transfer(java.sql.ResultSet rs) throws java.sql.SQLException {
         return new TransferRow(rs.getString("transfer_id"), rs.getString("artifact_id"), rs.getString("task_id"), rs.getString("principal_id"),
                 rs.getString("machine_id"), rs.getString("direction"), rs.getString("source_path"), rs.getString("destination_path"),
-                rs.getString("file_name"), rs.getString("mime_type"), rs.getLong("expected_bytes"), rs.getString("expected_sha256"), rs.getString("status"), rs.getString("object_key"));
+                rs.getString("file_name"), rs.getString("mime_type"), rs.getLong("expected_bytes"), rs.getString("expected_sha256"), rs.getString("status"), rs.getString("error_text"), rs.getString("object_key"));
     }
 
     private static TransferDescriptor descriptor(java.sql.ResultSet rs) throws java.sql.SQLException {
@@ -1037,7 +1037,7 @@ public final class ArtifactTransferService {
     private record Ids(String transferId, String artifactId) { }
     private record TransferRow(String transferId, String artifactId, String taskId, String principalId, String machineId,
                                String direction, String sourcePath, String destinationPath, String fileName, String mimeType,
-                               long bytes, String sha256, String status, String objectKey) { }
+                               long bytes, String sha256, String status, String error, String objectKey) { }
     private record PendingReservation(String transferId, String taskId, String machineId) { }
     private record OrphanPreparedTask(String taskId, String machineId) { }
     private record MemoryTransfer(TransferDescriptor descriptor, String objectKey, String destinationPath, String sourcePath) { }

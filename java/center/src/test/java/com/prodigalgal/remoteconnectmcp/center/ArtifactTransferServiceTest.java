@@ -2,8 +2,9 @@ package com.prodigalgal.remoteconnectmcp.center;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
@@ -12,8 +13,8 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import java.io.ByteArrayInputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -68,6 +69,16 @@ class ArtifactTransferServiceTest {
         assertThrows(SecurityException.class,
                 () -> service.openPublic(descriptor.artifactId(), Long.parseLong(expires), principal, connection,
                         session + "-other", purpose, signature));
+
+        var failedRequest = new CreateTaskRequest(registration.machineId(), command, "transfer-failure", "", "",
+                ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
+        var failed = service.createAgentToWeb(origin, failedRequest, root.resolve("failed.txt").toString(), "failed.txt", "text/plain");
+        assertThrows(IllegalArgumentException.class, () -> service.receiveFromAgent(registration.machineId(),
+                failed.transfer().transferId(), new ByteArrayInputStream(data), data.length, "0".repeat(64),
+                "failed.txt", "text/plain"));
+        var failedDescriptor = service.findByTransfer(failed.transfer().transferId(), origin).orElseThrow();
+        assertEquals("failed", failedDescriptor.status());
+        assertNotNull(failedDescriptor.error());
         assertThrows(java.util.NoSuchElementException.class,
                 () -> service.findByArtifact(descriptor.artifactId(), new TaskOrigin("principal-b", "token-b", "connection-b")).orElseThrow());
     }
