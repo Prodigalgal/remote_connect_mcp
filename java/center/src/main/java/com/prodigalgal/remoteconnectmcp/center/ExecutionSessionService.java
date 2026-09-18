@@ -73,7 +73,12 @@ public final class ExecutionSessionService {
                         && !conversationId.equals(existing.conversationId())) {
                     throw new SecurityException("execution session is already owned by another conversation");
                 }
-                assertContractCompatibility(existing == null ? null : existing.contract(), contract);
+                // The compatibility principal represents the pre-session
+                // internal API. It intentionally multiplexes legacy tasks;
+                // authenticated principals remain contract-pinned.
+                if (!TaskOrigin.SHARED_PRINCIPAL.equals(principal)) {
+                    assertContractCompatibility(existing == null ? null : existing.contract(), contract);
+                }
                 memory.put(key(principal, sessionId), state);
             } else {
                 var contractJson = new String(JsonCodec.write(contract), StandardCharsets.UTF_8);
@@ -84,7 +89,11 @@ public final class ExecutionSessionService {
                             && !conversationId.equals(existing.conversationId())) {
                         throw new SecurityException("execution session is already owned by another conversation");
                     }
-                    assertContractCompatibility(existing == null ? null : existing.contract(), contract);
+                    // See the in-memory path above: only the compatibility
+                    // principal may reuse one session across legacy contracts.
+                    if (!TaskOrigin.SHARED_PRINCIPAL.equals(principal)) {
+                        assertContractCompatibility(existing == null ? null : existing.contract(), contract);
+                    }
                     jdbc.update("""
                             INSERT INTO rcm_execution_session(session_id, principal_id, conversation_id, machine_id,
                                                               contract_json, status, last_seen_at, expires_at, created_at, updated_at)
