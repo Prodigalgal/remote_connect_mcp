@@ -5,7 +5,7 @@ import com.fasterxml.jackson.annotation.JsonValue;
 import java.util.Locale;
 
 /**
- * Scheduling compatibility for tasks that target the same execution lane.
+ * Scheduling semantics for tasks that target the same execution lane.
  * READ tasks may share a lane; WRITE tasks exclude reads and other writes;
  * EXCLUSIVE also documents operations that own the whole host/session.
  */

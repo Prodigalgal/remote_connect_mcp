@@ -157,7 +157,7 @@ class PostgresIntegrationTest {
 
         var worktree = projectService.createWorktree(project.id(), new ProjectWorktreeRequest("feature/integration", "project-worktree-1"));
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rcm_execution_session WHERE principal_id = ? AND session_id = ?",
-                Integer.class, TaskOrigin.SHARED_PRINCIPAL, "internal"));
+                Integer.class, TaskOrigin.CONFIGURED_PRINCIPAL, "internal"));
         assertNotNull(worktree.taskId());
         var worktreeTask = projectTasks.poll(agentId, new PollRequest(List.of(), 1, List.of("command"))).task();
         assertEquals(worktree.taskId(), worktreeTask.id());
@@ -228,7 +228,7 @@ class PostgresIntegrationTest {
         var transfers = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
         // Use the built-in shared principal so transfer-only rows do not make
         // the ACL fixture's principal undeletable during @AfterAll cleanup.
-        var transferOrigin = TaskOrigin.shared();
+        var transferOrigin = TaskOrigin.configured();
         var transferRequest = new CreateTaskRequest(agentId,
                 new TaskCommand("", TaskKind.COMMAND, "command", "printf transfer", "/tmp", Map.of(), 0, null, Instant.now()),
                 "transfer-v2-key", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, transferOrigin);

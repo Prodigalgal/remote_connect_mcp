@@ -26,13 +26,13 @@ class McpAccessServiceTest {
     }
 
     @Test
-    void grantsExpireAndCompatibilityPrincipalRemainsExplicitlyGlobal() {
+    void grantsExpireAndConfiguredPrincipalRemainsExplicitlyGlobal() {
         var access = new McpAccessService();
         var origin = new TaskOrigin("user-b", "token-b", "conversation-b");
         access.grantMachine("user-b", "machine-b", Set.of("admin"), Instant.now().minusSeconds(1));
         assertThrows(SecurityException.class, () -> access.authorizeMachine(origin, "machine-b", "read"));
 
-        assertDoesNotThrow(() -> access.authorizeExecution(TaskOrigin.shared(), "machine-b", "project-b"));
+        assertDoesNotThrow(() -> access.authorizeExecution(TaskOrigin.configured(), "machine-b", "project-b"));
         assertEquals(1, access.machineCount("user-b"));
         assertEquals(0, access.projectCount("user-b"));
     }

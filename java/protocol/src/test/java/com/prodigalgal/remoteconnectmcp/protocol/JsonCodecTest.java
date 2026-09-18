@@ -1,6 +1,7 @@
 package com.prodigalgal.remoteconnectmcp.protocol;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
@@ -9,7 +10,7 @@ import org.junit.jupiter.api.Test;
 
 class JsonCodecTest {
     @Test
-    void usesTheGoCompatibleSnakeCaseWireFormat() {
+    void usesTheCurrentSnakeCaseWireFormat() {
         var request = new RegisterRequest("agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.WORKSPACE, "/srv/project", List.of("command"));
         var json = new String(JsonCodec.write(request), java.nio.charset.StandardCharsets.UTF_8);
 
@@ -20,25 +21,19 @@ class JsonCodecTest {
     }
 
     @Test
-    void appliesGoZeroValuesToPartialPollRequests() {
-        var request = JsonCodec.read("{}".getBytes(java.nio.charset.StandardCharsets.UTF_8), PollRequest.class);
-
-        assertEquals(0, request.availableSlots());
-        assertEquals(List.of(), request.runningTaskIds());
-        assertEquals(List.of(), request.availableCapabilities());
-        assertEquals(0L, request.configGeneration());
+    void rejectsIncompletePollRequests() {
+        assertThrows(IllegalArgumentException.class,
+                () -> JsonCodec.read("{}".getBytes(java.nio.charset.StandardCharsets.UTF_8), PollRequest.class));
     }
 
     @Test
-    void acceptsExplicitNullConfigGenerationFromLegacyAgents() {
-        var request = JsonCodec.read("{\"config_generation\":null}"
-                .getBytes(java.nio.charset.StandardCharsets.UTF_8), PollRequest.class);
-
-        assertEquals(0L, request.configGeneration());
+    void rejectsNullConfigGeneration() {
+        assertThrows(IllegalArgumentException.class, () -> JsonCodec.read("{\"config_generation\":null}"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8), PollRequest.class));
     }
 
     @Test
-    void keepsRuntimeConfigOptionalForOlderPollResponses() {
+    void allowsOptionalCurrentRuntimeConfig() {
         var response = JsonCodec.read("{\"cancel_task_ids\":[],\"config\":{\"generation\":2,\"poll_interval_ms\":1500,\"max_concurrency\":3}}"
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8), PollResponse.class);
         assertEquals(2, response.config().generation());

@@ -69,7 +69,7 @@ public final class McpQuotaService {
      * authoritative same-command check under its transaction.
      */
     public void assertTaskAdmission(TaskOrigin origin, String taskId, String machineId, String idempotencyKey) {
-        if (origin == null || origin.isShared()) return;
+        if (origin == null || origin.isConfigured()) return;
         var principal = origin.principalId();
         if (jdbc != null) {
             var key = idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey.trim();
@@ -114,7 +114,7 @@ public final class McpQuotaService {
      */
     boolean assertTaskAdmissionInTransaction(TaskOrigin origin, String taskId,
                                              String machineId, String idempotencyKey) {
-        if (origin == null || origin.isShared() || jdbc == null) return false;
+        if (origin == null || origin.isConfigured() || jdbc == null) return false;
         var principal = origin.principalId();
         jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
                 ps -> ps.setString(1, principal), rs -> null);
@@ -145,7 +145,7 @@ public final class McpQuotaService {
 
     /** Move a memory-mode task into the active bucket after dispatch. */
     public void markTaskActive(TaskOrigin origin, String taskId) {
-        if (origin == null || origin.isShared() || jdbc != null || taskId == null || taskId.isBlank()) return;
+        if (origin == null || origin.isConfigured() || jdbc != null || taskId == null || taskId.isBlank()) return;
         var reservations = memoryReservations.get(origin.principalId());
         if (reservations == null) return;
         synchronized (reservations) {
@@ -161,7 +161,7 @@ public final class McpQuotaService {
      * queued without consuming a permit or requiring a retry timer.
      */
     public boolean permitsActivation(TaskOrigin origin, String taskId) {
-        if (origin == null || origin.isShared() || jdbc != null || taskId == null || taskId.isBlank()) return true;
+        if (origin == null || origin.isConfigured() || jdbc != null || taskId == null || taskId.isBlank()) return true;
         var reservations = memoryReservations.get(origin.principalId());
         if (reservations == null) return true;
         synchronized (reservations) {
@@ -173,7 +173,7 @@ public final class McpQuotaService {
 
     /** Return a memory-mode reservation to the queued bucket after lease recovery. */
     public void markTaskQueued(TaskOrigin origin, String taskId) {
-        if (origin == null || origin.isShared() || jdbc != null || taskId == null || taskId.isBlank()) return;
+        if (origin == null || origin.isConfigured() || jdbc != null || taskId == null || taskId.isBlank()) return;
         var reservations = memoryReservations.get(origin.principalId());
         var active = memoryActiveTasks.get(origin.principalId());
         if (reservations == null || active == null) return;
@@ -190,7 +190,7 @@ public final class McpQuotaService {
 
     /** Enforce the active execution-session cap without adding a timer. */
     public void assertSessionAdmission(TaskOrigin origin, String sessionId) {
-        if (origin == null || origin.isShared() || sessionId == null || sessionId.isBlank()) return;
+        if (origin == null || origin.isConfigured() || sessionId == null || sessionId.isBlank()) return;
         var principal = origin.principalId();
         if (jdbc == null) {
             var sessions = memorySessions.computeIfAbsent(principal, ignored -> ConcurrentHashMap.newKeySet());
@@ -227,7 +227,7 @@ public final class McpQuotaService {
      * same transaction that writes {@code rcm_execution_session}.</p>
      */
     boolean assertSessionAdmissionInTransaction(TaskOrigin origin, String sessionId) {
-        if (origin == null || origin.isShared() || jdbc == null || sessionId == null || sessionId.isBlank()) {
+        if (origin == null || origin.isConfigured() || jdbc == null || sessionId == null || sessionId.isBlank()) {
             return false;
         }
         var principal = origin.principalId();
@@ -256,7 +256,7 @@ public final class McpQuotaService {
 
     /** Check a transfer while allowing an idempotent existing transfer replay. */
     public void assertTransferAdmission(TaskOrigin origin, long expectedBytes, String transferId) {
-        if (origin == null || origin.isShared() || jdbc == null) return;
+        if (origin == null || origin.isConfigured() || jdbc == null) return;
         if (expectedBytes < 0 || expectedBytes > maxTransferBytes) {
             throw new IllegalStateException("principal transfer-byte quota exceeded");
         }
@@ -279,7 +279,7 @@ public final class McpQuotaService {
 
     /** Authoritative transfer admission used inside the transfer-row transaction. */
     void assertTransferAdmissionInTransaction(TaskOrigin origin, String transferId, long expectedBytes) {
-        if (origin == null || origin.isShared() || jdbc == null) return;
+        if (origin == null || origin.isConfigured() || jdbc == null) return;
         if (expectedBytes < 0 || expectedBytes > maxTransferBytes) {
             throw new IllegalStateException("principal transfer-byte quota exceeded");
         }
@@ -304,7 +304,7 @@ public final class McpQuotaService {
 
     /** Release a concrete reservation; repeated terminal callbacks are harmless. */
     public void releaseTask(TaskOrigin origin, String taskId) {
-        if (origin == null || origin.isShared() || jdbc != null) return;
+        if (origin == null || origin.isConfigured() || jdbc != null) return;
         var reservations = memoryReservations.get(origin.principalId());
         if (reservations == null) return;
         synchronized (reservations) {
@@ -332,7 +332,7 @@ public final class McpQuotaService {
 
     /** Release a memory-mode session reservation on explicit close or expiry. */
     public void releaseSession(TaskOrigin origin, String sessionId) {
-        if (origin == null || origin.isShared() || jdbc != null || sessionId == null || sessionId.isBlank()) return;
+        if (origin == null || origin.isConfigured() || jdbc != null || sessionId == null || sessionId.isBlank()) return;
         var sessions = memorySessions.get(origin.principalId());
         if (sessions == null) return;
         synchronized (sessions) {
@@ -383,7 +383,7 @@ public final class McpQuotaService {
                             long queuedTasks, int maxQueuedTasks, long activeSessions,
                             int maxSessions, long transferBytes, long maxTransferBytes,
                             long reservedTransferBytes, long transferredTransferBytes) {
-        /** Compatibility shape for older Console clients. */
+        /** Compact projection shape used by the Console summary. */
         public QuotaView(String principalId, long activeTasks, int maxActiveTasks,
                          long queuedTasks, int maxQueuedTasks, long activeSessions,
                          int maxSessions, long transferBytes, long maxTransferBytes) {

@@ -50,7 +50,7 @@ class AgentConfigurationServiceTest {
     }
 
     @Test
-    void expectedGenerationPreventsLostUpdatesButLegacyRequestsRemainCompatible() {
+    void expectedGenerationPreventsLostUpdatesAndAllowsUnconditionalUpdates() {
         var service = new AgentConfigurationService((org.springframework.jdbc.core.JdbcTemplate) null,
                 (org.springframework.transaction.support.TransactionTemplate) null);
 
@@ -59,8 +59,7 @@ class AgentConfigurationServiceTest {
         assertEquals(2, second.generation());
         assertThrows(IllegalArgumentException.class,
                 () -> service.update("machine-a", new AgentConfigUpdateRequest(3000L, 4, first.generation())));
-        // Existing clients which do not send expected_generation retain the
-        // intentionally supported unconditional update behavior.
+        // An omitted generation is the explicit unconditional update form.
         assertEquals(3, service.update("machine-a", new AgentConfigUpdateRequest(null, 5)).generation());
     }
 }

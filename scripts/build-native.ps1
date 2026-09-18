@@ -14,10 +14,6 @@ if (-not $native) {
     if ($env:RCM_GRAALVM_HOME) { $candidates.Add($env:RCM_GRAALVM_HOME) }
     if ($env:GRAALVM_HOME) { $candidates.Add($env:GRAALVM_HOME) }
     if ($env:JAVA_HOME) { $candidates.Add($env:JAVA_HOME) }
-    if (Test-Path -LiteralPath 'D:\DevlopEnv\JDK') {
-        Get-ChildItem -LiteralPath 'D:\DevlopEnv\JDK' -Directory -Filter 'graalvm-jdk-25*' |
-            Sort-Object Name -Descending | ForEach-Object { $candidates.Add($_.FullName) }
-    }
     foreach ($candidate in $candidates | Select-Object -Unique) {
         $bin = Join-Path $candidate 'bin'
         if (Test-Path -LiteralPath (Join-Path $bin 'native-image.cmd')) {
@@ -44,8 +40,13 @@ $arch = switch ($archName) {
     'arm64' { 'arm64' }
     default { throw "Unsupported host architecture: $archName" }
 }
+$nativeMarch = switch ($arch) {
+    'amd64' { 'x86-64-v2' }
+    'arm64' { 'armv8-a' }
+    default { throw "Unsupported Native Image architecture baseline: $arch" }
+}
 if ($os -eq 'windows' -and $arch -eq 'arm64') {
-    throw 'GraalVM/NIK 25 Native Image does not publish a supported Windows ARM64 target; use the JVM/Go compatibility package or a supported target.'
+    throw 'GraalVM/NIK 25 Native Image does not publish a supported Windows ARM64 target; use a supported release target.'
 }
 $version = if ($env:RCM_RELEASE_VERSION) { $env:RCM_RELEASE_VERSION } else { (git describe --tags --always --dirty 2>$null) }
 if ([string]::IsNullOrWhiteSpace($version)) { $version = 'dev' }
@@ -69,7 +70,7 @@ Push-Location (Join-Path $root 'java')
 try {
     # Native Image is intentionally serialized; running Center and Agent
     # images together can consume several GiB per process.
-    & $gradle :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
+    & $gradle -PnativeMarch=$nativeMarch :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
     $suffix = if ($os -eq 'windows') { '.exe' } else { '' }
     $center = Join-Path (Get-Location) "center\build\native\nativeCompile\rcm-center$suffix"
     $agent = Join-Path (Get-Location) "agent\build\native\nativeCompile\rcm-agent$suffix"

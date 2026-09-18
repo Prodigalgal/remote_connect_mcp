@@ -49,7 +49,7 @@ final class JdbcTaskStore {
                    t.file_transfer_action,
                    NULL::bytea AS output_data, COALESCE(a.bytes, t.artifact_bytes, 0) AS artifact_bytes,
                    COALESCE(a.mime_type, t.artifact_mime) AS artifact_mime,
-                   COALESCE(a.sha256, t.artifact_sha256) AS artifact_sha256, NULL::bytea AS artifact_data
+                   COALESCE(a.sha256, t.artifact_sha256) AS artifact_sha256
               FROM rcm_task t
               LEFT JOIN rcm_task_artifact a ON a.task_id = t.task_id
             """;
@@ -75,15 +75,15 @@ final class JdbcTaskStore {
         this.quota = quota;
     }
 
-    /** Compatibility entry point for Agent/admin callers without a user owner. */
+    /** Configured-principal entry point for internal Agent/admin callers. */
     TaskView create(String taskId, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt) {
-        return create(taskId, machineId, command, idempotencyKey, createdAt, TaskOrigin.shared());
+        return create(taskId, machineId, command, idempotencyKey, createdAt, TaskOrigin.configured());
     }
 
     TaskView create(String taskId, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt,
                     TaskOrigin origin) {
         var normalizedKey = idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey;
-        var normalizedOrigin = origin == null ? TaskOrigin.shared() : origin;
+        var normalizedOrigin = origin == null ? TaskOrigin.configured() : origin;
         try {
             return transactions.execute(status -> {
                 if (quota != null) {
@@ -245,7 +245,7 @@ final class JdbcTaskStore {
                      ORDER BY created_at LIMIT 64
                     """, String.class, machineId, TaskStatus.CANCEL_REQUESTED);
             if (availableSlots <= 0 || capabilities.isEmpty()) {
-                return new PollResult(new PollResponse(null, cancelIds, null), recoveredTaskIds);
+                return new PollResult(new PollResponse(null, cancelIds, null, null), recoveredTaskIds);
             }
             // Lock only the row that can actually be returned.  Locking a
             // larger batch and filtering capabilities in Java would make a
@@ -255,7 +255,7 @@ final class JdbcTaskStore {
             // count is assembled from the already bounded request list.
             var capabilityPlaceholders = String.join(", ", java.util.Collections.nCopies(capabilities.size(), "?"));
             var quotaPredicate = quota == null ? "TRUE" : """
-                    (COALESCE(t.principal_id, '') = 'owner/shared-domain'
+                    (COALESCE(t.principal_id, '') = 'owner/configured-mcp'
                      OR (SELECT COUNT(*) FROM rcm_task principal_active
                            WHERE principal_active.principal_id = t.principal_id
                              AND principal_active.status IN ('dispatching', 'running', 'cancel_requested')) < ?)
@@ -309,7 +309,7 @@ final class JdbcTaskStore {
                     .filter(task -> capabilities.contains(task.command().requiredCapability()))
                     .findFirst();
             if (selected.isEmpty()) {
-                return new PollResult(new PollResponse(null, cancelIds, null), recoveredTaskIds);
+            return new PollResult(new PollResponse(null, cancelIds, null, null), recoveredTaskIds);
             }
             var task = selected.get();
             var now = Instant.now();
@@ -324,19 +324,15 @@ final class JdbcTaskStore {
             task.attempt(task.attempt() + 1);
             task.dispatchedAt(now);
             task.leaseUntil(lease);
-            return new PollResult(new PollResponse(task.command().withAttempt(task.attempt()), cancelIds, null), recoveredTaskIds);
+            return new PollResult(new PollResponse(task.command().withAttempt(task.attempt()), cancelIds, null, null), recoveredTaskIds);
         });
     }
 
     record PollResult(PollResponse response, List<String> recoveredTaskIds) {
         PollResult {
-            response = response == null ? new PollResponse(null, List.of(), null) : response;
+            response = response == null ? new PollResponse(null, List.of(), null, null) : response;
             recoveredTaskIds = recoveredTaskIds == null ? List.of() : List.copyOf(recoveredTaskIds);
         }
-    }
-
-    TaskView updateState(String machineId, String taskId, TaskUpdateRequest update) {
-        return updateState(machineId, taskId, update, null);
     }
 
     boolean hasActiveProjectTasks(String projectId) {
@@ -396,6 +392,10 @@ final class JdbcTaskStore {
         });
     }
 
+    TaskView updateState(String machineId, String taskId, TaskUpdateRequest update) {
+        return updateState(machineId, taskId, update, currentAttempt(machineId, taskId));
+    }
+
     TaskView updateFileTransferAction(String machineId, String taskId,
                                       com.prodigalgal.remoteconnectmcp.protocol.FileTransferAction action) {
         return transactions.execute(status -> {
@@ -441,10 +441,6 @@ final class JdbcTaskStore {
             assertAttempt(task, attempt);
             return null;
         });
-    }
-
-    OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data) {
-        return appendOutput(machineId, taskId, offset, data, null);
     }
 
     OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data, Integer attempt) {
@@ -502,6 +498,10 @@ final class JdbcTaskStore {
         });
     }
 
+    OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data) {
+        return appendOutput(machineId, taskId, offset, data, currentAttempt(machineId, taskId));
+    }
+
     OutputPage readOutput(String taskId, long cursor, int limit) {
         if (taskId == null || taskId.isBlank()) throw new IllegalArgumentException("taskId is required");
         if (cursor < 0 || cursor > Integer.MAX_VALUE - 1L) {
@@ -534,7 +534,7 @@ final class JdbcTaskStore {
     }
 
     ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256, byte[] data) {
-        return appendArtifact(machineId, taskId, mimeType, sha256, data, null);
+        return appendArtifact(machineId, taskId, mimeType, sha256, data, currentAttempt(machineId, taskId));
     }
 
     ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256,
@@ -548,31 +548,26 @@ final class JdbcTaskStore {
                 throw new IllegalArgumentException("artifact exceeds the execution contract limit of "
                         + TaskService.artifactLimit(task) + " bytes");
             }
-            var existing = jdbc.query("SELECT storage_backend, object_key, sha256, artifact_data, mime_type, bytes FROM rcm_task_artifact WHERE task_id = ? FOR UPDATE",
+            var existing = jdbc.query("SELECT storage_backend, object_key, sha256, mime_type, bytes FROM rcm_task_artifact WHERE task_id = ? FOR UPDATE",
                     ps -> ps.setString(1, taskId), rs -> {
                         if (!rs.next()) return null;
                         return new ArtifactRow(rs.getString("storage_backend"), rs.getString("object_key"),
-                                rs.getString("sha256"), rs.getBytes("artifact_data"), rs.getString("mime_type"), rs.getLong("bytes"));
+                                rs.getString("sha256"), rs.getString("mime_type"), rs.getLong("bytes"));
                     });
             if (existing != null) {
                 if (!existing.sha256().equalsIgnoreCase(sha256)) throw new IllegalArgumentException("task already has a different artifact");
                 if (existing.bytes() > 0 && existing.bytes() != data.length) {
                     throw new IllegalArgumentException("task artifact bytes do not match the existing digest");
                 }
-                // A row imported from the old Go/inline schema is migrated on
-                // the first successful retry.  New requests never write a
-                // payload into PostgreSQL bytea.
-                if (existing.artifactData() != null && existing.artifactData().length > 0) {
-                    var objectKey = artifactStore.put(taskId, sha256, existing.artifactData());
-                    jdbc.update("UPDATE rcm_task_artifact SET storage_backend = ?, object_key = ?, artifact_data = NULL WHERE task_id = ?",
-                            artifactStore.backend(), objectKey, taskId);
+                if (existing.objectKey() == null || existing.objectKey().isBlank()) {
+                    throw new ArtifactStore.StorageException("artifact metadata has no object key");
                 }
                 return new ArtifactResponse(data.length, sha256);
             }
             var objectKey = artifactStore.put(taskId, sha256, data);
             jdbc.update("""
-                    INSERT INTO rcm_task_artifact(task_id, mime_type, storage_backend, object_key, bytes, sha256, artifact_data, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
+                    INSERT INTO rcm_task_artifact(task_id, mime_type, storage_backend, object_key, bytes, sha256, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     """, taskId, mimeType, artifactStore.backend(), objectKey, data.length, sha256);
             task.artifactBytes(data.length);
             task.artifactMime(mimeType);
@@ -584,31 +579,15 @@ final class JdbcTaskStore {
 
     Optional<TaskService.ArtifactData> readArtifact(String taskId) {
         if (taskId == null || taskId.isBlank()) return Optional.empty();
-        var row = jdbc.query("SELECT mime_type, storage_backend, object_key, bytes, sha256, artifact_data FROM rcm_task_artifact WHERE task_id = ?",
+        var row = jdbc.query("SELECT mime_type, storage_backend, object_key, bytes, sha256 FROM rcm_task_artifact WHERE task_id = ?",
                 ps -> ps.setString(1, taskId.trim()), rs -> {
                     if (!rs.next()) return null;
                     return new ArtifactRow(rs.getString("storage_backend"), rs.getString("object_key"),
-                            rs.getString("sha256"), rs.getBytes("artifact_data"), rs.getString("mime_type"), rs.getLong("bytes"));
+                            rs.getString("sha256"), rs.getString("mime_type"), rs.getLong("bytes"));
                 });
         if (row == null) return Optional.empty();
-        byte[] data = row.artifactData();
-        if (data == null || data.length == 0) {
-            if (row.objectKey() == null || row.objectKey().isBlank()) {
-                // A legacy inline row can represent a valid zero-byte
-                // artifact without an object key.  Preserve that edge
-                // semantic instead of treating it as "not found".
-                if (row.bytes() != 0) return Optional.empty();
-                data = new byte[0];
-            } else {
-                data = artifactStore.read(row.objectKey());
-            }
-        } else {
-            // Backfill legacy inline rows without making the read path depend
-            // on a second query while the JDBC ResultSet is still open.
-            var objectKey = artifactStore.put(taskId.trim(), row.sha256(), data);
-            jdbc.update("UPDATE rcm_task_artifact SET storage_backend = ?, object_key = ?, artifact_data = NULL WHERE task_id = ?",
-                    artifactStore.backend(), objectKey, taskId.trim());
-        }
+        if (row.objectKey() == null || row.objectKey().isBlank()) return Optional.empty();
+        byte[] data = artifactStore.read(row.objectKey());
         if (data.length != row.bytes() || !sha256(data).equalsIgnoreCase(row.sha256())) {
             throw new ArtifactStore.StorageException("artifact metadata does not match stored bytes");
         }
@@ -670,12 +649,6 @@ final class JdbcTaskStore {
         var deleteFailures = 0;
         long reclaimedBytes = 0L;
         for (var candidate : candidates) {
-            if (candidate.objectKey() == null || candidate.objectKey().isBlank()) {
-                // Legacy inline rows have no filesystem object.  Their
-                // metadata was removed above; there is nothing to delete and
-                // this should not be reported as a storage failure.
-                continue;
-            }
             try {
                 artifactStore.delete(candidate.objectKey());
                 deletedObjects++;
@@ -703,14 +676,6 @@ final class JdbcTaskStore {
                     Instant.now().minus(Duration.ofHours(1)), limit);
         } catch (RuntimeException failure) {
             deleteFailures++;
-        }
-        // Legacy inline rows have no object key, but their metadata payload is
-        // still reclaimed by the transaction above.  Count those bytes here;
-        // object-store bytes are counted only after a successful delete.
-        for (var candidate : candidates) {
-            if (candidate.objectKey() == null || candidate.objectKey().isBlank()) {
-                reclaimedBytes = saturatingAdd(reclaimedBytes, candidate.bytes());
-            }
         }
         return new TaskService.ArtifactGcResult(candidates.size(), deletedObjects, deleteFailures, reclaimedBytes);
     }
@@ -830,14 +795,13 @@ final class JdbcTaskStore {
         var output = rs.getBytes("output_data");
         var artifactBytesValue = rs.getObject("artifact_bytes");
         var artifactBytes = artifactBytesValue instanceof Number number ? number.longValue() : 0L;
-        var artifactData = rs.getBytes("artifact_data");
         var state = TaskState.restore(taskId, rs.getString("agent_id"), command, rs.getString("idempotency_key"), instant(rs, "created_at"),
                 rs.getString("status"), rs.getInt("attempt"), numberValue(rs.getObject("exit_code")), rs.getString("error_text"),
                 rs.getBoolean("output_truncated"), instant(rs, "dispatched_at"), instant(rs, "started_at"), instant(rs, "finished_at"),
                 instant(rs, "lease_until"), output == null ? new byte[0] : output,
                 artifactBytes, rs.getString("artifact_mime"), rs.getString("artifact_sha256"),
-                artifactData == null ? new byte[0] : artifactData,
-                new TaskOrigin(rs.getString("principal_id"), TaskOrigin.COMPAT_TOKEN, rs.getString("connection_id")),
+                new byte[0],
+                new TaskOrigin(rs.getString("principal_id"), TaskOrigin.CONFIGURED_TOKEN, rs.getString("connection_id")),
                 rs.getString("lane_key"), rs.getString("execution_session_id"), rs.getString("result_channel"));
         state.outputBytes(rs.getLong("output_bytes"));
         return state;
@@ -877,14 +841,16 @@ final class JdbcTaskStore {
                 && (left.contract() == null ? right.contract() == null : left.contract().sameIntent(right.contract()));
     }
 
+    private int currentAttempt(String machineId, String taskId) {
+        var value = jdbc.queryForObject("SELECT attempt FROM rcm_task WHERE task_id = ? AND agent_id = ?", Integer.class,
+                taskId, machineId);
+        if (value == null || value < 1) throw new SecurityException("task dispatch attempt is required");
+        return value;
+    }
+
     private static void assertAttempt(TaskState task, Integer attempt) {
-        if (attempt == null) {
-            // Keep the first dispatch compatible with old Go Agents, but do
-            // not allow a legacy process to write after a lease retry.
-            if (task.attempt() > 1) throw new SecurityException("task dispatch attempt is required after a retry");
-            return;
-        }
-        if (attempt > 0 && task.attempt() != attempt) {
+        if (attempt == null || attempt < 1) throw new SecurityException("task dispatch attempt is required");
+        if (task.attempt() != attempt) {
             throw new SecurityException("stale task dispatch attempt");
         }
     }
@@ -924,7 +890,7 @@ final class JdbcTaskStore {
     private record OutputSlice(long outputBytes, boolean truncated, String status, byte[] data) {
     }
 
-    private record ArtifactRow(String storageBackend, String objectKey, String sha256, byte[] artifactData,
+    private record ArtifactRow(String storageBackend, String objectKey, String sha256,
                                String mimeType, long bytes) {
     }
 

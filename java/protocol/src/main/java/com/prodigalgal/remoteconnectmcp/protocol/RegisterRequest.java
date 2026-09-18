@@ -16,7 +16,7 @@ public record RegisterRequest(
         List<String> capabilities,
         AgentRuntimeDescriptor runtime) {
 
-    /** Compatibility constructor for clients that predate runtime self-description. */
+    /** Local construction overload using the baseline runtime descriptor. */
     public RegisterRequest(String name, String hostId, String hostname, String os, String arch, String version,
                            String defaultCwd, ScopeMode scopeMode, String workspaceRoot, List<String> capabilities) {
         this(name, hostId, hostname, os, arch, version, defaultCwd, scopeMode, workspaceRoot, capabilities,

@@ -9,7 +9,7 @@ public record AgentConfigUpdateRequest(
         /** Optional optimistic-concurrency guard from the last GET. */
         @JsonProperty("expected_generation") Long expectedGeneration) {
 
-    /** Compatibility constructor for clients written before CAS support. */
+    /** Construction overload when no generation guard is supplied. */
     public AgentConfigUpdateRequest(Long pollIntervalMs, Integer maxConcurrency) {
         this(pollIntervalMs, maxConcurrency, null);
     }

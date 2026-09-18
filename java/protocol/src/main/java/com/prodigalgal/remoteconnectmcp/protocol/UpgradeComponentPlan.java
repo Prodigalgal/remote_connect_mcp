@@ -5,9 +5,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 /**
  * One independently staged component in a machine upgrade campaign.
  *
- * <p>The current production Agent still consumes the legacy command-only
- * fields on {@link UpgradePlan}; this record is additive so a newer Agent can
- * negotiate component upgrades without changing the MCP/Agent identity.</p>
+ * <p>Component plans let Center stage command, Desktop, and Browser bundles
+ * without changing the MCP/Agent identity.</p>
  */
 public record UpgradeComponentPlan(
         String component,

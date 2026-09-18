@@ -34,7 +34,7 @@ public interface ArtifactStore {
             throw new IllegalArgumentException("artifact stream size is outside the allowed range");
         }
         if (expectedBytes > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("legacy artifact backend cannot materialise files larger than 2 GiB");
+            throw new IllegalArgumentException("in-memory artifact backend cannot materialise files larger than 2 GiB");
         }
         try (var output = new ByteArrayOutputStream((int) Math.min(expectedBytes, 1024 * 1024L))) {
             input.transferTo(output);

@@ -12,17 +12,8 @@ public record UpgradePlan(
         @JsonProperty("attempt") Integer attempt,
         @JsonProperty("components") List<UpgradeComponentPlan> components) {
 
-    /** Compatibility constructor for Centers that do not fence upgrade offers. */
-    public UpgradePlan(String campaignId, String version, String url, String sha256) {
-        this(campaignId, version, url, sha256, null, List.of());
-    }
-
-    public UpgradePlan(String campaignId, String version, String url, String sha256, Integer attempt) {
-        this(campaignId, version, url, sha256, attempt, List.of());
-    }
-
     public UpgradePlan {
-        if (attempt != null && attempt < 1) throw new IllegalArgumentException("upgrade attempt must be positive");
+        if (attempt == null || attempt < 1) throw new IllegalArgumentException("upgrade attempt is required and must be positive");
         components = components == null ? List.of() : List.copyOf(components);
     }
 }

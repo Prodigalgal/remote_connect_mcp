@@ -2,7 +2,7 @@
 
 需求上游基线：[`docs/REQUIREMENTS.md`](REQUIREMENTS.md)。本文只记录为满足该基线所选择的技术和运行时边界，不把技术选型本身当作产品需求。
 
-本文记录 RCM 的 Java 25/React 迁移实现与生产选型。Java/React 代码已进入生产路径，Go 仅作为离线节点的兼容/回滚基线保留。所有构建和验证统一由 GitHub Actions 执行；Native Image、数据库、路由和切换事实以发布验收和生产探针为准。
+本文记录 RCM 的 Java 25/React 实现与生产选型。Java/React 是唯一运行时路径；所有构建和验证统一由 GitHub Actions 执行，Native Image、数据库、路由和切换事实以发布验收和生产探针为准。
 
 ## 1. 目标和边界
 
@@ -19,12 +19,12 @@
 
 ### 当前实施状态（2026-09-11）
 
-- 已建立 `java/` Gradle 多模块实现：`protocol`、`center`、`agent`、`desktop`、`browser`；后三个 Agent 目标分别产出 command-agent、desktop-companion、browser-agent Native Image；协议记录、边界校验、异步 MCP、健康/版本探针和注册/长轮询兼容接口均可测试，并已锁定 Liquibase/PostgreSQL 依赖；
+- 已建立 `java/` Gradle 多模块实现：`protocol`、`center`、`agent`、`desktop`、`browser`；后三个 Agent 目标分别产出 command-agent、desktop-companion、browser-agent Native Image；协议记录、边界校验、异步 MCP、健康/版本探针和注册/长轮询接口均可测试，并已锁定 Liquibase/PostgreSQL 依赖；
 - Center 注册表与任务队列已支持内存和 PostgreSQL 两种适配路径：`postgres` 模式通过独立 Liquibase changelog 管理 Agent、任务、输出游标和有界工件；一个进程只选择其中一种，生产只允许 PostgreSQL，内存适配器仅用于协议回归和开发。
-- Java command-agent 已有可执行自包含 JAR、原子身份文件、一次性注册换取日常 Token、断线指数退避、401 自动重新注册、虚拟线程命令执行、有界磁盘 spool/异步上传与无超时进程恢复、用户会话 Desktop IPC 客户端和 Browser Agent 监管；desktop/browser 目标分别隔离 AWT 和浏览器适配器生命周期；command-agent 与 desktop-companion、browser-agent 只通过 `protocol` 共享线协议和桌面 IPC 记录，command/browser 任务使用有界进程预算，desktop-companion 使用独立的 GUI 进程回收边界，避免把不需要的实现和运行库交叉打包；
+- Java command-agent 已有自包含 Native 运行时、原子身份文件、一次性注册换取日常 Token、断线指数退避、401 自动重新注册、虚拟线程命令执行、有界磁盘 spool/异步上传与无超时进程恢复、用户会话 Desktop IPC 客户端和 Browser Agent 监管；desktop/browser 目标分别隔离 AWT 和浏览器适配器生命周期；command-agent 与 desktop-companion、browser-agent 只通过 `protocol` 共享线协议和桌面 IPC 记录，command/browser 任务使用有界进程预算，desktop-companion 使用独立的 GUI 进程回收边界，避免把不需要的实现和运行库交叉打包；
 - 已建立 `web/` React/Vite 控制台并接入 Admin API 的机器/任务分页读取、取消和真实升级活动，Admin Token 只驻留当前 React 内存；
-- Java Center/Agent v0.1.21 已替换生产 Center，四台在线 Oracle Agent 已完成迁移；Go Center 已缩容为 0，Go Agent 仅作为离线节点的兼容/回滚基线保留。Java 已实现注册、心跳、异步任务、工件、项目/worktree 和 Center 控制的升级编排；升级活动在 PostgreSQL 模式通过 Liquibase `005-upgrades`、`006-agent-config` 和 `007-projects-worktrees` 持久化，`008-agent-name-unique` 约束并发注册的同名身份；Agent 侧普通任务输出还受单任务与聚合 spool 双重上限保护；
-- Agent 配置已支持带 generation 的长轮询等待时间、兼容退避间隔和并发槽位热更新；心跳 runtime descriptor 同时公布单任务与 Agent 级总进程预算，旧 descriptor 缺失新增字段时按有界默认值兼容；配置原子写入状态目录，输出上限、Token 和工作区边界仍保持启动时约束；
+- Java Center/Agent 是生产 Center 的唯一实现；Java 已实现注册、心跳、异步任务、工件、项目/worktree 和 Center 控制的升级编排；升级活动在 PostgreSQL 模式通过 Liquibase `005-upgrades`、`006-agent-config` 和 `007-projects-worktrees` 持久化，`008-agent-name-unique` 约束并发注册的同名身份；Agent 侧普通任务输出还受单任务与聚合 spool 双重上限保护；
+- Agent 配置已支持带 generation 的长轮询等待时间、事件唤醒和并发槽位热更新；心跳 runtime descriptor 同时公布单任务与 Agent 级总进程预算；配置原子写入状态目录，输出上限、Token 和工作区边界仍保持启动时约束；
 - JVM 测试、Center/Agent JAR 构建、React 生产构建，以及 Linux amd64/arm64、Windows amd64 的 Center/Agent/desktop/browser Native Image 和 MCP 烟测已由 GitHub Actions `34795775084` 重新验证；当前不在开发机执行构建或测试。正式 tag 的签名、Release 资产和目标机安装/升级回归仍由发布门禁负责。
 
 ## 2. 选型总表
@@ -33,13 +33,13 @@
 | --- | --- | --- | --- |
 | Center 语言 | Java 25 | 虚拟线程、成熟的 TLS/HTTP/进程/服务生态，便于和 Agent 共享协议模型 | Java 21（除非部署环境无法提供 25） |
 | Center Web | Spring Boot 4.x + Spring MVC + Tomcat | 生态完整、管理端/安全/指标/测试成熟；阻塞式任务查询可直接使用虚拟线程 | WebFlux 作为默认模型、Spring Cloud 全家桶 |
-| MCP | 官方 MCP Java SDK 2.x，Streamable HTTP | 不手写 JSON-RPC，兼容工具发现和能力协商 | 自研 MCP 协议、为每台机器复制工具 |
+| MCP | 官方 MCP Java SDK 2.x，Streamable HTTP | 不手写 JSON-RPC，遵循工具发现和能力协商 | 自研 MCP 协议、为每台机器复制工具 |
 | Center 数据访问 | Spring JDBC `JdbcClient` + 明确 SQL | 队列、租约、幂等、CAS 更新都需要可见 SQL 和事务边界；避免 ORM 隐式行为 | JPA/Hibernate 作为核心队列存储 |
 | Center 数据库 | PostgreSQL（版本锁定在部署清单） | 事务、行锁、JSONB、LISTEN/NOTIFY 和运维工具成熟 | 生产继续依赖单个 JSON/PVC 文件 |
 | 数据迁移 | Liquibase | 版本化 changelog、上下文/前置条件、SQL 预览和回滚审计完整 | 启动时无条件自动改表 |
-| 工件存储 | `ArtifactStore` 抽象；当前生产实现为独立持久卷上的原子文件对象，S3 兼容适配器保留扩展位 | 图片、日志、升级包与 PostgreSQL 元数据分离，按 key、大小和 SHA-256 校验 | 将大工件塞进任务 JSON 或 PostgreSQL `BYTEA` |
+| 工件存储 | `ArtifactStore` 抽象；当前生产实现为独立持久卷上的原子文件对象，S3 对象存储适配器保留扩展位 | 图片、日志、升级包与 PostgreSQL 元数据分离，按 key、大小和 SHA-256 校验 | 将大工件塞进任务 JSON 或 PostgreSQL `BYTEA` |
 | Agent 语言 | Java 25 模块化 JDK 应用 | 不带 Spring，原生镜像小、启动快、跨平台边界清晰 | Agent 引入完整 Spring 容器 |
-| Agent 通道 | JDK `HttpClient` 25 秒长轮询 + 原始 WebSocket 唤醒；旧端退避回退 | 无额外网络栈依赖，HTTPS/TLS 和断线重试可控，健康路径不刷固定请求 | 首版直接绑定 QUIC |
+| Agent 通道 | JDK `HttpClient` 25 秒长轮询 + 原始 WebSocket 唤醒；断线指数退避 | 无额外网络栈依赖，HTTPS/TLS 和断线重试可控，健康路径不刷固定请求 | 首版直接绑定 QUIC |
 
 | Desktop | 独立 Java `desktop` Native 目标 + 用户会话伴侣 IPC（AWT/平台适配层） | 服务与 GUI 权限分离，command-agent 不加载 AWT | 让 SYSTEM 服务假装拥有用户桌面 |
 | Browser | 独立 Java `browser` Native 目标 + 本机适配器 SPI | command-agent 仅负责 Center 和上限，browser-agent 单任务监管 Playwright/Patchright/Comoufox | 将 Node Worker 注册成第二台 Agent |
@@ -65,7 +65,7 @@ center/
   center-persistence     # JdbcClient、事务、Liquibase、PostgreSQL
   center-upgrade         # 发布包、SHA-256/签名、批次和回滚
   center-observability   # Micrometer、OTel、审计脱敏
-  protocol               # JSON Schema、版本、兼容性测试夹具
+  protocol               # JSON Schema、版本、契约测试夹具
 ```
 
 Spring MVC/Tomcat 负责 HTTP、SSE 和 WebSocket，生产打开虚拟线程；MCP、Agent 和 Admin 控制器均返回异步结果，JDBC 等阻塞集成在可关闭的虚拟线程执行器中运行。虚拟线程用于高并发等待，不替代数据库连接池、并发上限或任务租约。长时间命令不占用 MCP HTTP 请求，仍然走持久化异步任务。
@@ -74,20 +74,20 @@ MCP 层使用官方 Java SDK 的 Streamable HTTP 传输，固定挂载 `/mcp`。
 
 ### 3.2 持久化和一致性
 
-- **单一权威存储**：生产 Center 只使用 PostgreSQL + Liquibase。Go 的 JSON/PVC Store 是迁移前兼容基线，Java 的 memory adapter 是测试/开发替身；它们不会与 PostgreSQL 同时启用，也不会双写。
+- **单一权威存储**：生产 Center 只使用 PostgreSQL + Liquibase。Java 的 memory adapter 仅用于协议回归和开发，不与 PostgreSQL 同时启用，也不双写。
 - **内存只做加速，不做事实来源**：连接唤醒表、任务等待条件和短生命周期请求状态可以留在进程内存；进程重启后从 PostgreSQL 重建。不得把任务租约、Attempt、Token 摘要、输出游标、工件或升级状态只放在缓存中。
 - **不新增 Redis/Kafka 作为第二状态层**：当前规模优先使用 PostgreSQL 行锁、共享缓冲区、Hikari 连接池和 `LISTEN/NOTIFY`；确有读热点时采用有界、可失效的本地 L1，并以数据库版本/事件失效，缓存丢失不影响正确性。
 - 任务创建、幂等键、租约领取、Attempt、状态机和输出游标全部由 PostgreSQL 事务保证；
 - 使用 `SELECT ... FOR UPDATE SKIP LOCKED` 或等价 CAS 语句实现多 Agent 领取，Center 副本增加前不引入额外消息队列；
 - `LISTEN/NOTIFY` 只作为唤醒提示，不能替代数据库状态，断线后仍能靠版本/游标补偿；
-- 输出、截图、升级包使用对象存储 key + SHA-256 + 大小 + MIME 元数据；当前 Center 通过独立持久卷文件对象落盘，数据库不再写入新的大块 `BYTEA`，旧 `artifact_data` 只作为迁移兼容列；
+- 输出、截图、升级包使用对象存储 key + SHA-256 + 大小 + MIME 元数据；当前 Center 通过独立持久卷文件对象落盘，数据库不再写入新的大块 `BYTEA`；
 - `RCM_CENTER_ARTIFACT_STORE=filesystem` 时使用同一 PVC/专用数据卷，写入采用临时文件加原子替换，读取再次校验大小与 SHA-256；`RCM_CENTER_ARTIFACT_STORE=http` 时通过 HTTPS 内部对象网关读写同一套 opaque key，网关 Token 只经 Secret/env 注入；任一后端接入 `ArtifactStore` 后都不改变任务或 Agent 协议；
 - Liquibase changelog 使用 Git 管理的 master YAML + 版本化 YAML/SQL 变更集，必须可回放、可 `update-sql` dry-run，并为 PostgreSQL 集成测试提供 Testcontainers 夹具；
 - 生产由独立 Kubernetes migration Job 执行 `validate/update`，应用只校验已安装的 schema 版本；禁止多个 Center Pod 同时在启动阶段抢迁移锁；
 - 每个变更集设置唯一 `id/author`、`labels/contexts` 和必要的 preconditions，危险 DDL 先在影子数据库执行 rollback 演练；
 - 协议回归可使用内存适配器，但生产配置必须显式选择 PostgreSQL 和对象存储/受控工件存储。
 
-首个 Java Center 版本提供 `rcm-center --import-go <state-dir-or-state.json>` 文件存储导入工具：先将现有 Go Center 的机器、任务、输出、工件和 Token 摘要导入 PostgreSQL，再切换读写；导入工具不导入 MCP/Admin Token 明文，旧升级活动需在新 Center 重新创建。
+Java Center 生产版本只使用当前 PostgreSQL + Liquibase 数据模型；发布前完成备份和 migration Job，不内置旧状态导入或旧 Token 迁移入口。
 
 ### 3.3 连接层演进
 
@@ -98,9 +98,8 @@ Transport -> Envelope(version, agent_id, host_id, capability, generation, sequen
           -> Register / Heartbeat / Poll / Task / Output / Artifact / Upgrade
 ```
 
-Java Agent 默认使用 25 秒 HTTPS 长轮询，事件到达即返回，服务端 deadline 结束空闲请求；旧 Go
-Center 或显式禁用时才退避回退。当前已加入只传递 wake 提示的原始 WebSocket 旁路，复用 Agent
-身份并在断线时自动回退；后续再把同一 Envelope、心跳、序列号和幂等语义扩展到真正的长连接任务流，
+Java Agent 默认使用 25 秒 HTTPS 长轮询，事件到达即返回，服务端 deadline 结束空闲请求；当前已加入只传递 wake 提示的原始 WebSocket 旁路，复用 Agent
+身份并在断线时重新建立连接；后续再把同一 Envelope、心跳、序列号和幂等语义扩展到真正的长连接任务流，
 最后评估 QUIC。QUIC 只能作为可选 Transport SPI，不能改变任务协议，也不能让 Agent 因 QUIC 不可用而离线。
 
 ### 3.4 可观测性
@@ -163,7 +162,7 @@ Worker 不是第二个物理 Agent，不注册第二台机器；command-agent �
 
 ### 5.1 构建方式
 
-使用 GraalVM Native Image 25.x 或 Liberica NIK 25.x，版本写入 Java 构建约束文件和构建容器 digest。Center、command-agent、desktop-companion 和 browser-agent 都保留 JVM jar 作为诊断和兼容后备，但正式发布物为平台二进制：
+使用 GraalVM Native Image 25.x 或 Liberica NIK 25.x，版本写入 Java 构建约束文件和构建容器 digest。Center、command-agent、desktop-companion 和 browser-agent 的正式发布物为平台二进制；JVM jar 只作为 CI 诊断产物，不作为运行时后备：
 
 ```text
  remote-connect-mcp-center-vX.Y.Z-linux-amd64.zip    # Center ELF + Native Image .so 运行库
@@ -177,18 +176,16 @@ Worker 不是第二个物理 Agent，不注册第二台机器；command-agent �
  remote-connect-mcp-browser-vX.Y.Z-windows-amd64.zip      # browser-agent + Native Image runtime
 ```
 
-每个发布资产附带 SHA-256、SBOM、构建元数据和签名。Linux/Windows Agent 必须把可执行文件与同一构建生成的 `.so`/DLL 一起打包，不能把裸可执行文件当作完整运行包；旧裸资产仅用于兼容回退。Native Image 是针对具体 OS/CPU 架构的构建产物，不能把一个 Linux 二进制当作跨平台包；CI 使用匹配架构 runner/容器分别编译和冒烟测试，不做未经验证的交叉编译。
+每个发布资产附带 SHA-256、SBOM、构建元数据和签名。Linux/Windows Agent 必须把可执行文件与同一构建生成的 `.so`/DLL 一起打包，不能把裸可执行文件当作完整运行包。Native Image 是针对具体 OS/CPU 架构的构建产物，不能把一个 Linux 二进制当作跨平台包；CI 使用匹配架构 runner/容器分别编译和冒烟测试，不做未经验证的交叉编译。
 
 当前发布门禁只接受 Linux amd64/arm64 与 Windows amd64 Native Image。Windows ARM64
-没有受支持且可复现的 GraalVM/NIK 25 Native Image 目标，因此保留 JVM/Go 兼容包，不能
-把交叉编译结果标成原生二进制；若未来引入 `jpackage` 后备包，也必须明确标注为非 Native
-Image 并单独完成服务安装、升级和回滚验收。
+没有受支持且可复现的 GraalVM/NIK 25 Native Image 目标，因此不进入发布矩阵，不能把交叉编译结果标成原生二进制；若未来纳入，必须增加独立的 Native Image 构建、服务安装、升级和回滚验收。
 
 ### 5.2 Native Image 约束
 
 - 生产代码避免运行时反射、动态代理、扫描 classpath 和任意资源加载；
 - 所有 JSON、ServiceLoader、JNA、Playwright driver 和资源路径纳入 reachability metadata，并运行 native tests；
-- CI 同时执行 JVM 单元测试、native 单元测试、协议兼容测试、MCP conformance、断线恢复测试；
+- CI 同时执行 JVM 单元测试、native 单元测试、协议契约测试、MCP conformance、断线恢复测试；
 - Native Image 失败时不能退回“开发机能跑的 JVM”而继续发布，必须修 metadata 或明确使用 jpackage 后备档；
 - 原生升级采用临时文件、校验、原子替换和失败回滚，保留上一版本可启动文件。
 
@@ -230,22 +227,22 @@ web/
 事件长轮询（变更序号 + 按需刷新），异常时才有界退避重试。认证使用 Secure、HttpOnly、SameSite
 Cookie 或显式短期会话，不把 Admin Token 放在 localStorage，也不把任何 Center/Agent Token 编译进静态资源。
 
-生产路由建议让控制台和 API 使用同源域名（`/console` 与 `/api`），由反向代理转发到独立 React 静态站和 Java Center；这样默认不需要开放宽泛 CORS。前端可以独立发布和回滚，但 API 版本和兼容窗口由 Center 控制。
+生产路由建议让控制台和 API 使用同源域名（`/console` 与 `/api`），由反向代理转发到独立 React 静态站和 Java Center；这样默认不需要开放宽泛 CORS。前端可以独立发布和回滚，API 版本由 Center 控制。
 
 ## 7. 迁移顺序和验收门槛
 
 ### 阶段 A：协议冻结和并行实现
 
-1. 从现有 Go 类型提取 JSON Schema/OpenAPI 夹具，固定 `/mcp`、`/api/v1`、`/agent/v1` 和 Bearer 语义；
-2. Java Center 先实现只读注册/机器/任务查询，与 Go Center 做协议契约测试；
-3. Java Center 在本地使用 PostgreSQL/Testcontainers，完成 Liquibase changelog、导入工具和迁移回滚演练。
+1. 从 Java protocol 类型提取 JSON Schema/OpenAPI 夹具，固定 `/mcp`、`/api/v1`、`/agent/v1` 和 Bearer 语义；
+2. Java Center 实现注册/机器/任务查询，并以 Java protocol 做协议契约测试；
+3. Java Center 使用 PostgreSQL/Testcontainers，完成 Liquibase changelog 和迁移回滚演练。
 
 ### 阶段 B：Agent 和能力
 
 1. Java `command-agent` 先替换 Linux amd64/arm64，再替换 Windows amd64；
 2. 独立 `desktop-companion` 以用户会话身份接入，完成截图、启动、断线恢复和工件校验；
 3. 独立 `browser-agent` 先监管 Playwright Worker，随后加入 Patchright/Comoufox 适配；
-4. 在旧 Go Agent 与 Java Center、Java Agent 与旧 Center 之间各保留至少一个版本的兼容窗口。
+4. Center、command-agent、desktop-companion 和 browser-agent 按同一 release manifest 整体发布，不保留旧运行时窗口。
 
 ### 阶段 C：控制台和传输
 

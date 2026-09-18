@@ -36,7 +36,7 @@ final class TaskState {
     private byte[] artifactData;
 
     TaskState(String id, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt) {
-        this(id, machineId, command, idempotencyKey, createdAt, TaskOrigin.shared());
+        this(id, machineId, command, idempotencyKey, createdAt, TaskOrigin.configured());
     }
 
     TaskState(String id, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt,
@@ -58,7 +58,7 @@ final class TaskState {
         this.command = command;
         this.idempotencyKey = idempotencyKey;
         this.createdAt = createdAt;
-        this.origin = origin == null ? TaskOrigin.shared() : origin;
+        this.origin = origin == null ? TaskOrigin.configured() : origin;
         this.laneKey = laneKey == null || laneKey.isBlank()
                 ? ExecutionLaneKey.derive(machineId, command == null ? null : command.contract()) : laneKey.trim();
         this.executionSessionId = normalizeCorrelation(executionSessionId,
@@ -73,7 +73,7 @@ final class TaskState {
                              long artifactBytes, String artifactMime, String artifactSha256, byte[] artifactData) {
         return restore(id, machineId, command, idempotencyKey, createdAt, status, attempt, exitCode, error,
                 outputTruncated, dispatchedAt, startedAt, finishedAt, leaseUntil, output, artifactBytes,
-                artifactMime, artifactSha256, artifactData, TaskOrigin.shared());
+                artifactMime, artifactSha256, artifactData, TaskOrigin.configured());
     }
 
     static TaskState restore(String id, String machineId, TaskCommand command, String idempotencyKey,
@@ -180,7 +180,7 @@ final class TaskState {
         if (contract != null && contract.sessionId() != null && !contract.sessionId().isBlank()) {
             return contract.sessionId().trim();
         }
-        return origin == null ? TaskOrigin.shared().connectionId() : origin.connectionId();
+        return origin == null ? TaskOrigin.configured().connectionId() : origin.connectionId();
     }
 
     private static String deriveResultChannel(String taskId) {

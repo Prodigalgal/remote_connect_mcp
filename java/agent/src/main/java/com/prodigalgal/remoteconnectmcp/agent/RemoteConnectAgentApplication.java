@@ -1,6 +1,5 @@
 package com.prodigalgal.remoteconnectmcp.agent;
 
-import java.nio.file.Path;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -15,20 +14,6 @@ public final class RemoteConnectAgentApplication {
         if (args.length == 2 && "--apply-update".equals(args[0])) {
             System.exit(AgentUpgradeHelper.run(args[1]));
             return;
-        }
-        if ((args.length == 1 || args.length == 2) && "--desktop-companion".equals(args[0])) {
-            try {
-                var defaultStateDir = System.getenv().getOrDefault("REMOTE_CONNECT_MCP_AGENT_STATE_DIR",
-                        System.getProperty("os.name", "").toLowerCase().contains("win")
-                                ? Path.of(System.getenv().getOrDefault("ProgramData", "."), "RemoteConnectMCPAgent").toString()
-                                : "/var/lib/remote-connect-mcp-agent");
-                var stateDir = args.length == 2 ? Path.of(args[1]) : Path.of(defaultStateDir);
-                DesktopCompanionLauncher.run(stateDir);
-                return;
-            } catch (Exception exception) {
-                LOG.log(Level.SEVERE, "desktop companion failed", exception);
-                System.exit(1);
-            }
         }
         if (args.length == 1 && "--check-config".equals(args[0])) {
             var config = AgentConfig.fromEnvironment();
@@ -76,6 +61,6 @@ public final class RemoteConnectAgentApplication {
             }
         }
 
-        LOG.log(Level.WARNING, "usage: java -jar remote-connect-mcp-agent.jar --check-config|--register-once|--run|--desktop-companion [state-dir]|--apply-update <helper-config>");
+        LOG.log(Level.WARNING, "usage: rcm-agent --check-config|--register-once|--run|--apply-update <helper-config>");
     }
 }

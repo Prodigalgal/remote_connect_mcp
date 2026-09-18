@@ -3,9 +3,14 @@ plugins {
     application
 }
 
-// The release workflow selects an explicit baseline per architecture.  Keep
-// the compatibility alias as the default for other CI callers.
-val nativeMarch = providers.gradleProperty("nativeMarch").orElse("compatibility").get()
+// Native Image builds must select an explicit CPU baseline per architecture.
+// JVM-only CI tasks still configure this project, so enforce the value only
+// when a Native task is actually requested.
+val nativeTaskRequested = gradle.startParameter.taskNames.any { task ->
+    task.substringAfterLast(':').lowercase().contains("native")
+}
+val nativeMarch = providers.gradleProperty("nativeMarch").orNull
+    ?: if (nativeTaskRequested) error("nativeMarch is required; the CI matrix must select an architecture baseline") else "unused"
 
 dependencies {
     implementation(project(":protocol"))
@@ -29,9 +34,8 @@ graalvmNative {
 }
 
 tasks.jar {
-    // The Agent is intentionally Spring-free, so its release JAR must carry
-    // the small shared protocol module and run with `java -jar` on a clean
-    // host. Native Image packaging can consume the same runtime classpath.
+    // Keep a self-contained JVM diagnostic artifact for CI inspection only.
+    // Production installation and upgrade consume the Native Image bundle.
     dependsOn(configurations.runtimeClasspath)
     from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE

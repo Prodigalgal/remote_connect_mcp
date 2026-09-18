@@ -118,16 +118,13 @@ final class BrowserTaskRunner implements Runnable {
             Files.deleteIfExists(resultFile);
             artifactDir = Files.createTempDirectory(config.stateDir(), "browser-artifacts-");
             var browserBinary = resolveBrowserAgent();
-            var browserCommand = browserBinary == null
-                    ? shell(adapter)
-                    : List.of(browserBinary.toString(), "--run-worker");
+            var browserCommand = List.of(browserBinary.toString(), "--run-worker");
             var builder = new ProcessBuilder(browserCommand).directory(cwd.toFile()).redirectErrorStream(true);
             cleanSensitiveEnvironment(builder.environment());
             // The standalone browser-agent consumes this local adapter command
             // and never receives the Center identity/token.
             builder.environment().put("REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER", adapter);
             builder.environment().put("RCM_BROWSER_TASK_ID", task.id());
-            builder.environment().put("RCM_BROWSER_TASK_COMMAND", task.command() == null ? "" : task.command());
             builder.environment().put("RCM_BROWSER_TASK_REQUEST_FILE", requestFile.toString());
             builder.environment().put("RCM_BROWSER_RESULT_FILE", resultFile.toString());
             builder.environment().put("RCM_BROWSER_ARTIFACT_DIR", artifactDir.toString());
@@ -487,13 +484,6 @@ final class BrowserTaskRunner implements Runnable {
         }
     }
 
-    private static List<String> shell(String command) {
-        if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")) {
-            return List.of("cmd.exe", "/d", "/s", "/c", command);
-        }
-        return List.of("/bin/sh", "-lc", command);
-    }
-
     private static boolean isWindows() {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
@@ -512,13 +502,18 @@ final class BrowserTaskRunner implements Runnable {
             }
             return path;
         }
-        if (current == null || current.getParent() == null) return null;
+        if (current == null || current.getParent() == null) {
+            throw new IOException("browser-agent binary is not configured");
+        }
         var executable = current.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".exe")
                 ? "rcm-browser-agent.exe" : "rcm-browser-agent";
         var sibling = current.resolveSibling(executable);
-        if (Files.isRegularFile(sibling, LinkOption.NOFOLLOW_LINKS)) return sibling;
+        if (Files.isRegularFile(sibling, LinkOption.NOFOLLOW_LINKS)
+                && (isWindows() || Files.isExecutable(sibling))) return sibling;
         var isolated = current.resolveSibling("browser").resolve(executable).normalize();
-        return Files.isRegularFile(isolated, LinkOption.NOFOLLOW_LINKS) ? isolated : null;
+        if (Files.isRegularFile(isolated, LinkOption.NOFOLLOW_LINKS)
+                && (isWindows() || Files.isExecutable(isolated))) return isolated;
+        throw new IOException("browser-agent binary is not configured or installed beside command-agent");
     }
 
     private static byte[] readBoundedRegularFile(Path path, long maxBytes, String label) throws IOException {

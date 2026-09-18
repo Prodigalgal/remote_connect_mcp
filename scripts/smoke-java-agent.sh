@@ -243,18 +243,14 @@ import sys
 print(json.dumps({
     "machine_id": sys.argv[1],
     "idempotency_key": "linux-native-agent-smoke-1",
-    "command": {
-        "kind": "command",
-        "required_capability": "command",
-        "command": "echo rcm-native-agent-smoke",
-        "cwd": sys.argv[2],
-        "env": {},
-        "timeout_seconds": 30,
-    },
+    "command": "echo rcm-native-agent-smoke",
+    "cwd": sys.argv[2],
+    "env": {},
+    "timeout_seconds": 30,
     # A native smoke agent is registered with the safe workspace default.
     # Keep the scope explicit here: Admin task creation intentionally rejects
     # omitted scope metadata for an unrestricted machine so that a test (or a
-    # real caller) cannot gain full-host authority through a legacy payload.
+    # real caller) cannot gain full-host authority by omitting the scope.
     "scope_mode": "workspace",
     "scope_root": sys.argv[2],
 }, separators=(",", ":")))

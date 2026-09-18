@@ -26,8 +26,8 @@ case "$(uname -s)" in
   *) echo "build-native.sh must run on Linux; use build-native.ps1 on Windows." >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
-  x86_64|amd64) ARCH=amd64 ;;
-  aarch64|arm64) ARCH=arm64 ;;
+  x86_64|amd64) ARCH=amd64; NATIVE_MARCH=x86-64-v2 ;;
+  aarch64|arm64) ARCH=arm64; NATIVE_MARCH=armv8-a ;;
   *) echo "unsupported host architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 VERSION=${RCM_RELEASE_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || printf '%s' dev)}
@@ -41,7 +41,7 @@ mkdir -p "$OUT"
 cd "$ROOT/java"
 # Native Image is intentionally serialized; running Center and any Agent
 # image together can consume several GiB per process.
-./gradlew :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
+./gradlew -PnativeMarch="$NATIVE_MARCH" :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
 for name in rcm-center rcm-agent rcm-desktop-companion rcm-browser-agent; do
   case "$name" in
     rcm-center) module=center ;;
@@ -65,7 +65,7 @@ done
 # Keep the local package shape identical to the Linux GitHub Release assets:
 # flat Center/Agent ZIP bundles contain the executable and all Native Image
 # shared objects. The archives are outside OUT so they are never packed into
-# themselves; a raw executable is retained only inside its bundle directory.
+# themselves; the native executable remains private inside its bundle directory.
 AGENT_ASSET="$ROOT/dist/remote-connect-mcp-agent-$VERSION-$OS-$ARCH"
 CENTER_ASSET="$ROOT/dist/remote-connect-mcp-center-$VERSION-$OS-$ARCH"
 DESKTOP_ASSET="$ROOT/dist/remote-connect-mcp-desktop-$VERSION-$OS-$ARCH"

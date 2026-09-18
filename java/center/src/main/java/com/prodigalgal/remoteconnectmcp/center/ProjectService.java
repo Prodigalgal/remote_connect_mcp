@@ -293,7 +293,7 @@ public final class ProjectService {
      * arbitrary output directory.
      */
     public WorktreeView createWorktree(String projectId, ProjectWorktreeRequest request) {
-        return createWorktree(projectId, request, TaskOrigin.shared());
+        return createWorktree(projectId, request, TaskOrigin.configured());
     }
 
     /** Queue a worktree operation owned by the authenticated MCP principal. */
@@ -371,7 +371,7 @@ public final class ProjectService {
     }
 
     public WorktreeView removeWorktree(String projectId, String worktreeId, String idempotencyKey) {
-        return removeWorktree(projectId, worktreeId, idempotencyKey, TaskOrigin.shared());
+        return removeWorktree(projectId, worktreeId, idempotencyKey, TaskOrigin.configured());
     }
 
     /** Queue a worktree removal owned by the authenticated MCP principal. */
@@ -482,7 +482,7 @@ public final class ProjectService {
      * second commit or merge.
      */
     public TaskView gitOperation(String projectId, String operation, ProjectGitOperationRequest request) {
-        return gitOperation(projectId, operation, request, TaskOrigin.shared());
+        return gitOperation(projectId, operation, request, TaskOrigin.configured());
     }
 
     /** Queue a Git operation owned by the authenticated MCP principal. */
@@ -518,9 +518,9 @@ public final class ProjectService {
         var taskKey = clientKey.isBlank() ? "" : "rcm-git:" + project.id + ":" + normalizedOperation + ":" + clientKey;
         var timeout = WORKTREE_TIMEOUT_SECONDS;
         var task = new TaskCommand("", TaskKind.COMMAND, "command", command, target,
-                Map.of("GIT_TERMINAL_PROMPT", "0", "GIT_EDITOR", "true"), timeout, null, Instant.now());
+                Map.of("GIT_TERMINAL_PROMPT", "0", "GIT_EDITOR", "true"), timeout, null, Instant.now(), null, 0, null);
         // Let TaskService derive a stable session from the authenticated
-        // connection (or the idempotency key for admin/legacy callers).  A
+        // connection (or the idempotency key for admin callers).  A
         // random session here would make every MCP retry consume another
         // active-session quota slot even when it reuses the same idempotent
         // Git task.
@@ -603,7 +603,7 @@ public final class ProjectService {
         try {
             var task = tasks.create(new CreateTaskRequest(project.machineId,
                     new TaskCommand("", TaskKind.COMMAND, "command", commandText, project.rootPath,
-                            Map.of(), WORKTREE_TIMEOUT_SECONDS, null, Instant.now()),
+                            Map.of(), WORKTREE_TIMEOUT_SECONDS, null, Instant.now(), null, 0, null),
                     "rcm-worktree:" + state.id + ":" + state.operation,
                     project.id, null, ScopeMode.PROJECT, project.rootPath, "", "low", false, origin), "mcp", origin);
             state.taskId = task.id();

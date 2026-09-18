@@ -9,18 +9,12 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$centerJar = Join-Path $root 'java\center\build\libs\center-0.1.0-SNAPSHOT.jar'
-$agentJar = Join-Path $root 'java\agent\build\libs\agent-0.1.0-SNAPSHOT.jar'
 $center = if ([string]::IsNullOrWhiteSpace($CenterBinary)) { $null } else { (Resolve-Path -LiteralPath $CenterBinary -ErrorAction Stop).Path }
 $agent = if ([string]::IsNullOrWhiteSpace($AgentBinary)) { $null } else { (Resolve-Path -LiteralPath $AgentBinary -ErrorAction Stop).Path }
-if (-not $center -and -not (Test-Path -LiteralPath $centerJar -PathType Leaf)) {
-    throw "Center bootJar not found: $centerJar. This smoke script consumes a prebuilt GitHub Actions artifact; pass -CenterBinary to the downloaded Native Image or CI JAR."
-}
-if (-not $agent -and -not (Test-Path -LiteralPath $agentJar -PathType Leaf)) {
-    throw "Agent JAR not found: $agentJar. This smoke script consumes a prebuilt GitHub Actions artifact; pass -AgentBinary to the downloaded Native Image or CI JAR."
-}
-if ($center -and -not (Test-Path -LiteralPath $center -PathType Leaf)) { throw "Center native binary not found: $center" }
-if ($agent -and -not (Test-Path -LiteralPath $agent -PathType Leaf)) { throw "Agent native binary not found: $agent" }
+if (-not $center) { throw 'Center Native Image path is required; pass -CenterBinary to a GitHub Actions artifact.' }
+if (-not $agent) { throw 'Agent Native Image path is required; pass -AgentBinary to a GitHub Actions artifact.' }
+if (-not (Test-Path -LiteralPath $center -PathType Leaf)) { throw "Center native binary not found: $center" }
+if (-not (Test-Path -LiteralPath $agent -PathType Leaf)) { throw "Agent native binary not found: $agent" }
 
 $base = "http://127.0.0.1:$Port"
 $mcpToken = 'smoke-mcp-token'
@@ -37,15 +31,9 @@ $script:agentProcForResource = $null
 $script:agentPeakRssBytes = [int64]0
 $script:agentRssSamples = 0
 
-function New-ManagedProcess([string]$NativePath, [string]$JarPath, [string[]]$Arguments, [hashtable]$Environment) {
+function New-ManagedProcess([string]$NativePath, [string[]]$Arguments, [hashtable]$Environment) {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    if ($NativePath) {
-        $psi.FileName = $NativePath
-    } else {
-        $psi.FileName = (Get-Command java -ErrorAction Stop).Source
-        $psi.ArgumentList.Add('-jar')
-        $psi.ArgumentList.Add($JarPath)
-    }
+    $psi.FileName = $NativePath
     foreach ($argument in $Arguments) { $psi.ArgumentList.Add($argument) }
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
@@ -121,7 +109,7 @@ function Get-OutputText($taskId, [int]$TimeoutSeconds = 8) {
 
 try {
     New-Item -ItemType Directory -Force -Path $tempState | Out-Null
-    $centerProcess = New-ManagedProcess $center $centerJar @("--server.port=$Port") @{
+    $centerProcess = New-ManagedProcess $center @("--server.port=$Port") @{
         RCM_CENTER_PERSISTENCE_MODE = 'memory'
         RCM_CENTER_VERSION = 'native-agent-smoke'
         REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN = $mcpToken
@@ -147,8 +135,7 @@ try {
         if (-not $health -or -not $health.IsSuccessStatusCode) { throw 'Center health check timed out' }
     } finally { $client.Dispose() }
 
-    # Use the real one-time Admin API flow rather than the legacy shared
-    # environment token. The plaintext enrollment token exists only in this
+    # Use the real one-time Admin API flow. The plaintext enrollment token exists only in this
     # in-memory smoke process and is removed before the long-lived Agent starts.
     $issued = Invoke-Json 'POST' '/api/v1/admin/enrollment-tokens' $adminToken @{
         requested_name = 'native-smoke-agent'
@@ -167,7 +154,7 @@ try {
         REMOTE_CONNECT_MCP_AGENT_CAPABILITIES = 'command,durable_tasks'
         REMOTE_CONNECT_MCP_AGENT_POLL_INTERVAL_MS = '250'
     }
-    $register = New-ManagedProcess $agent $agentJar @('--register-once') $agentEnv
+    $register = New-ManagedProcess $agent @('--register-once') $agentEnv
     try {
         if (-not $register.Process.WaitForExit(30000)) {
             $register.Process.Kill($true)
@@ -188,7 +175,7 @@ try {
     # Deliberately remove the one-time token before starting the long-lived
     # runtime. Existing identity.json must be sufficient for normal startup.
     $agentEnv.Remove('REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN')
-    $agentProcess = New-ManagedProcess $agent $agentJar @('--run') $agentEnv
+    $agentProcess = New-ManagedProcess $agent @('--run') $agentEnv
     $agentProc = $agentProcess.Process
     $script:agentProcForResource = $agentProc
     $agentOut = $agentProcess.Stdout
@@ -227,7 +214,7 @@ try {
     }
 
     # Exercise the Native/AOT admin DTO and project registry route as well as
-    # the legacy nested task payload below. Registration is metadata-only; the
+    # the current flat task payload below. Registration is metadata-only; the
     # smoke directory does not need to be a Git checkout.
     $project = Invoke-Json 'POST' '/api/v1/admin/projects' $adminToken @{
         machine_id = [string]$identity.machine_id
@@ -245,14 +232,10 @@ try {
     $payload = @{
         machine_id = [string]$identity.machine_id
         idempotency_key = 'native-agent-smoke-1'
-        command = @{
-            kind = 'command'
-            required_capability = 'command'
-            command = 'echo rcm-native-agent-smoke'
-            cwd = $root
-            env = @{}
-            timeout_seconds = 30
-        }
+        command = 'echo rcm-native-agent-smoke'
+        cwd = $root
+        env = @{}
+        timeout_seconds = 30
         scope_mode = 'workspace'
         scope_root = $root
     }

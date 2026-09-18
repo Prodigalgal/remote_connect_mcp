@@ -11,17 +11,13 @@ public final class UpgradeConfig {
     private final String releasesApiUrl;
 
     public UpgradeConfig() {
-        enabled = Boolean.parseBoolean(firstEnv("RCM_CENTER_AGENT_UPGRADES_ENABLED",
-                "REMOTE_CONNECT_MCP_CENTER_AGENT_UPGRADES_ENABLED", "true"));
-        releaseBaseUrl = trimTrailingSlash(firstEnv("RCM_CENTER_RELEASE_BASE_URL",
-                "REMOTE_CONNECT_MCP_CENTER_RELEASE_BASE_URL",
+        enabled = Boolean.parseBoolean(env("RCM_CENTER_AGENT_UPGRADES_ENABLED", "true"));
+        releaseBaseUrl = trimTrailingSlash(env("RCM_CENTER_RELEASE_BASE_URL",
                 "https://github.com/Prodigalgal/remote_connect_mcp/releases/download"));
-        releaseTagPrefix = firstEnv("RCM_CENTER_RELEASE_TAG_PREFIX",
-                "REMOTE_CONNECT_MCP_CENTER_RELEASE_TAG_PREFIX", "java-");
+        releaseTagPrefix = env("RCM_CENTER_RELEASE_TAG_PREFIX", "java-");
         validateTagPrefix(releaseTagPrefix);
         validateHttps(releaseBaseUrl, "RCM_CENTER_RELEASE_BASE_URL");
-        releasesApiUrl = trimTrailingSlash(firstEnv("RCM_CENTER_RELEASES_API_URL",
-                "REMOTE_CONNECT_MCP_CENTER_RELEASES_API_URL", defaultReleasesApi(releaseBaseUrl)));
+        releasesApiUrl = trimTrailingSlash(env("RCM_CENTER_RELEASES_API_URL", defaultReleasesApi(releaseBaseUrl)));
         validateHttps(releasesApiUrl, "RCM_CENTER_RELEASES_API_URL");
     }
 
@@ -68,11 +64,6 @@ public final class UpgradeConfig {
     private static String env(String key, String fallback) {
         var value = System.getenv(key);
         return value == null || value.isBlank() ? fallback : value.trim();
-    }
-
-    private static String firstEnv(String primary, String legacy, String fallback) {
-        var value = env(primary, "");
-        return value.isBlank() ? env(legacy, fallback) : value;
     }
 
     private static String trimTrailingSlash(String value) {

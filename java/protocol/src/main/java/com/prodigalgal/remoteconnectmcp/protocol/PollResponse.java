@@ -9,7 +9,7 @@ public record PollResponse(
         UpgradePlan upgrade,
         AgentConfigUpdate config) {
 
-    /** Compatibility constructor for the pre-hot-reload wire shape. */
+    /** Local construction overload when no hot-reload config is present. */
     public PollResponse(TaskCommand task, List<String> cancelTaskIds, UpgradePlan upgrade) {
         this(task, cancelTaskIds, upgrade, null);
     }

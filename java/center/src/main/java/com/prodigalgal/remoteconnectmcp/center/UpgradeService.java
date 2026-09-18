@@ -352,13 +352,10 @@ public final class UpgradeService {
             if (CANCELED.equals(campaign.status)) return view(campaign);
         var target = campaign.targets.stream().filter(value -> value.machineId.equals(machineId)).findFirst()
                     .orElseThrow(() -> new IllegalArgumentException("machine is not part of the upgrade campaign"));
-            if ((request.attempt() == null && target.attempts > 1)
-                    || (request.attempt() != null && request.attempt() != target.attempts)) {
+            if (request.attempt() == null || request.attempt() != target.attempts) {
                 // A helper from an expired offer may report after a newer offer
-                // has already been issued.  Treat the report as a stale
-                // observation and leave the newer attempt authoritative.  The
-                // legacy wire shape omitted attempt, so it remains compatible
-                // for the first offer only.
+                // has already been issued. Treat the report as a stale
+                // observation and leave the newer attempt authoritative.
                 return view(campaign);
             }
             var now = Instant.now();
@@ -729,23 +726,14 @@ public final class UpgradeService {
         var parts = key.split("/", 2);
         var releaseTag = config.releaseTagPrefix() + version;
         var stem = "remote-connect-mcp-agent-" + version + "-" + parts[0] + "-" + parts[1];
-        // Native Image releases are bundles: the executable and generated
-        // Windows DLLs/Linux shared objects must be upgraded together. Keep a
-        // legacy raw executable fallback so older releases remain upgradeable
-        // while new tags use the safer flat ZIP asset.
-        var names = List.of(stem + ".zip", stem + ("windows".equals(parts[0]) ? ".exe" : ""));
-        Exception last = null;
-        for (var name : names) {
-            var url = config.releaseBaseUrl() + "/" + releaseTag + "/" + name;
-            try {
-                var checksum = fetchChecksum(url + ".sha256");
-                return new UpgradeArtifact(parts[0], parts[1], url, checksum);
-            } catch (Exception exception) {
-                last = exception;
-            }
+        var name = stem + ".zip";
+        var url = config.releaseBaseUrl() + "/" + releaseTag + "/" + name;
+        try {
+            return new UpgradeArtifact(parts[0], parts[1], url, fetchChecksum(url + ".sha256"));
+        } catch (Exception exception) {
+            throw new IllegalArgumentException("cannot resolve release artifact for " + key + ": "
+                    + compactError(exception.getMessage()), exception);
         }
-        throw new IllegalArgumentException("cannot resolve release artifact for " + key + ": "
-                + compactError(last == null ? "release asset is unavailable" : last.getMessage()), last);
     }
 
     private String fetchChecksum(String url) throws IOException, InterruptedException {
@@ -791,8 +779,8 @@ public final class UpgradeService {
         return result;
     }
 
-    private static int normalizePositive(Integer value, int fallback, int maximum) {
-        var result = value == null || value <= 0 ? fallback : value;
+    private static int normalizePositive(Integer value, int defaultValue, int maximum) {
+        var result = value == null || value <= 0 ? defaultValue : value;
         if (result > maximum) result = maximum;
         return result;
     }

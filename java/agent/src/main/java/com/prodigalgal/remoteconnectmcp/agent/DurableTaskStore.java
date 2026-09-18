@@ -430,21 +430,14 @@ final class DurableTaskStore {
     record Record(String taskId, long pid, String command, String cwd, Instant startedAt, String outputPath,
                   String recordPath, boolean completed, Integer exitCode, String error, ExecutionContract contract,
                   int attempt) {
-        /** Compatibility constructor for durable records written before contracts. */
-        Record(String taskId, long pid, String command, String cwd, Instant startedAt, String outputPath,
-               String recordPath, boolean completed, Integer exitCode, String error) {
-            this(taskId, pid, command, cwd, startedAt, outputPath, recordPath, completed, exitCode, error, null, 0);
-        }
-
-        /** Compatibility constructor for records that persisted a contract but no attempt. */
-        Record(String taskId, long pid, String command, String cwd, Instant startedAt, String outputPath,
-               String recordPath, boolean completed, Integer exitCode, String error, ExecutionContract contract) {
-            this(taskId, pid, command, cwd, startedAt, outputPath, recordPath, completed, exitCode, error, contract, 0);
+        Record {
+            if (contract == null) throw new IllegalArgumentException("durable task contract is required");
+            if (attempt < 1) throw new IllegalArgumentException("durable task attempt must be positive");
         }
 
         TaskCommand taskCommand() {
             return new TaskCommand(taskId, com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND, "command",
-                    command, cwd, java.util.Map.of(), 0, null, startedAt == null ? Instant.EPOCH : startedAt, contract, attempt);
+                    command, cwd, java.util.Map.of(), 0, null, startedAt == null ? Instant.EPOCH : startedAt, contract, attempt, null);
         }
     }
 

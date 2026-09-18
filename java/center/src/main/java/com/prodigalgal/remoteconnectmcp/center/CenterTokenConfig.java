@@ -9,18 +9,13 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class CenterTokenConfig {
-    private final String enrollmentToken;
     private final String mcpToken;
     private final String adminToken;
     private final String artifactSigningSecret;
     private final String artifactSigningSecretPrevious;
     private final String artifactSigningKid;
     private final String artifactSigningKidPrevious;
-    private final boolean allowSharedEnrollment;
-
     public CenterTokenConfig() {
-        var value = System.getenv("REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN");
-        enrollmentToken = value == null || value.isBlank() ? null : value.trim();
         var mcp = System.getenv("REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN");
         mcpToken = mcp == null || mcp.isBlank() ? null : mcp.trim();
         var admin = System.getenv("REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN");
@@ -31,15 +26,6 @@ public class CenterTokenConfig {
         artifactSigningSecretPrevious = previousArtifact == null || previousArtifact.isBlank() ? null : previousArtifact.trim();
         artifactSigningKid = safeKid(System.getenv("REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID"), "v1");
         artifactSigningKidPrevious = safeKid(System.getenv("REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID_PREVIOUS"), "v0");
-        allowSharedEnrollment = Boolean.parseBoolean(System.getenv().getOrDefault("RCM_CENTER_ALLOW_SHARED_ENROLLMENT", "false"));
-    }
-
-    public Optional<String> enrollmentToken() {
-        return Optional.ofNullable(enrollmentToken);
-    }
-
-    public boolean acceptsEnrollment(String candidate) {
-        return allowSharedEnrollment && accepts(enrollmentToken, candidate);
     }
 
     public Optional<String> mcpToken() {

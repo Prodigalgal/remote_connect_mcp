@@ -10,12 +10,12 @@ public record PollRequest(
         AgentMetadata metadata,
         @JsonProperty("config_generation") Long configGeneration) {
 
-    /** Compatibility constructor for older Center/Agent callers. */
+    /** Local construction overload for a heartbeat without metadata. */
     public PollRequest(List<String> runningTaskIds, Integer availableSlots, List<String> availableCapabilities) {
-        this(runningTaskIds, availableSlots, availableCapabilities, null, 0L);
+        this(runningTaskIds, availableSlots, availableCapabilities, AgentMetadata.empty(), 0L);
     }
 
-    /** Compatibility constructor for callers that include heartbeat metadata. */
+    /** Local construction overload with explicit heartbeat metadata. */
     public PollRequest(List<String> runningTaskIds, Integer availableSlots, List<String> availableCapabilities,
                        AgentMetadata metadata) {
         this(runningTaskIds, availableSlots, availableCapabilities, metadata, 0L);
@@ -23,9 +23,10 @@ public record PollRequest(
 
     public PollRequest {
         runningTaskIds = runningTaskIds == null ? List.of() : List.copyOf(runningTaskIds);
-        availableSlots = availableSlots == null ? 0 : availableSlots;
+        if (availableSlots == null) throw new IllegalArgumentException("availableSlots is required");
         availableCapabilities = availableCapabilities == null ? List.of() : List.copyOf(availableCapabilities);
-        configGeneration = configGeneration == null ? 0L : configGeneration;
+        if (metadata == null) throw new IllegalArgumentException("metadata is required");
+        if (configGeneration == null) throw new IllegalArgumentException("configGeneration is required");
         if (configGeneration < 0) throw new IllegalArgumentException("configGeneration must be non-negative");
     }
 }

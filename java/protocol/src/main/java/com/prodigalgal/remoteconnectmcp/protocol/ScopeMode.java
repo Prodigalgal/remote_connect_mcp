@@ -12,7 +12,7 @@ public enum ScopeMode {
     WORKTREE("worktree"),
     /** An explicitly supplied path root. */
     PATH("path"),
-    /** Backwards-compatible name for a registered workspace root. */
+    /** Registered workspace root managed by the current scope contract. */
     WORKSPACE("workspace");
 
     private final String wireValue;
@@ -33,9 +33,7 @@ public enum ScopeMode {
     @JsonCreator
     public static ScopeMode fromWireValue(String value) {
         if (value == null || value.isBlank()) {
-            // Missing scope data is treated as the safest bounded protocol
-            // value. Legacy callers that need unrestricted access must carry
-            // the explicit wire value instead of relying on a default.
+            // Missing scope data is treated as the safest bounded protocol value.
             return WORKSPACE;
         }
         for (ScopeMode mode : values()) {

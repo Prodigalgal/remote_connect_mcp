@@ -7,7 +7,6 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.ImportRuntimeHints;
-import java.nio.file.Path;
 
 @SpringBootApplication
 @ImportRuntimeHints(RemoteConnectCenterRuntimeHints.class)
@@ -15,10 +14,6 @@ public class RemoteConnectCenterApplication {
     public static void main(String[] args) {
         if (args.length > 0 && "--migrate".equals(args[0])) {
             System.exit(runMigration());
-            return;
-        }
-        if (args.length == 2 && "--import-go".equals(args[0])) {
-            System.exit(GoStateImportApplication.run(Path.of(args[1])));
             return;
         }
         var application = new SpringApplication(RemoteConnectCenterApplication.class);

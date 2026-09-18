@@ -54,7 +54,7 @@ public final class AgentRegistry {
                 changeProvider == null ? null : changeProvider.getIfAvailable());
     }
 
-    /** Compatibility constructor for direct protocol tests and older integrations. */
+    /** Construction overload used by focused registry tests. */
     public AgentRegistry(CenterTokenConfig tokens, ObjectProvider<JdbcTemplate> jdbcProvider,
                          EnrollmentTokenService enrollments, ObjectProvider<TransactionTemplate> transactionProvider) {
         this(tokens, jdbcProvider.getIfAvailable(), enrollments, transactionProvider.getIfAvailable(), null);
@@ -70,7 +70,7 @@ public final class AgentRegistry {
     }
 
     private AgentRegistry(String enrollmentToken) {
-        this(new CenterTokenConfigForTest(enrollmentToken), (JdbcTemplate) null, new EnrollmentTokenService(), null, null);
+        this(new CenterTokenConfig(), (JdbcTemplate) null, EnrollmentTokenService.forTest(enrollmentToken), null, null);
     }
 
     public static AgentRegistry forTest(String enrollmentToken) {
@@ -78,7 +78,7 @@ public final class AgentRegistry {
     }
 
     static AgentRegistry forTest(String enrollmentToken, JdbcTemplate jdbc) {
-        return new AgentRegistry(new CenterTokenConfigForTest(enrollmentToken), jdbc, new EnrollmentTokenService(), null, null);
+        return new AgentRegistry(new CenterTokenConfig(), jdbc, EnrollmentTokenService.forTest(enrollmentToken), null, null);
     }
 
     public RegisterResponse register(RegisterRequest request, String enrollmentToken) {
@@ -87,7 +87,7 @@ public final class AgentRegistry {
         }
         AgentMetadata metadata = request.metadata();
         ProtocolValidation.validateMetadata(metadata);
-        if (!tokens.acceptsEnrollment(enrollmentToken) && !enrollments.consume(enrollmentToken, metadata.name())) {
+        if (!enrollments.consume(enrollmentToken, metadata.name())) {
             throw new SecurityException("invalid enrollment token");
         }
         var token = randomToken();
@@ -320,22 +320,19 @@ public final class AgentRegistry {
         if (capabilitiesJson != null && !capabilitiesJson.isBlank()) {
             try {
                 capabilities = Arrays.asList(JsonCodec.read(capabilitiesJson.getBytes(StandardCharsets.UTF_8), String[].class));
-            } catch (RuntimeException ignored) {
-                // A malformed legacy capability value should not break an
-                // inventory page; the raw value is not exposed to MCP.
+            } catch (RuntimeException failure) {
+                throw new IllegalStateException("stored Agent capabilities are invalid", failure);
             }
         }
-        var runtime = AgentRuntimeDescriptor.defaults();
+        AgentRuntimeDescriptor runtime;
         var runtimeJson = rs.getString("runtime_descriptor");
-        if (runtimeJson != null && !runtimeJson.isBlank()) {
-            try {
-                var parsed = JsonCodec.read(runtimeJson.getBytes(StandardCharsets.UTF_8), AgentRuntimeDescriptor.class);
-                if (parsed != null) runtime = parsed;
-            } catch (RuntimeException ignored) {
-                // A malformed or pre-013 runtime descriptor must not make the
-                // inventory endpoint unavailable.  The bounded default keeps
-                // the projection safe until the next heartbeat repairs it.
-            }
+        if (runtimeJson == null || runtimeJson.isBlank()) {
+            throw new IllegalStateException("stored Agent runtime descriptor is missing");
+        }
+        try {
+            runtime = JsonCodec.read(runtimeJson.getBytes(StandardCharsets.UTF_8), AgentRuntimeDescriptor.class);
+        } catch (RuntimeException failure) {
+            throw new IllegalStateException("stored Agent runtime descriptor is invalid", failure);
         }
         var last = lastSeen == null ? null : lastSeen.toInstant();
         return new MachineView(
@@ -487,16 +484,4 @@ public final class AgentRegistry {
     private record RegisteredIdentity(String name, String hostId) {
     }
 
-    private static final class CenterTokenConfigForTest extends CenterTokenConfig {
-        private final String token;
-
-        private CenterTokenConfigForTest(String token) {
-            this.token = token;
-        }
-
-        @Override
-        public boolean acceptsEnrollment(String candidate) {
-            return token != null && token.equals(candidate);
-        }
-    }
 }

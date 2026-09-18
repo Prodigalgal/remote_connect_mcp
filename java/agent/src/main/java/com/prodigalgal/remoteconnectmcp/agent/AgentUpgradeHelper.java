@@ -16,7 +16,7 @@ import java.util.ArrayList;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
-/** Detached, bounded updater transaction used by native/JAR Agent builds. */
+/** Detached, bounded updater transaction used by the Native Image Agent bundle. */
 final class AgentUpgradeHelper {
     // A Windows Native Image Agent executable is currently about 55 MiB and
     // will grow as capabilities are added. Keep a generous per-file ceiling
@@ -39,7 +39,7 @@ final class AgentUpgradeHelper {
             validate(config);
             waitForParent(config.parentPid());
             stopService(config.serviceName());
-            apply(config);
+            applyArchive(config);
             startRuntime(config);
             var componentFailures = new ArrayList<String>();
             var componentStatuses = new java.util.LinkedHashMap<String, String>();
@@ -88,36 +88,6 @@ final class AgentUpgradeHelper {
             }
             return 1;
         }
-    }
-
-    private static void apply(Config config) throws IOException {
-        if (config.archive()) {
-            applyArchive(config);
-            return;
-        }
-        var staged = Path.of(config.staged()).toAbsolutePath().normalize();
-        var target = Path.of(config.target()).toAbsolutePath().normalize();
-        if (!Files.isRegularFile(staged, LinkOption.NOFOLLOW_LINKS) || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) throw new IOException("upgrade staged or target file is missing");
-        var next = target.resolveSibling("." + target.getFileName() + ".next");
-        var backup = target.resolveSibling(target.getFileName() + ".previous");
-        Files.deleteIfExists(next);
-        Files.copy(staged, next, LinkOption.NOFOLLOW_LINKS, StandardCopyOption.REPLACE_EXISTING);
-        move(target, backup);
-        try {
-            move(next, target);
-        } catch (Exception exception) {
-            move(backup, target);
-            throw exception;
-        }
-        try {
-            Files.setPosixFilePermissions(target, java.util.EnumSet.of(
-                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
-                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
-                    java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE));
-        } catch (Exception ignored) {
-        }
-        writeVersion(config);
-        Files.deleteIfExists(staged);
     }
 
     /**
@@ -191,10 +161,8 @@ final class AgentUpgradeHelper {
         for (var name : names) {
             var installedName = installedFileName(name, executableName);
             var current = targetDir.resolve(installedName).normalize();
-            // Persist the installed filename, not the archive filename.  This
-            // matters when a Java Native Image archive uses canonical
-            // `rcm-agent` but the existing service still points at the legacy
-            // `remote-connect-mcp-agent` basename.
+            // Persist the installed filename so the component service always
+            // points at the canonical bundle layout.
             manifestLines.add((Files.exists(current, LinkOption.NOFOLLOW_LINKS) ? "1" : "0") + "\t" + installedName);
         }
         try {
@@ -351,22 +319,18 @@ final class AgentUpgradeHelper {
     private static void cleanupAfterSuccess(Config config) {
         try {
             var target = Path.of(config.target()).toAbsolutePath().normalize();
-            if (config.archive()) {
-                var manifest = Path.of(config.stateDir()).toAbsolutePath().normalize()
-                        .resolve("upgrade-files-" + safeComponent(config.campaignId()) + ".txt");
-                if (Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)) {
-                    var targetDir = target.getParent();
-                    for (var raw : Files.readAllLines(manifest, StandardCharsets.US_ASCII)) {
-                        var fields = raw.split("\\t", 2);
-                        var name = (fields.length == 2 ? fields[1] : fields[0]).trim();
-                        if (name.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")) {
-                            Files.deleteIfExists(targetDir.resolve(name + ".previous").normalize());
-                        }
+            var manifest = Path.of(config.stateDir()).toAbsolutePath().normalize()
+                    .resolve("upgrade-files-" + safeComponent(config.campaignId()) + ".txt");
+            if (Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)) {
+                var targetDir = target.getParent();
+                for (var raw : Files.readAllLines(manifest, StandardCharsets.US_ASCII)) {
+                    var fields = raw.split("\\t", 2);
+                    var name = (fields.length == 2 ? fields[1] : fields[0]).trim();
+                    if (name.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")) {
+                        Files.deleteIfExists(targetDir.resolve(name + ".previous").normalize());
                     }
-                    Files.deleteIfExists(manifest);
                 }
-            } else {
-                Files.deleteIfExists(target.resolveSibling(target.getFileName() + ".previous"));
+                Files.deleteIfExists(manifest);
             }
             Files.deleteIfExists(Path.of(config.stateDir()).resolve("agent-version.previous"));
         } catch (Exception ignored) {
@@ -376,16 +340,9 @@ final class AgentUpgradeHelper {
 
     private static void rollback(Config config) {
         try {
-            if (config.archive()) {
-                rollbackArchive(Path.of(config.target()).toAbsolutePath().normalize(),
-                        Path.of(config.stateDir()).toAbsolutePath().normalize()
-                                .resolve("upgrade-files-" + safeComponent(config.campaignId()) + ".txt"));
-                restorePreviousVersion(Path.of(config.stateDir()).toAbsolutePath().normalize());
-                return;
-            }
-            var target = Path.of(config.target()).toAbsolutePath().normalize();
-            var backup = target.resolveSibling(target.getFileName() + ".previous");
-            if (Files.isRegularFile(backup, LinkOption.NOFOLLOW_LINKS)) move(backup, target);
+            rollbackArchive(Path.of(config.target()).toAbsolutePath().normalize(),
+                    Path.of(config.stateDir()).toAbsolutePath().normalize()
+                            .resolve("upgrade-files-" + safeComponent(config.campaignId()) + ".txt"));
             restorePreviousVersion(Path.of(config.stateDir()).toAbsolutePath().normalize());
         } catch (Exception ignored) {
         }
@@ -513,28 +470,15 @@ final class AgentUpgradeHelper {
     }
 
     private static boolean isExecutableBundleFile(String name, String targetName) {
-        if (name.equalsIgnoreCase(targetName)) return true;
-        return isLegacyTargetName(targetName) && name.equalsIgnoreCase(canonicalExecutableName());
+        return name.equalsIgnoreCase(targetName);
     }
 
     private static String installedFileName(String archiveName, String targetName) {
-        if (isLegacyTargetName(targetName) && archiveName.equalsIgnoreCase(canonicalExecutableName())) {
-            return targetName;
-        }
         return archiveName;
     }
 
     private static String installedComponentFileName(String archiveName, String targetName, String component) {
         return isComponentExecutableFile(archiveName, targetName, component) ? targetName : archiveName;
-    }
-
-    private static boolean isLegacyTargetName(String targetName) {
-        var lower = targetName.toLowerCase(Locale.ROOT);
-        return lower.equals("remote-connect-mcp-agent") || lower.equals("remote-connect-mcp-agent.exe");
-    }
-
-    private static String canonicalExecutableName() {
-        return isWindows() ? "rcm-agent.exe" : "rcm-agent";
     }
 
     private static void deleteTree(Path root) {
@@ -567,10 +511,8 @@ final class AgentUpgradeHelper {
         // systemctl command itself returns.  systemd has no --wait option for
         // stop, so wait for ActiveState=inactive before replacing the bundle.
         if (isWindows()) {
-            // GraalVM Native Image binaries are console executables and do not
-            // implement the Windows ServiceMain/control dispatcher.  New
-            // installers supervise them with Task Scheduler.  Keep the SCM
-            // path as a compatibility fallback for older wrapper installs.
+            // GraalVM Native Image binaries are console executables and are
+            // supervised by the canonical Task Scheduler task.
             if (windowsTaskExists(service)) {
                 // The helper itself is launched by the Agent task.  Calling
                 // `schtasks /End` here could terminate this detached helper
@@ -579,8 +521,7 @@ final class AgentUpgradeHelper {
                 // PowerShell launcher/task action to drain naturally.
                 waitWindowsTaskStopped(service);
             } else {
-                runServiceCommand(List.of("sc.exe", "stop", service), false);
-                waitWindowsServiceStopped(service);
+                throw new IOException("Windows Agent task is missing: " + service);
             }
         } else {
             runServiceCommand(List.of("systemctl", "stop", service), false);
@@ -596,8 +537,7 @@ final class AgentUpgradeHelper {
                     runServiceCommand(List.of("schtasks.exe", "/Run", "/TN", service), true);
                     waitWindowsTaskRunning(service);
                 } else {
-                    runServiceCommand(List.of("sc.exe", "start", service), true);
-                    waitWindowsServiceRunning(service);
+                    throw new IOException("Windows Agent task is missing: " + service);
                 }
             } else {
                 runServiceCommand(List.of("systemctl", "start", service), true);
@@ -610,11 +550,6 @@ final class AgentUpgradeHelper {
         // while still allowing the helper to exit independently.
         var target = Path.of(config.target()).toAbsolutePath().normalize();
         var command = new java.util.ArrayList<String>();
-        if (target.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")) {
-            command.add(System.getProperty("java.home") + java.io.File.separator + "bin" + java.io.File.separator
-                    + (isWindows() ? "java.exe" : "java"));
-            command.add("-jar");
-        }
         command.add(target.toString());
         command.add("--run");
         new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
@@ -628,8 +563,7 @@ final class AgentUpgradeHelper {
                 runServiceCommand(List.of("schtasks.exe", "/Run", "/TN", service), true);
                 waitWindowsTaskRunning(service);
             } else {
-                runServiceCommand(List.of("sc.exe", "start", service), true);
-                waitWindowsServiceRunning(service);
+                throw new IOException("Windows component task is missing: " + service);
             }
         } else {
             runServiceCommand(List.of("systemctl", "start", service), true);
@@ -715,39 +649,6 @@ final class AgentUpgradeHelper {
         }
     }
 
-    private static void waitWindowsServiceStopped(String service) throws IOException, InterruptedException {
-        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
-        while (true) {
-            var process = new ProcessBuilder("sc.exe", "query", service).redirectErrorStream(true).start();
-            var finished = process.waitFor(5, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                process.waitFor(5, TimeUnit.SECONDS);
-            } else {
-                var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-                if (output.contains("STOPPED") || output.contains("1060")) return;
-            }
-            if (System.nanoTime() >= deadline) throw new IOException("service " + service + " did not become stopped");
-            Thread.sleep(250L);
-        }
-    }
-
-    private static void waitWindowsServiceRunning(String service) throws IOException, InterruptedException {
-        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
-        while (true) {
-            var process = new ProcessBuilder("sc.exe", "query", service).redirectErrorStream(true).start();
-            var finished = process.waitFor(5, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                process.waitFor(5, TimeUnit.SECONDS);
-            } else {
-                var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-                if (output.contains("RUNNING")) return;
-            }
-            if (System.nanoTime() >= deadline) throw new IOException("service " + service + " did not become running");
-            Thread.sleep(250L);
-        }
-    }
 
     private static void writeResult(Path stateDir, Result result) throws IOException {
         Files.createDirectories(stateDir);
@@ -781,6 +682,8 @@ final class AgentUpgradeHelper {
     private static void validate(Config config) throws IOException {
         if (config == null || config.campaignId() == null || config.campaignId().isBlank()) throw new IOException("invalid upgrade helper config");
         if (config.staged() == null || config.target() == null || config.stateDir() == null) throw new IOException("upgrade helper paths are missing");
+        if (!config.staged().toLowerCase(Locale.ROOT).endsWith(".zip")) throw new IOException("upgrade helper accepts only Native Image ZIP bundles");
+        if (config.target().toLowerCase(Locale.ROOT).endsWith(".jar")) throw new IOException("upgrade helper requires a Native Image executable target");
         if (config.parentPid() <= 0) throw new IOException("upgrade helper parent pid is invalid");
         for (var component : config.components()) {
             if (component == null || component.component() == null || !component.component().matches("[a-z][a-z0-9-]{1,63}")) {
@@ -788,6 +691,12 @@ final class AgentUpgradeHelper {
             }
             if (component.staged() == null || component.target() == null || component.stateDir() == null) {
                 throw new IOException("component upgrade paths are missing");
+            }
+            if (!component.staged().toLowerCase(Locale.ROOT).endsWith(".zip")) {
+                throw new IOException("component upgrade accepts only Native Image ZIP bundles");
+            }
+            if (component.target().toLowerCase(Locale.ROOT).endsWith(".jar")) {
+                throw new IOException("component upgrade requires a Native Image executable target");
             }
             // A target may be temporarily absent on a host that has not
             // enabled this companion yet.  Treat it as a component-level
@@ -803,30 +712,25 @@ final class AgentUpgradeHelper {
     }
 
     record Config(String campaignId, String version, String staged, String target, String stateDir,
-                  String serviceName, long parentPid, boolean archive, Integer attempt,
+                  String serviceName, long parentPid, Integer attempt,
                   List<ComponentConfig> components) {
         Config {
             components = components == null ? List.of() : List.copyOf(components);
         }
 
         Config(String campaignId, String version, String staged, String target, String stateDir,
-               String serviceName, long parentPid, boolean archive, Integer attempt) {
-            this(campaignId, version, staged, target, stateDir, serviceName, parentPid, archive, attempt, List.of());
-        }
-
-        Config(String campaignId, String version, String staged, String target, String stateDir,
-               String serviceName, long parentPid, boolean archive) {
-            this(campaignId, version, staged, target, stateDir, serviceName, parentPid, archive, null, List.of());
+               String serviceName, long parentPid, Integer attempt) {
+            this(campaignId, version, staged, target, stateDir, serviceName, parentPid, attempt, List.of());
         }
 
         Config(String campaignId, String version, String staged, String target, String stateDir,
                String serviceName, long parentPid) {
-            this(campaignId, version, staged, target, stateDir, serviceName, parentPid, false, null, List.of());
+            this(campaignId, version, staged, target, stateDir, serviceName, parentPid, null, List.of());
         }
     }
 
     record ComponentConfig(String component, String version, String staged, String target, String stateDir,
-                           String serviceName, boolean archive, String restartPolicy) {
+                           String serviceName, String restartPolicy) {
         ComponentConfig {
             component = component == null ? "" : component.trim();
             version = version == null ? "" : version.trim();

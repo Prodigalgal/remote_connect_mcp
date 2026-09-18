@@ -21,7 +21,7 @@ public record UpgradeCampaignView(
         Instant updatedAt,
         Instant finishedAt) {
 
-    /** Compatibility constructor for the pre-component campaign projection. */
+    /** Construction overload with no component plan projection. */
     public UpgradeCampaignView(String id, String version, String status, int canaryCount, int batchSize,
                                 int activeLimit, Map<String, UpgradeArtifact> artifacts,
                                 List<UpgradeTargetView> targets, Instant createdAt, Instant updatedAt,

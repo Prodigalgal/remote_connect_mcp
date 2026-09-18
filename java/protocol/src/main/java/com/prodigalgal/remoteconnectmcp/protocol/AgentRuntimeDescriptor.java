@@ -25,16 +25,15 @@ public record AgentRuntimeDescriptor(
     /** Highest runtime descriptor schema understood by this release. */
     public static final int CURRENT_SCHEMA_VERSION = 1;
 
-    /** Compatibility constructor for the first runtime-descriptor schema. */
+    /** Local construction overload for callers that use the baseline descriptor. */
     public AgentRuntimeDescriptor(int schemaVersion, long configGeneration, int maxConcurrency,
                                   int maxBrowserWorkers, long maxOutputBytes, long maxAggregateOutputBytes,
                                   int maxChildProcesses, long maxTaskDurationSeconds, long maxRssBytes,
                                   long maxCpuSeconds, boolean desktopEnabled, boolean browserAdapterConfigured) {
         this(schemaVersion, configGeneration, maxConcurrency, maxBrowserWorkers, maxOutputBytes,
-                maxAggregateOutputBytes, maxChildProcesses, defaultTotalChildProcesses(maxConcurrency),
-                maxTaskDurationSeconds, maxRssBytes,
-                maxCpuSeconds, desktopEnabled, browserAdapterConfigured, ScopeMode.WORKSPACE,
-                false, false, "process-tree");
+                maxAggregateOutputBytes, maxChildProcesses, Math.min(256, Math.max(32, Math.max(1, maxConcurrency) * 32)),
+                maxTaskDurationSeconds, maxRssBytes, maxCpuSeconds, desktopEnabled, browserAdapterConfigured,
+                ScopeMode.WORKSPACE, false, false, "process-tree");
     }
 
     public AgentRuntimeDescriptor {
@@ -42,9 +41,11 @@ public record AgentRuntimeDescriptor(
             throw new IllegalArgumentException("unsupported Agent runtime schema version: " + schemaVersion);
         }
         if (configGeneration < 0) throw new IllegalArgumentException("runtime config generation must be non-negative");
-        scopeMode = scopeMode == null ? ScopeMode.WORKSPACE : scopeMode;
-        resourceEnforcement = resourceEnforcement == null || resourceEnforcement.isBlank()
-                ? "process-tree" : resourceEnforcement.trim();
+        if (scopeMode == null) throw new IllegalArgumentException("runtime scope mode is required");
+        if (resourceEnforcement == null || resourceEnforcement.isBlank()) {
+            throw new IllegalArgumentException("runtime resource enforcement is required");
+        }
+        resourceEnforcement = resourceEnforcement.trim();
         if (resourceEnforcement.length() > 64 || resourceEnforcement.indexOf('\u0000') >= 0
                 || resourceEnforcement.indexOf('\r') >= 0 || resourceEnforcement.indexOf('\n') >= 0) {
             throw new IllegalArgumentException("runtime resource enforcement is invalid");
@@ -55,11 +56,6 @@ public record AgentRuntimeDescriptor(
         if (maxOutputBytes < 1024L * 1024 || maxOutputBytes > 1024L * 1024 * 1024) throw new IllegalArgumentException("runtime max output is outside the allowed range");
         if (maxAggregateOutputBytes < maxOutputBytes || maxAggregateOutputBytes > 4L * 1024 * 1024 * 1024) throw new IllegalArgumentException("runtime aggregate output is outside the allowed range");
         if (maxChildProcesses < 1 || maxChildProcesses > 256) throw new IllegalArgumentException("runtime max child processes is outside the allowed range");
-        // JSON written by pre-total-budget Agents omits this field and
-        // Jackson supplies zero for the primitive component. Use the same
-        // bounded default as the current Agent instead of rejecting a valid
-        // legacy heartbeat.
-        if (maxTotalChildProcesses == 0) maxTotalChildProcesses = defaultTotalChildProcesses(maxConcurrency);
         if (maxTotalChildProcesses < 1 || maxTotalChildProcesses > 4096) throw new IllegalArgumentException("runtime max total child processes is outside the allowed range");
         if (maxTaskDurationSeconds < 0 || maxTaskDurationSeconds > ProtocolValidation.MAX_TIMEOUT_SECONDS) throw new IllegalArgumentException("runtime max duration is outside the allowed range");
         if (maxRssBytes < 0 || maxRssBytes > 16L * 1024 * 1024 * 1024) throw new IllegalArgumentException("runtime max RSS is outside the allowed range");
@@ -72,17 +68,4 @@ public record AgentRuntimeDescriptor(
                 ScopeMode.WORKSPACE, false, false, "process-tree");
     }
 
-    private static int defaultTotalChildProcesses(int concurrency) {
-        return Math.min(256, Math.max(32, Math.max(1, concurrency) * 32));
-    }
-
-    /**
-     * Return whether a descriptor can be consumed without guessing at new
-     * semantics.  Older clients are represented by {@link #defaults()}; a
-     * newer schema is rejected at the protocol boundary until this release
-     * explicitly learns its fields and limits.
-     */
-    public boolean compatibleWith(int supportedSchemaVersion) {
-        return schemaVersion <= Math.max(0, supportedSchemaVersion);
-    }
 }

@@ -110,9 +110,7 @@ function App() {
       setLoading(true)
       setApiMessage('')
       try {
-        // Project APIs were added in the Java Center migration. Keep the
-        // console usable against the older Go compatibility Center while the
-        // migration is in progress.
+        // All console reads use the current Java Center API contract.
         const [machines, projects, tasks, upgrades, releases, audit] = await Promise.all([
           listMachines(normalizedToken),
           listProjects(normalizedToken).catch(() => []),

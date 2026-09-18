@@ -18,7 +18,7 @@
 | P0 | G1 范围合同 | 通过 | Linux/Windows cwd、环境变量伪造、越界路径和幂等重试均已实机验证 |
 | P0 | G2 重启/重试 | 部分通过 | Agent 停止/启动期间 durable 任务只执行一次；Center 重启与 ChatGPT 重试需维护窗口 |
 | P0 | G3 长任务/工件/资源 | 部分通过 | 128 KiB 分页、超时终态、durable 完成和 32 子进程硬上限均已通过；工件及 RSS/CPU 极限仍待 capability/压测条件 |
-| P0 | G4 固定 `/mcp` 多机路由 | 通过 | 9 台在线 Agent 经同一 MCP 会话完成 `command_start`/`task_wait` |
+| P0 | G4 固定 `/mcp` 多机路由 | 通过 | 9 台在线 Agent 经同一 MCP 会话完成 `command`/`task_read` |
 | P1 | P1-01 项目注册与 worktree | 通过 | 项目注册、Git 读操作、worktree 创建/删除和清理闭环见下文 |
 | P1 | P1-02 Desktop Companion | 部分通过 | `local-cmcc-debian` 已完成真实 screens/截图路由；`local-ly-windows11` 已安装 desktop bundle、SYSTEM Agent 和按用户登录触发的 Companion 任务，但当前无交互登录会话，Windows 截图/输入仍待用户会话 |
 | P1 | P1-03 Browser Agent | 部分通过 | `local-cmcc-debian` 与 `local-ly-windows11` 均完成真实 `navigate`；snapshot/截图/下载、持久会话和更多浏览器引擎仍待补充 |
@@ -34,7 +34,7 @@
 | P2 | P2-04 SLO/告警 | 待验收 | 指标与 PrometheusRule 存在；通知出口和告警演练未执行 |
 | P2 | P2-05-lite 多主体/对话/连接 | 待实施 | 已完成关系设计；用户 Token、主体 ACL、执行车道和 Desktop/Browser 会话隔离尚未进入生产验收；完整 SaaS 多租户仍不做 |
 | P2 | P2-06 桌面/浏览器增强 | 部分通过 | Linux/Windows 均已完成独立 command/desktop/browser 包部署和浏览器基线；Windows 桌面交互与更多浏览器工件场景仍待真实登录会话 |
-| P2 | P2-07 Go 路径退出 | 待验收 | Java 已为生产路径；Go 兼容清理仍需独立生产变更 |
+| P2 | P2-07 旧运行时退出 | 待验收 | Go 源码、工作流和公开部署资源已删除；仅需在生产环境确认旧镜像、任务和 DNS 资源清理 |
 
 ## 2026-09-15 Agent v0.1.26 五机滚动验收
 
@@ -61,7 +61,7 @@ Java Agent `v0.1.26` 已通过 GitHub Actions Native Release（构建与签名�
 | 版本识别 | 通过 | `/api/v1/version` 返回 Java 实现和生产版本 |
 | MCP 未授权保护 | 通过 | 未携带 Bearer 调用 `/mcp` 返回 HTTP 401 |
 | MCP 授权会话 | 通过 | 有效 MCP Token 完成 `initialize`、会话建立和 `tools/list`；精简工具面 9 个工具均可发现 |
-| MCP 机器列表 | 通过 | `machines_list` 调用成功，结果未发现 Token、密码、Secret 或私钥字段 |
+| MCP 机器列表 | 通过 | `machines` 调用成功，结果未发现 Token、密码、Secret 或私钥字段 |
 | Admin 鉴权与基础分页 | 通过 | 有效 Admin Token 可读取机器列表；`items/offset/limit` 存在 |
 | Admin 新分页投影 | 通过 | 生产 `v0.1.22` 返回 `items/offset/limit/total/has_more`，机器列表 9 台且单页完整 |
 | Metrics | 通过 | Admin 鉴权、Prometheus 文本格式和机器计数器可用；响应未发现 Token、密码、Secret 或私钥字段 |
@@ -169,7 +169,7 @@ P2-03 的代码路径已存在，生产日志采集器、对象生命周期和�
 
 合并提交 `8e4839f`、稳定 tag `java-v0.1.22` 已在 GitHub Actions 完成大规模回归：
 
-- 综合 CI `34937165824`：Go 测试/vet、四平台兼容构建、事件驱动检查和仓库卫生，成功；
+- 综合 CI `34937165824`：历史 Go 路径测试/vet、四平台构建、事件驱动检查和仓库卫生，成功；该工作流随后已从仓库删除；
 - Java/React `34937165828`：PostgreSQL/Liquibase、JVM Ubuntu/Windows、React 构建、Linux amd64/arm64 Native 构建、MCP 冒烟和 Agent RSS 门禁，成功；
 - 稳定 Native Release `34938856822`：Linux amd64/arm64、Windows amd64 Center/Agent/Desktop/Browser 资产、校验和、SBOM 与签名，成功；
 - 本机没有执行 Java、Gradle、Native Image、React 或正式安装包构建。
@@ -213,7 +213,7 @@ P1-06 有效 WebSocket 断线恢复，以及离线/失败/回滚升级仍按前�
 | 项目 | 结果 | 证据 |
 | --- | --- | --- |
 | Gateway 路由 | 通过 | Java Center 与 Console 的生产 HTTPRoute 均被 Gateway 接受；健康、就绪和版本端点继续 HTTP 200 |
-| MCP 工具发现 | 通过 | Streamable HTTP 会话可建立，`tools/list` 返回 9 个精简工具：`machines_list`、`machine_info`、`project`、`desktop`、`browser`、`command_start`、`task_wait`、`task_output`、`task_cancel` |
+| MCP 工具发现 | 通过 | Streamable HTTP 会话可建立，`tools/list` 返回 8 个精简工具：`machines`、`command`、`desktop`、`browser`、`project`、`artifact`、`task_read`、`task_cancel` |
 | 认证边界 | 通过 | 未携带凭据访问 `/mcp`、Admin API 和 `/metrics` 均返回 HTTP 401；已认证调用未返回敏感内容 |
 | 事件驱动等待 | 通过 | 使用当前事件游标等待 1 秒返回 `changed=false`，未使用固定间隔轮询；事件游标保持连续 |
 | Agent 收敛 | 通过 | 9/9 Agent `online=true` 且版本为 `v0.1.28`；运行时 `max_child_processes=32`、`resource_enforcement=process-tree` |

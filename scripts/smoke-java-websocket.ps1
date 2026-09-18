@@ -7,16 +7,11 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$jar = Join-Path $root 'java\center\build\libs\center-0.1.0-SNAPSHOT.jar'
 $binary = if ([string]::IsNullOrWhiteSpace($CenterBinary)) { $null } else { (Resolve-Path -LiteralPath $CenterBinary -ErrorAction Stop).Path }
-if ($binary) {
-    if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Center native binary not found: $binary" }
-} elseif (-not (Test-Path -LiteralPath $jar -PathType Leaf)) {
-    throw "Center bootJar not found: $jar. This smoke script consumes a prebuilt GitHub Actions artifact; pass -CenterBinary to the downloaded Native Image or CI JAR."
-}
+if (-not $binary) { throw 'Center Native Image path is required; pass -CenterBinary to a GitHub Actions artifact.' }
+if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Center native binary not found: $binary" }
 
 $base = "http://127.0.0.1:$Port"
-$centerToken = 'smoke-enrollment-token'
 $adminToken = 'smoke-admin-token'
 $process = $null
 $stderrTask = $null
@@ -24,13 +19,7 @@ $socket = $null
 
 function New-CenterProcess {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    if ($binary) {
-        $psi.FileName = $binary
-    } else {
-        $psi.FileName = (Get-Command java -ErrorAction Stop).Source
-        $psi.ArgumentList.Add('-jar')
-        $psi.ArgumentList.Add($jar)
-    }
+    $psi.FileName = $binary
     $psi.ArgumentList.Add("--server.port=$Port")
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
@@ -41,8 +30,6 @@ function New-CenterProcess {
     $psi.Environment['RCM_CENTER_AGENT_WEBSOCKET_ENABLED'] = 'true'
     $psi.Environment['REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN'] = 'smoke-mcp-token'
     $psi.Environment['REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN'] = $adminToken
-    $psi.Environment['REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN'] = $centerToken
-    $psi.Environment['RCM_CENTER_ALLOW_SHARED_ENROLLMENT'] = 'true'
     $value = [System.Diagnostics.Process]::new()
     $value.StartInfo = $psi
     if (-not $value.Start()) { throw 'could not start Java Center' }
@@ -120,7 +107,13 @@ try {
         $client.Dispose()
     }
 
-    $registration = Invoke-Json 'POST' '/agent/v1/register' $centerToken @{
+    $issued = Invoke-Json 'POST' '/api/v1/admin/enrollment-tokens' $adminToken @{
+        requested_name = 'websocket-smoke-agent'
+        expires_in_seconds = 3600
+    }
+    $enrollmentToken = [string]$issued.token
+    if ([string]::IsNullOrWhiteSpace($enrollmentToken)) { throw 'Center did not return a one-time enrollment token' }
+    $registration = Invoke-Json 'POST' '/agent/v1/register' $enrollmentToken @{
         name = 'websocket-smoke-agent'
         host_id = 'websocket-smoke-host'
         hostname = 'websocket-smoke-host'
@@ -153,14 +146,10 @@ try {
     $task = Invoke-Json 'POST' '/api/v1/admin/tasks' $adminToken @{
         machine_id = [string]$registration.machine_id
         scope_mode = 'unrestricted'
-        command = @{
-            kind = 'command'
-            required_capability = 'command'
-            command = 'echo websocket-wake'
-            cwd = $root
-            env = @{}
-            timeout_seconds = 30
-        }
+        command = 'echo websocket-wake'
+        cwd = $root
+        env = @{}
+        timeout_seconds = 30
     }
     if ([string]::IsNullOrWhiteSpace([string]$task.id)) { throw 'Center did not return a task id' }
     $wake = Wait-TextMessage $socket

@@ -239,9 +239,9 @@ RCM 不要求所有任务运行在容器或虚拟机里。可信的整机模式�
 主要传输优先级：
 
 1. 事件唤醒或 WebSocket；
-2. HTTPS 长轮询作为可靠补偿和兼容通道；
+2. HTTPS 长轮询作为可靠的正式事件通道；
 3. 在确有收益时增加 QUIC；
-4. 固定间隔轮询只能作为明确标记的旧环境兼容回退。
+4. 正式 Agent 不使用固定间隔轮询；只有明确的健康探针可以按需执行一次性读取。
 
 任何通知丢失都必须能够通过任务 ID、版本、游标和下一次显式读取恢复，不能把通知本身当作事实来源。
 
@@ -261,7 +261,7 @@ RCM 不要求所有任务运行在容器或虚拟机里。可信的整机模式�
 
 | 凭据 | 用途 | 生命周期 |
 | --- | --- | --- |
-| 兼容 MCP Token（owner/shared） | 兼容旧连接器调用 `/mcp`；映射到 `owner/shared-domain` 主体 | 迁移期保留；确认用户 Token 已迁移后由管理员手动撤销 |
+| 配置 MCP Token | 把当前 Web 连接器映射到配置主体和其机器/项目/能力范围 | 不透明、可撤销；由部署环境注入并与 Agent Token 分离 |
 | 用户 MCP Token | 把 Web 用户或服务主体映射到 `/mcp` 及其机器/项目/能力范围 | 不透明、可撤销；由 Console/Admin 签发，可设置有效期和配额；不要求 OAuth/JWT |
 | Admin Token | React 控制台和 Admin API | 与 MCP Token 分离，手动通过部署环境替换 |
 | Enrollment Token | 首次安装、重装或身份恢复 | 一次性、短期、绑定机器名称 |
@@ -283,7 +283,7 @@ RCM 不要求所有任务运行在容器或虚拟机里。可信的整机模式�
 - Agent：Java 25 模块化 Native Image，不引入完整 Spring；
 - Console：React 19 + TypeScript + Vite，独立静态部署；
 - 数据库：PostgreSQL + Liquibase，不使用 Flyway；
-- Linux amd64/arm64 和 Windows amd64 是首要原生目标；Windows ARM64 没有可复现的 Native Image 目标时，必须明确使用兼容包；
+- Linux amd64/arm64 和 Windows amd64 是首要原生目标；没有可复现 Native Image 目标的平台不发布伪原生包；
 - Java、Native Image、React 和正式安装包全部由 GitHub Actions 构建；开发机和目标机不执行正式构建。
 
 ## 10. 控制台和 MCP 体验
@@ -299,9 +299,9 @@ MCP 面遵循以下原则：
 - 默认返回下一步所需的最小结果；
 - 长输出、截图、DOM、错误和列表均有界；
 - 新能力优先扩展已有任务/能力协议，只有无法复用时才新增 MCP 工具；
-- 新版本不得要求重新创建既有连接器。
+- Center/Agent/Companion 升级不改变 `/mcp` URL、Bearer Token 或机器身份；Tool 面改变时由连接器重新发现当前 Schema。
 
-## 11. 升级和兼容
+## 11. 升级和版本纪律
 
 升级流程必须支持：
 
@@ -313,7 +313,7 @@ MCP 面遵循以下原则：
 6. Center 依据 Agent 实际心跳版本判断成功，而不是只看下载请求；
 7. 失败目标暂停或重新排队，管理员可以取消活动；
 8. 升级不改变 machine ID、Agent Token、服务配置或 ChatGPT MCP URL；
-9. Center 至少兼容上一代 Agent，旧 Agent 遇到未知能力时安全失败。
+9. 生产只接受当前协议版本的 Center/Agent/Companion bundle；不把旧协议或旧二进制作为运行时分支。
 
 ## 12. 非目标
 
@@ -369,6 +369,6 @@ MCP 面遵循以下原则：
 
 1. 它解决的是 ChatGPT 到可靠终端执行链路中的哪一个真实问题？
 2. 它能否复用现有 Center/Agent/任务/能力协议，而不扩大 MCP 上下文？
-3. 它的权限、资源、隐私、失败恢复和升级兼容边界是否可以被明确验收？
+3. 它的权限、资源、隐私、失败恢复和升级边界是否可以被明确验收？
 
 不能回答以上问题的功能不进入 P0/P1；只属于展示、实验或未来扩展的内容必须标记为 P2 或单独项目，不得混入生产基线。

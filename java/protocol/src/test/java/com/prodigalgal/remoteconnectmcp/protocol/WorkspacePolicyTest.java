@@ -25,7 +25,7 @@ class WorkspacePolicyTest {
     }
 
     @Test
-    void unrestrictedModePreservesCompatibility() {
+    void unrestrictedModeExplicitlyPermitsWholeHostPaths() {
         assertDoesNotThrow(() -> WorkspacePolicy.validateRemote(ScopeMode.UNRESTRICTED, "linux",
                 null, null, "/outside"));
     }

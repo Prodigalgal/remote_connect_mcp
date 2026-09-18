@@ -57,6 +57,6 @@ class DesktopCompanionServerTest {
     private static DesktopCompanionProtocol.Request request(Path cwd, Path scopeRoot, String scopeMode) {
         return new DesktopCompanionProtocol.Request("companion-token", "screenshot", null, List.of(),
                 cwd.toString(), null, null, null, null, null, null, null, null, null,
-                scopeMode, scopeRoot.toString(), Instant.now().plusSeconds(60));
+                scopeMode, scopeRoot.toString(), Instant.now().plusSeconds(60), "test-session");
     }
 }

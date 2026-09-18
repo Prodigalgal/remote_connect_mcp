@@ -119,12 +119,7 @@ public final class TaskService {
         this.quota = null;
     }
 
-    /**
-     * Enqueue a task using the legacy/admin audit source.  Callers that know
-     * the request channel should use {@link #create(CreateTaskRequest, String)}
-     * so the audit timeline can distinguish MCP/model requests from console
-     * actions without storing command text or credentials.
-     */
+    /** Enqueue a task using the default admin audit source. */
     public TaskView create(CreateTaskRequest request) {
         return create(request, "admin");
     }
@@ -140,7 +135,7 @@ public final class TaskService {
         if (request == null || request.machineId().isBlank()) {
             throw new IllegalArgumentException("machineId is required");
         }
-        var origin = requestedOrigin == null ? TaskOrigin.shared() : requestedOrigin;
+        var origin = requestedOrigin == null ? TaskOrigin.configured() : requestedOrigin;
         var id = "task_" + UUID.randomUUID().toString().replace("-", "");
         // This is an early, low-cost rejection so a session is not created
         // for an obviously exhausted principal. JDBC repeats the admission
@@ -175,7 +170,7 @@ public final class TaskService {
                     original.contract(), original.attempt(), original.fileTransfer());
             var createdAt = Instant.now();
             var contract = buildContract(request, machine, original, capability, id, createdAt, origin);
-            var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), createdAt, contract, original.fileTransfer());
+            var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), createdAt, contract, 0, original.fileTransfer());
             ProtocolValidation.validateTask(command);
             if (sessions != null) sessions.ensure(origin, contract);
 
@@ -397,7 +392,7 @@ public final class TaskService {
                         canceled++;
                     }
                     default -> {
-                        // Unknown legacy states are intentionally excluded
+                        // Unknown persisted states are intentionally excluded
                         // from SLO ratios rather than guessed.
                     }
                 }
@@ -506,14 +501,10 @@ public final class TaskService {
                     signalChanged();
                 }
             }
-            return new PollResponse(task, cancelIds, null);
+            return new PollResponse(task, cancelIds, null, null);
         } finally {
             lock.unlock();
         }
-    }
-
-    public TaskView updateState(String machineId, String taskId, TaskUpdateRequest update) {
-        return updateState(machineId, taskId, update, null);
     }
 
     /**
@@ -530,7 +521,7 @@ public final class TaskService {
         // created; using an empty id here makes the protocol validator reject
         // every successfully downloaded file before it can be dispatched.
         ProtocolValidation.validateTask(new TaskCommand(taskId, TaskKind.FILE_TRANSFER,
-                AgentCapability.FILE_TRANSFER.wireValue(), null, ".", Map.of(), 0, null, Instant.now(), null, action));
+                AgentCapability.FILE_TRANSFER.wireValue(), null, ".", Map.of(), 0, null, Instant.now(), null, 0, action));
         if (jdbcStore != null) {
             var view = jdbcStore.updateFileTransferAction(machineId, taskId, action);
             signalChanged(taskId);
@@ -593,8 +584,7 @@ public final class TaskService {
      * attempt.  File transfers can spend minutes outside the task-state
      * endpoint; checking the attempt immediately before committing metadata
      * prevents a stale Agent from publishing bytes after a lease reclaim.
-     * A null/zero attempt keeps first-dispatch compatibility with older
-     * Agents, while retries still require the current positive attempt.
+     * The positive attempt fence is required for every streaming operation.
      */
     public void assertCurrentAttempt(String machineId, String taskId, Integer attempt) {
         if (jdbcStore != null) {
@@ -612,10 +602,7 @@ public final class TaskService {
     }
 
     /**
-     * Apply a state update with an optional dispatch-attempt fence. A zero or
-     * absent attempt preserves first-dispatch compatibility with older Go
-     * Agents; after a lease retry the Center requires the fence so a stale
-     * process cannot complete or append output to a reissued task.
+     * Apply a state update with the dispatch-attempt fence.
      */
     public TaskView updateState(String machineId, String taskId, TaskUpdateRequest update, Integer attempt) {
         if (update == null || update.status() == null || update.status().isBlank()) {
@@ -625,7 +612,7 @@ public final class TaskService {
             var view = jdbcStore.updateState(machineId, taskId, update, attempt);
             signalChanged(taskId);
             audit("task.state", "agent", machineId, view, view.status(),
-                    "attempt=" + (attempt == null ? "legacy" : attempt));
+                    "attempt=" + attempt);
             return view;
         }
         lock.lock();
@@ -667,18 +654,19 @@ public final class TaskService {
             }
             signalChanged();
             audit("task.state", "agent", machineId, taskId, task.command(), task.status(),
-                    "attempt=" + (attempt == null ? "legacy" : attempt));
+                    "attempt=" + attempt);
             return new TaskView(task);
         } finally {
             lock.unlock();
         }
     }
 
-    public OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data) {
-        return appendOutput(machineId, taskId, offset, data, null);
+    /** Service-internal shorthand; resolves the current durable attempt. */
+    public TaskView updateState(String machineId, String taskId, TaskUpdateRequest update) {
+        return updateState(machineId, taskId, update, currentAttempt(machineId, taskId));
     }
 
-    /** Append output while fencing a stale dispatch attempt when supplied. */
+    /** Append output while fencing the dispatch attempt. */
     public OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data, Integer attempt) {
         if (offset < 0 || data == null || data.length > MAX_OUTPUT_CHUNK_BYTES) {
             throw new IllegalArgumentException("offset and data are required; output chunks are limited to 256 KiB");
@@ -721,6 +709,11 @@ public final class TaskService {
         }
     }
 
+    /** Service-internal shorthand; resolves the current durable attempt. */
+    public OutputResponse appendOutput(String machineId, String taskId, long offset, byte[] data) {
+        return appendOutput(machineId, taskId, offset, data, currentAttempt(machineId, taskId));
+    }
+
     public OutputPage readOutput(String taskId, long cursor, int limit) {
         if (cursor < 0) {
             throw new IllegalArgumentException("cursor must be non-negative");
@@ -750,10 +743,10 @@ public final class TaskService {
     }
 
     public ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256, byte[] data) {
-        return appendArtifact(machineId, taskId, mimeType, sha256, data, null);
+        return appendArtifact(machineId, taskId, mimeType, sha256, data, currentAttempt(machineId, taskId));
     }
 
-    /** Append an artifact while fencing a stale dispatch attempt when supplied. */
+    /** Append an artifact while fencing the dispatch attempt. */
     public ArtifactResponse appendArtifact(String machineId, String taskId, String mimeType, String sha256,
                                            byte[] data, Integer attempt) {
         var normalizedMime = normalizeMimeType(mimeType);
@@ -1053,17 +1046,17 @@ public final class TaskService {
             scopeRoot = machine.workspaceRoot();
         }
         // The MCP transport session is the safest default correlation value.
-        // A caller-supplied session_id remains useful for admin/legacy clients,
+        // A caller-supplied session_id remains useful for admin clients,
         // but it never overrides the authenticated connection owner.
         var explicitSessionId = firstNonBlank(request.sessionId(), supplied == null ? null : supplied.sessionId());
         var connectionId = origin == null ? null : origin.connectionId();
         var sessionId = explicitSessionId;
         if (sessionId == null && connectionId != null && !connectionId.isBlank()) {
-            // Preserve the legacy shared connection id used by internal and
+            // Preserve the configured connection id used by internal and
             // PostgreSQL integration callers.  Authenticated MCP callers get
             // a machine/scope fingerprint so one connection can safely span
             // several independent execution contexts.
-            if (origin == null || origin.isShared()) {
+            if (origin == null || origin.isConfigured()) {
                 sessionId = connectionId.trim();
             } else {
                 var sessionFingerprint = connectionId + "\u0000" + machine.id() + "\u0000"
@@ -1178,6 +1171,18 @@ public final class TaskService {
         return value == null ? "" : value.trim();
     }
 
+    private Integer currentAttempt(String machineId, String taskId) {
+        if (jdbcStore != null) return jdbcStore.currentAttempt(machineId, taskId);
+        lock.lock();
+        try {
+            var task = required(taskId);
+            assertMachine(task, machineId);
+            return task.attempt();
+        } finally {
+            lock.unlock();
+        }
+    }
+
     private static LaneMode defaultLaneMode(TaskCommand command) {
         if (command == null) return LaneMode.WRITE;
         return switch (command.kind()) {
@@ -1223,15 +1228,8 @@ public final class TaskService {
     }
 
     private static void assertAttempt(TaskState task, Integer attempt) {
-        if (attempt == null) {
-            // Legacy Go/Agent clients did not send the fence header.  Keep
-            // their first dispatch compatible, but fail closed once the
-            // Center has re-leased the task: a late legacy process must not
-            // overwrite the newer attempt.
-            if (task.attempt() > 1) throw new SecurityException("task dispatch attempt is required after a retry");
-            return;
-        }
-        if (attempt > 0 && task.attempt() != attempt) {
+        if (attempt == null || attempt < 1) throw new SecurityException("task dispatch attempt is required");
+        if (task.attempt() != attempt) {
             throw new SecurityException("stale task dispatch attempt");
         }
     }
@@ -1494,7 +1492,7 @@ public final class TaskService {
     }
 
     public record ArtifactGcResult(int metadataRows, int objectFiles, int deleteFailures, long objectBytes) {
-        /** Compatibility constructor for callers compiled against v1. */
+        /** Construction overload when the object byte total is not reported. */
         public ArtifactGcResult(int metadataRows, int objectFiles, int deleteFailures) {
             this(metadataRows, objectFiles, deleteFailures, 0L);
         }

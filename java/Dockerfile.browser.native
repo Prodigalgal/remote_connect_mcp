@@ -3,9 +3,10 @@
 ARG BUILDER_IMAGE=ghcr.io/graalvm/native-image-community:25@sha256:0d936f32bb8acb5bc60c41b33e05f064d7a6aaf36b726538296c54949bd4a3c0
 FROM ${BUILDER_IMAGE} AS build
 ARG RCM_CI_BUILD=false
-ARG RCM_NATIVE_MARCH=compatibility
+ARG RCM_NATIVE_MARCH
 WORKDIR /src
 RUN test "$RCM_CI_BUILD" = "true" || (echo "Native Image Docker builds are GitHub Actions-only" >&2 && exit 2)
+RUN test -n "$RCM_NATIVE_MARCH" || (echo "RCM_NATIVE_MARCH is required" >&2 && exit 2)
 ENV GITHUB_ACTIONS=${RCM_CI_BUILD}
 COPY . .
 RUN chmod +x ./gradlew && ./gradlew :browser:nativeCompile -PnativeMarch="$RCM_NATIVE_MARCH" --no-daemon --no-parallel

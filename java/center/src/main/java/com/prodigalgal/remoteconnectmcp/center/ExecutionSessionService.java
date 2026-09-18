@@ -77,11 +77,11 @@ public final class ExecutionSessionService {
                         && !conversationId.equals(existing.conversationId())) {
                     throw new SecurityException("execution session is already owned by another conversation");
                 }
-                // The compatibility principal represents the pre-session
-                // internal API. It intentionally multiplexes legacy tasks;
+                // The configured principal represents the connector-wide
+                // internal API and intentionally multiplexes its own tasks;
                 // authenticated principals remain contract-pinned.
-                if (!TaskOrigin.SHARED_PRINCIPAL.equals(principal)) {
-                    assertContractCompatibility(existing == null ? null : existing.contract(), contract);
+                if (!TaskOrigin.CONFIGURED_PRINCIPAL.equals(principal)) {
+                    assertContractMatch(existing == null ? null : existing.contract(), contract);
                 }
                 memory.put(key(principal, sessionId), state);
             } else {
@@ -94,10 +94,10 @@ public final class ExecutionSessionService {
                             && !conversationId.equals(existing.conversationId())) {
                         throw new SecurityException("execution session is already owned by another conversation");
                     }
-                    // See the in-memory path above: only the compatibility
-                    // principal may reuse one session across legacy contracts.
-                    if (!TaskOrigin.SHARED_PRINCIPAL.equals(principal)) {
-                        assertContractCompatibility(existing == null ? null : existing.contract(), contract);
+                    // See the in-memory path above: only the configured
+                    // principal may reuse one session across its contracts.
+                    if (!TaskOrigin.CONFIGURED_PRINCIPAL.equals(principal)) {
+                        assertContractMatch(existing == null ? null : existing.contract(), contract);
                     }
                     jdbc.update("""
                             INSERT INTO rcm_execution_session(session_id, principal_id, conversation_id, machine_id,
@@ -236,7 +236,7 @@ public final class ExecutionSessionService {
      */
     public void authorize(TaskOrigin origin, String sessionId, String requiredCapability) {
         var principal = principal(origin);
-        if (TaskOrigin.SHARED_PRINCIPAL.equals(principal)) return;
+        if (TaskOrigin.CONFIGURED_PRINCIPAL.equals(principal)) return;
         var session = required(sessionId, "session_id");
         var now = Instant.now();
         expireStale(now);
@@ -310,15 +310,15 @@ public final class ExecutionSessionService {
         try {
             return JsonCodec.read(value.getBytes(StandardCharsets.UTF_8), ExecutionContract.class);
         } catch (RuntimeException exception) {
-            // A malformed persisted contract is not equivalent to a legacy
-            // row with no contract.  Failing the request here prevents a
+            // A malformed persisted contract is not equivalent to a row with
+            // no contract. Failing the request here prevents a
             // corrupted session from becoming an implicit authorization
             // grant after a restart.
             throw new IllegalStateException("stored execution session contract is invalid", exception);
         }
     }
 
-    private static void assertContractCompatibility(ExecutionContract existing, ExecutionContract requested) {
+    private static void assertContractMatch(ExecutionContract existing, ExecutionContract requested) {
         if (existing == null || requested == null) return;
         if (!java.util.Objects.equals(existing.machineId(), requested.machineId())
                 || existing.scopeMode() != requested.scopeMode()

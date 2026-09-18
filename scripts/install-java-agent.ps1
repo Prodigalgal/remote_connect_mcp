@@ -145,8 +145,11 @@ function Register-AgentTask {
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$LauncherPath
     )
-    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $action = New-ScheduledTaskAction -Execute $windowsPowerShell -Argument (
+    $pwsh = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+    if (-not (Test-Path -LiteralPath $pwsh -PathType Leaf)) {
+        throw "PowerShell 7 is required at $pwsh. Install PowerShell 7 before installing the Agent."
+    }
+    $action = New-ScheduledTaskAction -Execute $pwsh -Argument (
         '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $LauncherPath)
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
@@ -202,12 +205,7 @@ function Install-NativeCompanionBundle {
             $sourceRoot = $source.Directory.FullName
             $sourceFiles = @($source) + @(Get-ChildItem -LiteralPath $sourceRoot -Filter '*.dll' -File -ErrorAction SilentlyContinue)
         } else {
-            $source = Get-Item -LiteralPath $resolved -ErrorAction Stop
-            if ($source.Name -ine $ExpectedExecutable) {
-                throw "Companion binary must be named $ExpectedExecutable."
-            }
-            $sourceRoot = $source.Directory.FullName
-            $sourceFiles = @($source) + @(Get-ChildItem -LiteralPath $sourceRoot -Filter '*.dll' -File -ErrorAction SilentlyContinue)
+            throw "Companion input must be a Native Image ZIP containing $ExpectedExecutable."
         }
         $sourceFiles = @($sourceFiles | Sort-Object Name -Unique)
         if (-not ($sourceFiles | Where-Object { $_.Name -ieq $ExpectedExecutable })) {
@@ -235,6 +233,9 @@ $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.Wind
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw "Run this script from an elevated PowerShell 7 window."
 }
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw "PowerShell 7 or newer is required."
+}
 
 if ($Uninstall) {
     Remove-AgentTask -Name $serviceName
@@ -247,7 +248,7 @@ if ($Uninstall) {
 }
 
 if ([string]::IsNullOrWhiteSpace($BinaryPath) -or -not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
-    throw "BinaryPath must point to rcm-agent.exe or a Windows Native Image Agent ZIP."
+    throw "BinaryPath must point to the current Windows Native Image Agent ZIP."
 }
 if ([string]::IsNullOrWhiteSpace($CenterUrl) -or $CenterUrl.Contains("`r") -or $CenterUrl.Contains("`n")) { throw "CenterUrl is required and must be one line." }
 $parsedCenterUrl = [Uri]$CenterUrl
@@ -275,10 +276,8 @@ $destination = Join-Path $InstallRoot "rcm-agent.exe"
 
 # A Windows Native Image executable is not self-contained: the GraalVM runtime
 # DLLs generated beside it (java.dll, jvm.dll, awt.dll, ...) must stay beside
-# the exe. Accept both a raw executable (and its sibling DLLs) and the flat
-# release ZIP produced by build-native.ps1/GitHub Actions. Only exe/dll files
-# from the selected bundle are copied; checksum/readme metadata never enters
-# the service directory.
+# the executable. The installer accepts only the flat release ZIP produced by
+# GitHub Actions so every runtime library is upgraded atomically as one bundle.
 $inputPath = (Resolve-Path -LiteralPath $BinaryPath).Path
 $staging = $null
 $sourceFiles = @()
@@ -295,15 +294,7 @@ try {
         $sourceFiles = @(Get-ChildItem -LiteralPath $sourceRoot -File |
             Where-Object { $_.Extension -ieq '.exe' -or $_.Extension -ieq '.dll' })
     } else {
-        $source = $inputPath
-        if ([IO.Path]::GetFileName($source) -ine 'rcm-agent.exe') {
-            throw "BinaryPath must point to rcm-agent.exe or a Windows Native Image Agent ZIP."
-        }
-        $sourceRoot = Split-Path -Parent $source
-        $sourceFiles = @(
-            Get-Item -LiteralPath $source
-            Get-ChildItem -LiteralPath $sourceRoot -Filter '*.dll' -File -ErrorAction SilentlyContinue
-        )
+        throw "BinaryPath must be a Native Image ZIP containing rcm-agent.exe."
     }
     if (-not ($sourceFiles | Where-Object { $_.Name -ieq 'rcm-agent.exe' })) {
         throw "The selected Agent bundle does not contain rcm-agent.exe."
@@ -356,7 +347,7 @@ if ($DesktopEnabled -or -not [string]::IsNullOrWhiteSpace($DesktopBinaryPath)) {
         if (Test-Path -LiteralPath $existingDesktop -PathType Leaf) {
             $desktopDestination = $existingDesktop
         } else {
-            throw 'DesktopEnabled requires DesktopBinaryPath pointing to the rcm-desktop-companion ZIP or EXE.'
+            throw 'DesktopEnabled requires DesktopBinaryPath pointing to the rcm-desktop-companion ZIP.'
         }
     } else {
         $desktopDestination = Install-NativeCompanionBundle -InputPath $DesktopBinaryPath -ExpectedExecutable 'rcm-desktop-companion.exe' -DestinationDirectory (Join-Path $InstallRoot 'desktop')
@@ -405,25 +396,12 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
     }
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $destination
-    # Windows PowerShell 5.1 runs on the .NET Framework, whose
-    # ProcessStartInfo does not expose the .NET Core ArgumentList/Environment
-    # properties.  The installer is often launched from an elevated Windows
-    # PowerShell window even when PowerShell 7 is installed, so keep the
-    # registration path compatible with both runtimes.
-    if ($null -ne $psi.GetType().GetProperty('ArgumentList')) {
-        $psi.ArgumentList.Add('--register-once')
-    } else {
-        $psi.Arguments = '--register-once'
-    }
+    $psi.ArgumentList.Add('--register-once')
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-    if ($null -ne $psi.GetType().GetProperty('Environment')) {
-        foreach ($entry in $bootstrap.GetEnumerator()) { $psi.Environment[$entry.Key] = [string]$entry.Value }
-    } else {
-        foreach ($entry in $bootstrap.GetEnumerator()) { $psi.EnvironmentVariables[$entry.Key] = [string]$entry.Value }
-    }
+    foreach ($entry in $bootstrap.GetEnumerator()) { $psi.Environment[$entry.Key] = [string]$entry.Value }
     $registration = [System.Diagnostics.Process]::new()
     $registration.StartInfo = $psi
     if (-not $registration.Start()) { throw "could not start Java Agent registration" }
@@ -488,9 +466,8 @@ foreach ($entry in $environment) {
 $launcherLines.Add('$binary = Join-Path $PSScriptRoot ''rcm-agent.exe''')
 $launcherLines.Add('& $binary --run')
 $launcherLines.Add('exit $LASTEXITCODE')
-# The startup task deliberately uses inbox Windows PowerShell 5.1 so it does
-# not depend on a per-user PS7 installation; write UTF-16LE for lossless
-# parsing of non-ASCII machine names/paths by that host.
+# The startup task uses the machine-wide PowerShell 7 installation selected by
+# Register-AgentTask; write UTF-16LE so paths and machine names remain lossless.
 Set-Content -LiteralPath $launcherPath -Value $launcherLines -Encoding Unicode -Force
 & icacls.exe $launcherPath /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
 # Keep the advertised version in sync with a direct reinstall as well as with
@@ -545,8 +522,8 @@ if ($DesktopEnabled) {
     $desktopLauncherLines.Add('if ($null -eq $process) { throw "could not start desktop companion" }')
     $desktopLauncherLines.Add('$process.WaitForExit()')
     $desktopLauncherLines.Add('exit $process.ExitCode')
-    # UTF-16LE keeps the wrapper parseable by inbox PowerShell 5.1 even when a
-    # localized install path or machine name contains non-ASCII characters.
+    # UTF-16LE preserves non-ASCII install paths and machine names in the
+    # generated diagnostic wrapper.
     Set-Content -LiteralPath $desktopLauncherPath -Value $desktopLauncherLines -Encoding Unicode -Force
     & icacls.exe $desktopLauncherPath /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
     if ($desktopSid) {
@@ -577,9 +554,8 @@ if ($DesktopEnabled) {
     $action = New-ScheduledTaskAction -Execute $hiddenWScript -Argument $launcherArguments
     $desktopUserId = if ($env:USERNAME -like '*\*') { $env:USERNAME } else { "$($env:COMPUTERNAME)\$($env:USERNAME)" }
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $desktopUserId
-    # Windows PowerShell 5.1 exposes the interactive logon type as `Interactive`;
-    # `InteractiveToken` is not a valid enum value there and prevents the
-    # desktop companion task from being registered on GUI hosts.
+    # Interactive is the supported scheduled-task logon type for the user
+    # session that owns the desktop companion.
     $principal = New-ScheduledTaskPrincipal -UserId $desktopUserId -LogonType Interactive -RunLevel Limited
     $desktopSettings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)

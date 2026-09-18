@@ -27,9 +27,7 @@ import java.util.UUID;
  * {@code ATOMIC_MOVE}); readers verify both the bounded size and SHA-256.
  * Object keys are derived from digests rather than caller-controlled path
  * fragments, so a malformed task ID cannot escape the configured root.</p>
- * <p>New objects live below the physical {@code fs-v1/} namespace. Reads and
- * deletes still recognize the pre-namespace layout so a rolling deployment
- * does not strand objects written by an older Center.</p>
+ * <p>Objects live below the physical {@code fs-v1/} namespace.</p>
  */
 public final class FileSystemArtifactStore implements ArtifactStore {
     private static final String PREFIX = "fs-v1/";
@@ -131,7 +129,7 @@ public final class FileSystemArtifactStore implements ArtifactStore {
     @Override
     public byte[] read(String objectKey) {
         var normalizedKey = ArtifactStore.normalizeKey(objectKey);
-        var target = existingPathFor(normalizedKey);
+        var target = pathFor(normalizedKey);
         try {
             var size = Files.size(target);
             if (size < 0 || size > MAX_BYTES) throw new IOException("artifact object exceeds store limit");
@@ -145,7 +143,7 @@ public final class FileSystemArtifactStore implements ArtifactStore {
 
     @Override
     public InputStream open(String objectKey) {
-        var target = existingPathFor(ArtifactStore.normalizeKey(objectKey));
+        var target = pathFor(ArtifactStore.normalizeKey(objectKey));
         try {
             if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) || Files.size(target) < 0) {
                 throw new IOException("artifact object is missing");
@@ -160,14 +158,9 @@ public final class FileSystemArtifactStore implements ArtifactStore {
     public void delete(String objectKey) {
         var normalizedKey = ArtifactStore.normalizeKey(objectKey);
         var target = pathFor(normalizedKey);
-        var legacyTarget = legacyPathFor(normalizedKey);
         try {
             Files.deleteIfExists(target);
             pruneEmptyParents(target.getParent());
-            if (!legacyTarget.equals(target)) {
-                Files.deleteIfExists(legacyTarget);
-                pruneEmptyParents(legacyTarget.getParent());
-            }
         } catch (IOException exception) {
             throw new ArtifactStore.StorageException("cannot delete artifact object", exception);
         }
@@ -220,24 +213,6 @@ public final class FileSystemArtifactStore implements ArtifactStore {
             throw new ArtifactStore.StorageException("unsafe artifact object key");
         }
         return candidate;
-    }
-
-    /** Resolve an object written before the physical fs-v1 namespace existed. */
-    private Path legacyPathFor(String objectKey) {
-        if (!objectKey.startsWith(PREFIX)) throw new ArtifactStore.StorageException("unsupported artifact object key");
-        var relative = objectKey.substring(PREFIX.length());
-        var candidate = root.resolve(relative).normalize();
-        if (!candidate.startsWith(root) || relative.isBlank() || relative.contains("\\") || relative.contains("..")) {
-            throw new ArtifactStore.StorageException("unsafe artifact object key");
-        }
-        return candidate;
-    }
-
-    private Path existingPathFor(String objectKey) {
-        var canonical = pathFor(objectKey);
-        if (Files.exists(canonical, LinkOption.NOFOLLOW_LINKS)) return canonical;
-        var legacy = legacyPathFor(objectKey);
-        return Files.exists(legacy, LinkOption.NOFOLLOW_LINKS) ? legacy : canonical;
     }
 
     private static String digestFromKey(String objectKey) {

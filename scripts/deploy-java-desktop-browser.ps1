@@ -52,6 +52,10 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw "Run this deployment from an elevated PowerShell or SYSTEM task."
 }
+$pwsh = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+if (-not (Test-Path -LiteralPath $pwsh -PathType Leaf)) {
+    throw "PowerShell 7 is required at $pwsh."
+}
 
 New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
 $driveName = [IO.Path]::GetPathRoot($StageRoot).TrimEnd('\').TrimEnd(':')
@@ -78,17 +82,10 @@ $agentZip = Download-Verified "remote-connect-mcp-agent-$Version-windows-amd64.z
 $desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-windows-amd64.zip"
 $browserZip = Download-Verified "remote-connect-mcp-browser-$Version-windows-amd64.zip"
 $installer = Join-Path $StageRoot "install-java-agent.ps1"
-# Prefer the installer shipped beside this deployment script.  This keeps a
-# staged SYSTEM apply in lockstep with local compatibility fixes (notably the
-# PowerShell 5.1 ProcessStartInfo fallback) instead of silently downloading an
-# older tag copy from GitHub.  The remote tag remains the fallback for a
-# standalone script downloaded without the repository.
-$localInstaller = Join-Path $PSScriptRoot 'install-java-agent.ps1'
-if (Test-Path -LiteralPath $localInstaller -PathType Leaf) {
-    Copy-Item -LiteralPath $localInstaller -Destination $installer -Force
-} else {
-    Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-java-agent.ps1" -OutFile $installer -TimeoutSec 30
-}
+# Stage the installer from the same immutable release tag as the three Native
+# bundles. Mixing a local script with a tagged bundle would create a second
+# protocol version and make upgrades non-reproducible.
+Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-java-agent.ps1" -OutFile $installer -TimeoutSec 30
 
 $runtime = Join-Path $StageRoot "browser-runtime"
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
@@ -175,7 +172,7 @@ $applyLines = @(
     ('  $agent = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $agentZip))),
     ('  $desktop = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $desktopZip))),
     ('  $browser = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $browserZip))),
-    '  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -BinaryPath $agent -AgentName $agentName -HostId $hostId -CenterUrl $centerUrl -DefaultCwd "C:\" -ScopeMode unrestricted -Capabilities "command,durable_tasks,desktop,browser,file_transfer" -Version $version -DesktopEnabled -DesktopBinaryPath $desktop -BrowserBinaryPath $browser -BrowserAdapter $adapter -BrowserEngine $browserEngine -BrowserName $browserName -BrowserHeadless $browserHeadless -PlaywrightBrowsersPath $playwrightBrowsersPath -BrowserProfileDir $browserProfileDir -MaxConcurrency 1 -MaxBrowserWorkers 1 -DesktopMaxLaunchedProcesses 16 -MaxChildProcesses 32 -MaxTotalChildProcesses 32',
+    ('  & {0} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -BinaryPath $agent -AgentName $agentName -HostId $hostId -CenterUrl $centerUrl -DefaultCwd "C:\" -ScopeMode unrestricted -Capabilities "command,durable_tasks,desktop,browser,file_transfer" -Version $version -DesktopEnabled -DesktopBinaryPath $desktop -BrowserBinaryPath $browser -BrowserAdapter $adapter -BrowserEngine $browserEngine -BrowserName $browserName -BrowserHeadless $browserHeadless -PlaywrightBrowsersPath $playwrightBrowsersPath -BrowserProfileDir $browserProfileDir -MaxConcurrency 1 -MaxBrowserWorkers 1 -DesktopMaxLaunchedProcesses 16 -MaxChildProcesses 32 -MaxTotalChildProcesses 32' -f (ConvertTo-PSLiteral $pwsh)),
     '  if ($LASTEXITCODE -ne 0) { throw "agent installer failed with exit $LASTEXITCODE" }',
     '  try { Start-ScheduledTask -TaskName "RemoteConnectMCPDesktopCompanion" -ErrorAction Stop } catch { }',
     '  Start-Sleep -Seconds 3',
@@ -190,7 +187,7 @@ $applyLines = @(
 )
 Set-Content -LiteralPath $apply -Value ($applyLines -join [Environment]::NewLine) -Encoding Unicode -Force
 
-$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $apply)
+$action = New-ScheduledTaskAction -Execute $pwsh -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $apply)
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(15)
 $applyPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 Unregister-ScheduledTask -TaskName $applyTaskName -Confirm:$false -ErrorAction SilentlyContinue

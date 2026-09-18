@@ -253,8 +253,8 @@ public final class DesktopCompanionServer {
         var operation = request.operation() == null ? "" : request.operation().trim().toLowerCase(Locale.ROOT);
         validate(request, operation);
         validateScope(request);
-        var sessionId = request.sessionId() == null || request.sessionId().isBlank()
-                ? "legacy" : request.sessionId().trim();
+        var sessionId = request.sessionId() == null ? "" : request.sessionId().trim();
+        if (sessionId.isBlank()) throw new IllegalArgumentException("desktop session id is required");
         if (sessionId.length() > 256 || sessionId.indexOf('\u0000') >= 0
                 || sessionId.indexOf('\r') >= 0 || sessionId.indexOf('\n') >= 0) {
             throw new IllegalArgumentException("desktop session id is invalid");
@@ -511,7 +511,7 @@ public final class DesktopCompanionServer {
     private DesktopCompanionProtocol.Response focus(DesktopCompanionProtocol.Request request) throws IOException, InterruptedException {
         if (!isWindows()) throw new IOException("window focus is currently supported only on Windows");
         var script = "$ErrorActionPreference='Stop'; Add-Type @'\nusing System; using System.Runtime.InteropServices; public static class RcmWindow { [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h, int n); }\n'@; $needle=$env:RCM_DESKTOP_WINDOW_TITLE; $p=Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle.Contains($needle) } | Select-Object -First 1; if($null -eq $p){ exit 2 }; [RcmWindow]::ShowWindow($p.MainWindowHandle,9) | Out-Null; if(-not [RcmWindow]::SetForegroundWindow($p.MainWindowHandle)){ exit 3 }";
-        var builder = new ProcessBuilder("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+        var builder = new ProcessBuilder(powershell7Executable(), "-NoLogo", "-NoProfile", "-NonInteractive",
                 "-ExecutionPolicy", "Bypass", "-Command", script).redirectErrorStream(true);
         builder.environment().keySet().removeIf(DesktopCompanionServer::sensitiveEnvironment);
         builder.environment().put("RCM_DESKTOP_WINDOW_TITLE", request.windowTitle());
@@ -770,9 +770,8 @@ public final class DesktopCompanionServer {
                     + "$items=@(Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle } "
                     + "| Select-Object Id,ProcessName,MainWindowTitle,MainWindowHandle); "
                     + "if ($null -eq $items) { '[]' } else { @($items) | ConvertTo-Json -Compress }";
-            commands.add(List.of("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+            commands.add(List.of(powershell7Executable(), "-NoLogo", "-NoProfile", "-NonInteractive",
                     "-ExecutionPolicy", "Bypass", "-Command", script));
-            commands.add(List.of("pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script));
         } else {
             commands.add(List.of("wmctrl", "-l", "-x", "-p", "-G"));
             commands.add(List.of("xdotool", "search", "--onlyvisible", "--name", ".", "getwindowname"));
@@ -862,6 +861,16 @@ public final class DesktopCompanionServer {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
 
+    private static String powershell7Executable() throws IOException {
+        var programFiles = System.getenv("ProgramFiles");
+        if (programFiles == null || programFiles.isBlank()) throw new IOException("ProgramFiles is not configured");
+        var executable = Path.of(programFiles, "PowerShell", "7", "pwsh.exe");
+        if (!Files.isRegularFile(executable, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("PowerShell 7 is required at " + executable);
+        }
+        return executable.toString();
+    }
+
     private static final class SessionGuard {
         private final Semaphore semaphore = new Semaphore(1);
         private final java.util.concurrent.atomic.AtomicInteger references = new java.util.concurrent.atomic.AtomicInteger();
@@ -911,9 +920,8 @@ public final class DesktopCompanionServer {
      * user-session helper. New Agent installations publish a valid policy
      * before the companion is used. A missing or malformed policy fails closed
      * to the Agent state directory rather than widening a user-session process
-     * to whole-host access. The constructor-only legacy policy remains
-     * available for direct protocol tests, but the production environment
-     * loader never treats absent policy as unrestricted authority.
+     * to whole-host access. The production environment loader never treats an
+     * absent policy as unrestricted authority.
      */
     private static DesktopCompanionProtocol.Policy loadPolicy(Path stateDir) {
         try {

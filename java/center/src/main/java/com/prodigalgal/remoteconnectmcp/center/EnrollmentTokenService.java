@@ -30,12 +30,14 @@ public final class EnrollmentTokenService {
     private final Map<String, Entry> memory = new ConcurrentHashMap<>();
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final String fixedTestToken;
 
     @Autowired
     public EnrollmentTokenService(ObjectProvider<JdbcTemplate> jdbcProvider,
                                   ObjectProvider<TransactionTemplate> transactionProvider) {
         this.jdbc = jdbcProvider.getIfAvailable();
         this.transactions = jdbc == null ? null : transactionProvider.getIfAvailable();
+        this.fixedTestToken = null;
         if (jdbc != null && transactions == null) {
             throw new IllegalStateException("TransactionTemplate is required when PostgreSQL persistence is enabled");
         }
@@ -44,6 +46,17 @@ public final class EnrollmentTokenService {
     EnrollmentTokenService() {
         this.jdbc = null;
         this.transactions = null;
+        this.fixedTestToken = null;
+    }
+
+    private EnrollmentTokenService(String fixedTestToken) {
+        this.jdbc = null;
+        this.transactions = null;
+        this.fixedTestToken = fixedTestToken;
+    }
+
+    static EnrollmentTokenService forTest(String fixedTestToken) {
+        return new EnrollmentTokenService(fixedTestToken);
     }
 
     public IssuedToken issue(String requestedName, Duration lifetime) {
@@ -70,6 +83,7 @@ public final class EnrollmentTokenService {
 
     public boolean consume(String token, String requestedName) {
         if (token == null || token.isBlank() || requestedName == null || requestedName.isBlank()) return false;
+        if (fixedTestToken != null) return fixedTestToken.equals(token.trim());
         var hash = hash(token.trim());
         var name = requestedName.trim();
         if (jdbc == null) {

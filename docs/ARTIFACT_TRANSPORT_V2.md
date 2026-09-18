@@ -27,7 +27,7 @@ ChatGPT Web 文件 → MCP Center → 目标终端 Agent → 终端文件系统
 
 ### ChatGPT Web → 终端
 
-ChatGPT Apps SDK 通过 `fileParams` 将用户文件作为短期文件引用传给 `artifact_put`。Center 立即消费 `download_url`，不把临时 URL 写入 durable task；下载过程中写入临时文件并计算大小、SHA-256，校验通过后上传 Object Storage。
+ChatGPT Apps SDK 通过 `fileParams` 将用户文件作为短期文件引用传给 `artifact` 的 `put` 操作。Center 立即消费 `download_url`，不把临时 URL 写入 durable task；下载过程中写入临时文件并计算大小、SHA-256，校验通过后上传 Object Storage。
 
 随后 Center 创建一个 `WEB_TO_AGENT` transfer task。任务只携带：
 
@@ -45,7 +45,7 @@ Agent 使用自身 Agent Token 从 Center 流式读取文件，写入目标路�
 
 ### 终端 → ChatGPT Web
 
-模型通过 `artifact_get` 请求目标 Agent 的 `source_path`。Agent 先在本机校验 scope 和文件属性，再把文件流式上传到 Center。Center 生成 Artifact 元数据和短期签名读取地址。
+模型通过 `artifact` 的 `get` 操作请求目标 Agent 的 `source_path`。Agent 先在本机校验 scope 和文件属性，再把文件流式上传到 Center。Center 生成 Artifact 元数据和短期签名读取地址。
 
 MCP 只返回以下内容：
 
@@ -61,9 +61,9 @@ MCP 只返回以下内容：
 }
 ```
 
-React Artifact Viewer 按需读取文件：图片/PDF/媒体尝试预览，Office/压缩包/未知二进制提供下载。小型图片可以兼容返回 MCP `ImageContent`，但不把它作为网页附件显示的唯一机制。
+React Artifact Viewer 按需读取文件：图片/PDF/媒体尝试预览，Office/压缩包/未知二进制提供下载。小型图片可以按需返回 MCP `ImageContent`，但不把它作为网页附件显示的唯一机制。
 
-`artifact_put`、`artifact_get` 和 `artifact_read` 同时返回 MCP `structuredContent` 与一段
+`artifact` 的 `put/get/read` 操作同时返回 MCP `structuredContent` 与一段
 有界文本摘要。`structuredContent.file` 使用 ChatGPT 文件对象的
 `download_url`、`file_id`、`mime_type`、`file_name` 形状；文本摘要只保留句柄、大小、哈希和
 下一步动作，绝不复制二进制。这样支持文件 Host/Widget 的机器读取，也不会把文件内容灌入
@@ -116,14 +116,14 @@ ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation
 
 | 工具 | 用途 | 默认返回 |
 | --- | --- | --- |
-| `artifact_put` | Web 文件写入终端 | transfer_id、任务状态和摘要 |
-| `artifact_get` | 终端文件回传 Web | artifact_id、文件元数据 |
-| `artifact_read` | 按需读取元数据和短期文件对象 | `structuredContent.file`（仅句柄）和有界摘要 |
-| `artifact_read` | 按需读取元数据和短期文件对象 | `structuredContent.file` + `ui://remote-connect-mcp/artifact-viewer-v1.html` Viewer |
+| `artifact(operation=put)` | Web 文件写入终端 | transfer_id、任务状态和摘要 |
+| `artifact(operation=get)` | 终端文件回传 Web | artifact_id、文件元数据 |
+| `artifact(operation=read)` | 按需读取元数据和短期文件对象 | `structuredContent.file`（仅句柄）和有界摘要 |
+| `artifact(operation=read)` | 按需读取元数据和短期文件对象 | `structuredContent.file` + `ui://remote-connect-mcp/artifact-viewer-v1.html` Viewer |
 
-现有 `command`、`desktop`、`browser`、`task_wait` 工具保持不变；它们只引用 Artifact，不复制文件传输逻辑。
+现有 `command`、`desktop`、`browser`、`task_read` 工具只引用 Artifact，不复制文件传输逻辑。
 
-## ChatGPT Web 兼容策略
+## ChatGPT Web 集成策略
 
 首次接入文件能力时，工具声明需要增加：
 

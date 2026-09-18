@@ -64,12 +64,11 @@
       library.hidden=!downloadUrl||!canUpload;library.onclick=()=>upload(library,true);
     };
     render();
+    // MCP Apps delivers tool results through the standard UI notification
+    // channel.  Do not subscribe to historical host-specific callbacks: a
+    // single result path keeps the viewer deterministic and avoids silently
+    // accepting an obsolete host contract.
     window.addEventListener('message',event=>{const data=event&&event.data;if(data&&data.method==='ui/notifications/tool-result')resultHandler(data.params||{});});
-    const app=window.mcpApp||window.mcp||window.app;
-    if(app&&typeof app.addEventListener==='function')app.addEventListener('toolresult',resultHandler);
-    if(app&&typeof app.ontoolresult==='function')app.ontoolresult=resultHandler;
-    const notify=window.openai&&window.openai.onToolResult?window.openai.onToolResult:window.openai&&window.openai.onToolOutput;
-    if(typeof notify==='function')notify(resultHandler);
   })();
   </script>
 </body>

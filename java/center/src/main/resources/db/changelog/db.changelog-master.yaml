@@ -53,3 +53,5 @@ databaseChangeLog:
       file: db/changelog/026-upgrade-components.yaml
   - include:
       file: db/changelog/027-artifact-lifecycle-policy.yaml
+  - include:
+      file: db/changelog/028-configured-principal-normalization.yaml

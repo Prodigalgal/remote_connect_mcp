@@ -18,13 +18,13 @@ public record CreateUpgradeCampaignRequest(
         @JsonProperty("include_offline") Boolean includeOffline,
         @JsonProperty("component_plans") Map<String, List<UpgradeComponentPlan>> componentPlans) {
 
-    /** Compatibility constructor for the original five-field request. */
+    /** Construction overload with default campaign options. */
     public CreateUpgradeCampaignRequest(String version, Integer canaryCount, Integer batchSize,
                                         List<String> machineIds, Map<String, UpgradeArtifact> artifacts) {
         this(version, canaryCount, batchSize, machineIds, artifacts, null, null);
     }
 
-    /** Compatibility constructor for callers that already supplied includeOffline. */
+    /** Construction overload with default component plans. */
     public CreateUpgradeCampaignRequest(String version, Integer canaryCount, Integer batchSize,
                                         List<String> machineIds, Map<String, UpgradeArtifact> artifacts,
                                         Boolean includeOffline) {
@@ -43,9 +43,9 @@ public record CreateUpgradeCampaignRequest(
             componentPlans = Collections.unmodifiableMap(normalized);
         }
         // A campaign created without an explicit machine list is a fleet
-        // campaign.  Keep offline registrations in the target set so an
-        // Agent that reconnects later receives the same signed release offer;
-        // callers that need the old online-only behavior can opt out.
+        // campaign. Keep offline registrations in the target set so an Agent
+        // that reconnects later receives the same signed release offer; an
+        // explicit false value remains the documented opt-out.
         includeOffline = includeOffline == null || includeOffline;
     }
 }

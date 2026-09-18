@@ -18,7 +18,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * Principal-to-machine/project authorization for MCP calls.
  *
- * <p>The compatibility principal is deliberately the only implicit global
+ * <p>The configured MCP principal is deliberately the only implicit global
  * grant.  Every user principal must have an explicit machine grant before it
  * can see or use a target, and a project-scoped task additionally needs an
  * explicit project membership.  PostgreSQL is authoritative in production;
@@ -52,23 +52,23 @@ public final class McpAccessService {
         this.transactions = transactions;
     }
 
-    /** Require a machine grant for a non-compatibility principal. */
+    /** Require a machine grant for a user principal. */
     public void authorizeMachine(TaskOrigin origin, String machineId, String action) {
         var principalId = principalId(origin);
         var resource = requiredResource(machineId, "machine_id");
         var required = requiredMachineScope(action);
-        if (TaskOrigin.SHARED_PRINCIPAL.equals(principalId)) return;
+        if (TaskOrigin.CONFIGURED_PRINCIPAL.equals(principalId)) return;
         if (!hasMachineGrant(principalId, resource, required)) {
             throw new SecurityException("MCP principal is not granted " + required + " access to machine");
         }
     }
 
-    /** Require a project membership for a non-compatibility principal. */
+    /** Require a project membership for a user principal. */
     public void authorizeProject(TaskOrigin origin, String projectId, String action) {
         var principalId = principalId(origin);
         var resource = requiredResource(projectId, "project_id");
         var required = requiredProjectScope(action);
-        if (TaskOrigin.SHARED_PRINCIPAL.equals(principalId)) return;
+        if (TaskOrigin.CONFIGURED_PRINCIPAL.equals(principalId)) return;
         if (!hasProjectGrant(principalId, resource, required)) {
             throw new SecurityException("MCP principal is not a project member with " + required + " access");
         }
@@ -88,14 +88,14 @@ public final class McpAccessService {
     /** Whether a principal may see a machine in a bounded inventory page. */
     public boolean canReadMachine(TaskOrigin origin, String machineId) {
         var principalId = principalId(origin);
-        if (TaskOrigin.SHARED_PRINCIPAL.equals(principalId)) return true;
+        if (TaskOrigin.CONFIGURED_PRINCIPAL.equals(principalId)) return true;
         return hasMachineGrant(principalId, requiredResource(machineId, "machine_id"), "read");
     }
 
     /** Whether a principal may see a project in a bounded inventory page. */
     public boolean canReadProject(TaskOrigin origin, String projectId) {
         var principalId = principalId(origin);
-        if (TaskOrigin.SHARED_PRINCIPAL.equals(principalId)) return true;
+        if (TaskOrigin.CONFIGURED_PRINCIPAL.equals(principalId)) return true;
         return hasProjectGrant(principalId, requiredResource(projectId, "project_id"), "read");
     }
 

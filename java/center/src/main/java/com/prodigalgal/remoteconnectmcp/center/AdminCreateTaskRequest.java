@@ -28,14 +28,14 @@ public record AdminCreateTaskRequest(
         @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
         @JsonProperty("lane_mode") LaneMode laneMode) {
 
-    /** Compatibility constructor for the original flat console payload. */
+    /** Construction overload with default scope and lane values. */
     public AdminCreateTaskRequest(String machineId, String command, String cwd, Map<String, String> env,
                                   Integer timeoutSeconds, String idempotencyKey, String projectId, String worktreeId) {
         this(machineId, command, cwd, env, timeoutSeconds, idempotencyKey, projectId, worktreeId,
                 "", "", "", "low", false, null, null);
     }
 
-    /** Compatibility constructor for the pre-lane flat payload. */
+    /** Construction overload with default lane values. */
     public AdminCreateTaskRequest(String machineId, String command, String cwd, Map<String, String> env,
                                   Integer timeoutSeconds, String idempotencyKey, String projectId, String worktreeId,
                                   String scopeMode, String scopeRoot, String sessionId, String risk,
@@ -63,10 +63,10 @@ public record AdminCreateTaskRequest(
     public CreateTaskRequest toInternal() {
         var task = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand(
                 "", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND, null,
-                command, cwd.isBlank() ? null : cwd, env, timeoutSeconds, null, null);
+                command, cwd.isBlank() ? null : cwd, env, timeoutSeconds, null, java.time.Instant.now(), null, 0, null);
         var parsedScope = scopeMode.isBlank() ? null : ScopeMode.fromWireValue(scopeMode);
         return new CreateTaskRequest(machineId, task, idempotencyKey, projectId, worktreeId,
                 parsedScope, scopeRoot, workspacePolicy, laneMode, sessionId, risk,
-                elevationRequired, TaskOrigin.shared());
+                elevationRequired, TaskOrigin.configured());
     }
 }

@@ -5,13 +5,12 @@ import tools.jackson.databind.PropertyNamingStrategies;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Shared Jackson 3 codec configured for the wire format used by the Go baseline. */
+/** Shared Jackson 3 codec for the current Remote Connect wire contract. */
 public final class JsonCodec {
     private static final ObjectMapper MAPPER = JsonMapper.builder()
             .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-            // Go's encoding/json uses the zero value for omitted primitive fields.
-            // Keep partial PollRequest bodies wire-compatible with the Go Center.
-            .disable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+            .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+            .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .build();
 
     private JsonCodec() {

@@ -18,8 +18,8 @@ import org.springframework.stereotype.Service;
 
 /**
  * Reads the immutable component manifest published beside a GitHub release.
- * The manifest is an optional additive contract: legacy releases continue to
- * upgrade command-agent through the existing platform artifact only.
+ * Every release is component-addressable; a missing or invalid manifest
+ * produces no upgrade offer instead of falling back to an older artifact shape.
  */
 @Service
 public final class ReleaseManifestService {
@@ -40,7 +40,7 @@ public final class ReleaseManifestService {
         this.config = config;
     }
 
-    /** Return component plans for one platform; no manifest means legacy mode. */
+    /** Return component plans for one platform; no manifest means no offer. */
     public List<UpgradeComponentPlan> components(String version, String os, String arch) {
         var normalizedVersion = version == null ? "" : version.trim();
         var platform = (os == null ? "" : os.trim().toLowerCase(java.util.Locale.ROOT)) + "/"

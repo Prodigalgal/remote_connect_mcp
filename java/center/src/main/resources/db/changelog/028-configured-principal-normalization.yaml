@@ -1,0 +1,86 @@
+databaseChangeLog:
+  - changeSet:
+      id: 028-configured-principal-normalization
+      author: remote-connect-mcp
+      labels: principals,cleanup
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - sql:
+            sql: |
+              INSERT INTO rcm_principal
+                (principal_id, kind, display_name, status, created_at, updated_at)
+              VALUES
+                ('owner/configured-mcp', 'configured', 'Configured MCP principal', 'active',
+                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              ON CONFLICT (principal_id) DO UPDATE
+                SET kind = 'configured', display_name = 'Configured MCP principal',
+                    status = 'active', updated_at = CURRENT_TIMESTAMP;
+
+              UPDATE rcm_mcp_token
+                 SET principal_id = 'owner/configured-mcp'
+               WHERE principal_id = 'owner/shared-domain';
+
+              INSERT INTO rcm_machine_grant
+                (principal_id, agent_id, scope_json, expires_at, created_at, updated_at)
+              SELECT 'owner/configured-mcp', agent_id, scope_json, expires_at, created_at, updated_at
+                FROM rcm_machine_grant
+               WHERE principal_id = 'owner/shared-domain'
+              ON CONFLICT (principal_id, agent_id) DO UPDATE
+                SET scope_json = EXCLUDED.scope_json, expires_at = EXCLUDED.expires_at,
+                    updated_at = EXCLUDED.updated_at;
+              DELETE FROM rcm_machine_grant WHERE principal_id = 'owner/shared-domain';
+
+              INSERT INTO rcm_project_member
+                (project_id, principal_id, role, scope_json, expires_at, created_at, updated_at)
+              SELECT project_id, 'owner/configured-mcp', role, scope_json, expires_at, created_at, updated_at
+                FROM rcm_project_member
+               WHERE principal_id = 'owner/shared-domain'
+              ON CONFLICT (project_id, principal_id) DO UPDATE
+                SET role = EXCLUDED.role, scope_json = EXCLUDED.scope_json,
+                    expires_at = EXCLUDED.expires_at, updated_at = EXCLUDED.updated_at;
+              DELETE FROM rcm_project_member WHERE principal_id = 'owner/shared-domain';
+
+              DELETE FROM rcm_execution_session old_session
+               WHERE old_session.principal_id = 'owner/shared-domain'
+                 AND EXISTS (
+                       SELECT 1 FROM rcm_execution_session current_session
+                        WHERE current_session.principal_id = 'owner/configured-mcp'
+                          AND current_session.session_id = old_session.session_id
+                     );
+              UPDATE rcm_execution_session
+                 SET principal_id = 'owner/configured-mcp'
+               WHERE principal_id = 'owner/shared-domain';
+
+              DELETE FROM rcm_task old_task
+               WHERE old_task.principal_id = 'owner/shared-domain'
+                 AND old_task.idempotency_key IS NOT NULL
+                 AND EXISTS (
+                       SELECT 1 FROM rcm_task current_task
+                        WHERE current_task.principal_id = 'owner/configured-mcp'
+                          AND current_task.agent_id = old_task.agent_id
+                          AND current_task.idempotency_key = old_task.idempotency_key
+                     );
+              UPDATE rcm_task
+                 SET principal_id = 'owner/configured-mcp', connection_id = 'internal'
+               WHERE principal_id = 'owner/shared-domain';
+
+              UPDATE rcm_artifact
+                 SET principal_id = 'owner/configured-mcp'
+               WHERE principal_id = 'owner/shared-domain';
+              UPDATE rcm_file_transfer
+                 SET principal_id = 'owner/configured-mcp'
+               WHERE principal_id = 'owner/shared-domain';
+
+              DELETE FROM rcm_principal WHERE principal_id = 'owner/shared-domain';
+      rollback:
+        - sql:
+            sql: |
+              INSERT INTO rcm_principal
+                (principal_id, kind, display_name, status, created_at, updated_at)
+              VALUES
+                ('owner/shared-domain', 'retired', 'Retired principal', 'inactive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              ON CONFLICT (principal_id) DO NOTHING;

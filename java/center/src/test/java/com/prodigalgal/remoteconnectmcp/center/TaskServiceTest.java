@@ -155,12 +155,12 @@ class TaskServiceTest {
     }
 
     @Test
-    void legacyFenceHeadersAreAcceptedOnlyForTheFirstDispatch() {
+    void missingAttemptIsRejectedAfterLeaseProgresses() {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(),
-                new TaskCommand("", TaskKind.COMMAND, "command", "printf retry", "/srv", java.util.Map.of(), 0, null, null), "legacy-fence"));
+                new TaskCommand("", TaskKind.COMMAND, "command", "printf retry", "/srv", java.util.Map.of(), 0, null, null), "attempt-fence"));
         var first = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
         tasks.updateState(registration.machineId(), task.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false));
         assertEquals(1, first.attempt());
@@ -299,6 +299,7 @@ class TaskServiceTest {
         var tasks = new TaskService(registry);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(), new TaskCommand("", TaskKind.DESKTOP, "desktop", null, null, java.util.Map.of(), 30,
                 new TaskCommand.DesktopAction("screenshot", null, List.of(), null), null), "artifact"));
+        tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("desktop")));
         var bytes = new byte[]{(byte) 0x89, 0x50, 0x4e, 0x47, 1, 2, 3};
         var digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
 
@@ -318,6 +319,7 @@ class TaskServiceTest {
         var tasks = new TaskService(registry);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(), new TaskCommand("", TaskKind.DESKTOP, "desktop", null, null, Map.of(), 30,
                 new TaskCommand.DesktopAction("screenshot", null, List.of(), null), null), "empty-artifact"));
+        tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("desktop")));
         var digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(new byte[0]));
 
         tasks.appendArtifact(registration.machineId(), task.id(), "application/octet-stream", digest, new byte[0]);
@@ -339,6 +341,7 @@ class TaskServiceTest {
         var task = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.DESKTOP, "desktop", null, null, java.util.Map.of(), 30,
                         new TaskCommand.DesktopAction("screens", null, List.of(), null), null, contract), "artifact-budget"));
+        tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("desktop")));
 
         var bytes = new byte[]{1};
         var digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));

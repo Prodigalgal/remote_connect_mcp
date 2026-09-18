@@ -6,14 +6,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$root = Split-Path -Parent $PSScriptRoot
-$jar = Join-Path $root 'java\center\build\libs\center-0.1.0-SNAPSHOT.jar'
 $binary = if ([string]::IsNullOrWhiteSpace($CenterBinary)) { $null } else { (Resolve-Path -LiteralPath $CenterBinary -ErrorAction Stop).Path }
-if ($binary) {
-    if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Center native binary not found: $binary" }
-} elseif (-not (Test-Path -LiteralPath $jar -PathType Leaf)) {
-    throw "Center bootJar not found: $jar. This smoke script consumes a prebuilt GitHub Actions artifact; pass -CenterBinary to the downloaded Native Image or CI JAR."
-}
+if (-not $binary) { throw 'Center Native Image path is required; pass -CenterBinary to a GitHub Actions artifact.' }
+if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Center native binary not found: $binary" }
 
 $base = "http://127.0.0.1:$Port"
 $mcpToken = 'smoke-mcp-token'
@@ -101,13 +96,7 @@ function Invoke-JsonRpc([string]$method, [int]$id, [string]$sessionId) {
 
 try {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    if ($binary) {
-        $psi.FileName = $binary
-    } else {
-        $psi.FileName = (Get-Command java -ErrorAction Stop).Source
-        $psi.ArgumentList.Add('-jar')
-        $psi.ArgumentList.Add($jar)
-    }
+    $psi.FileName = $binary
     $psi.ArgumentList.Add("--server.port=$Port")
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
@@ -117,7 +106,6 @@ try {
     $psi.Environment['RCM_CENTER_VERSION'] = 'smoke'
     $psi.Environment['REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN'] = $mcpToken
     $psi.Environment['REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN'] = $adminToken
-    $psi.Environment['REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN'] = 'smoke-enrollment-token'
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $psi
     if (-not $process.Start()) { throw 'could not start Java Center' }
@@ -149,7 +137,7 @@ try {
     $initialize = Invoke-JsonRpc 'initialize' 1 $null
     if ($initialize.Body -notmatch '"result"') { throw 'MCP initialize did not return a JSON-RPC result' }
     $tools = Invoke-JsonRpc 'tools/list' 2 $initialize.SessionId
-    if ($tools.Body -notmatch 'machines_list' -or $tools.Body -notmatch 'command_start') {
+    if ($tools.Body -notmatch '"name":"machines"' -or $tools.Body -notmatch '"name":"command"') {
         throw 'MCP tools/list did not expose the expected bounded tools'
     }
     $metricsClient = [System.Net.Http.HttpClient]::new()

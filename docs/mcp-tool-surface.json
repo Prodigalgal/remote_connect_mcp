@@ -1,0 +1,25 @@
+{
+  "surface_version": "v1",
+  "tools": [
+    "machines",
+    "command",
+    "desktop",
+    "browser",
+    "project",
+    "artifact",
+    "task_read",
+    "task_cancel"
+  ],
+  "must_not_register": [
+    "machines_list",
+    "machine_info",
+    "command_start",
+    "task_wait",
+    "task_output",
+    "artifact_put",
+    "artifact_get",
+    "artifact_read"
+  ],
+  "max_mcp_json_chars": 196608,
+  "max_inline_image_bytes": 524288
+}

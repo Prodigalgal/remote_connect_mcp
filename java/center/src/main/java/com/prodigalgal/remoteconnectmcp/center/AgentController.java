@@ -1,10 +1,7 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
-import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
-import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
-import com.prodigalgal.remoteconnectmcp.protocol.ProtocolValidation;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
@@ -43,7 +40,6 @@ import org.springframework.http.ContentDisposition;
 public final class AgentController {
     private static final int MAX_OUTPUT_REQUEST_BASE64 = 256 * 1024;
     private static final int MAX_ARTIFACT_REQUEST_BASE64 = 12 * 1024 * 1024;
-    private static final int MAX_AGENT_METADATA_HEADER = 16 * 1024;
     private static final long MAX_LONG_POLL_MS = 25_000L;
     private final AgentRegistry registry;
     private final TaskService tasks;
@@ -67,7 +63,7 @@ public final class AgentController {
         this.wakes = wakeProvider == null ? null : wakeProvider.getIfAvailable();
     }
 
-    /** Compatibility constructor for direct protocol/controller tests. */
+    /** Construction overload used by focused controller tests. */
     AgentController(AgentRegistry registry, TaskService tasks, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
         this(registry, tasks, upgrades, configurations, async, null, null);
@@ -85,13 +81,13 @@ public final class AgentController {
     @PostMapping("/poll")
     public CompletableFuture<ResponseEntity<?>> poll(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                       @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
-                                                      @RequestHeader(value = "X-Agent-Metadata", required = false) String metadataHeader,
                                                       @RequestHeader(value = TransportNegotiation.HEADER_CAPABILITIES, required = false) String transportCapabilities,
                                                       @RequestHeader(value = TransportNegotiation.HEADER_PREFERRED, required = false) String preferredTransport,
-                                                      @RequestBody(required = false) PollRequest request,
+                                                      @RequestBody PollRequest request,
                                                       @RequestParam(value = "wait_ms", defaultValue = "0") long waitMs) {
         return execute(() -> {
-            var pollRequest = withHeaderMetadata(request, metadataHeader);
+            if (request == null) throw new IllegalArgumentException("poll request is required");
+            var pollRequest = request;
             var normalizedWait = normalizeLongPoll(waitMs);
             var response = pollUntilChange(machineId, bearerValue(authorization), pollRequest, normalizedWait);
             var selectedTransport = TransportNegotiation.select(transportCapabilities, preferredTransport,
@@ -104,31 +100,6 @@ public final class AgentController {
             return ResponseEntity.ok().header(TransportNegotiation.HEADER_CAPABILITIES, TransportNegotiation.SERVER_CAPABILITIES)
                     .header(TransportNegotiation.HEADER_SELECTED, selectedTransport).body(response);
         });
-    }
-
-    /**
-     * The Go Agent sends its heartbeat metadata in an optional base64url
-     * header so it can talk to older Centers whose JSON decoder only knows the
-     * original PollRequest fields.  Decode it at the protocol boundary and
-     * carry it through the normal JDBC heartbeat path.  Java Agents may send
-     * the metadata in the JSON body; that body remains authoritative when it
-     * is present.
-     */
-    static PollRequest withHeaderMetadata(PollRequest request, String metadataHeader) {
-        var base = request == null ? new PollRequest(java.util.List.of(), 0, java.util.List.of()) : request;
-        if (base.metadata() != null || metadataHeader == null || metadataHeader.isBlank()) return base;
-        var encoded = metadataHeader.trim();
-        if (encoded.length() > MAX_AGENT_METADATA_HEADER) {
-            throw new IllegalArgumentException("X-Agent-Metadata header is too large");
-        }
-        try {
-            var metadata = JsonCodec.read(Base64.getUrlDecoder().decode(encoded), AgentMetadata.class);
-            ProtocolValidation.validateMetadata(metadata);
-            return new PollRequest(base.runningTaskIds(), base.availableSlots(), base.availableCapabilities(),
-                    metadata, base.configGeneration());
-        } catch (IllegalArgumentException exception) {
-            throw new IllegalArgumentException("invalid X-Agent-Metadata header", exception);
-        }
     }
 
     private PollResponse pollUntilChange(String machineId, String token, PollRequest request, long waitMs)
@@ -211,7 +182,7 @@ public final class AgentController {
     public CompletableFuture<ResponseEntity<?>> taskState(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                           @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
                                                           @RequestHeader(value = "X-Task-Output-Truncated", required = false) String outputTruncated,
-                                                          @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+                                                          @RequestHeader(value = "X-Task-Attempt") String attemptHeader,
                                                           @PathVariable String taskId,
                                                           @RequestBody(required = false) TaskUpdateRequest request) {
         return execute(() -> {
@@ -227,7 +198,7 @@ public final class AgentController {
     @PostMapping("/tasks/{taskId}/output")
     public CompletableFuture<ResponseEntity<?>> taskOutput(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                            @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
-                                                           @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+                                                           @RequestHeader(value = "X-Task-Attempt") String attemptHeader,
                                                            @PathVariable String taskId,
                                                            @RequestBody(required = false) OutputRequest request) {
         return execute(() -> {
@@ -246,7 +217,7 @@ public final class AgentController {
     @PostMapping("/tasks/{taskId}/artifact")
     public CompletableFuture<ResponseEntity<?>> taskArtifact(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                              @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
-                                                             @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+                                                             @RequestHeader(value = "X-Task-Attempt") String attemptHeader,
                                                              @PathVariable String taskId,
                                                              @RequestBody(required = false) ArtifactRequest request) {
         return execute(() -> {
@@ -267,7 +238,7 @@ public final class AgentController {
     public ResponseEntity<StreamingResponseBody> transferDownload(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
-            @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+            @RequestHeader(value = "X-Task-Attempt") String attemptHeader,
             @RequestHeader(value = "Range", required = false) String rangeHeader,
             @PathVariable String transferId) {
         authenticate(machineId, authorization);
@@ -306,7 +277,7 @@ public final class AgentController {
     public ResponseEntity<Void> transferResumeProbe(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
-            @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+            @RequestHeader(value = "X-Task-Attempt") String attemptHeader,
             @PathVariable String transferId) {
         authenticate(machineId, authorization);
         var resume = transfers.resumeFromAgent(machineId, transferId, parseAttempt(attemptHeader));
@@ -321,7 +292,7 @@ public final class AgentController {
     public CompletableFuture<ResponseEntity<?>> transferUpload(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
-            @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+            @RequestHeader(value = "X-Task-Attempt") String attemptHeader,
             @RequestHeader(value = "X-RCM-Expected-SHA256", required = false) String expectedSha256,
             @RequestHeader(value = "X-RCM-Expected-Bytes", required = false) String expectedBytesHeader,
             @RequestHeader(value = "Content-Range", required = false) String contentRangeHeader,
@@ -365,7 +336,7 @@ public final class AgentController {
     public CompletableFuture<ResponseEntity<?>> transferAcknowledgement(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
-            @RequestHeader(value = "X-Task-Attempt", required = false) String attemptHeader,
+            @RequestHeader(value = "X-Task-Attempt") String attemptHeader,
             @PathVariable String transferId,
             @RequestBody(required = false) FileTransferResponse acknowledgement) {
         return execute(() -> {
@@ -418,7 +389,7 @@ public final class AgentController {
     }
 
     private static ContentRange parseContentRange(String value) {
-        if (value == null || value.isBlank()) return null;
+        if (value == null || value.isBlank()) throw new IllegalArgumentException("X-Task-Attempt is required");
         var trimmed = value.trim();
         var matcher = java.util.regex.Pattern.compile("bytes (\\d+)-(\\d+)/(\\d+)").matcher(trimmed);
         if (!matcher.matches()) throw new IllegalArgumentException("Content-Range must use bytes start-end/total");

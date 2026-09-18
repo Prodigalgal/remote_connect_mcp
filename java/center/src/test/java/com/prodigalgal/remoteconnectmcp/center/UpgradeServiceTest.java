@@ -37,7 +37,7 @@ class UpgradeServiceTest {
         assertNotNull(firstPlan);
         assertNull(upgrades.offer(second.machineId(), request), "second target waits for canary completion");
 
-        var afterFirst = upgrades.updateStatus(first.machineId(), new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null));
+        var afterFirst = upgrades.updateStatus(first.machineId(), new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, 1, Map.of()));
         assertEquals(UpgradeService.RUNNING, afterFirst.status());
         assertNotNull(upgrades.offer(second.machineId(), request));
     }
@@ -66,7 +66,7 @@ class UpgradeServiceTest {
                 List.of(registration.machineId()), Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
         upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command")));
         assertEquals(UpgradeService.PAUSED, upgrades.updateStatus(registration.machineId(),
-                new UpgradeStatusRequest(campaign.id(), UpgradeService.FAILED, "network down")).status());
+                new UpgradeStatusRequest(campaign.id(), UpgradeService.FAILED, "network down", 1, Map.of())).status());
         assertNull(upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))));
         assertEquals(UpgradeService.RUNNING, upgrades.control(campaign.id(), "resume").status());
         assertNotNull(upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))));
@@ -127,7 +127,7 @@ class UpgradeServiceTest {
         assertEquals(UpgradeService.CANCELED, upgrades.control(campaign.id(), "cancel").status());
 
         var late = upgrades.updateStatus(registration.machineId(),
-                new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null));
+                new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, 1, Map.of()));
 
         assertEquals(UpgradeService.CANCELED, late.status());
         assertEquals(UpgradeService.OFFERED, late.targets().getFirst().status());
@@ -148,7 +148,7 @@ class UpgradeServiceTest {
         // A report carrying a different attempt is stale. It must not turn the
         // still-offered target into a completed target.
         var stale = upgrades.updateStatus(registration.machineId(),
-                new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, first.attempt() + 1));
+                new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, first.attempt() + 1, Map.of()));
 
         assertEquals(UpgradeService.OFFERED, stale.targets().getFirst().status());
     }
@@ -165,9 +165,9 @@ class UpgradeServiceTest {
         var plan = upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command")));
         assertNotNull(plan);
         assertEquals(UpgradeService.COMPLETED, upgrades.updateStatus(registration.machineId(),
-                new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, plan.attempt())).status());
+                new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, plan.attempt(), Map.of())).status());
         var late = upgrades.updateStatus(registration.machineId(),
-                new UpgradeStatusRequest(campaign.id(), UpgradeService.DOWNLOADING, null, plan.attempt()));
+                new UpgradeStatusRequest(campaign.id(), UpgradeService.DOWNLOADING, null, plan.attempt(), Map.of()));
         assertEquals(UpgradeService.COMPLETED, late.targets().getFirst().status());
     }
 

@@ -8,21 +8,22 @@ package com.prodigalgal.remoteconnectmcp.center;
  * this record and are never exposed to MCP callers.</p>
  */
 public record TaskOrigin(String principalId, String tokenId, String connectionId) {
-    public static final String SHARED_PRINCIPAL = "owner/shared-domain";
-    public static final String COMPAT_TOKEN = "compat-mcp";
+    /** Principal used by the single configured MCP bearer token. */
+    public static final String CONFIGURED_PRINCIPAL = "owner/configured-mcp";
+    public static final String CONFIGURED_TOKEN = "configured-mcp";
 
     public TaskOrigin {
-        principalId = normalize(principalId, SHARED_PRINCIPAL, 180);
-        tokenId = normalize(tokenId, COMPAT_TOKEN, 180);
+        principalId = normalize(principalId, CONFIGURED_PRINCIPAL, 180);
+        tokenId = normalize(tokenId, CONFIGURED_TOKEN, 180);
         connectionId = normalize(connectionId, "internal", 256);
     }
 
-    public static TaskOrigin shared() {
-        return new TaskOrigin(SHARED_PRINCIPAL, COMPAT_TOKEN, "internal");
+    public static TaskOrigin configured() {
+        return new TaskOrigin(CONFIGURED_PRINCIPAL, CONFIGURED_TOKEN, "internal");
     }
 
-    public boolean isShared() {
-        return SHARED_PRINCIPAL.equals(principalId);
+    public boolean isConfigured() {
+        return CONFIGURED_PRINCIPAL.equals(principalId);
     }
 
     private static String normalize(String value, String fallback, int max) {

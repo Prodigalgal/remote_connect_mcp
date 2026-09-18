@@ -65,24 +65,6 @@ class FileSystemArtifactStoreTest {
     }
 
     @Test
-    void readsAndDeletesObjectsFromThePreNamespaceLayout(@TempDir Path root) throws Exception {
-        var store = new FileSystemArtifactStore(root);
-        var taskId = "legacy-task";
-        var data = "legacy-artifact".getBytes(StandardCharsets.UTF_8);
-        var digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
-        var taskDigest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                .digest(taskId.getBytes(StandardCharsets.UTF_8)));
-        var key = "fs-v1/" + taskDigest + "/" + digest + ".blob";
-        var legacy = root.resolve(taskDigest).resolve(digest + ".blob");
-        Files.createDirectories(legacy.getParent());
-        Files.write(legacy, data);
-
-        assertArrayEquals(data, store.read(key));
-        store.delete(key);
-        assertTrue(Files.notExists(legacy));
-    }
-
-    @Test
     void preservesZeroByteArtifacts(@TempDir Path root) throws Exception {
         var store = new FileSystemArtifactStore(root);
         var digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(new byte[0]));

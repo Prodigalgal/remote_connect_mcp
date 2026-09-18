@@ -32,12 +32,12 @@ class AgentWakeClientTest {
     }
 
     @Test
-    void wakeSequencesAreMonotonicButLegacyHintsRemainCompatible() {
+    void wakeSequencesAreStrictlyMonotonic() {
         var last = new AtomicLong();
         org.junit.jupiter.api.Assertions.assertTrue(AgentWakeClient.acceptWakeSequence(last, 4));
         org.junit.jupiter.api.Assertions.assertFalse(AgentWakeClient.acceptWakeSequence(last, 4));
         org.junit.jupiter.api.Assertions.assertFalse(AgentWakeClient.acceptWakeSequence(last, 3));
         org.junit.jupiter.api.Assertions.assertTrue(AgentWakeClient.acceptWakeSequence(last, 5));
-        org.junit.jupiter.api.Assertions.assertTrue(AgentWakeClient.acceptWakeSequence(last, 0));
+        org.junit.jupiter.api.Assertions.assertFalse(AgentWakeClient.acceptWakeSequence(last, 0));
     }
 }

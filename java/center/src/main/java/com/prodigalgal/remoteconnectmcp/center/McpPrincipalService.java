@@ -32,22 +32,22 @@ public final class McpPrincipalService {
     private static final long MAX_TTL_SECONDS = Duration.ofDays(3650).toSeconds();
     private static final SecureRandom RANDOM = new SecureRandom();
 
-    private final CenterTokenConfig compatibility;
+    private final CenterTokenConfig configuredToken;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final Map<String, MemoryToken> memoryTokens = new ConcurrentHashMap<>();
 
     @org.springframework.beans.factory.annotation.Autowired
-    public McpPrincipalService(CenterTokenConfig compatibility,
+    public McpPrincipalService(CenterTokenConfig configuredToken,
                                ObjectProvider<JdbcTemplate> jdbcProvider,
                                ObjectProvider<TransactionTemplate> transactionProvider) {
-        this.compatibility = compatibility;
+        this.configuredToken = configuredToken;
         this.jdbc = jdbcProvider == null ? null : jdbcProvider.getIfAvailable();
         this.transactions = transactionProvider == null ? null : transactionProvider.getIfAvailable();
     }
 
-    McpPrincipalService(CenterTokenConfig compatibility) {
-        this.compatibility = compatibility;
+    McpPrincipalService(CenterTokenConfig configuredToken) {
+        this.configuredToken = configuredToken;
         this.jdbc = null;
         this.transactions = null;
     }
@@ -59,19 +59,16 @@ public final class McpPrincipalService {
         var hash = sha256(value);
         var dynamic = resolveDatabase(hash).or(() -> resolveMemory(hash));
         if (dynamic.isPresent()) return dynamic;
-        // Keep existing connectors usable until the administrator migrates to
-        // per-user tokens. This principal is deliberately explicit as shared.
-        return compatibility.acceptsMcp(value) ? Optional.of(McpPrincipal.compatibility()) : Optional.empty();
+        return configuredToken.acceptsMcp(value) ? Optional.of(McpPrincipal.configured()) : Optional.empty();
     }
 
     /** Issue a token; plaintext is returned to the caller exactly once. */
     public IssuedToken issue(IssueRequest request) {
         var value = request == null ? new IssueRequest("", "", null, Set.of()) : request;
         var principalId = normalizeIdentifier(value.principalId(), "principal_" + randomHex(16), 180);
-        if (TaskOrigin.SHARED_PRINCIPAL.equals(principalId)) {
-            // The compatibility principal owns legacy tasks during migration.
-            // Never let a newly-issued user token impersonate that reserved
-            // identity and thereby inherit every pre-migration task.
+        if (TaskOrigin.CONFIGURED_PRINCIPAL.equals(principalId)) {
+            // The configured MCP token owns the global connector domain. Never
+            // let a user token impersonate that reserved identity.
             throw new IllegalArgumentException("principal_id is reserved");
         }
         var displayName = value.displayName() == null || value.displayName().isBlank()
@@ -130,8 +127,6 @@ public final class McpPrincipalService {
                                 instant(rs.getTimestamp("expires_at")), instant(rs.getTimestamp("revoked_at")),
                                 instant(rs.getTimestamp("created_at"))));
             } catch (DataAccessException ignored) {
-                // A pre-015 database remains usable through the compatibility
-                // token until the next Liquibase migration.
                 return List.of();
             }
         }
@@ -161,7 +156,7 @@ public final class McpPrincipalService {
             try {
                 changed = jdbc.update("UPDATE rcm_mcp_token SET revoked_at = CURRENT_TIMESTAMP WHERE token_id = ? AND revoked_at IS NULL", normalized) > 0;
             } catch (DataAccessException ignored) {
-                // Keep memory fallback behavior deterministic in protocol mode.
+                // Keep memory mode deterministic in protocol tests.
             }
         }
         for (var entry : new ArrayList<>(memoryTokens.entrySet())) {

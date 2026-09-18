@@ -31,6 +31,6 @@ Before a production sync:
    Secret. CI runs the non-deploying `--template` mode to ensure those
    placeholders remain safe in the public repository.
 
-The overlay does not alter the existing Go Deployment or ChatGPT connector;
-it is a migration candidate until the separate canary and rollback acceptance
-is complete.
+The overlay targets the Java Center deployment and keeps the existing ChatGPT
+connector URL stable; it is a production template until the separate canary
+and rollback acceptance is complete.

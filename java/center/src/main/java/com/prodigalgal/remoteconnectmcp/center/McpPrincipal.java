@@ -30,9 +30,9 @@ public record McpPrincipal(String principalId, String tokenId, String displayNam
         return scopes.contains("*") || scopes.contains(value);
     }
 
-    public static McpPrincipal compatibility() {
-        return new McpPrincipal(TaskOrigin.SHARED_PRINCIPAL, TaskOrigin.COMPAT_TOKEN,
-                "Compatibility shared domain", Set.of("*"), true, null);
+    public static McpPrincipal configured() {
+        return new McpPrincipal(TaskOrigin.CONFIGURED_PRINCIPAL, TaskOrigin.CONFIGURED_TOKEN,
+                "Configured MCP", Set.of("*"), true, null);
     }
 
     private static Set<String> normalizeScopes(Set<String> values) {

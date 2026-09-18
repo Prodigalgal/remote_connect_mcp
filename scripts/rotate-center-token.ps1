@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet("mcp", "admin", "enrollment")]
+    [ValidateSet("mcp", "admin")]
     [string]$Kind,
 
     [Security.SecureString]$NewToken,
@@ -30,10 +30,6 @@ $keys = @{
         Env = "REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN"
         Secret = "admin-token"
     }
-    enrollment = @{
-        Env = "REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN"
-        Secret = "enrollment-token"
-    }
 }
 
 function ConvertFrom-SecureValue([Security.SecureString]$Value) {
@@ -60,7 +56,6 @@ function Write-EnvValues([string]$Path, [hashtable]$Values) {
     $content = @(
         "REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN=$($Values.REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN)"
         "REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN=$($Values.REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN)"
-        "REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN=$($Values.REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN)"
     ) -join [Environment]::NewLine
     $temp = "$Path.tmp"
     [IO.File]::WriteAllText($temp, $content + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
@@ -126,10 +121,6 @@ foreach ($entry in $keys.Values) {
         throw "Missing $($entry.Env) in $EnvFile."
     }
 }
-if ($Kind -ne "mcp" -and $values.REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN.Contains("REMOTE_CONNECT_MCP_CENTER_")) {
-    throw "The current MCP token contains legacy concatenated assignments. Rotate the MCP token first."
-}
-
 $selected = $keys[$Kind]
 $oldEnvContent = [IO.File]::ReadAllText($EnvFile)
 $oldSecret = kubectl -n $Namespace get secret $SecretName -o json | ConvertFrom-Json
@@ -171,7 +162,4 @@ if ($Kind -eq "mcp") {
 }
 elseif ($Kind -eq "admin") {
     Write-Host "Sign in to the control console again with the new admin token."
-}
-else {
-    Write-Host "Existing machine identities remain valid; use the new enrollment token for future Agent installations."
 }

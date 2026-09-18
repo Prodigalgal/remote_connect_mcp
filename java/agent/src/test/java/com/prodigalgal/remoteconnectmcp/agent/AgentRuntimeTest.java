@@ -209,7 +209,7 @@ class AgentRuntimeTest {
             // Leave a generous, deterministic attach window on busy Windows
             // runners.  The first runner is intentionally interrupted before
             // the process exits; a short ping made the test race with the
-            // offline-completion fallback and report a false failure.
+            // preserve the completed result and report a false failure.
             return "ping -n 20 127.0.0.1 > NUL & echo recovered";
         }
         return "sleep 5; echo recovered";
@@ -267,16 +267,16 @@ class AgentRuntimeTest {
         }
 
         @Override
-        public void updateState(String machineId, String token, String taskId, TaskUpdateRequest request) {
+        public void updateState(String machineId, String token, String taskId, int attempt, TaskUpdateRequest request) {
         }
 
         @Override
-        public OutputResponse appendOutput(String machineId, String token, String taskId, long offset, byte[] data) {
+        public OutputResponse appendOutput(String machineId, String token, String taskId, int attempt, long offset, byte[] data) {
             return new OutputResponse(offset + data.length);
         }
 
         @Override
-        public ArtifactResponse appendArtifact(String machineId, String token, String taskId, String mimeType, String sha256, byte[] data) {
+        public ArtifactResponse appendArtifact(String machineId, String token, String taskId, int attempt, String mimeType, String sha256, byte[] data) {
             return new ArtifactResponse(data.length, sha256);
         }
     }
@@ -299,16 +299,16 @@ class AgentRuntimeTest {
         }
 
         @Override
-        public void updateState(String machineId, String token, String taskId, TaskUpdateRequest request) {
+        public void updateState(String machineId, String token, String taskId, int attempt, TaskUpdateRequest request) {
         }
 
         @Override
-        public OutputResponse appendOutput(String machineId, String token, String taskId, long offset, byte[] data) {
+        public OutputResponse appendOutput(String machineId, String token, String taskId, int attempt, long offset, byte[] data) {
             return new OutputResponse(offset + data.length);
         }
 
         @Override
-        public ArtifactResponse appendArtifact(String machineId, String token, String taskId, String mimeType,
+        public ArtifactResponse appendArtifact(String machineId, String token, String taskId, int attempt, String mimeType,
                                                String sha256, byte[] data) {
             return new ArtifactResponse(data.length, sha256);
         }
@@ -329,7 +329,7 @@ class AgentRuntimeTest {
         }
 
         @Override
-        public void updateState(String machineId, String token, String taskId, TaskUpdateRequest request) {
+        public void updateState(String machineId, String token, String taskId, int attempt, TaskUpdateRequest request) {
             statuses.add(request.status());
             if (request.error() != null) {
                 errors.add(request.error());
@@ -337,12 +337,12 @@ class AgentRuntimeTest {
         }
 
         @Override
-        public OutputResponse appendOutput(String machineId, String token, String taskId, long offset, byte[] data) throws IOException {
+        public OutputResponse appendOutput(String machineId, String token, String taskId, int attempt, long offset, byte[] data) throws IOException {
             return new OutputResponse(offset + data.length);
         }
 
         @Override
-        public ArtifactResponse appendArtifact(String machineId, String token, String taskId, String mimeType, String sha256, byte[] data) {
+        public ArtifactResponse appendArtifact(String machineId, String token, String taskId, int attempt, String mimeType, String sha256, byte[] data) {
             return new ArtifactResponse(data.length, sha256);
         }
     }
@@ -351,7 +351,7 @@ class AgentRuntimeTest {
         private final AtomicInteger outputFailures = new AtomicInteger();
 
         @Override
-        public OutputResponse appendOutput(String machineId, String token, String taskId, long offset, byte[] data) throws IOException {
+        public OutputResponse appendOutput(String machineId, String token, String taskId, int attempt, long offset, byte[] data) throws IOException {
             if (outputFailures.compareAndSet(0, 1)) {
                 throw new IOException("temporary center outage");
             }

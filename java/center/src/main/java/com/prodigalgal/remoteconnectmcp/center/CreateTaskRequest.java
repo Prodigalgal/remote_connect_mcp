@@ -22,21 +22,21 @@ public record CreateTaskRequest(
         TaskOrigin origin,
         boolean readOnlyLaneHint) {
 
-    /** Compatibility constructor for callers written before execution contracts. */
+    /** Construction overload with default execution policy fields. */
     public CreateTaskRequest(String machineId, TaskCommand command, String idempotencyKey) {
         this(machineId, command, idempotencyKey, "", "", null, "", null, null,
-                "", "low", false, TaskOrigin.shared(), false);
+                "", "low", false, TaskOrigin.configured(), false);
     }
 
-    /** Compatibility constructor for the pre-principal request shape. */
+    /** Construction overload with default owner policy. */
     public CreateTaskRequest(String machineId, TaskCommand command, String idempotencyKey,
                              String projectId, String worktreeId, ScopeMode scopeMode, String scopeRoot,
                              String sessionId, String risk, boolean elevationRequired) {
         this(machineId, command, idempotencyKey, projectId, worktreeId, scopeMode, scopeRoot,
-                null, null, sessionId, risk, elevationRequired, TaskOrigin.shared(), false);
+                null, null, sessionId, risk, elevationRequired, TaskOrigin.configured(), false);
     }
 
-    /** Compatibility constructor for callers that already carry an owner. */
+    /** Construction overload with an explicit owner. */
     public CreateTaskRequest(String machineId, TaskCommand command, String idempotencyKey,
                              String projectId, String worktreeId, ScopeMode scopeMode, String scopeRoot,
                              String sessionId, String risk, boolean elevationRequired, TaskOrigin origin) {
@@ -44,7 +44,7 @@ public record CreateTaskRequest(
                 null, null, sessionId, risk, elevationRequired, origin, false);
     }
 
-    /** Compatibility constructor for callers using the full pre-hint shape. */
+    /** Construction overload with default lane hint. */
     public CreateTaskRequest(String machineId, TaskCommand command, String idempotencyKey,
                              String projectId, String worktreeId, ScopeMode scopeMode, String scopeRoot,
                              WorkspacePolicyMode workspacePolicy, LaneMode laneMode, String sessionId,
@@ -63,7 +63,7 @@ public record CreateTaskRequest(
         laneMode = laneMode == null ? null : laneMode;
         sessionId = sessionId == null ? "" : sessionId.trim();
         risk = risk == null ? "" : risk.trim();
-        origin = origin == null ? TaskOrigin.shared() : origin;
+        origin = origin == null ? TaskOrigin.configured() : origin;
         if (command == null) {
             throw new IllegalArgumentException("command is required");
         }

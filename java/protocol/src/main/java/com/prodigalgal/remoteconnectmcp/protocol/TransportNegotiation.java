@@ -8,8 +8,8 @@ import java.util.stream.Collectors;
 /**
  * Bounded transport capability vocabulary shared by Agent and Center.
  * Business payloads never depend on one of these values; they only describe
- * how the same task contract reached the peer.  Unknown values are ignored so
- * an older Agent can safely talk to a newer Center.
+ * how the same task contract reached the peer. Unknown values are ignored at
+ * the negotiation boundary and never enter the task contract.
  */
 public final class TransportNegotiation {
     public static final String HEADER_CAPABILITIES = "X-RCM-Transport-Capabilities";
@@ -48,8 +48,8 @@ public final class TransportNegotiation {
 
     /**
      * Select one server-supported capability from the client's offer.  The
-     * current HTTP endpoint always has HTTPS fallback, even for an empty or
-     * malformed offer.  QUIC remains opt-in and cannot be selected by default.
+     * current HTTP endpoint selects HTTPS when no mutually offered transport
+     * is available. QUIC remains opt-in and cannot be selected by default.
      */
     public static String select(String offered, String preferred, Set<String> serverSupported) {
         var supported = serverSupported == null ? Set.<String>of() : serverSupported;

@@ -52,8 +52,8 @@ final class AgentConfigurationService {
                     try {
                         var decoded = JsonCodec.read(json.getBytes(StandardCharsets.UTF_8), AgentConfigUpdate.class);
                         return decoded.generation() == generation ? decoded : null;
-                    } catch (RuntimeException ignored) {
-                        return null;
+                    } catch (RuntimeException invalid) {
+                        throw new IllegalStateException("stored Agent runtime configuration is invalid", invalid);
                     }
                 });
     }
@@ -83,7 +83,7 @@ final class AgentConfigurationService {
                             catch (RuntimeException ignored) { }
                         }
                         return decoded == null || decoded.generation() != generation
-                                ? fallbackConfig(generation) : decoded;
+                                ? defaultConfig(generation) : decoded;
                     });
             if (current == null) throw new IllegalArgumentException("machine not found");
             assertExpectedGeneration(requested, current.generation());
@@ -167,14 +167,14 @@ final class AgentConfigurationService {
                     var generation = rs.getLong("config_generation");
                     var json = rs.getString("runtime_config");
                     if (json == null || json.isBlank() || "{}".equals(json.trim())) {
-                        return fallbackConfig(generation);
+                        return defaultConfig(generation);
                     }
                     try {
                         var decoded = JsonCodec.read(json.getBytes(StandardCharsets.UTF_8), AgentConfigUpdate.class);
                         return decoded.generation() == generation ? decoded
-                                : fallbackConfig(generation);
-                    } catch (RuntimeException ignored) {
-                        return fallbackConfig(generation);
+                                : defaultConfig(generation);
+                    } catch (RuntimeException invalid) {
+                        throw new IllegalStateException("stored Agent runtime configuration is invalid", invalid);
                     }
                 });
     }
@@ -190,7 +190,7 @@ final class AgentConfigurationService {
         return new AgentConfigUpdate(generation, poll, concurrency);
     }
 
-    private static AgentConfigUpdate fallbackConfig(long generation) {
+    private static AgentConfigUpdate defaultConfig(long generation) {
         var normalized = Math.max(0L, generation);
         return normalized == 0L
                 ? AgentConfigUpdate.defaults()

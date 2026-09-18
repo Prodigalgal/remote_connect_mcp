@@ -9,8 +9,8 @@
 本文把“多个用户、多个 Web 对话、多个 MCP 连接和多台终端”拆成独立关系。它是
 `P2-05-lite` 的设计基线。当前第一阶段已经把不透明 MCP Token 映射到 Principal，
 并将主体、连接元数据、幂等键、READ/WRITE/EXCLUSIVE 执行车道、显式执行会话、任务专属结果通道、机器/项目 ACL、配额和会话最新合同接入任务生命周期；
-会话访问时过期回收、Desktop lease 和 Browser Context/Profile 隔离已经实现。未迁移的旧连接器仍可使用
-单一兼容 MCP Token；使用同一个 Token 的调用者属于同一个共享信任域。
+会话访问时过期回收、Desktop lease 和 Browser Context/Profile 隔离已经实现。配置 MCP Token
+只代表当前部署信任域；多用户场景使用 Console 签发的独立 Token。
 
 ## 1. 设计结论
 
@@ -143,10 +143,10 @@ erDiagram
          ∩ 当前 Task execution contract
 ```
 
-1. `machines_list`、`project`、任务状态和工件列表只返回主体有权看到的投影；机器列表最多 25 条，项目列表不携带本地根路径，worktree 只给最多 10 条轻量摘要。
+1. `machines`、`project`、任务状态和工件列表只返回主体有权看到的投影；机器列表最多 25 条，项目列表不携带本地根路径，worktree 只给最多 10 条轻量摘要。
 2. `unrestricted` 必须同时满足 Token 能力和任务显式声明；普通项目 Token 不能升级为整机权限。
 3. Agent 继续执行最终路径、进程、资源和桌面会话校验；Center 的主体授权不能替代本机校验。
-4. `task_wait`、`task_output` 和 `task_cancel` 必须检查任务主体或共享项目 ACL，不能只凭任务 ID 放行。
+4. `task_read` 和 `task_cancel` 必须检查任务主体或共享项目 ACL，不能只凭任务 ID 放行。
 5. 任务车道、用户队列和 Agent 总预算都由 Center/Agent 有界实现；任何通知丢失都通过任务 ID
    和游标恢复，不运行固定频率扫描。
 
@@ -177,27 +177,26 @@ Token、Cookie、完整命令、环境变量和页面内容不作为普通字段
 
 为了保持 Web 上下文精简，不新增“每用户一套工具”或“每机器一套工具”。列表和结果遵循固定预算：
 
-- 机器发现只返回 `id/name/os/arch/version/capabilities/scope_mode/online` 等路由摘要；运行时预算、HostID、路径和心跳时间必须显式调用 `machine_info` 获取；
+- 机器发现只返回 `id/name/os/arch/version/capabilities/scope_mode/online` 等路由摘要；运行时预算、HostID、路径和心跳时间必须通过 `machines(operation=detail)` 按需获取；
 - 项目发现只返回项目 ID、名称、默认 ref、worktree 数量和有限 worktree 摘要，不把本地 root/repository/path 或完整 worktree 历史带进对话；需要时显式调用 `project(operation=detail)` 分页获取详情，路径还必须传 `include_paths=true`；
 - 任务输出继续使用字节游标分页；MCP 文本 JSON 设有最后防线，超过预算时要求使用游标或 Console 详情端点；
 - 图片只有不超过 512 KiB 才内联，较大截图/下载只返回大小、MIME、SHA-256 和 Console 工件引用。
 
 因此，MCP 是“摘要 + 句柄 + 游标”的控制通道，而不是日志、目录或工件浏览器：
 
-- 继续使用现有 `machines_list`、`machine_info`、`project`、`command_start`、`desktop`、
-  `browser`、`task_wait`、`task_output`、`task_cancel`；
+- 使用固定的 `machines`、`command`、`desktop`、`browser`、`project`、`artifact`、
+  `task_read`、`task_cancel` 聚合 Tool；
 - Center 从 Bearer Token 派生主体，不要求模型填写 `principal_id`；
 - 对话和连接 ID 由 Center 生成并在任务摘要中返回，只有需要恢复时才由模型携带 `task_id`；
 - 用户、Token、项目成员、配额和撤销放在 React Console/Admin API，不扩张 MCP 工具元数据；
 - 任务结果只返回最小摘要、游标和工件引用，主体无权访问的内容在 Center 侧过滤。
 
-## 8. 迁移和发布顺序
+## 8. 发布顺序
 
-1. **兼容阶段（已完成）**：把现有全局 MCP Token 映射为 `owner/shared-domain` 主体，保持旧连接器可用；不改变 `/mcp`、Agent Token 或机器身份。
-2. **数据阶段（已完成）**：通过 Liquibase 增加主体、Token、项目成员、车道、任务归属、执行会话和文件传输字段；旧任务归属到兼容主体。
-3. **影子阶段（代码已完成）**：控制台可生成每用户 Token，主体过滤、ACL、车道、配额、会话和撤销均已接入；双账号/多窗口只剩真实 Web 验收。
-4. **强制阶段（代码已完成）**：主体过滤、项目 ACL、主体维度幂等键、READ/WRITE/EXCLUSIVE 车道、用户配额和 Browser/Desktop 会话隔离默认生效。
-5. **收口阶段（待运维决策）**：确认所有 Web 连接器迁移后，由管理员手动撤销全局共享 Token；不做自动轮换，不在 MCP 工具中提供 Token 轮换操作。
+1. **主体阶段（已完成）**：配置 MCP Token、用户 Token 和 Agent Token 使用独立身份；不把共享主体暴露给当前协议。
+2. **数据阶段（已完成）**：通过 Liquibase 增加主体、Token、项目成员、车道、任务归属、执行会话和文件传输字段；历史共享主体由 `028-configured-principal-normalization` 收口。
+3. **强制阶段（代码已完成）**：主体过滤、项目 ACL、主体维度幂等键、READ/WRITE/EXCLUSIVE 车道、用户配额和 Browser/Desktop 会话隔离默认生效。
+4. **生产阶段（待验收）**：双账号/多窗口、断线重试、Center/Agent 重启和附件回显进入统一生产验收；不在 MCP Tool 中提供 Token 轮换操作。
 
 所有 Java、Native、React、Liquibase 集成和生产迁移仍只通过 GitHub Actions/GitOps 完成，
 本机不编译、不直接改生产数据库。
@@ -249,8 +248,8 @@ Sessions/Contexts 设计允许并发浏览器，同时按 Context 持久化登�
 
 | 方案 | 典型做法/参考 | 对 RCM 的优点 | 对 RCM 的代价或缺陷 | 结论 |
 | --- | --- | --- | --- | --- |
-| A. 全局共享 Bearer | 当前兼容模式；所有 Web 对话共用一个 Token | 最简单，旧连接器无需改动；适合单人或完全互信的管理员域 | 无法区分用户、撤销单个用户、做用户配额和审计；两个账号会互相看到任务 | 仅作迁移兼容，不能作为最终多用户模型 |
-| B. 每用户不透明 Bearer + Center ACL | Token 映射 `Principal`，Center 派生主体并过滤机器/项目/任务 | 保持一个固定 `/mcp`；可撤销、限额、审计；兼容真实 Windows/Linux 主机；实现量可控 | 需要新增主体、Token、ACL 和任务归属表；共享项目需显式成员关系 | **选定为基础身份模型** |
+| A. 全局共享 Bearer | 所有 Web 对话共用一个 Token | 最简单；适合单人或完全互信的管理员域 | 无法区分用户、撤销单个用户、做用户配额和审计；两个账号会互相看到任务 | 明确淘汰，不进入当前实现 |
+| B. 每用户不透明 Bearer + Center ACL | Token 映射 `Principal`，Center 派生主体并过滤机器/项目/任务 | 保持一个固定 `/mcp`；可撤销、限额、审计；适配真实 Windows/Linux 主机；实现量可控 | 需要新增主体、Token、ACL 和任务归属表；共享项目需显式成员关系 | **选定为基础身份模型** |
 | C. 每对话 Token/连接即权限 | 每个 Web 对话创建独立 Token 或独立服务入口 | 对话级配额和回收直观，误串话风险低 | ChatGPT Web 不一定提供可验证的稳定对话身份；Token 数量和连接器配置会爆炸；不利于固定 URL | 不作为认证模型；只把对话映射为内部 `ExecutionSession` |
 | D. 每用户/每对话物理沙箱 | E2B/Daytona VM，或 OpenHands/MCP Gateway 的每会话 runtime | 隔离、资源上限、可复现性最好；适合不可信用户和高风险任务 | 启动/存储/网络成本高；无法自然控制用户正在登录的 Windows 桌面和本机 GUI；改变 RCM 的真实主机语义 | 作为可选运行时，不替代默认 Agent |
 | E. OAuth/OIDC/企业 IdP | Gateway 通过 Entra/OIDC 发放委托 Token | 企业身份、统一撤销和组织联邦能力强 | 引入 IdP、动态注册、回调和更多运维面；不能单独解决 worktree、Desktop lease 或公平调度；与当前 ChatGPT DCR 问题冲突 | 预留适配器，当前不作为主路径 |
@@ -288,8 +287,8 @@ RCM 采用 **B + C（内部会话）+ 可选 D** 的混合方案，但不采用 
    不改变 `/mcp`、Token 和任务 API。
 7. **PostgreSQL 先作为唯一真相源。** Liquibase 持久化主体、Token 哈希、ACL、会话、车道、
    任务和游标；使用事务、行锁和 `LISTEN/NOTIFY`，不以固定周期轮询或额外消息总线作为基础依赖。
-8. **兼容 Token 只作为过渡。** 旧全局 Token 映射为 `owner/shared-domain`，明确标记为共享信任域；
-   控制台生成的用户 Token 才提供用户级撤销、审计和配额。迁移完成后由管理员手动撤销共享 Token。
+8. **配置主体只用于单一部署信任域。** 多用户场景使用 Console 签发的独立 Token；每个 Token
+   都有主体、撤销、审计和配额边界。
 
 ### 11.2 为什么这是当前最优解
 
@@ -301,7 +300,7 @@ RCM 采用 **B + C（内部会话）+ 可选 D** 的混合方案，但不采用 
   状态摘要、游标和工件引用，不把每台机器或每个用户复制成一套工具。
 - **渐进式增强**：先完成轻量多主体和车道；需要更强隔离时增加 sandbox runtime，需要企业
   身份时增加 OAuth/OIDC adapter，需要更高吞吐时再评估消息总线，不推翻现有协议。
-- **可验证、可回滚**：兼容主体可以影子运行和按阶段收紧；每一步都有主体、ACL、车道、租约、
+- **可验证、可回滚**：每一步都有主体、ACL、车道、租约、
   会话隔离和双账号端到端验收，不依赖“看起来已连接”作为成功标准。
 
 因此，`P2-05-lite` 的实现基线更新为：**per-user opaque Bearer + Center-derived Principal +
@@ -347,7 +346,7 @@ Desktop lease/Browser Context，sandbox/OAuth/broker 作为后续可插拔能力
 任务创建时，Center 同时记录 `principal_id`、内部 `execution_session_id`、来源连接、
 目标指纹和 `result_channel`。MCP 响应只返回不可预测的任务句柄和最小摘要：
 
-1. `task_wait`、`task_output`、`task_cancel` 必须带任务句柄；Center 检查主体、项目 ACL、
+1. `task_read`、`task_cancel` 必须带任务句柄；Center 检查主体、项目 ACL、
    会话能力和当前 Attempt，不接受只凭机器 ID 或猜测的任务查询；
 2. 每个任务拥有独立的序列游标；WebSocket/`LISTEN/NOTIFY` 只发送“某任务有变化”的唤醒，
    不把输出内容广播到其他对话；

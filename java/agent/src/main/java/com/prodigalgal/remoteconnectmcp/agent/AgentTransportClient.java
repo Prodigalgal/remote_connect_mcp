@@ -96,8 +96,8 @@ public final class AgentTransportClient implements AgentTransport {
             throw new IllegalArgumentException("transferStallTimeout must be between 5 seconds and 1 hour");
         }
         this.transferStallTimeout = transferStallTimeout;
-        if (longPollSeconds < 0 || longPollSeconds > 25) {
-            throw new IllegalArgumentException("longPollSeconds must be between 0 and 25");
+        if (longPollSeconds < 1 || longPollSeconds > 25) {
+            throw new IllegalArgumentException("longPollSeconds must be between 1 and 25");
         }
         this.longPollSeconds = longPollSeconds;
     }
@@ -118,8 +118,8 @@ public final class AgentTransportClient implements AgentTransport {
     }
 
     public PollResponse poll(String machineId, String token, PollRequest poll) throws IOException, InterruptedException {
-        var endpoint = centerUrl.resolve("/agent/v1/poll");
-        if (longPollSeconds > 0) endpoint = URI.create(endpoint + "?wait_ms=" + (longPollSeconds * 1000L));
+        var endpoint = URI.create(centerUrl.resolve("/agent/v1/poll").toString()
+                + "?wait_ms=" + (longPollSeconds * 1000L));
         var request = newRequest(endpoint)
                 .timeout(requestTimeout)
                 .header("Authorization", "Bearer " + token)
@@ -148,11 +148,6 @@ public final class AgentTransportClient implements AgentTransport {
     }
 
     @Override
-    public void updateState(String machineId, String token, String taskId, TaskUpdateRequest update) throws IOException, InterruptedException {
-        updateState(machineId, token, taskId, 0, update);
-    }
-
-    @Override
     public void updateState(String machineId, String token, String taskId, int attempt,
                             TaskUpdateRequest update) throws IOException, InterruptedException {
         var builder = newRequest(centerUrl.resolve("/agent/v1/tasks/" + encodePath(taskId) + "/state"))
@@ -162,24 +157,11 @@ public final class AgentTransportClient implements AgentTransport {
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json");
         addAttemptHeader(builder, attempt);
-        var payload = update;
-        if (update != null && Boolean.TRUE.equals(update.outputTruncated())) {
-            // Older Centers reject fields they do not know. Carry this advisory
-            // bit in a header and keep the JSON body compatible with them.
-            builder.header("X-Task-Output-Truncated", "1");
-            payload = new TaskUpdateRequest(update.status(), update.exitCode(), update.error(),
-                    update.startedAt(), update.finishedAt(), false);
-        }
-        var request = builder.POST(HttpRequest.BodyPublishers.ofByteArray(JsonCodec.write(payload))).build();
+        var request = builder.POST(HttpRequest.BodyPublishers.ofByteArray(JsonCodec.write(update))).build();
         var response = send(request);
         if (response.statusCode() != 200) {
             throw new CenterTransportException("center task state update failed", response.statusCode());
         }
-    }
-
-    @Override
-    public OutputResponse appendOutput(String machineId, String token, String taskId, long offset, byte[] data) throws IOException, InterruptedException {
-        return appendOutput(machineId, token, taskId, 0, offset, data);
     }
 
     @Override
@@ -202,11 +184,6 @@ public final class AgentTransportClient implements AgentTransport {
     }
 
     @Override
-    public ArtifactResponse appendArtifact(String machineId, String token, String taskId, String mimeType, String sha256, byte[] data) throws IOException, InterruptedException {
-        return appendArtifact(machineId, token, taskId, 0, mimeType, sha256, data);
-    }
-
-    @Override
     public ArtifactResponse appendArtifact(String machineId, String token, String taskId, int attempt,
                                            String mimeType, String sha256, byte[] data) throws IOException, InterruptedException {
         var payload = new ArtifactRequest(mimeType, sha256, Base64.getEncoder().encodeToString(data));
@@ -223,13 +200,6 @@ public final class AgentTransportClient implements AgentTransport {
             throw new CenterTransportException("center task artifact update failed", response.statusCode());
         }
         return JsonCodec.read(response.body(), ArtifactResponse.class);
-    }
-
-    @Override
-    public void downloadTransfer(String machineId, String token, String transferId, Path destination,
-                                 long expectedBytes, String expectedSha256, int attempt)
-            throws IOException, InterruptedException {
-        downloadTransfer(machineId, token, transferId, destination, expectedBytes, expectedSha256, attempt, true);
     }
 
     @Override
@@ -277,15 +247,6 @@ public final class AgentTransportClient implements AgentTransport {
         }
 
         var response = requestDownload(machineId, token, transferId, expectedBytes, expectedSha256, attempt, offset);
-        // A rolling deployment may briefly route this request to an older
-        // Center which does not understand Range.  Restart once from zero so
-        // a 200 body can never be appended after an existing partial.
-        if (offset > 0 && response.statusCode() == 200) {
-            close(response.body());
-            Files.deleteIfExists(temporary);
-            offset = 0L;
-            response = requestDownload(machineId, token, transferId, expectedBytes, expectedSha256, attempt, 0L);
-        }
         try (var input = response.body()) {
             if (response.statusCode() != (offset > 0 ? 206 : 200)) {
                 throw new CenterTransportException("center file transfer download failed", response.statusCode());
@@ -430,10 +391,7 @@ public final class AgentTransportClient implements AgentTransport {
         if (actualBytes != expectedBytes) throw new IOException("source file size changed before upload");
         var resume = queryTransferResume(machineId, token, transferId, attempt);
         var resumeOffset = resume.offset();
-        if (resumeOffset < 0 || expectedBytes == 0) {
-            return uploadWholeTransfer(machineId, token, transferId, source, fileName, mimeType,
-                    expectedBytes, expectedSha256, attempt);
-        }
+        if (resumeOffset < 0) throw new IOException("center does not expose the required resumable transfer endpoint");
         if (resumeOffset > expectedBytes) throw new IOException("center resume offset exceeds source size");
         if (resumeOffset == expectedBytes) {
             if ("delivered".equalsIgnoreCase(resume.status())) {
@@ -444,12 +402,7 @@ public final class AgentTransportClient implements AgentTransport {
                         transferId, "", "delivered", expectedBytes,
                         expectedSha256 == null ? "" : expectedSha256.toLowerCase(), null);
             }
-            // A full partial spool in `delivering` state means the previous
-            // request lost its response before the metadata commit.  Replay
-            // through the legacy whole-stream path, which atomically
-            // finalizes the object, instead of fabricating a delivered ACK.
-            return uploadWholeTransfer(machineId, token, transferId, source, fileName, mimeType,
-                    expectedBytes, expectedSha256, attempt);
+            throw new IOException("center transfer is at the expected size but has not reached delivered state");
         }
         var offset = resumeOffset;
         while (offset < expectedBytes) {
@@ -471,13 +424,6 @@ public final class AgentTransportClient implements AgentTransport {
             }
             addAttemptHeader(builder, attempt);
             var response = sendTransfer(builder.PUT(HttpRequest.BodyPublishers.ofByteArray(chunk)).build());
-            if (response.statusCode() == 404 || response.statusCode() == 405) {
-                // A rolling upgrade can route this first chunk to a legacy
-                // Center.  Only an untouched offset is safe to replay as a
-                // legacy whole-stream request.
-                if (offset == 0) return uploadWholeTransfer(machineId, token, transferId, source, fileName,
-                        mimeType, expectedBytes, expectedSha256, attempt);
-            }
             if (response.statusCode() != 200) {
                 throw new CenterTransportException("center file transfer chunk upload failed", response.statusCode());
             }
@@ -492,39 +438,6 @@ public final class AgentTransportClient implements AgentTransport {
                 expectedSha256 == null ? "" : expectedSha256.toLowerCase(), null);
     }
 
-    private com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadWholeTransfer(
-            String machineId, String token, String transferId, Path source, String fileName,
-            String mimeType, long expectedBytes, String expectedSha256, int attempt)
-            throws IOException, InterruptedException {
-        var endpoint = centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/content");
-        var builder = newRequest(endpoint).timeout(transferTimeout)
-                .header("Authorization", "Bearer " + token)
-                .header("X-Machine-ID", machineId)
-                .header("Content-Type", mimeType == null || mimeType.isBlank() ? "application/octet-stream" : mimeType)
-                .header("X-RCM-File-Name", fileName == null ? source.getFileName().toString() : fileName)
-                // BodyPublishers.ofFile supplies the real Content-Length. The
-                // JDK forbids callers from setting that restricted header.
-                .header("X-RCM-Expected-Bytes", Long.toString(expectedBytes));
-        if (expectedSha256 != null && expectedSha256.matches("(?i)[0-9a-f]{64}")) {
-            builder.header("X-RCM-Expected-SHA256", expectedSha256.toLowerCase());
-        }
-        addAttemptHeader(builder, attempt);
-        // A file body can legitimately take minutes or hours.  Do not send it
-        // through the ordinary control-plane helper: that helper deliberately
-        // uses the short request timeout used by poll/state/output calls.
-        // The transfer helper waits on the same asynchronous HTTP pipeline
-        // with the separately configured transfer timeout.
-        var response = sendTransfer(builder.PUT(HttpRequest.BodyPublishers.ofFile(source)).build());
-        if (response.statusCode() != 200) throw new CenterTransportException("center file transfer upload failed", response.statusCode());
-        return JsonCodec.read(response.body(), com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse.class);
-    }
-
-    @Override
-    public long queryTransferOffset(String machineId, String token, String transferId, int attempt)
-            throws IOException, InterruptedException {
-        return queryTransferResume(machineId, token, transferId, attempt).offset();
-    }
-
     @Override
     public AgentTransport.TransferResume queryTransferResume(String machineId, String token, String transferId, int attempt)
             throws IOException, InterruptedException {
@@ -535,15 +448,11 @@ public final class AgentTransportClient implements AgentTransport {
                 .header("Accept", "application/json");
         addAttemptHeader(builder, attempt);
         var response = send(builder.method("HEAD", HttpRequest.BodyPublishers.noBody()).build());
-        if (response.statusCode() == 404 || response.statusCode() == 405) return new AgentTransport.TransferResume(-1L, "");
         if (response.statusCode() != 200) {
             throw new CenterTransportException("center file transfer resume probe failed", response.statusCode());
         }
         var value = response.headers().firstValue("X-RCM-Resume-Offset").orElse("").trim();
-        // Spring can answer HEAD for an older GET mapping with 200 while
-        // suppressing the body.  Absence of the explicit resume header is the
-        // compatibility signal to use the legacy whole-stream upload.
-        if (value.isBlank()) return new AgentTransport.TransferResume(-1L, "");
+        if (value.isBlank()) throw new IOException("center did not return a resumable transfer offset");
         try {
             var offset = Long.parseLong(value);
             if (offset < 0) throw new NumberFormatException("negative offset");
@@ -593,8 +502,8 @@ public final class AgentTransportClient implements AgentTransport {
     }
 
     private static void addAttemptHeader(HttpRequest.Builder builder, int attempt) {
-        if (attempt < 0) throw new IllegalArgumentException("attempt must be non-negative");
-        if (attempt > 0) builder.header("X-Task-Attempt", Integer.toString(attempt));
+        if (attempt < 1) throw new IllegalArgumentException("attempt must be positive");
+        builder.header("X-Task-Attempt", Integer.toString(attempt));
     }
 
     /**
@@ -711,10 +620,9 @@ public final class AgentTransportClient implements AgentTransport {
     }
 
     /**
-     * Prefer HTTP/2 for the long-lived HTTPS path while retaining the JDK's
-     * negotiated HTTP/1.1 fallback.  This is the safe baseline measured by
-     * the transport probe; QUIC/HTTP3 remains an explicit future provider and
-     * never becomes a hidden hard dependency of the Agent.
+     * Prefer HTTP/2 for the long-lived HTTPS path while allowing the JDK to
+     * negotiate HTTP/1.1 when the endpoint advertises that protocol. QUIC/
+     * HTTP/3 remains a separate explicit transport provider.
      */
     private static HttpClient defaultHttpClient() {
         return HttpClient.newBuilder()

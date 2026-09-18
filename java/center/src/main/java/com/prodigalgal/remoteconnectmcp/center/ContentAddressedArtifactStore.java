@@ -5,8 +5,8 @@ import java.time.Instant;
 import java.util.Set;
 
 /**
- * Optional content-addressed adapter. The underlying store keeps its legacy
- * key format, but every payload uses the digest as the logical task key, so
+ * Optional content-addressed adapter. Every payload uses the digest as the
+ * logical task key, so
  * equal SHA-256 content is written once and referenced by many metadata rows.
  */
 public final class ContentAddressedArtifactStore implements ArtifactStore {

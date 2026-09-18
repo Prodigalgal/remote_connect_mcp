@@ -20,12 +20,8 @@ trap on_error ERR
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 port="${RCM_SMOKE_PORT:-18180}"
 center_binary="${1:-${RCM_SMOKE_CENTER_BINARY:-}}"
-jar="$root/java/center/build/libs/center-0.1.0-SNAPSHOT.jar"
-if [[ -n "$center_binary" ]]; then
-  [[ -f "$center_binary" ]] || { echo "Center native binary not found: $center_binary" >&2; exit 1; }
-else
-  [[ -f "$jar" ]] || { echo "Center bootJar not found: $jar; this smoke script consumes a prebuilt GitHub Actions artifact; pass the downloaded Native Image as the first argument." >&2; exit 1; }
-fi
+[[ -n "$center_binary" ]] || { echo "Center Native Image path is required; pass a GitHub Actions artifact as the first argument." >&2; exit 2; }
+[[ -f "$center_binary" ]] || { echo "Center native binary not found: $center_binary" >&2; exit 1; }
 
 tmp="$(mktemp -d)"
 pid=""
@@ -48,21 +44,11 @@ finish() {
 }
 trap finish EXIT
 
-if [[ -n "$center_binary" ]]; then
-  RCM_CENTER_PERSISTENCE_MODE=memory \
-  RCM_CENTER_VERSION=smoke \
-  REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN=smoke-mcp-token \
-  REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN=smoke-admin-token \
-  REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN=smoke-enrollment-token \
-  "$center_binary" "--server.port=$port" >"$tmp/out" 2>"$tmp/err" &
-else
-  RCM_CENTER_PERSISTENCE_MODE=memory \
-  RCM_CENTER_VERSION=smoke \
-  REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN=smoke-mcp-token \
-  REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN=smoke-admin-token \
-  REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN=smoke-enrollment-token \
-  java -jar "$jar" "--server.port=$port" >"$tmp/out" 2>"$tmp/err" &
-fi
+RCM_CENTER_PERSISTENCE_MODE=memory \
+RCM_CENTER_VERSION=smoke \
+REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN=smoke-mcp-token \
+REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN=smoke-admin-token \
+"$center_binary" "--server.port=$port" >"$tmp/out" 2>"$tmp/err" &
 pid=$!
 
 healthy="false"
@@ -106,8 +92,8 @@ init="$(rpc 1 initialize)"
 grep -q '"result"' <<<"$init"
 session="$(awk 'tolower($1) == "mcp-session-id:" {print $2; exit}' "$tmp/rpc-1.headers" | tr -d '\r')"
 tools="$(rpc 2 tools/list "$session")"
-grep -q 'machines_list' <<<"$tools"
-grep -q 'command_start' <<<"$tools"
+grep -q '"name":"machines"' <<<"$tools"
+grep -q '"name":"command"' <<<"$tools"
 metrics="$(curl --silent --show-error --fail --max-time 5 \
   -H 'Authorization: Bearer smoke-admin-token' \
   -H 'Accept: text/plain' \
@@ -121,6 +107,4 @@ bad_metrics_status="$(curl --silent --show-error --max-time 5 -o /dev/null -w '%
   -H 'Authorization: Bearer wrong-admin-token' \
   "http://127.0.0.1:$port/metrics")"
 [[ "$bad_metrics_status" == "401" ]] || { echo "metrics accepted invalid Admin Token: HTTP $bad_metrics_status" >&2; exit 1; }
-implementation="jvm"
-if [[ -n "$center_binary" ]]; then implementation="native"; fi
-printf '{"health":"ok","initialize":"ok","tools":"ok","metrics":"ok","implementation":"%s","mcp":"http://127.0.0.1:%s/mcp"}\n' "$implementation" "$port"
+printf '{"health":"ok","initialize":"ok","tools":"ok","metrics":"ok","implementation":"native","mcp":"http://127.0.0.1:%s/mcp"}\n' "$port"

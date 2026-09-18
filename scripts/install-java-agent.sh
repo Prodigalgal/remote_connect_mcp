@@ -9,10 +9,13 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 service_file="${REMOTE_CONNECT_MCP_AGENT_SERVICE_FILE:-$script_dir/remote-connect-mcp-agent.service}"
 [[ -f "$service_file" ]] || { echo "systemd service template is missing: $service_file (set REMOTE_CONNECT_MCP_AGENT_SERVICE_FILE)" >&2; exit 1; }
 
-binary_source="${REMOTE_CONNECT_MCP_AGENT_BINARY:-./rcm-agent}"
-[[ -f "$binary_source" ]] || { echo "Java native Agent binary or flat ZIP is missing: $binary_source" >&2; exit 1; }
+binary_source="${REMOTE_CONNECT_MCP_AGENT_BINARY:-}"
+[[ -n "$binary_source" && -f "$binary_source" ]] || { echo "REMOTE_CONNECT_MCP_AGENT_BINARY must point to the current Java Agent ZIP" >&2; exit 1; }
+[[ "${binary_source,,}" == *.zip ]] || { echo "REMOTE_CONNECT_MCP_AGENT_BINARY must be a Native Image ZIP" >&2; exit 1; }
 desktop_source="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY:-}"
 browser_source="${REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY:-}"
+[[ -z "$desktop_source" || "${desktop_source,,}" == *.zip ]] || { echo "REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY must be a Native Image ZIP" >&2; exit 1; }
+[[ -z "$browser_source" || "${browser_source,,}" == *.zip ]] || { echo "REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY must be a Native Image ZIP" >&2; exit 1; }
 desktop_enabled="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED:-false}"
 desktop_enabled="${desktop_enabled,,}"
 desktop_user="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_USER:-${SUDO_USER:-}}"
@@ -65,11 +68,8 @@ install_companion_bundle() (
     source_file="${executables[0]}"
     source_root="$staging"
   else
-    source_file="$(readlink -f "$source_path")"
-    source_root="$(dirname "$source_file")"
-    [[ "$(basename "$source_file")" == "$expected" ]] || {
-      echo "companion binary must be named $expected" >&2; exit 1;
-    }
+    echo "companion input must be a Native Image ZIP containing $expected" >&2
+    exit 1
   fi
   [[ -x "$source_file" ]] || { echo "companion executable is not executable: $source_file" >&2; exit 1; }
   install -d -m 0755 "$destination"
@@ -284,9 +284,9 @@ systemd_env_quote() {
   printf '"%s"' "$value"
 }
 
-# Native Image may emit shared libraries beside the ELF.  Accept the flat
-# Agent ZIP produced by GitHub Actions as well as an already extracted binary;
-# never copy arbitrary nested archive paths into the service directory.
+# Native Image may emit shared libraries beside the ELF.  Accept only the flat
+# Agent ZIP produced by GitHub Actions so the executable and every sidecar are
+# installed as one immutable bundle.
 staging=""
 source_dir=""
 source_binary=""
@@ -303,9 +303,8 @@ if [[ "${binary_source,,}" == *.zip ]]; then
   [[ "$source_dir" == "$staging" ]] || { echo "Agent ZIP must be flat (no nested executable path)" >&2; exit 1; }
   source_binary="${executables[0]}"
 else
-  [[ -x "$binary_source" ]] || { echo "Java native Agent binary is missing or not executable: $binary_source" >&2; exit 1; }
-  source_binary="$(readlink -f "$binary_source")"
-  source_dir="$(dirname "$source_binary")"
+  echo "Java native Agent input must be a Native Image ZIP" >&2
+  exit 1
 fi
 
 [[ -x "$source_binary" ]] || { echo "selected Java Agent executable is not executable" >&2; exit 1; }

@@ -5,7 +5,14 @@ plugins {
     application
 }
 
-val nativeMarch = providers.gradleProperty("nativeMarch").orElse("compatibility").get()
+// Native Image builds must select an explicit CPU baseline per architecture.
+// JVM-only CI tasks still configure this project, so enforce the value only
+// when a Native task is actually requested.
+val nativeTaskRequested = gradle.startParameter.taskNames.any { task ->
+    task.substringAfterLast(':').lowercase().contains("native")
+}
+val nativeMarch = providers.gradleProperty("nativeMarch").orNull
+    ?: if (nativeTaskRequested) error("nativeMarch is required; the CI matrix must select an architecture baseline") else "unused"
 
 dependencies {
     implementation(project(":protocol"))

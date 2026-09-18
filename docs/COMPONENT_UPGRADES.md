@@ -4,12 +4,12 @@
 
 ## 当前边界
 
-现有 Center 对旧 Release 仍兼容单个 `url + sha256`。新 Release 可附带
+每个 Release 必须附带
 `remote-connect-mcp-manifest-vX.Y.Z.json`，由 Center 固化为一个 Campaign 的
 多组件计划；新 Agent 先替换 command-agent，再独立 drain/替换
 `desktop-companion` 和 `browser-agent`。伴侣缺失或失败只会让该组件失败，
 不会回滚已经健康的 command-agent。Desktop/Browser 仍可通过安装脚本全量安装，
-作为没有组件 Manifest 时的回退路径。
+没有完整组件 Manifest 的 Release 会被 Center 拒绝。
 
 Manifest 最小形状如下：
 
@@ -59,7 +59,7 @@ GitHub Actions 每个 Java Release 生成一个签名的 `release-manifest.json`
   "browser_runtime": {
     "engine": "playwright",
     "version": "1.63.0",
-    "compatibility": "separate-cache-only"
+    "lifecycle": "separate-cache-only"
   }
 }
 ```
@@ -115,7 +115,7 @@ Agent 必须先把所选组件全部下载到 `state/upgrades/<campaign>/<attemp
 Browser 升级拆成三类动作：
 
 1. `browser-agent` Native bundle：由组件 Campaign 管理。
-2. Browser runtime/engine：独立兼容矩阵和缓存目录，按显式 runtime upgrade 管理。
+2. Browser runtime/engine：独立平台矩阵和缓存目录，按显式 runtime upgrade 管理。
 3. Profile/Cookie：不升级、不复制、不删除；只由用户会话和 Browser Worker 使用。
 
 有活动浏览器任务时先 drain；任务完成或超时后再替换。没有桌面会话的主机仍可升级 headless Browser Agent。
@@ -129,11 +129,11 @@ Browser 升级拆成三类动作：
 
 ## 实施顺序
 
-1. 协议增加 `ComponentUpgradePlan`、Manifest、组件版本/状态和向后兼容的 command-only fallback。
+1. 协议增加 `ComponentUpgradePlan`、Manifest、组件版本/状态；缺少组件计划的 Release 直接拒绝。
 2. Agent 将现有 detached updater 泛化为 component staging、drain、原子替换、健康检查和 rollback。
 3. 增加 Windows scheduled task、Linux systemd-user、Browser Worker drain 适配。
 4. Center/PostgreSQL 增加 campaign component/target component 表与并发锁。
 5. React Console 增加组件版本、选择、canary、单组件重试/回滚。
 6. GitHub Actions 生成三套 bundle、Manifest、SHA-256、SBOM、签名并做失败矩阵。
 
-生产门禁至少覆盖：在线/离线 Agent、无桌面 Session、Desktop 任务运行中、Browser 任务运行中、单组件下载失败、磁盘不足、Center 重启、Agent 重启、旧 command-only Agent 兼容和回滚。
+生产门禁至少覆盖：在线/离线 Agent、无桌面 Session、Desktop 任务运行中、Browser 任务运行中、单组件下载失败、磁盘不足、Center 重启、Agent 重启和单组件回滚。

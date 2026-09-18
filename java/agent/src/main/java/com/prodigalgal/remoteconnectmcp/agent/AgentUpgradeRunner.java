@@ -72,26 +72,28 @@ final class AgentUpgradeRunner implements Runnable {
             Files.createDirectories(directory);
             var safeVersion = safeComponent(plan.version());
             var bundleSuffix = archiveSuffix(plan.url());
-            var archive = bundleSuffix != null;
-            staged = directory.resolve("agent-" + safeVersion + ".new" + (archive ? bundleSuffix : executableSuffix()));
+            if (bundleSuffix == null) throw new IOException("Agent upgrade URL must reference a Native Image ZIP bundle");
+            staged = directory.resolve("agent-" + safeVersion + ".new" + bundleSuffix);
             downloadVerified(plan.url(), plan.sha256(), staged);
 
             var componentConfigs = new ArrayList<AgentUpgradeHelper.ComponentConfig>();
             for (var component : plan.components()) {
                 var componentTarget = resolveComponentTarget(component.component());
+                var componentSuffix = archiveSuffix(component.url());
+                if (componentSuffix == null) throw new IOException("component upgrade URL must reference a Native Image ZIP bundle");
                 var componentStaged = directory.resolve(safeComponent(component.component()) + "-" + safeComponent(component.version())
-                        + ".new" + (archiveSuffix(component.url()) == null ? ".zip" : archiveSuffix(component.url())));
+                        + ".new" + componentSuffix);
                 downloadVerified(component.url(), component.sha256(), componentStaged);
                 componentConfigs.add(new AgentUpgradeHelper.ComponentConfig(component.component(), component.version(),
                         componentStaged.toString(), componentTarget.toString(), config.stateDir().toAbsolutePath().normalize().toString(),
-                        componentServiceName(component.component()), true, component.restartPolicy()));
+                        componentServiceName(component.component()), component.restartPolicy()));
             }
 
             var target = resolveTargetBinary();
             var helperConfig = new AgentUpgradeHelper.Config(
                     plan.campaignId(), plan.version(), staged.toString(), target.toString(),
                     config.stateDir().toAbsolutePath().normalize().toString(), serviceName(),
-                    ProcessHandle.current().pid(), archive, plan.attempt(), componentConfigs);
+                    ProcessHandle.current().pid(), plan.attempt(), componentConfigs);
             var configPath = directory.resolve("helper-" + safeVersion + ".json");
             writeConfig(configPath, helperConfig);
             report("installing", null);
@@ -112,7 +114,7 @@ final class AgentUpgradeRunner implements Runnable {
     private void report(String status, String error) throws IOException, InterruptedException {
         AgentRetry.call(LOG, "upgrade status " + plan.campaignId(), () -> {
             transport.reportUpgrade(identity.machineId(), identity.token(),
-                    new UpgradeStatusRequest(plan.campaignId(), status, error, plan.attempt()));
+                    new UpgradeStatusRequest(plan.campaignId(), status, error, plan.attempt(), java.util.Map.of()));
             return null;
         });
     }
@@ -193,16 +195,14 @@ final class AgentUpgradeRunner implements Runnable {
         }
         var target = Path.of(configured.trim()).toAbsolutePath().normalize();
         if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Agent binary path is not a file: " + target);
+        if (target.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")) {
+            throw new IOException("Agent self-upgrade requires the installed Native Image executable");
+        }
         return target;
     }
 
     private void launchHelper(Path target, Path configPath) throws IOException {
         var command = new java.util.ArrayList<String>();
-        if (target.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")) {
-            command.add(System.getProperty("java.home") + java.io.File.separator + "bin" + java.io.File.separator +
-                    (isWindows() ? "java.exe" : "java"));
-            command.add("-jar");
-        }
         command.add(target.toString());
         command.add("--apply-update");
         command.add(configPath.toString());
@@ -225,7 +225,12 @@ final class AgentUpgradeRunner implements Runnable {
         if (value == null || value.campaignId() == null || value.campaignId().isBlank()) throw new IllegalArgumentException("upgrade campaign_id is required");
         if (value.version() == null || value.version().isBlank() || value.version().length() > 128) throw new IllegalArgumentException("upgrade version is invalid");
         var uri = URI.create(value.url() == null ? "" : value.url().trim());
-        if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null) throw new IllegalArgumentException("upgrade URL must use HTTPS");
+        if (value.url() == null || value.url().isBlank() || value.url().length() > 4096
+                || archiveSuffix(value.url()) == null
+                || !"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                || uri.getUserInfo() != null || uri.getFragment() != null) {
+            throw new IllegalArgumentException("upgrade URL must be an HTTPS Native Image ZIP bundle");
+        }
         if (value.sha256() == null || !value.sha256().trim().matches("(?i)[0-9a-f]{64}")) throw new IllegalArgumentException("upgrade SHA-256 is invalid");
         var names = new java.util.HashSet<String>();
         for (var component : value.components()) {
@@ -276,7 +281,6 @@ final class AgentUpgradeRunner implements Runnable {
         return result.isBlank() ? "upgrade" : result.substring(0, Math.min(80, result.length()));
     }
 
-    private static String executableSuffix() { return isWindows() ? ".exe" : ""; }
     private static String archiveSuffix(String value) {
         if (value == null) return null;
         var normalized = value.trim().toLowerCase(Locale.ROOT);
@@ -286,7 +290,6 @@ final class AgentUpgradeRunner implements Runnable {
         return null;
     }
     private static String serviceName() { return System.getenv().getOrDefault("REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME", "").trim(); }
-    private static boolean isWindows() { return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win"); }
     private static MessageDigest sha256Digest() {
         try { return MessageDigest.getInstance("SHA-256"); }
         catch (java.security.NoSuchAlgorithmException exception) { throw new IllegalStateException(exception); }

@@ -80,7 +80,7 @@ public record ExecutionContract(
         }
     }
 
-    /** Compatibility constructor for the pre-workspace/lane contract shape. */
+    /** Local construction overload with the default shared-serial policy. */
     public ExecutionContract(String machineId, String hostId, ScopeMode scopeMode,
                              String projectId, String worktreeId, String scopeRoot,
                              String sessionId, String capability, Budget budget,
@@ -144,12 +144,6 @@ public record ExecutionContract(
             @JsonProperty("max_rss_bytes") long maxRssBytes,
             @JsonProperty("max_cpu_seconds") long maxCpuSeconds) {
 
-        /** Compatibility constructor for the original four-field budget. */
-        public Budget(int maxDurationSeconds, long maxOutputBytes, long maxArtifactBytes,
-                      int maxChildProcesses) {
-            this(maxDurationSeconds, maxOutputBytes, maxArtifactBytes, maxChildProcesses, 0L, 0L);
-        }
-
         public Budget {
             if (maxDurationSeconds < 0 || maxDurationSeconds > ProtocolValidation.MAX_TIMEOUT_SECONDS) {
                 throw new IllegalArgumentException("maxDurationSeconds is outside the allowed range");
@@ -169,6 +163,12 @@ public record ExecutionContract(
             if (maxCpuSeconds < 0 || maxCpuSeconds > 30L * 24 * 60 * 60) {
                 throw new IllegalArgumentException("maxCpuSeconds is outside the allowed range");
             }
+        }
+
+        /** Local construction overload with no RSS/CPU budget. */
+        public Budget(int maxDurationSeconds, long maxOutputBytes, long maxArtifactBytes,
+                      int maxChildProcesses) {
+            this(maxDurationSeconds, maxOutputBytes, maxArtifactBytes, maxChildProcesses, 0L, 0L);
         }
 
         public static Budget defaults() {

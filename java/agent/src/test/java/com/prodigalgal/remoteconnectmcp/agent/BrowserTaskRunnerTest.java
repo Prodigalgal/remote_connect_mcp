@@ -65,12 +65,12 @@ class BrowserTaskRunnerTest {
         }
 
         @Override
-        public void updateState(String machineId, String token, String taskId, TaskUpdateRequest request) {
+        public void updateState(String machineId, String token, String taskId, int attempt, TaskUpdateRequest request) {
             statuses.add(request.status());
         }
 
         @Override
-        public OutputResponse appendOutput(String machineId, String token, String taskId, long offset, byte[] data)
+        public OutputResponse appendOutput(String machineId, String token, String taskId, int attempt, long offset, byte[] data)
                 throws IOException {
             synchronized (output) {
                 output.append(new String(data, java.nio.charset.StandardCharsets.UTF_8));
@@ -79,7 +79,7 @@ class BrowserTaskRunnerTest {
         }
 
         @Override
-        public ArtifactResponse appendArtifact(String machineId, String token, String taskId, String mimeType,
+        public ArtifactResponse appendArtifact(String machineId, String token, String taskId, int attempt, String mimeType,
                                                String sha256, byte[] data) {
             artifactMime = mimeType;
             artifact.append(new String(data, java.nio.charset.StandardCharsets.UTF_8));

@@ -31,10 +31,8 @@ trap cleanup EXIT INT TERM
 export RCM_CENTER_PERSISTENCE_MODE=memory
 export RCM_CENTER_VERSION=websocket-smoke
 export RCM_CENTER_AGENT_WEBSOCKET_ENABLED=true
-export RCM_CENTER_ALLOW_SHARED_ENROLLMENT=true
 export REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN=smoke-mcp-token
 export REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN=smoke-admin-token
-export REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN=smoke-enrollment-token
 "$CENTER_BINARY" "--server.port=$PORT" >"$STATE_DIR/center.log" 2>&1 &
 CENTER_PID=$!
 
@@ -56,7 +54,6 @@ PORT="$PORT" BASE="$BASE" node <<'NODE'
 const port = process.env.PORT;
 const base = process.env.BASE;
 const adminToken = "smoke-admin-token";
-const enrollmentToken = "smoke-enrollment-token";
 
 async function jsonFetch(path, init = {}) {
   const response = await fetch(base + path, {
@@ -102,6 +99,14 @@ function waitForMessage(socket, predicate, timeoutMs = 8000) {
   });
 }
 
+const issued = await jsonFetch("/api/v1/admin/enrollment-tokens", {
+  method: "POST",
+  token: adminToken,
+  body: JSON.stringify({ requested_name: "websocket-smoke-agent", expires_in_seconds: 3600 }),
+});
+const enrollmentToken = issued.token;
+if (!enrollmentToken) throw new Error("Center did not return a one-time enrollment token");
+
 const registration = await jsonFetch("/agent/v1/register", {
   method: "POST",
   token: enrollmentToken,
@@ -140,7 +145,10 @@ const task = await jsonFetch("/api/v1/admin/tasks", {
   body: JSON.stringify({
     machine_id: registration.machine_id,
     scope_mode: "unrestricted",
-    command: { kind: "command", required_capability: "command", command: "echo websocket-wake", cwd: process.cwd(), env: {}, timeout_seconds: 30 },
+    command: "echo websocket-wake",
+    cwd: process.cwd(),
+    env: {},
+    timeout_seconds: 30,
   }),
 });
 if (!task.id) throw new Error("Center did not return a task id");

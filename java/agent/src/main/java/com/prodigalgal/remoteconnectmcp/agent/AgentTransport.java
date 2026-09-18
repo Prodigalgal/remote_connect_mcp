@@ -29,93 +29,46 @@ public interface AgentTransport {
         return "https";
     }
 
-    void updateState(String machineId, String token, String taskId, TaskUpdateRequest request) throws IOException, InterruptedException;
+    void updateState(String machineId, String token, String taskId, int attempt,
+                     TaskUpdateRequest request) throws IOException, InterruptedException;
 
-    /** Fenced delivery variant; old test/Go transports can use the legacy method. */
-    default void updateState(String machineId, String token, String taskId, int attempt,
-                             TaskUpdateRequest request) throws IOException, InterruptedException {
-        updateState(machineId, token, taskId, request);
-    }
+    OutputResponse appendOutput(String machineId, String token, String taskId, int attempt,
+                                long offset, byte[] data) throws IOException, InterruptedException;
 
-    OutputResponse appendOutput(String machineId, String token, String taskId, long offset, byte[] data) throws IOException, InterruptedException;
-
-    /** Fenced output variant; attempt zero keeps compatibility with old Agents. */
-    default OutputResponse appendOutput(String machineId, String token, String taskId, int attempt,
-                                        long offset, byte[] data) throws IOException, InterruptedException {
-        return appendOutput(machineId, token, taskId, offset, data);
-    }
-
-    ArtifactResponse appendArtifact(String machineId, String token, String taskId, String mimeType, String sha256, byte[] data) throws IOException, InterruptedException;
-
-    /** Fenced artifact variant; attempt zero keeps compatibility with old Agents. */
-    default ArtifactResponse appendArtifact(String machineId, String token, String taskId, int attempt,
-                                            String mimeType, String sha256, byte[] data) throws IOException, InterruptedException {
-        return appendArtifact(machineId, token, taskId, mimeType, sha256, data);
-    }
+    ArtifactResponse appendArtifact(String machineId, String token, String taskId, int attempt,
+                                    String mimeType, String sha256, byte[] data) throws IOException, InterruptedException;
 
     /** Stream a Center-owned inbound artifact to a local file. */
     default void downloadTransfer(String machineId, String token, String transferId, Path destination,
-                                  long expectedBytes, String expectedSha256, int attempt)
-            throws IOException, InterruptedException {
-        throw new CenterTransportException("file transfer download is not supported by this Center", 404);
-    }
-
-    /**
-     * Fenced download with an atomic overwrite policy.  The legacy overload
-     * remains available to old test/Go transports and keeps their historical
-     * replace-on-success behavior.
-     */
-    default void downloadTransfer(String machineId, String token, String transferId, Path destination,
                                   long expectedBytes, String expectedSha256, int attempt, boolean overwrite)
             throws IOException, InterruptedException {
-        downloadTransfer(machineId, token, transferId, destination, expectedBytes, expectedSha256, attempt);
+        throw new CenterTransportException("file transfer download is not supported by this Center", 404);
     }
 
     /** Confirm the local side of a transfer without adding a second task. */
     default void acknowledgeTransfer(String machineId, String token, String transferId,
                                      com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse acknowledgement,
                                      int attempt) throws IOException, InterruptedException {
-        // Older Centers do not expose an ACK endpoint.  Keeping this a
-        // compatibility no-op lets their transports finish the task while a
-        // current Center receives the durable transfer state transition.
-    }
-
-    /**
-     * Return the durable Center-side resume offset for an Agent upload.
-     * A negative value means that the connected Center predates the chunked
-     * transfer endpoint; callers must fall back to the legacy whole-stream
-     * PUT in that case.
-     */
-    default long queryTransferOffset(String machineId, String token, String transferId, int attempt)
-            throws IOException, InterruptedException {
-        return -1L;
+        throw new CenterTransportException("file transfer acknowledgement is not supported by this Center", 404);
     }
 
     /**
      * Return the Center resume offset together with its durable transfer
      * status.  The status matters when a connection was lost after the final
-     * chunk reached the Center but before the metadata transaction committed:
-     * an offset equal to the expected size is not, by itself, proof that an
-     * artifact is available.  The default keeps old transports source and
-     * binary compatible while exposing only the small control-plane record
-     * needed by current clients.
+     * chunk reached the Center but before the metadata transaction committed.
      */
-    default TransferResume queryTransferResume(String machineId, String token, String transferId, int attempt)
-            throws IOException, InterruptedException {
-        return new TransferResume(queryTransferOffset(machineId, token, transferId, attempt), "");
-    }
+    TransferResume queryTransferResume(String machineId, String token, String transferId, int attempt)
+            throws IOException, InterruptedException;
 
     /** Stream a local file to the Center-owned artifact store. */
-    default com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadTransfer(
+    com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadTransfer(
             String machineId, String token, String transferId, Path source, String fileName,
             String mimeType, long expectedBytes, String expectedSha256, int attempt)
-            throws IOException, InterruptedException {
-        throw new CenterTransportException("file transfer upload is not supported by this Center", 404);
-    }
+            throws IOException, InterruptedException;
 
     record TransferResume(long offset, String status) { }
 
-    /** Optional upgrade progress channel; old test transports remain compatible. */
+    /** Upgrade progress channel. */
     default void reportUpgrade(String machineId, String token, UpgradeStatusRequest request)
             throws IOException, InterruptedException {
         throw new CenterTransportException("upgrade status is not supported by this Center", 404);

@@ -127,10 +127,8 @@ public final class AgentRuntime {
                         var task = poll.task();
                         if (task.kind() == com.prodigalgal.remoteconnectmcp.protocol.TaskKind.BROWSER
                                 && browserRunning.get() >= maxBrowserWorkers) {
-                            // This can only happen if a legacy Center ignores
-                            // available_capabilities.  Leave the lease for
-                            // its normal expiry instead of starting a process
-                            // beyond the local cap.
+                            // Never start a browser process beyond the local
+                            // worker cap. Leave the lease for normal expiry.
                             LOG.warning("Center returned a browser task while the local browser worker cap is full; deferring it");
                             backoff = settings.pollInterval();
                             wakeSignal.await(backoff);
@@ -190,13 +188,9 @@ public final class AgentRuntime {
                         // silently ignored a hot-reloaded interval on every
                         // idle cycle.
                         backoff = settings.pollInterval();
-                        // A Java Center that advertises long-polling has
-                        // already held the request until a change or the
-                        // server deadline. Do not add another fixed sleep;
-                        // immediately issue the next long-poll request. Old
-                        // Go/HTTP Centers do not send the header and retain
-                        // the legacy backoff behavior.
-                        if (!transport.longPollHonored()) wakeSignal.await(backoff);
+                        // The Center poll endpoint is always event-driven and
+                        // holds the request until a change or its deadline.
+                        // Do not add a fixed idle sleep after it returns.
                     }
                 } catch (CenterTransportException exception) {
                     if ((exception.statusCode() == 401 || exception.statusCode() == 403) && running.isEmpty()) {
@@ -363,9 +357,9 @@ public final class AgentRuntime {
             });
             Files.deleteIfExists(resultFile);
         } catch (CenterTransportException exception) {
-            // A rolling upgrade can briefly restart against an older Center.
-            // A 404 means it has no campaign record; retaining the result would
-            // otherwise replay it forever on every service restart.
+            // The campaign may have been removed before the detached helper
+            // reported its result. Discard that terminal result rather than
+            // replaying it forever on every service restart.
             if (exception.statusCode() == 404) {
                 try { Files.deleteIfExists(resultFile); } catch (IOException ignored) { }
             } else {

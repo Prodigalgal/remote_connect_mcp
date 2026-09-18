@@ -2,10 +2,7 @@ package com.prodigalgal.remoteconnectmcp.center;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
-import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
-import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
-import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicyMode;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -90,7 +87,7 @@ public final class AdminController {
         this.manifests = manifestProvider == null ? null : manifestProvider.getIfAvailable();
     }
 
-    /** Compatibility constructor for direct protocol/controller tests. */
+    /** Construction overload used by focused controller tests. */
     AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                     EnrollmentTokenService enrollments, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
@@ -320,13 +317,15 @@ public final class AdminController {
 
     @PostMapping("/tasks")
     public CompletableFuture<ResponseEntity<?>> createTask(@RequestHeader(value = "Authorization", required = false) String authorization,
-                                                           @RequestBody(required = false) Object request) {
+                                                           @RequestBody AdminCreateTaskRequest request) {
         return execute(() -> {
             authenticate(authorization);
-            var decoded = decodeTaskRequest(request);
+            if (request == null) throw new IllegalArgumentException("task request is required");
+            var decoded = new DecodedTaskRequest(request.toInternal(), request.projectId(), request.worktreeId(), request.cwd(),
+                    !request.scopeMode().isBlank());
             var internal = decoded.internal();
             // A bounded machine may safely inherit its registered workspace
-            // for legacy admin payloads.  An unrestricted machine may not:
+            // when scope fields are omitted.  An unrestricted machine may not:
             // whole-host authority must be visible in the request so a UI,
             // retry handler, or model cannot obtain it by omission.
             if (!decoded.scopeExplicit() && decoded.projectId().isBlank()) {
@@ -343,7 +342,8 @@ public final class AdminController {
                 var original = internal.command();
                 var scoped = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand(
                         "", original.kind(), original.requiredCapability(), original.command(), cwd,
-                        original.env(), original.timeoutSeconds(), original.desktop(), original.createdAt(), original.contract());
+                        original.env(), original.timeoutSeconds(), original.desktop(), original.createdAt(), original.contract(),
+                        original.attempt(), original.fileTransfer());
                 var mode = internal.scopeMode() == null
                         ? (decoded.worktreeId().isBlank() ? ScopeMode.PROJECT : ScopeMode.WORKTREE)
                         : internal.scopeMode();
@@ -354,59 +354,6 @@ public final class AdminController {
             }
             return ResponseEntity.status(HttpStatus.CREATED).body(tasks.create(internal, "console"));
         });
-    }
-
-    /** Accept the flat console contract while keeping the old nested request compatible. */
-    private static DecodedTaskRequest decodeTaskRequest(Object value) {
-        if (value instanceof AdminCreateTaskRequest request) {
-            return new DecodedTaskRequest(request.toInternal(), request.projectId(), request.worktreeId(), request.cwd(),
-                    !request.scopeMode().isBlank());
-        }
-        if (!(value instanceof Map<?, ?> raw)) throw new IllegalArgumentException("task request is required");
-        var commandValue = raw.get("command");
-        if (commandValue instanceof String || commandValue == null) {
-            var flat = new AdminCreateTaskRequest(
-                    text(raw.get("machine_id")), text(raw.get("command")), text(raw.get("cwd")),
-                    stringMap(raw.get("env")), integer(raw.get("timeout_seconds")), text(raw.get("idempotency_key")),
-                     text(raw.get("project_id")), text(raw.get("worktree_id")), text(raw.get("scope_mode")),
-                     text(raw.get("scope_root")), text(raw.get("session_id")), text(raw.get("risk")),
-                     bool(raw.get("elevation_required")),
-                     text(raw.get("workspace_policy")).isBlank() ? null : WorkspacePolicyMode.fromWireValue(text(raw.get("workspace_policy"))),
-                     text(raw.get("lane_mode")).isBlank() ? null : LaneMode.fromWireValue(text(raw.get("lane_mode"))));
-            return new DecodedTaskRequest(flat.toInternal(), flat.projectId(), flat.worktreeId(), flat.cwd(),
-                    !flat.scopeMode().isBlank());
-        }
-        try {
-            var command = JsonCodec.read(JsonCodec.write(commandValue), TaskCommand.class);
-            if (command.contract() != null) {
-                throw new IllegalArgumentException("execution contract is managed by Center and cannot be supplied by the caller");
-            }
-            var scopeMode = text(raw.get("scope_mode"));
-            var projectId = text(raw.get("project_id"));
-            var worktreeId = text(raw.get("worktree_id"));
-            var internal = new CreateTaskRequest(text(raw.get("machine_id")), command,
-                    text(raw.get("idempotency_key")), projectId, worktreeId,
-                     scopeMode.isBlank() ? null : ScopeMode.fromWireValue(scopeMode),
-                     text(raw.get("scope_root")),
-                     text(raw.get("workspace_policy")).isBlank() ? null : WorkspacePolicyMode.fromWireValue(text(raw.get("workspace_policy"))),
-                     text(raw.get("lane_mode")).isBlank() ? null : LaneMode.fromWireValue(text(raw.get("lane_mode"))),
-                     text(raw.get("session_id")), text(raw.get("risk")),
-                     bool(raw.get("elevation_required")), TaskOrigin.shared());
-            return new DecodedTaskRequest(internal, projectId, worktreeId, command.cwd(), !scopeMode.isBlank());
-        } catch (IllegalArgumentException exception) {
-            throw new IllegalArgumentException("command must be a string or a valid task command object", exception);
-        }
-    }
-
-    private static String text(Object value) {
-        return value == null ? "" : String.valueOf(value);
-    }
-
-    private static Integer integer(Object value) {
-        if (value == null) return 0;
-        if (value instanceof Number number) return number.intValue();
-        try { return Integer.valueOf(String.valueOf(value)); }
-        catch (NumberFormatException exception) { throw new IllegalArgumentException("timeout_seconds must be an integer", exception); }
     }
 
     @PostMapping("/artifacts/gc")
@@ -662,23 +609,6 @@ public final class AdminController {
             if (quota == null) throw new IllegalStateException("quota service is unavailable");
             return ResponseEntity.ok(quota.snapshot(principalId));
         });
-    }
-
-    private static Boolean bool(Object value) {
-        if (value == null) return Boolean.FALSE;
-        if (value instanceof Boolean flag) return flag;
-        return Boolean.parseBoolean(String.valueOf(value));
-    }
-
-    private static Map<String, String> stringMap(Object value) {
-        if (value == null) return Map.of();
-        if (!(value instanceof Map<?, ?> raw)) throw new IllegalArgumentException("env must be an object");
-        var result = new java.util.LinkedHashMap<String, String>();
-        raw.forEach((key, entry) -> {
-            if (key == null || entry == null) throw new IllegalArgumentException("env keys and values are required");
-            result.put(String.valueOf(key), String.valueOf(entry));
-        });
-        return Map.copyOf(result);
     }
 
     private record DecodedTaskRequest(CreateTaskRequest internal, String projectId, String worktreeId,

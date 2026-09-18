@@ -574,7 +574,7 @@ public final class ArtifactTransferService {
                     completeOutbound(row, safeMime, safeName, total, actualSha, objectKey);
                     memory.put(transferId, new MemoryTransfer(new TransferDescriptor(transferId, row.artifactId(), row.direction(), row.taskId(),
                             row.principalId(), row.machineId(), safeName, safeMime, total, actualSha, "delivered", null,
-                            publicUrl(row.artifactId(), new TaskOrigin(row.principalId(), TaskOrigin.COMPAT_TOKEN, ""), taskSession(row.taskId()), "download"), total),
+                            publicUrl(row.artifactId(), new TaskOrigin(row.principalId(), TaskOrigin.CONFIGURED_TOKEN, ""), taskSession(row.taskId()), "download"), total),
                             objectKey, "", row.sourcePath(), memoryExpiry(transferId)));
                 Files.deleteIfExists(partial);
                 forgetPartialSpool(transferId);
@@ -771,7 +771,7 @@ public final class ArtifactTransferService {
             committed = true;
             memory.put(transferId, new MemoryTransfer(new TransferDescriptor(transferId, artifactId, row.direction(), row.taskId(),
                     row.principalId(), row.machineId(), safeName, safeMime, received.bytes(), received.sha256(), "delivered", null,
-                    publicUrl(artifactId, new TaskOrigin(row.principalId(), TaskOrigin.COMPAT_TOKEN, ""), taskSession(row.taskId()), "download"), received.bytes()),
+                    publicUrl(artifactId, new TaskOrigin(row.principalId(), TaskOrigin.CONFIGURED_TOKEN, ""), taskSession(row.taskId()), "download"), received.bytes()),
                     objectKey, "", row.sourcePath(), memoryExpiry(transferId)));
             return response;
         } catch (IOException exception) {
@@ -1129,16 +1129,6 @@ public final class ArtifactTransferService {
                 access.session(), access.purpose(), access.signature());
     }
 
-    public PublicArtifact openPublic(String artifactId, long expires, String principal, String signature) {
-        return openPublic(artifactId, expires, principal, "", "", "download", signature);
-    }
-
-    /** Compatibility overload for links issued before session binding. */
-    public PublicArtifact openPublic(String artifactId, long expires, String principal, String connection,
-                                     String purpose, String signature) {
-        return openPublic(artifactId, expires, principal, connection, "", purpose, signature);
-    }
-
     public PublicArtifact openPublic(String artifactId, long expires, String principal, String connection,
                                       String session, String purpose, String signature) {
         if (artifactId == null || artifactId.isBlank() || principal == null || principal.isBlank()
@@ -1150,16 +1140,6 @@ public final class ArtifactTransferService {
         }
         var supplied = signature.trim().getBytes(java.nio.charset.StandardCharsets.US_ASCII);
         var valid = verifySignature(signatureSubject(artifactId, principal, expires, purpose, connection, session), supplied);
-        // Keep already-issued connection-bound links valid during a rolling
-        // deployment.  The legacy fallback is only reachable when both new
-        // binding fields are omitted; newly generated links always include
-        // purpose, connection, and session.
-        if (!valid && session.isBlank()) {
-            valid = verifySignature(signatureSubject(artifactId, principal, expires, purpose, connection, ""), supplied);
-        }
-        if (!valid && connection.isBlank() && session.isBlank()) {
-            valid = verifySignature(artifactId + "\n" + principal + "\n" + expires, supplied);
-        }
         if (!valid) {
             throw new SecurityException("invalid or expired artifact URL");
         }
@@ -1236,7 +1216,7 @@ public final class ArtifactTransferService {
     private CreateTaskRequest withAction(CreateTaskRequest request, FileTransferAction action) {
         var source = request.command();
         var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null,
-                source.cwd(), Map.of(), 0, null, Instant.now(), null, action);
+                source.cwd(), Map.of(), 0, null, Instant.now(), null, 0, action);
         return new CreateTaskRequest(request.machineId(), command, request.idempotencyKey(), request.projectId(),
                 request.worktreeId(), request.scopeMode(), request.scopeRoot(), request.workspacePolicy(),
                 request.laneMode(), request.sessionId(), request.risk(), request.elevationRequired(), request.origin());
@@ -1844,21 +1824,16 @@ public final class ArtifactTransferService {
                 try {
                     cipher.init(javax.crypto.Cipher.DECRYPT_MODE, accessKey(key.secret()), new javax.crypto.spec.GCMParameterSpec(128, nonce));
                     var fields = new String(cipher.doFinal(encrypted), java.nio.charset.StandardCharsets.UTF_8).split("\\n", -1);
-                    // Seven fields are the versioned opaque token. Six fields
-                    // are accepted only for rolling compatibility with tokens
-                    // issued before kid was introduced.
-                    var offset = fields.length == 7 ? 1 : 0;
-                    if ((fields.length != 7 && fields.length != 6)
-                            || (fields.length == 7 && !key.kid().equals(fields[0]))
-                            || fields[offset].isBlank() || fields[offset + 1].isBlank()
-                            || fields[offset + 3].isBlank() || fields[offset + 4].length() > 256
-                            || fields[offset + 5].length() > 256) continue;
-                    var expires = Long.parseLong(fields[offset + 2]);
+                    if (fields.length != 7 || !key.kid().equals(fields[0])
+                            || fields[1].isBlank() || fields[2].isBlank()
+                            || fields[4].isBlank() || fields[5].length() > 256
+                            || fields[6].length() > 256) continue;
+                    var expires = Long.parseLong(fields[3]);
                     if (expires < Instant.now().getEpochSecond()) continue;
-                    var signature = sign(signatureSubject(fields[offset], fields[offset + 1], expires,
-                            fields[offset + 3], fields[offset + 4], fields[offset + 5]), key);
-                    return new AccessToken(fields[offset], expires, fields[offset + 1], fields[offset + 4],
-                            fields[offset + 5], fields[offset + 3], key.kid(), signature);
+                    var signature = sign(signatureSubject(fields[1], fields[2], expires,
+                            fields[4], fields[5], fields[6]), key);
+                    return new AccessToken(fields[1], expires, fields[2], fields[5],
+                            fields[6], fields[4], key.kid(), signature);
                 } catch (Exception ignored) {
                     // An AES-GCM authentication failure is expected while
                     // trying the other active rotation key.
@@ -1965,7 +1940,7 @@ public final class ArtifactTransferService {
                                      String principalId, String machineId, String fileName, String mimeType, long bytes,
                                      String sha256, String status, String error, String downloadUrl,
                                      long bytesTransferred) {
-        /** Compatibility constructor for callers that only know total bytes. */
+        /** Construction overload when progress has not been reported yet. */
         public TransferDescriptor(String transferId, String artifactId, String direction, String taskId,
                                   String principalId, String machineId, String fileName, String mimeType, long bytes,
                                   String sha256, String status, String error, String downloadUrl) {
@@ -1994,7 +1969,7 @@ public final class ArtifactTransferService {
                                   long bytesTransferred, long expectedBytes,
                                   double averageDurationSeconds, double maxDurationSeconds,
                                   long resumeCount, long partialSpoolBytes, long gcBytes) {
-        /** Compatibility constructor for the original eight-field metrics. */
+        /** Construction overload when resume and garbage-collection counters are zero. */
         public TransferMetrics(long active, long delivered, long failed, long canceled,
                                long bytesTransferred, long expectedBytes,
                                double averageDurationSeconds, double maxDurationSeconds) {

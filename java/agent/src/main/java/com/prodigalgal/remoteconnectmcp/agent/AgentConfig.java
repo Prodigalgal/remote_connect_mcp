@@ -42,7 +42,7 @@ public record AgentConfig(
     private static final long MAX_TASK_CPU_SECONDS = 30L * 24 * 60 * 60;
     private static final int MAX_TOTAL_CHILD_PROCESSES = 4096;
 
-    /** Compatibility constructor for callers written before output limits were configurable. */
+    /** Defaulted construction overload for local callers. */
     public AgentConfig(URI centerUrl, String enrollmentToken, String name, String hostId,
                        String defaultCwd, ScopeMode scopeMode, String workspaceRoot,
                        List<String> capabilities, boolean desktopEnabled, Path stateDir,
@@ -52,7 +52,7 @@ public record AgentConfig(
                 DEFAULT_MAX_OUTPUT_BYTES, defaultAggregateOutputBytes(DEFAULT_MAX_OUTPUT_BYTES, maxConcurrency), "");
     }
 
-    /** Compatibility constructor for callers that already pass a per-task output limit. */
+    /** Defaulted construction overload with an explicit per-task output limit. */
     public AgentConfig(URI centerUrl, String enrollmentToken, String name, String hostId,
                        String defaultCwd, ScopeMode scopeMode, String workspaceRoot,
                        List<String> capabilities, boolean desktopEnabled, Path stateDir,
@@ -200,9 +200,9 @@ public record AgentConfig(
         throw new IllegalArgumentException("REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS must be 0/1");
     }
 
-    /** Long-poll hold time in seconds; zero explicitly restores legacy polling. */
+    /** Long-poll hold time in seconds. The event-driven path is mandatory. */
     public long longPollSeconds() {
-        return parseLongEnv("REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS", 25, 0, 25);
+        return parseLongEnv("REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS", 25, 1, 25);
     }
 
     /**

@@ -17,27 +17,25 @@ import org.junit.jupiter.api.Test;
 
 class AgentUpgradeHelperTest {
     @Test
-    void mapsCanonicalExecutableToLegacyServiceBasename() throws Exception {
-        var root = Files.createTempDirectory("rcm-upgrade-legacy-name-");
+    void replacesTheDeclaredExecutableWithoutRenamingIt() throws Exception {
+        var root = Files.createTempDirectory("rcm-upgrade-exact-name-");
         try {
             var targetDir = Files.createDirectories(root.resolve("bin"));
             var stateDir = Files.createDirectories(root.resolve("state"));
-            var targetName = isWindows() ? "remote-connect-mcp-agent.exe" : "remote-connect-mcp-agent";
-            var canonicalName = isWindows() ? "rcm-agent.exe" : "rcm-agent";
+            var targetName = isWindows() ? "rcm-agent.exe" : "rcm-agent";
             var target = targetDir.resolve(targetName);
             Files.writeString(target, "old-agent", StandardCharsets.UTF_8);
             var archive = root.resolve("agent.zip");
-            writeArchive(archive, canonicalName, "new-agent", "java.dll", "new-java");
-            var config = new AgentUpgradeHelper.Config("campaign-legacy-name", "v2.0.0", archive.toString(),
-                    target.toString(), stateDir.toString(), "", ProcessHandle.current().pid(), true);
+            writeArchive(archive, targetName, "new-agent", "java.dll", "new-java");
+            var config = new AgentUpgradeHelper.Config("campaign-exact-name", "v2.0.0", archive.toString(),
+                    target.toString(), stateDir.toString(), "", ProcessHandle.current().pid());
 
             invoke("applyArchive", config);
 
             assertEquals("new-agent", Files.readString(target));
             assertEquals("new-java", Files.readString(targetDir.resolve("java.dll")));
-            assertFalse(Files.exists(targetDir.resolve(canonicalName)), "canonical name must not replace the service target");
             if (!isWindows()) {
-                assertTrue(Files.isExecutable(target), "legacy service target must remain executable after archive replacement");
+                assertTrue(Files.isExecutable(target), "the declared executable must remain executable after archive replacement");
                 assertTrue(Files.isExecutable(targetDir.resolve("java.dll")), "runtime library permissions must match the installed bundle");
             }
 
@@ -61,7 +59,7 @@ class AgentUpgradeHelperTest {
             var archive = root.resolve("agent.zip");
             writeArchive(archive, "rcm-agent.exe", "new-agent", "java.dll", "new-java");
             var config = new AgentUpgradeHelper.Config("campaign-1", "v2.0.0", archive.toString(),
-                    target.toString(), stateDir.toString(), "", ProcessHandle.current().pid(), true);
+                    target.toString(), stateDir.toString(), "", ProcessHandle.current().pid());
 
             invoke("applyArchive", config);
 
@@ -93,7 +91,7 @@ class AgentUpgradeHelperTest {
             var archive = root.resolve("agent.zip");
             writeArchive(archive, "rcm-agent.exe", "new-agent", "java.dll", "new-java");
             var config = new AgentUpgradeHelper.Config("campaign-rollback", "v2.0.0", archive.toString(),
-                    target.toString(), stateDir.toString(), "", ProcessHandle.current().pid(), true);
+                    target.toString(), stateDir.toString(), "", ProcessHandle.current().pid());
 
             invoke("applyArchive", config);
             invoke("rollback", config);

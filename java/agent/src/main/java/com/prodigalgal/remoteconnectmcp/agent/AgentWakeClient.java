@@ -203,13 +203,9 @@ final class AgentWakeClient implements AutoCloseable {
         }
     }
 
-    /**
-     * Accept only a strictly newer server sequence.  A non-positive value is
-     * the legacy message shape, which remains a valid wake hint without
-     * ordering semantics.
-     */
+    /** Accept only a strictly newer positive server sequence. */
     static boolean acceptWakeSequence(AtomicLong lastSequence, long sequence) {
-        if (lastSequence == null || sequence <= 0) return true;
+        if (lastSequence == null || sequence <= 0) return false;
         while (true) {
             var previous = lastSequence.get();
             if (sequence <= previous) return false;
