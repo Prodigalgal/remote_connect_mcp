@@ -101,7 +101,7 @@ public final class ReleaseManifestService {
                 return null;
             }
             if (response.statusCode() != 200 || !"https".equalsIgnoreCase(response.uri().getScheme())
-                    || !uri.getHost().equalsIgnoreCase(response.uri().getHost())
+                    || !trustedResponseHost(uri, response.uri())
                     || response.body() == null || response.body().length > MAX_MANIFEST_BYTES) return null;
             var raw = JsonCodec.read(response.body(), ManifestWire.class);
             return normalize(raw, version);
@@ -146,6 +146,19 @@ public final class ReleaseManifestService {
             }
         }
         return new Manifest(raw.version() == null ? "" : raw.version(), List.copyOf(result));
+    }
+
+    private static boolean trustedResponseHost(URI requested, URI response) {
+        var configuredHost = requested.getHost();
+        var responseHost = response.getHost();
+        if (configuredHost == null || responseHost == null) return false;
+        if (configuredHost.equalsIgnoreCase(responseHost)) return true;
+        // GitHub release downloads legitimately redirect to the immutable
+        // release-assets host.  Keep the allowlist narrow for custom release
+        // endpoints so an arbitrary redirect cannot become a manifest SSRF.
+        return "github.com".equalsIgnoreCase(configuredHost)
+                && ("release-assets.githubusercontent.com".equalsIgnoreCase(responseHost)
+                    || responseHost.toLowerCase(java.util.Locale.ROOT).endsWith(".githubusercontent.com"));
     }
 
     record ManifestWire(String version, List<UpgradeComponentPlan> components) { }
