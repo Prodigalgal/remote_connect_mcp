@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -869,7 +870,13 @@ public final class DesktopCompanionServer {
     private static String loadOrCreateToken(Path stateDir) throws IOException {
         var file = stateDir.toAbsolutePath().normalize().resolve(COMPANION_DIR).resolve(TOKEN_FILE);
         if (Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-            var value = Files.readString(file, java.nio.file.LinkOption.NOFOLLOW_LINKS).trim();
+            String value;
+            try (var input = Files.newInputStream(file, java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                    StandardOpenOption.READ)) {
+                var bytes = input.readNBytes(4097);
+                if (bytes.length > 4096) throw new IOException("desktop companion token file is too large");
+                value = new String(bytes, StandardCharsets.UTF_8).trim();
+            }
             if (!value.isBlank()) {
                 var normalized = normalizeToken(value);
                 restrictOwner(file);

@@ -246,8 +246,10 @@ final class BrowserTaskRunner implements Runnable {
                     // plain remove() could evict the guard after another task
                     // increments its reference count, letting a later task
                     // create a second semaphore for the same browser profile.
-                    PROFILE_LOCKS.computeIfPresent(isolatedProfile, (ignored, current) ->
-                            current == profileGuard && current.references.get() == 0
+                    var finalProfile = isolatedProfile;
+                    var finalGuard = profileGuard;
+                    PROFILE_LOCKS.computeIfPresent(finalProfile, (ignored, current) ->
+                            current == finalGuard && current.references.get() == 0
                                     && current.semaphore.availablePermits() > 0 ? null : current);
                 }
             }
