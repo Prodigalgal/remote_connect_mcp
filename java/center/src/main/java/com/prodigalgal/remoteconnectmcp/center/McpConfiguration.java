@@ -570,8 +570,12 @@ public class McpConfiguration {
                 Map.entry("machine_id", string("machine identifier")),
                 Map.entry("kind", string("task kind")),
                 Map.entry("required_capability", string("required capability")),
-                Map.entry("command", string("bounded command summary")),
-                Map.entry("cwd", string("bounded working directory")),
+                // File-transfer tasks deliberately have no shell command and
+                // may omit cwd when the Agent's default scope is used.  Keep
+                // those fields nullable so the compact artifact result is
+                // valid for both command and file-transfer task kinds.
+                Map.entry("command", nullable("string", "bounded command summary")),
+                Map.entry("cwd", nullable("string", "bounded working directory")),
                 Map.entry("timeout_seconds", integer("task timeout")),
                 Map.entry("status", string("task status")),
                 Map.entry("attempt", integer("dispatch attempt")),
