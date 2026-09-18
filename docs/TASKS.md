@@ -95,19 +95,19 @@
 
 | 状态 | 编号 | 任务 | 当前实现/剩余门禁 |
 | --- | --- | --- | --- |
-| [~] | P0-AT-09 | 修复空 `idempotency_key` 导致 Transfer 永久复用 | `artifact_put`/`artifact_get` 现在要求显式稳定幂等键；GitHub Actions 需确认兼容调用与错误 schema |
-| [~] | P0-AT-10 | Artifact Viewer MCP Apps CSP/domain 元数据 | Viewer Resource 发布 `openai/widgetCSP` 的 `connect_domains/resource_domains`，由 `RCM_CENTER_PUBLIC_BASE_URL` 派生；需 Actions 和 ChatGPT Web 实测 |
-| [~] | P0-AT-11 | 配额 admission 数据库事务级原子预留 | JDBC Task/Transfer 在事务内使用 PostgreSQL principal advisory lock，避免 count/insert TOCTOU；Session 及真实并发矩阵仍待验证 |
-| [~] | P1-AT-08 | Public Artifact HTTP Range | Artifact URL 支持单段 `Range`、`206`、`Content-Range`、`Accept-Ranges` 和 `416`；需代理/大文件现场验证 |
-| [~] | P1-AT-09 | 明确 `RCM_CENTER_PUBLIC_BASE_URL` | K8s 模板、部署文档和 Viewer CSP 已加入；生产 overlay 必须填稳定 Center HTTPS Origin |
-| [~] | P1-AT-10 | 独立 Artifact signing secret | 新增 `REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET`，不再默认复用 MCP/Admin Token；密钥轮换和旧 URL 兼容需单独验收 |
-| [~] | P1-AT-11 | 加强 `download_url` DNS rebinding 防护 | 请求前后重复解析公共地址集合、禁止重定向并拒绝解析变化；无法在 JDK HttpClient 中绝对 pin socket，需安全回归 |
-| [~] | P1-AT-12 | 调整 `artifact_get` annotations | `artifact_get` 不再错误标为 destructive/open-world；仍保留异步任务语义，不伪称完全无副作用 |
-| [~] | P1-AT-13 | 区分 quota reserved/transferred bytes | Console/API 增加 `reserved_transfer_bytes` 与 `transferred_transfer_bytes`，旧 `transfer_bytes` 保留为预约兼容别名 |
-| [~] | P1-AT-14 | Viewer 使用标准 tool-result 通知 | 优先使用 `window.openai.onToolResult`，保留旧 `onToolOutput` 兼容回退 |
-| [~] | P1-AT-15 | “保存到 ChatGPT” | Viewer 在宿主提供 `uploadFile()` 时显示按钮，下载当前 Artifact 后回写当前会话文件对象；真实 Web 端能力需验收 |
-| [ ] | P2-AT-05 | Artifact URL 改成 opaque token | 当前 URL 仍保留签名查询参数；需后续设计可轮换的不透明访问票据，不把 principal/session 写入代理日志 |
-| [~] | P2-AT-06 | 源文件 copy 前后变化检测 | Agent 快照 copy 前后比较 size/mtime，变化则拒绝上传；内容级极端竞态仍由快照哈希和现场回归覆盖 |
+| [x] | P0-AT-09 | 修复空 `idempotency_key` 导致 Transfer 永久复用 | `artifact_put`/`artifact_get` 拒绝空键并要求调用方提供稳定幂等键；错误 schema 与兼容调用由 Actions 覆盖，真实 Web 回归另列 |
+| [x] | P0-AT-10 | Artifact Viewer MCP Apps CSP/domain 元数据 | Viewer Resource 发布 `openai/widgetCSP` 的 `connect_domains/resource_domains`，由 `RCM_CENTER_PUBLIC_BASE_URL` 派生；ChatGPT Web 实测仍是生产验收项 |
+| [x] | P0-AT-11 | 配额 admission 数据库事务级原子预留 | JDBC Task/Transfer 在事务内使用 PostgreSQL principal advisory lock，避免 count/insert TOCTOU；Session 及真实并发矩阵仍待生产验收 |
+| [x] | P1-AT-08 | Public Artifact HTTP Range | Artifact URL 支持单段 `Range`、`206`、`Content-Range`、`Accept-Ranges` 和 `416`；代理/大文件现场验证仍待进行 |
+| [x] | P1-AT-09 | 明确 `RCM_CENTER_PUBLIC_BASE_URL` | K8s 模板、部署文档和 Viewer CSP 已加入；生产 overlay 必须填稳定 Center HTTPS Origin |
+| [x] | P1-AT-10 | 独立 Artifact signing secret | 新增 `REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET`，不再默认复用 MCP/Admin Token；密钥轮换和旧 URL 兼容需单独验收 |
+| [x] | P1-AT-11 | 加强 `download_url` DNS rebinding 防护 | 请求前后重复解析公共地址集合、禁止重定向并拒绝解析变化；无法在 JDK HttpClient 中绝对 pin socket，需安全回归 |
+| [x] | P1-AT-12 | 调整 `artifact_get` annotations | `artifact_get` 不再错误标为 destructive/open-world；仍保留异步任务语义，不伪称完全无副作用 |
+| [x] | P1-AT-13 | 区分 quota reserved/transferred bytes | Console/API 增加 `reserved_transfer_bytes` 与 `transferred_transfer_bytes`，旧 `transfer_bytes` 保留为预约兼容别名 |
+| [x] | P1-AT-14 | Viewer 使用标准 tool-result 通知 | 优先使用 `window.openai.onToolResult`，保留旧 `onToolOutput` 兼容回退 |
+| [x] | P1-AT-15 | “保存到 ChatGPT” | Viewer 在宿主提供 `uploadFile()` 时显示按钮，下载当前 Artifact 后回写当前会话文件对象；真实 Web 端能力需验收 |
+| [x] | P2-AT-05 | Artifact URL 改成 opaque token | 公共 URL 使用加密不透明访问票据，主体/session/purpose 不再作为查询参数写入代理日志；旧签名 URL 保留滚动兼容 |
+| [x] | P2-AT-06 | 源文件 copy 前后变化检测 | Agent 快照 copy 前后比较 size/mtime，变化则拒绝上传；内容级极端竞态仍由快照哈希和现场回归覆盖 |
 
 ## P1：核心生产体验
 
