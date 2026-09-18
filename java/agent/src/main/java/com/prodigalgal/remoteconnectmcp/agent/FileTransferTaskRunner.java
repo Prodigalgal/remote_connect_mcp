@@ -125,7 +125,16 @@ final class FileTransferTaskRunner implements Runnable {
                             && !Files.isRegularFile(snapshotTemp, LinkOption.NOFOLLOW_LINKS)) {
                         throw new IOException("snapshot temporary path is not a regular file");
                     }
+                    var sourceSizeBefore = Files.size(source);
+                    var sourceModifiedBefore = Files.getLastModifiedTime(source, LinkOption.NOFOLLOW_LINKS);
                     Files.copy(source, snapshotTemp, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+                    var sourceSizeAfter = Files.size(source);
+                    var sourceModifiedAfter = Files.getLastModifiedTime(source, LinkOption.NOFOLLOW_LINKS);
+                    if (sourceSizeBefore != sourceSizeAfter
+                            || !sourceModifiedBefore.equals(sourceModifiedAfter)) {
+                        Files.deleteIfExists(snapshotTemp);
+                        throw new IOException("source file changed while creating transfer snapshot");
+                    }
                     try {
                         Files.move(snapshotTemp, snapshot, StandardCopyOption.ATOMIC_MOVE);
                     } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {

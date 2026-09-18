@@ -10,6 +10,7 @@ public class CenterTokenConfig {
     private final String enrollmentToken;
     private final String mcpToken;
     private final String adminToken;
+    private final String artifactSigningSecret;
     private final boolean allowSharedEnrollment;
 
     public CenterTokenConfig() {
@@ -19,6 +20,8 @@ public class CenterTokenConfig {
         mcpToken = mcp == null || mcp.isBlank() ? null : mcp.trim();
         var admin = System.getenv("REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN");
         adminToken = admin == null || admin.isBlank() ? null : admin.trim();
+        var artifact = System.getenv("REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET");
+        artifactSigningSecret = artifact == null || artifact.isBlank() ? null : artifact.trim();
         allowSharedEnrollment = Boolean.parseBoolean(System.getenv().getOrDefault("RCM_CENTER_ALLOW_SHARED_ENROLLMENT", "false"));
     }
 
@@ -48,9 +51,8 @@ public class CenterTokenConfig {
 
     /** Key used only to sign short-lived browser artifact URLs. */
     public String artifactDownloadSecret() {
-        if (mcpToken != null && !mcpToken.isBlank()) return mcpToken;
-        if (adminToken != null && !adminToken.isBlank()) return adminToken;
-        throw new IllegalStateException("an MCP or admin token is required to sign artifact URLs");
+        if (artifactSigningSecret != null && !artifactSigningSecret.isBlank()) return artifactSigningSecret;
+        throw new IllegalStateException("REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET is required to sign artifact URLs");
     }
 
     private static boolean accepts(String expectedValue, String candidate) {

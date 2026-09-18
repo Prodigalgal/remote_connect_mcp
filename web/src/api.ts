@@ -698,6 +698,8 @@ export type Quota = {
   maxSessions: number
   transferBytes: number
   maxTransferBytes: number
+  reservedTransferBytes: number
+  transferredTransferBytes: number
 }
 
 function mapToken(item: Record<string, unknown>): McpToken {
@@ -731,4 +733,4 @@ export async function revokeMachine(token: string, payload: unknown): Promise<vo
 export async function revokeProject(token: string, payload: unknown): Promise<void> { await request('/api/v1/admin/access/projects', token, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
 export async function listExecutionSessions(token: string, principalId = ''): Promise<ExecutionSession[]> { const suffix = principalId.trim() ? `&principalId=${encodeURIComponent(principalId.trim())}` : ''; const body = await request<{ items?: Array<Record<string, unknown>> }>(`/api/v1/admin/execution-sessions?offset=0&limit=200${suffix}`, token); return (body.items ?? []).map(mapSession) }
 export async function closeExecutionSession(token: string, principalId: string, sessionId: string): Promise<void> { await request('/api/v1/admin/execution-sessions/close', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ principal_id: principalId, session_id: sessionId }) }) }
-export async function getQuota(token: string, principalId: string): Promise<Quota> { const body = await request<Record<string, unknown>>(`/api/v1/admin/quotas/${encodeURIComponent(principalId)}`, token); return { principalId: String(body.principal_id ?? principalId), activeTasks: Number(body.active_tasks ?? 0), maxActiveTasks: Number(body.max_active_tasks ?? 0), queuedTasks: Number(body.queued_tasks ?? 0), maxQueuedTasks: Number(body.max_queued_tasks ?? 0), activeSessions: Number(body.active_sessions ?? 0), maxSessions: Number(body.max_sessions ?? 0), transferBytes: Number(body.transfer_bytes ?? 0), maxTransferBytes: Number(body.max_transfer_bytes ?? 0) } }
+export async function getQuota(token: string, principalId: string): Promise<Quota> { const body = await request<Record<string, unknown>>(`/api/v1/admin/quotas/${encodeURIComponent(principalId)}`, token); return { principalId: String(body.principal_id ?? principalId), activeTasks: Number(body.active_tasks ?? 0), maxActiveTasks: Number(body.max_active_tasks ?? 0), queuedTasks: Number(body.queued_tasks ?? 0), maxQueuedTasks: Number(body.max_queued_tasks ?? 0), activeSessions: Number(body.active_sessions ?? 0), maxSessions: Number(body.max_sessions ?? 0), transferBytes: Number(body.transfer_bytes ?? body.reserved_transfer_bytes ?? 0), maxTransferBytes: Number(body.max_transfer_bytes ?? 0), reservedTransferBytes: Number(body.reserved_transfer_bytes ?? body.transfer_bytes ?? 0), transferredTransferBytes: Number(body.transferred_transfer_bytes ?? 0) } }

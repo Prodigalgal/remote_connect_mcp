@@ -85,6 +85,9 @@ final class JdbcTaskStore {
         var normalizedOrigin = origin == null ? TaskOrigin.shared() : origin;
         try {
             return transactions.execute(status -> {
+                if (quota != null) {
+                    quota.assertTaskAdmissionInTransaction(normalizedOrigin, taskId, machineId, normalizedKey);
+                }
                 if (normalizedKey != null) {
                     var existing = findByIdempotency(machineId, normalizedOrigin.principalId(), normalizedKey, true);
                     if (existing != null) {

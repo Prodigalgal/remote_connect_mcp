@@ -19,9 +19,11 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
@@ -85,6 +87,7 @@ public final class ArtifactTransferService {
     private final Duration signedUrlTtl;
     private final Duration transferStallTimeout;
     private final Path transferSpoolRoot;
+    private final SecureRandom accessTokenRandom = new SecureRandom();
 
     @Autowired
     public ArtifactTransferService(ObjectProvider<JdbcTemplate> jdbcProvider,
@@ -190,6 +193,7 @@ public final class ArtifactTransferService {
                                             String mimeType, URI downloadUrl, Long expectedBytes,
         String expectedSha256, boolean overwrite) {
         requireRequest(origin, request);
+        requireIdempotencyKey(request);
         validatePath(destinationPath, "destinationPath");
         var safeName = fileNameOrLeaf(fileName, destinationPath);
         validateFileName(safeName);
@@ -198,7 +202,7 @@ public final class ArtifactTransferService {
         var existing = existingCreated(ids.transferId(), origin);
         if (existing != null) return existing;
         if (quota != null) quota.assertTransferAdmission(origin,
-                expectedBytes != null && expectedBytes >= 0 ? expectedBytes : MAX_BYTES);
+                expectedBytes != null && expectedBytes >= 0 ? expectedBytes : MAX_BYTES, ids.transferId());
         // Only a new ingest consumes the host-provided URL.  An idempotent
         // retry after the URL has expired must reuse the durable reservation
         // instead of failing before it can observe the existing transfer.
@@ -361,6 +365,7 @@ public final class ArtifactTransferService {
     public TransferCreated createAgentToWeb(TaskOrigin origin, CreateTaskRequest request,
                                             String sourcePath, String fileName, String mimeType) {
         requireRequest(origin, request);
+        requireIdempotencyKey(request);
         validatePath(sourcePath, "sourcePath");
         var safeName = fileNameOrLeaf(fileName, sourcePath);
         validateFileName(safeName);
@@ -368,7 +373,7 @@ public final class ArtifactTransferService {
         var ids = ids(origin, request.machineId(), request.idempotencyKey(), "", sourcePath);
         var existing = existingCreated(ids.transferId(), origin);
         if (existing != null) return existing;
-        if (quota != null) quota.assertTransferAdmission(origin, MAX_BYTES);
+        if (quota != null) quota.assertTransferAdmission(origin, MAX_BYTES, ids.transferId());
         var action = new FileTransferAction(FileTransferAction.AGENT_TO_WEB, ids.transferId(), ids.artifactId(),
                 sourcePath, "", safeName, safeMime, 0L, "", false);
         var task = tasks.create(withAction(request, action), "mcp", origin);
@@ -878,6 +883,11 @@ public final class ArtifactTransferService {
         return publicUrl(artifactId, origin, "", "download");
     }
 
+    /** Configured HTTPS origin used by MCP Apps CSP metadata and diagnostics. */
+    String publicBaseUrl() {
+        return publicBaseUrl;
+    }
+
     /**
      * Creates a URL bound to the execution session that produced the artifact.
      * A session is intentionally part of the signed subject rather than an
@@ -892,12 +902,16 @@ public final class ArtifactTransferService {
         var expires = Instant.now().plus(signedUrlTtl).getEpochSecond();
         var connection = origin.connectionId() == null ? "" : origin.connectionId();
         if (connection.length() > 256) return "";
-        var subject = signatureSubject(artifactId, origin.principalId(), expires, safePurpose, connection, session);
-        var signature = sign(subject);
+        var token = accessToken(artifactId, origin.principalId(), expires, safePurpose, connection, session);
         var base = publicBaseUrl.isBlank() ? "" : publicBaseUrl;
-        return base + "/artifacts/" + artifactId + "/content?expires=" + expires + "&principal="
-                + encode(origin.principalId()) + "&purpose=" + safePurpose + "&connection=" + encode(connection)
-                + "&session=" + encode(session) + "&signature=" + encode(signature);
+        return base + "/artifacts/" + artifactId + "/content?token=" + encode(token);
+    }
+
+    /** Validate a new opaque access token without exposing principal/session in URLs. */
+    public PublicArtifact openPublic(String token) {
+        var access = decodeAccessToken(token);
+        return openPublic(access.artifactId(), access.expires(), access.principal(), access.connection(),
+                access.session(), access.purpose(), access.signature());
     }
 
     public PublicArtifact openPublic(String artifactId, long expires, String principal, String signature) {
@@ -1024,7 +1038,12 @@ public final class ArtifactTransferService {
                 ON CONFLICT (transfer_id) DO NOTHING
                 """, descriptor.transferId(), descriptor.artifactId(), descriptor.taskId(), origin.principalId(), descriptor.machineId(),
                 descriptor.direction(), destinationPath, descriptor.fileName(), descriptor.mimeType(), expectedBytes, expectedSha256) > 0;
-        return transactions == null ? write.get() : Boolean.TRUE.equals(transactions.execute(status -> write.get()));
+        java.util.function.Supplier<Boolean> guarded = () -> {
+            if (quota != null) quota.assertTransferAdmissionInTransaction(origin, descriptor.transferId(),
+                    expectedBytes > 0 ? expectedBytes : MAX_BYTES);
+            return write.get();
+        };
+        return transactions == null ? guarded.get() : Boolean.TRUE.equals(transactions.execute(status -> guarded.get()));
     }
 
     private void completeInbound(TaskOrigin origin, String machineId, String taskId, Ids ids, String fileName, String mimeType,
@@ -1125,6 +1144,8 @@ public final class ArtifactTransferService {
     private void persistInbound(TaskOrigin origin, TransferDescriptor descriptor, String objectKey, String destinationPath) {
         if (jdbc == null) return;
         Runnable write = () -> {
+            if (quota != null) quota.assertTransferAdmissionInTransaction(origin, descriptor.transferId(),
+                    Math.max(0L, descriptor.bytes()));
             jdbc.update("""
                     INSERT INTO rcm_artifact(artifact_id, principal_id, machine_id, task_id, transfer_id, file_name, mime_type, storage_backend, object_key, bytes, sha256, status, created_at, expires_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
@@ -1145,6 +1166,7 @@ public final class ArtifactTransferService {
     private void persistOutbound(TaskOrigin origin, TransferDescriptor descriptor, String sourcePath) {
         if (jdbc == null) return;
         Runnable write = () -> {
+            if (quota != null) quota.assertTransferAdmissionInTransaction(origin, descriptor.transferId(), MAX_BYTES);
             jdbc.update("""
                     INSERT INTO rcm_file_transfer(transfer_id, artifact_id, task_id, principal_id, machine_id, direction, source_path, destination_path, file_name, mime_type, expected_bytes, expected_sha256, bytes_transferred, status, error_text, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 0, NULL, 0, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -1236,8 +1258,19 @@ public final class ArtifactTransferService {
 
     private Downloaded download(URI uri, Long expectedBytes, String expectedSha256, String transferId) throws IOException {
         try {
+            // Resolve immediately before opening the socket and compare the
+            // host's answers again after the response starts. Redirects are
+            // disabled; a changed answer is treated as a DNS-rebinding
+            // attempt instead of allowing a public URL to pivot to a private
+            // service between validation and download.
+            var resolvedBefore = validateDownloadUrl(uri);
             var request = HttpRequest.newBuilder(uri).timeout(DOWNLOAD_TIMEOUT).header("Accept", "application/octet-stream").GET().build();
             var response = downloader.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            var resolvedAfter = validateDownloadUrl(response.uri());
+            if (!resolvedBefore.equals(resolvedAfter)) {
+                close(response.body());
+                throw new IOException("download URL DNS resolution changed during request");
+            }
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 close(response.body());
                 throw new IOException("download URL returned HTTP " + response.statusCode());
@@ -1465,17 +1498,35 @@ public final class ArtifactTransferService {
         if (origin == null || request == null || request.machineId().isBlank()) throw new IllegalArgumentException("transfer request is incomplete");
     }
 
-    private static void validateDownloadUrl(URI uri) {
+    /**
+     * A transfer has a durable payload and may be retried long after the MCP
+     * request that created it.  Deriving its identity from an empty key makes
+     * every later request for the same path reuse an old transfer forever, so
+     * the file tools require the caller to provide a stable retry key.
+     */
+    private static void requireIdempotencyKey(CreateTaskRequest request) {
+        var key = request == null ? "" : request.idempotencyKey();
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException("idempotency_key is required for file transfers");
+        }
+        if (key.length() > 256) throw new IllegalArgumentException("idempotency_key is too long");
+    }
+
+    private static Set<InetAddress> validateDownloadUrl(URI uri) {
         if (uri == null || !"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
                 || uri.getUserInfo() != null || uri.getFragment() != null) {
             throw new IllegalArgumentException("download_url must be an HTTPS URL");
         }
         try {
+            var addresses = new java.util.LinkedHashSet<InetAddress>();
             for (var address : InetAddress.getAllByName(uri.getHost())) {
                 if (address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress() || address.isSiteLocalAddress()) {
                     throw new IllegalArgumentException("download_url points to a private address");
                 }
+                addresses.add(address);
             }
+            if (addresses.isEmpty()) throw new IllegalArgumentException("download_url host has no public address");
+            return Set.copyOf(addresses);
         } catch (IOException exception) {
             throw new IllegalArgumentException("download_url host cannot be resolved", exception);
         }
@@ -1529,6 +1580,62 @@ public final class ArtifactTransferService {
             mac.init(new javax.crypto.spec.SecretKeySpec(tokens.artifactDownloadSecret().getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
             return Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         } catch (Exception exception) { throw new IllegalStateException("artifact URL signing is unavailable", exception); }
+    }
+
+    private String accessToken(String artifactId, String principal, long expires, String purpose,
+                               String connection, String session) {
+        try {
+            var plain = (artifactId + "\n" + principal + "\n" + expires + "\n" + purpose + "\n"
+                    + connection + "\n" + session).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            var nonce = new byte[12];
+            accessTokenRandom.nextBytes(nonce);
+            var cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, accessKey(), new javax.crypto.spec.GCMParameterSpec(128, nonce));
+            var encrypted = cipher.doFinal(plain);
+            var combined = new byte[nonce.length + encrypted.length];
+            System.arraycopy(nonce, 0, combined, 0, nonce.length);
+            System.arraycopy(encrypted, 0, combined, nonce.length, encrypted.length);
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(combined);
+        } catch (Exception exception) {
+            throw new IllegalStateException("artifact access token encryption is unavailable", exception);
+        }
+    }
+
+    private AccessToken decodeAccessToken(String token) {
+        if (token == null || token.isBlank() || token.length() > 4096) {
+            throw new SecurityException("invalid or expired artifact URL");
+        }
+        try {
+            var combined = Base64.getUrlDecoder().decode(token.trim());
+            if (combined.length < 12 + 16) throw new SecurityException("invalid or expired artifact URL");
+            var nonce = Arrays.copyOfRange(combined, 0, 12);
+            var encrypted = Arrays.copyOfRange(combined, 12, combined.length);
+            var cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(javax.crypto.Cipher.DECRYPT_MODE, accessKey(), new javax.crypto.spec.GCMParameterSpec(128, nonce));
+            var fields = new String(cipher.doFinal(encrypted), java.nio.charset.StandardCharsets.UTF_8).split("\\n", -1);
+            if (fields.length != 6 || fields[0].isBlank() || fields[1].isBlank()
+                    || fields[3].isBlank() || fields[4].length() > 256 || fields[5].length() > 256) {
+                throw new SecurityException("invalid or expired artifact URL");
+            }
+            var expires = Long.parseLong(fields[2]);
+            if (expires < Instant.now().getEpochSecond()) throw new SecurityException("invalid or expired artifact URL");
+            var signature = sign(signatureSubject(fields[0], fields[1], expires, fields[3], fields[4], fields[5]));
+            return new AccessToken(fields[0], expires, fields[1], fields[4], fields[5], fields[3], signature);
+        } catch (SecurityException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new SecurityException("invalid or expired artifact URL", exception);
+        }
+    }
+
+    private javax.crypto.spec.SecretKeySpec accessKey() {
+        try {
+            var digest = MessageDigest.getInstance("SHA-256").digest(
+                    tokens.artifactDownloadSecret().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return new javax.crypto.spec.SecretKeySpec(digest, "AES");
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
     }
 
     private static String encode(String value) { return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8); }
@@ -1654,6 +1761,8 @@ public final class ArtifactTransferService {
     private record AdminArtifactRow(String artifactId, String fileName, String mimeType, long bytes,
                                     String sha256, String status, String objectKey) { }
     private record StoredObject(String objectKey, String status) { }
+    private record AccessToken(String artifactId, long expires, String principal, String connection,
+                               String session, String purpose, String signature) { }
 
     private static final class TransferLock {
         private final Object monitor = new Object();

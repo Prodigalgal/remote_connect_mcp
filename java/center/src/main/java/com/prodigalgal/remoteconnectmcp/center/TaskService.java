@@ -142,7 +142,13 @@ public final class TaskService {
         }
         var origin = requestedOrigin == null ? TaskOrigin.shared() : requestedOrigin;
         var id = "task_" + UUID.randomUUID().toString().replace("-", "");
-        if (quota != null) quota.assertTaskAdmission(origin, id, request.machineId(), request.idempotencyKey());
+        // This is an early, low-cost rejection so a session is not created
+        // for an obviously exhausted principal. JDBC repeats the admission
+        // authoritatively inside JdbcTaskStore's transaction, where the count
+        // and task INSERT share one database lock.
+        if (quota != null) {
+            quota.assertTaskAdmission(origin, id, request.machineId(), request.idempotencyKey());
+        }
         try {
             var machine = agents.findMachine(request.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             var original = request.command();

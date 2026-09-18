@@ -87,10 +87,16 @@ Windows 仍由 `-DesktopEnabled` 创建按用户登录触发的 Scheduled Task�
 RCM_CENTER_PERSISTENCE_MODE=postgres
 RCM_CENTER_REQUIRE_DURABLE_STORAGE=true
 RCM_CENTER_LIQUIBASE_ENABLED=false
+RCM_CENTER_PUBLIC_BASE_URL=https://remote-connect-mcp-center.example.invalid
 RCM_CENTER_DATABASE_URL=jdbc:postgresql://<host>:5432/remote_connect_mcp
 RCM_CENTER_DATABASE_USERNAME=<user>
 RCM_CENTER_DATABASE_PASSWORD=<password>
 ```
+
+`RCM_CENTER_PUBLIC_BASE_URL` 必须是用户/ChatGPT Web 能访问的稳定 HTTPS Center
+Origin；它用于签名 Artifact URL 和 MCP Apps Viewer 的 CSP 元数据。Artifact URL
+签名使用独立的 `REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET`，不要复用 MCP
+或 Admin Token。
 
 Java 发布工作流使用 `java-vX.Y.Z` 作为 Git Tag，但升级活动中填写的版本保持
 `vX.Y.Z`。因此生产 Center 默认使用 `RCM_CENTER_RELEASE_TAG_PREFIX=java-`，它只影响

@@ -196,7 +196,7 @@ public class McpConfiguration {
                 .strictToolNameValidation(true)
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
-                .resources(artifactViewerResource())
+                .resources(artifactViewerResource(transfers))
                 .tools(toolSpecs(agents, tasks, projects, access, transfers, mcpVirtualThreadExecutor))
                 .build();
         return server;
@@ -208,10 +208,18 @@ public class McpConfiguration {
      * artifact handle while a capable host can render/download the file on
      * demand.  The component also degrades to a plain link in older hosts.
      */
-    private static McpServerFeatures.AsyncResourceSpecification artifactViewerResource() {
+    private static McpServerFeatures.AsyncResourceSpecification artifactViewerResource(ArtifactTransferService transfers) {
+        var domains = viewerDomains(transfers == null ? "" : transfers.publicBaseUrl());
+        var csp = new LinkedHashMap<String, Object>();
+        csp.put("connect_domains", domains);
+        csp.put("resource_domains", domains);
+        var resourceMeta = new LinkedHashMap<String, Object>();
+        resourceMeta.put("openai/widgetCSP", csp);
+        if (!domains.isEmpty()) resourceMeta.put("openai/widgetDomain", domains.getFirst());
         var resource = McpSchema.Resource.builder(ARTIFACT_VIEWER_URI, "Remote Connect Artifact Viewer")
                 .description("Render an artifact file object returned by artifact_read")
                 .mimeType("text/html;profile=mcp-app")
+                .meta(resourceMeta)
                 .build();
         return new McpServerFeatures.AsyncResourceSpecification(resource, (exchange, request) ->
                 Mono.fromSupplier(() -> McpSchema.ReadResourceResult.builder(List.of(
@@ -224,7 +232,7 @@ public class McpConfiguration {
             <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
             <title>Remote Connect Artifact</title>
             <style>body{font:14px system-ui,sans-serif;margin:16px;color:#172033;background:#fff}main{display:grid;gap:10px}header{font-weight:600;word-break:break-word}small{color:#65718a}img,video,iframe{max-width:100%;max-height:70vh;border:1px solid #d9dfeb;border-radius:6px}pre{white-space:pre-wrap;max-height:60vh;overflow:auto;background:#f5f7fb;padding:10px;border-radius:6px}a{color:#1769e0}button{padding:6px 10px;border:1px solid #b7c2d6;border-radius:5px;background:#f5f7fb;cursor:pointer}</style></head>
-            <body><main><header id="name">Artifact</header><small id="meta"></small><section id="preview"></section><a id="download" rel="noreferrer" download>Download</a><button id="refresh" hidden>Refresh</button></main>
+            <body><main><header id="name">Artifact</header><small id="meta"></small><section id="preview"></section><a id="download" rel="noreferrer" download>Download</a><button id="save" hidden>Save to ChatGPT</button><button id="refresh" hidden>Refresh</button></main>
             <script>
             (function(){
               const output=()=>window.openai&&window.openai.toolOutput?window.openai.toolOutput:null;
@@ -241,9 +249,25 @@ public class McpConfiguration {
                 else if(mime.startsWith('text/')||mime.includes('json')||mime.includes('xml')){fetch(url,{credentials:'omit'}).then(r=>r.text()).then(t=>{p.innerHTML='<pre>'+esc(t.slice(0,262144))+'</pre>'}).catch(()=>{p.innerHTML='<small>Preview unavailable; use download.</small>'})}
                 else p.innerHTML='<small>This file type is download-only.</small>';
                  const a=document.querySelector('#download');a.href=downloadUrl;a.download=name;a.textContent='Download '+name;
-              }; render(); if(window.openai&&window.openai.onToolOutput)window.openai.onToolOutput(render);
+                 const save=document.querySelector('#save');
+                 if(save){save.hidden=!downloadUrl||!(window.openai&&typeof window.openai.uploadFile==='function');save.onclick=async()=>{save.disabled=true;try{const response=await fetch(downloadUrl,{credentials:'omit'});if(!response.ok)throw new Error('download failed');const blob=await response.blob();const file=new File([blob],name,{type:mime});await window.openai.uploadFile(file);save.textContent='Saved to ChatGPT';}catch(error){save.textContent='Save failed';}finally{save.disabled=false;}};}
+              };
+              render();
+              const notify=window.openai&&window.openai.onToolResult?window.openai.onToolResult:window.openai&&window.openai.onToolOutput;
+              if(typeof notify==='function')notify(render);
             })();</script></body></html>
             """;
+
+    private static List<String> viewerDomains(String baseUrl) {
+        if (baseUrl == null || baseUrl.isBlank()) return List.of();
+        try {
+            var uri = URI.create(baseUrl);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null) return List.of();
+            return List.of(uri.getScheme().toLowerCase(java.util.Locale.ROOT) + "://" + uri.getAuthority());
+        } catch (IllegalArgumentException ignored) {
+            return List.of();
+        }
+    }
 
     private static List<McpServerFeatures.AsyncToolSpecification> toolSpecs(AgentRegistry agents, TaskService tasks,
                                                                              ProjectService projects,
@@ -373,7 +397,7 @@ public class McpConfiguration {
                                  Map.entry("session_id", string("optional stable user/session identifier")),
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
-                                List.of("machine_id", "file", "destination_path")),
+                                List.of("machine_id", "file", "destination_path", "idempotency_key")),
                         Map.of("openai/fileParams", List.of("file")),
                         (exchange, request) -> { requireScope(exchange, "mcp:execute"); return artifactPut(agents, projects, access, transfers, origin(exchange), request); }, scheduler),
                 tool("artifact_get", "Transfer one Agent file back to ChatGPT. Returns a compact file handle and a task ID; call artifact_read after task completion.",
@@ -393,7 +417,7 @@ public class McpConfiguration {
                                  Map.entry("session_id", string("optional stable user/session identifier")),
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
-                                List.of("machine_id", "source_path")),
+                                List.of("machine_id", "source_path", "idempotency_key")),
                         (exchange, request) -> { requireScope(exchange, "mcp:execute"); return artifactGet(agents, projects, access, transfers, origin(exchange), request); }, scheduler),
                 tool("artifact_read", "Read compact artifact metadata and a short-lived downloadable file object. It never inlines binary content.",
                         schema(Map.of("artifact_id", string("artifact ID returned by artifact_get or artifact_put"),
@@ -417,9 +441,9 @@ public class McpConfiguration {
                 .readOnlyHint(name.equals("machines_list") || name.equals("machine_info") || name.equals("task_wait")
                         || name.equals("task_output") || name.equals("artifact_read"))
                 .destructiveHint(name.equals("command_start") || name.equals("task_cancel") || name.equals("project")
-                        || name.equals("artifact_put") || name.equals("artifact_get"))
+                        || name.equals("artifact_put"))
                 .openWorldHint(name.equals("command_start") || name.equals("project")
-                        || name.equals("artifact_put") || name.equals("artifact_get"))
+                        || name.equals("artifact_put"))
                 .build();
         var toolBuilder = McpSchema.Tool.builder(name)
                 .description(description)

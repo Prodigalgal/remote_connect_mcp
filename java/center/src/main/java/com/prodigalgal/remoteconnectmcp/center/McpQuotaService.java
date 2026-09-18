@@ -105,6 +105,44 @@ public final class McpQuotaService {
         }
     }
 
+    /**
+     * Database-backed task admission used from inside JdbcTaskStore's insert
+     * transaction.  The advisory lock is scoped to the principal and held
+     * until that transaction commits, so the count and the task INSERT cannot
+     * be separated by a concurrent Center request.  This deliberately does
+     * not create a second quota table: PostgreSQL remains the sole task fact.
+     */
+    boolean assertTaskAdmissionInTransaction(TaskOrigin origin, String taskId,
+                                             String machineId, String idempotencyKey) {
+        if (origin == null || origin.isShared() || jdbc == null) return false;
+        var principal = origin.principalId();
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+                ps -> ps.setString(1, principal), rs -> null);
+        var key = idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey.trim();
+        if (key != null && machineId != null && !machineId.isBlank()) {
+            var existing = jdbc.queryForObject("""
+                    SELECT EXISTS (SELECT 1 FROM rcm_task
+                                    WHERE agent_id = ? AND principal_id = ? AND idempotency_key = ?)
+                    """, Boolean.class, machineId.trim(), principal, key);
+            if (Boolean.TRUE.equals(existing)) return true;
+        }
+        var active = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM rcm_task
+                 WHERE principal_id = ? AND status IN ('dispatching', 'running', 'cancel_requested')
+                """, Long.class, principal);
+        var queued = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM rcm_task
+                 WHERE principal_id = ? AND status = 'queued'
+                """, Long.class, principal);
+        if ((active == null ? 0 : active) >= maxActiveTasks) {
+            throw new IllegalStateException("principal active task quota exceeded");
+        }
+        if ((queued == null ? 0 : queued) >= maxQueuedTasks) {
+            throw new IllegalStateException("principal queued task quota exceeded");
+        }
+        return false;
+    }
+
     /** Move a memory-mode task into the active bucket after dispatch. */
     public void markTaskActive(TaskOrigin origin, String taskId) {
         if (origin == null || origin.isShared() || jdbc != null || taskId == null || taskId.isBlank()) return;
@@ -180,9 +218,19 @@ public final class McpQuotaService {
 
     /** Check durable transfer bytes before opening a remote input stream. */
     public void assertTransferAdmission(TaskOrigin origin, long expectedBytes) {
+        assertTransferAdmission(origin, expectedBytes, null);
+    }
+
+    /** Check a transfer while allowing an idempotent existing transfer replay. */
+    public void assertTransferAdmission(TaskOrigin origin, long expectedBytes, String transferId) {
         if (origin == null || origin.isShared() || jdbc == null) return;
         if (expectedBytes < 0 || expectedBytes > maxTransferBytes) {
             throw new IllegalStateException("principal transfer-byte quota exceeded");
+        }
+        if (transferId != null && !transferId.isBlank()) {
+            var existing = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM rcm_file_transfer WHERE transfer_id = ? AND principal_id = ?)",
+                    Boolean.class, transferId.trim(), origin.principalId());
+            if (Boolean.TRUE.equals(existing)) return;
         }
         var used = jdbc.queryForObject("""
                 SELECT COALESCE(SUM(CASE WHEN expected_bytes = 0 THEN ?
@@ -190,6 +238,31 @@ public final class McpQuotaService {
                   FROM rcm_file_transfer
                  WHERE principal_id = ? AND status IN ('pending','ready','delivering')
                 """, Long.class, ArtifactStore.MAX_STREAM_BYTES, origin.principalId());
+        var current = used == null ? 0L : Math.max(0L, used);
+        if (current > maxTransferBytes - expectedBytes) {
+            throw new IllegalStateException("principal transfer-byte quota exceeded");
+        }
+    }
+
+    /** Authoritative transfer admission used inside the transfer-row transaction. */
+    void assertTransferAdmissionInTransaction(TaskOrigin origin, String transferId, long expectedBytes) {
+        if (origin == null || origin.isShared() || jdbc == null) return;
+        if (expectedBytes < 0 || expectedBytes > maxTransferBytes) {
+            throw new IllegalStateException("principal transfer-byte quota exceeded");
+        }
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+                ps -> ps.setString(1, origin.principalId()), rs -> null);
+        if (transferId != null && !transferId.isBlank()) {
+            var existing = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM rcm_file_transfer WHERE transfer_id = ? AND principal_id = ?)",
+                    Boolean.class, transferId.trim(), origin.principalId());
+            if (Boolean.TRUE.equals(existing)) return;
+        }
+        var used = jdbc.queryForObject("""
+                SELECT COALESCE(SUM(CASE WHEN expected_bytes = 0 THEN 4294967296
+                                         ELSE GREATEST(expected_bytes, bytes_transferred) END), 0)
+                  FROM rcm_file_transfer
+                 WHERE principal_id = ? AND status IN ('pending','ready','delivering')
+                """, Long.class, origin.principalId());
         var current = used == null ? 0L : Math.max(0L, used);
         if (current > maxTransferBytes - expectedBytes) {
             throw new IllegalStateException("principal transfer-byte quota exceeded");
@@ -241,11 +314,21 @@ public final class McpQuotaService {
         long queued = 0;
         long sessions = 0;
         long transferBytes = 0;
+        long reservedTransferBytes = 0;
+        long transferredTransferBytes = 0;
         if (jdbc != null && !principal.isBlank()) {
             active = value(jdbc.queryForObject("SELECT COUNT(*) FROM rcm_task WHERE principal_id = ? AND status IN ('dispatching','running','cancel_requested')", Long.class, principal));
             queued = value(jdbc.queryForObject("SELECT COUNT(*) FROM rcm_task WHERE principal_id = ? AND status = 'queued'", Long.class, principal));
             sessions = value(jdbc.queryForObject("SELECT COUNT(*) FROM rcm_execution_session WHERE principal_id = ? AND status = 'active' AND expires_at > CURRENT_TIMESTAMP", Long.class, principal));
-            transferBytes = value(jdbc.queryForObject("SELECT COALESCE(SUM(bytes_transferred),0) FROM rcm_file_transfer WHERE principal_id = ? AND status IN ('pending','ready','delivering')", Long.class, principal));
+            reservedTransferBytes = value(jdbc.queryForObject("""
+                    SELECT COALESCE(SUM(CASE WHEN expected_bytes = 0
+                                             THEN 4294967296
+                                             ELSE GREATEST(expected_bytes, bytes_transferred) END), 0)
+                      FROM rcm_file_transfer
+                     WHERE principal_id = ? AND status IN ('pending','ready','delivering')
+                    """, Long.class, principal));
+            transferredTransferBytes = value(jdbc.queryForObject("SELECT COALESCE(SUM(bytes_transferred),0) FROM rcm_file_transfer WHERE principal_id = ? AND status IN ('pending','ready','delivering')", Long.class, principal));
+            transferBytes = reservedTransferBytes;
         } else if (!principal.isBlank()) {
             var reservations = memoryReservations.get(principal);
             var activeSet = memoryActiveTasks.get(principal);
@@ -255,7 +338,8 @@ public final class McpQuotaService {
             sessions = sessionSet == null ? 0 : sessionSet.size();
         }
         return new QuotaView(principal, active, maxActiveTasks, queued, maxQueuedTasks,
-                sessions, maxSessions, transferBytes, maxTransferBytes);
+                sessions, maxSessions, transferBytes, maxTransferBytes,
+                reservedTransferBytes, transferredTransferBytes);
     }
 
     int maxActiveTasks() {
@@ -264,7 +348,17 @@ public final class McpQuotaService {
 
     public record QuotaView(String principalId, long activeTasks, int maxActiveTasks,
                             long queuedTasks, int maxQueuedTasks, long activeSessions,
-                            int maxSessions, long transferBytes, long maxTransferBytes) { }
+                            int maxSessions, long transferBytes, long maxTransferBytes,
+                            long reservedTransferBytes, long transferredTransferBytes) {
+        /** Compatibility shape for older Console clients. */
+        public QuotaView(String principalId, long activeTasks, int maxActiveTasks,
+                         long queuedTasks, int maxQueuedTasks, long activeSessions,
+                         int maxSessions, long transferBytes, long maxTransferBytes) {
+            this(principalId, activeTasks, maxActiveTasks, queuedTasks, maxQueuedTasks,
+                    activeSessions, maxSessions, transferBytes, maxTransferBytes,
+                    transferBytes, transferBytes);
+        }
+    }
 
     private static long value(Long value) {
         return value == null ? 0L : Math.max(0L, value);

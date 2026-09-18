@@ -52,6 +52,11 @@ spec:
               value: "604800"
             - name: RCM_CENTER_ARTIFACT_URL_TTL_SECONDS
               value: "900"
+            # Public origin used in signed artifact URLs and MCP Apps CSP
+            # metadata. Production overlays must replace this example value
+            # with the stable HTTPS Center hostname.
+            - name: RCM_CENTER_PUBLIC_BASE_URL
+              value: https://remote-connect-mcp-center.example.invalid
             - name: RCM_CENTER_TRANSFER_MAX_CONCURRENT
               value: "4"
             - name: RCM_CENTER_TRANSFER_MAX_PER_PRINCIPAL
@@ -101,6 +106,11 @@ spec:
                 secretKeyRef:
                   name: remote-connect-mcp-java-secrets
                   key: admin-token
+            - name: REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: remote-connect-mcp-java-secrets
+                  key: artifact-signing-secret
           readinessProbe:
             httpGet:
               path: /api/v1/readyz
