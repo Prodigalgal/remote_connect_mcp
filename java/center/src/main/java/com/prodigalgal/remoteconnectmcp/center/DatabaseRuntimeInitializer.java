@@ -44,21 +44,29 @@ public final class DatabaseRuntimeInitializer
         var liquibaseEnabled = Boolean.parseBoolean(setting(environment,
                 "RCM_CENTER_LIQUIBASE_ENABLED", null, "true"));
         var artifactBackend = setting(environment, "RCM_CENTER_ARTIFACT_STORE", "rcm.artifact.store", "filesystem").trim();
+        ArtifactStore configuredStore;
         if ("filesystem".equalsIgnoreCase(artifactBackend)) {
             var artifactRoot = setting(environment, "RCM_CENTER_ARTIFACT_ROOT", null, defaultArtifactRoot()).trim();
             if (artifactRoot.isEmpty()) throw new IllegalStateException("RCM_CENTER_ARTIFACT_ROOT is required in postgres mode");
-            register(registry, "artifactStore", FileSystemArtifactStore.class,
-                    () -> new FileSystemArtifactStore(Path.of(artifactRoot)), null);
+            configuredStore = new FileSystemArtifactStore(Path.of(artifactRoot));
         } else if ("http".equalsIgnoreCase(artifactBackend)) {
             var baseUrl = requiredSetting(environment, "RCM_CENTER_ARTIFACT_HTTP_BASE_URL", "rcm.artifact.http.base-url");
             var token = setting(environment, "RCM_CENTER_ARTIFACT_HTTP_TOKEN", "rcm.artifact.http.token", "");
             var timeout = parseDurationSeconds(setting(environment, "RCM_CENTER_ARTIFACT_HTTP_TIMEOUT_SECONDS",
                     "rcm.artifact.http.timeout-seconds", "30"));
-            register(registry, "artifactStore", HttpArtifactStore.class,
-                    () -> new HttpArtifactStore(URI.create(baseUrl), token, timeout), null);
+            configuredStore = new HttpArtifactStore(URI.create(baseUrl), token, timeout);
         } else {
             throw new IllegalStateException("RCM_CENTER_ARTIFACT_STORE must be filesystem or http");
         }
+        if (Boolean.parseBoolean(setting(environment, "RCM_CENTER_ARTIFACT_DEDUP_ENABLED", null, "false"))) {
+            configuredStore = new ContentAddressedArtifactStore(configuredStore);
+        }
+        if ("gzip".equalsIgnoreCase(setting(environment, "RCM_CENTER_ARTIFACT_COMPRESSION", null, "off"))) {
+            var spool = setting(environment, "RCM_CENTER_TRANSFER_SPOOL_ROOT", null, defaultSpoolRoot()).trim();
+            configuredStore = new GzipArtifactStore(configuredStore, Path.of(spool));
+        }
+        var artifactStore = configuredStore;
+        register(registry, "artifactStore", ArtifactStore.class, () -> artifactStore, null);
         register(registry, "dataSource", HikariDataSource.class,
                 () -> DatabaseConfiguration.dataSource(url, username, password), "close");
         register(registry, "jdbcTemplate", JdbcTemplate.class,
@@ -108,5 +116,9 @@ public final class DatabaseRuntimeInitializer
         return System.getProperty("os.name", "").toLowerCase().contains("win")
                 ? Path.of(System.getenv().getOrDefault("ProgramData", "."), "remote-connect-mcp-center", "artifacts").toString()
                 : "/var/lib/remote-connect-mcp-center/artifacts";
+    }
+
+    private static String defaultSpoolRoot() {
+        return Path.of(System.getProperty("java.io.tmpdir", "."), "remote-connect-mcp-transfer").toString();
     }
 }

@@ -19,6 +19,8 @@ public final class RemoteConnectCenterRuntimeHints implements RuntimeHintsRegist
         hints.reflection().registerType(ReleaseCatalogService.CatalogView.class, recordMembers);
         hints.reflection().registerType(ReleaseCatalogService.ReleaseView.class, recordMembers);
         hints.reflection().registerType(ReleaseCatalogService.ReleaseAssetView.class, recordMembers);
+        hints.reflection().registerType(ReleaseManifestService.class, recordMembers);
+        hints.reflection().registerType(ReleaseManifestService.ManifestWire.class, recordMembers);
         // MCP's JSON error mapper inspects Throwable#getCause when a client
         // sends a malformed session/request.  Register the base Throwable
         // methods so Native Image returns a real JSON-RPC error instead of a

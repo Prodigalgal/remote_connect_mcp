@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AdminApiError, cancelTask, closeExecutionSession, controlUpgrade, createProjectWorktree, createTask, createUpgrade, getMachineConfig, getQuota, grantMachine, grantProject, issueEnrollment, issueMcpToken, listAudit, listAuditPage, listExecutionSessions, listMachineGrants, listMcpTokens, listMachines, listMachinesPage, listProjectMembers, listProjects, listProjectsPage, listReleases, listTasks, listTasksPage, listUpgrades, listUpgradesPage, purgeAudit, readTaskArtifact, readTaskOutput, registerProject, removeProject, removeProjectWorktree, revokeMachine, revokeMcpToken, revokeProject, retryUpgradeTarget, rollbackMachineConfig, runProjectGit, updateMachineConfig, waitForAdminChange, type AgentConfig, type AuditEvent, type ExecutionSession, type Machine, type McpToken, type MachineGrant, type ProjectMember, type PageResult, type Project, type Quota, type ReleaseCatalog, type Task, type UpgradeCampaign } from './api'
+import { AdminApiError, cancelTask, closeExecutionSession, controlUpgrade, createProjectWorktree, createTask, createUpgrade, deleteArtifact, extendArtifactRetention, getMachineConfig, getQuota, grantMachine, grantProject, issueEnrollment, issueMcpToken, listArtifacts, listAudit, listAuditPage, listExecutionSessions, listMachineGrants, listMcpTokens, listMachines, listMachinesPage, listProjectMembers, listProjects, listProjectsPage, listReleaseComponents, listReleases, listTasks, listTasksPage, listUpgrades, listUpgradesPage, purgeAudit, readTaskArtifact, readTaskOutput, registerProject, removeProject, removeProjectWorktree, revokeMachine, revokeMcpToken, revokeProject, retryUpgradeTarget, rollbackMachineConfig, runProjectGit, updateMachineConfig, waitForAdminChange, type AgentConfig, type ArtifactAdmin, type AuditEvent, type ExecutionSession, type Machine, type McpToken, type MachineGrant, type ProjectMember, type PageResult, type Project, type Quota, type ReleaseCatalog, type Task, type UpgradeCampaign, type UpgradeComponentCatalog } from './api'
 
-type Page = 'overview' | 'machines' | 'projects' | 'tasks' | 'audit' | 'enrollment' | 'access' | 'upgrades' | 'settings'
+type Page = 'overview' | 'machines' | 'projects' | 'tasks' | 'artifacts' | 'audit' | 'enrollment' | 'access' | 'upgrades' | 'settings'
 
 const nav: Array<{ id: Page; label: string; icon: string; group: string }> = [
   { id: 'overview', label: '总览', icon: '⌂', group: '工作台' },
   { id: 'machines', label: '机器与 Agent', icon: '▦', group: '资源管理' },
   { id: 'projects', label: '项目与 Worktree', icon: '⌘', group: '资源管理' },
   { id: 'tasks', label: '任务记录', icon: '≡', group: '执行记录' },
+  { id: 'artifacts', label: '文件与工件', icon: '▣', group: '执行记录' },
   { id: 'audit', label: '审计日志', icon: '▤', group: '执行记录' },
   { id: 'enrollment', label: '注册令牌', icon: '♢', group: '安全' },
   { id: 'access', label: '访问控制', icon: '♙', group: '安全' },
@@ -230,6 +231,7 @@ function App() {
           {page === 'machines' && <Machines rows={liveMachines} token={adminToken} onEnroll={() => setPage('enrollment')} query={search} />}
           {page === 'projects' && <Projects rows={liveProjects} machines={liveMachines ?? []} token={adminToken} onRefresh={() => void refresh()} query={search} />}
           {page === 'tasks' && <Tasks rows={liveTasks} machines={liveMachines ?? []} projects={liveProjects ?? []} adminToken={adminToken} onRefresh={() => void refresh()} query={search} />}
+          {page === 'artifacts' && <Artifacts token={adminToken} machines={liveMachines ?? []} query={search} />}
           {page === 'audit' && <Audit rows={liveAudit} machines={liveMachines ?? []} token={adminToken} onRefresh={() => void refresh()} query={search} />}
           {page === 'enrollment' && <Enrollment adminToken={adminToken} />}
           {page === 'access' && <AccessControl token={adminToken} machines={liveMachines ?? []} projects={liveProjects ?? []} />}
@@ -403,6 +405,48 @@ function Tasks({ rows, machines, projects, adminToken, onRefresh, query }: { row
     return [task.id, task.machineId, task.kind, task.command, task.cwd, task.status].filter(Boolean).some((value) => String(value).toLocaleLowerCase().includes(needle))
   })
   return <><PageIntro kicker="EXECUTION RECORDS" title="任务记录" action="创建任务" onAction={() => document.getElementById('task-composer')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} /><TaskComposer machines={machines} projects={projects} token={adminToken} onCreated={onRefresh} /><section className="panel task-list"><div className="task-toolbar"><div className="segmented"><button className={filter === 'all' ? 'selected' : ''} onClick={() => setFilter('all')} aria-pressed={filter === 'all'}>全部 <b>{visibleRows.length}</b></button><button className={filter === 'active' ? 'selected' : ''} onClick={() => setFilter('active')} aria-pressed={filter === 'active'}>活动 <b>{visibleRows.filter((task) => !['completed', 'failed', 'canceled'].includes(task.status)).length}</b></button><button className={filter === 'terminal' ? 'selected' : ''} onClick={() => setFilter('terminal')} aria-pressed={filter === 'terminal'}>已结束 <b>{visibleRows.filter((task) => ['completed', 'failed', 'canceled'].includes(task.status)).length}</b></button></div><div className="task-toolbar-actions"><span>{filteredRows.length} 条任务{paged.hasMore ? `（已加载 ${visibleRows.length}）` : ''}</span><button className="secondary" onClick={onRefresh}>刷新</button></div></div>{filteredRows.length > 0 ? filteredRows.map((task) => <TaskRow key={task.id} task={task} token={adminToken} onRefresh={onRefresh} />) : <div className="filtered-empty">没有匹配的任务</div>}{paged.rows && (paged.hasMore || paged.loadingMore) && <div className="pagination-bar"><span>任务按页加载，日志仍通过独立游标读取</span><button className="secondary" onClick={() => void paged.loadMore()} disabled={paged.loadingMore || !paged.hasMore}>{paged.loadingMore ? '加载中…' : paged.hasMore ? '加载下一页' : '已加载全部'}</button></div>}</section></>
+}
+
+function Artifacts({ token, machines, query }: { token: string; machines: Machine[]; query: string }) {
+  const [rows, setRows] = useState<ArtifactAdmin[] | null>(null)
+  const [machineId, setMachineId] = useState('')
+  const [busy, setBusy] = useState('')
+  const [message, setMessage] = useState('')
+  const load = useCallback(async () => {
+    if (!token.trim()) { setRows(null); return }
+    try { setRows((await listArtifacts(token, { machineId }, 0, 100)).items); setMessage('') } catch (error) { setMessage(error instanceof Error ? error.message : '工件加载失败') }
+  }, [token, machineId])
+  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    if (!token.trim()) return
+    const controller = new AbortController()
+    let stopped = false
+    let retryTimer: number | undefined
+    const watch = async () => {
+      let cursor = 0
+      while (!stopped) {
+        try {
+          const change = await waitForAdminChange(token, cursor, 25_000, controller.signal)
+          if (stopped) return
+          cursor = change.cursor
+          if (change.changed) await load()
+        } catch {
+          if (stopped) return
+          await new Promise<void>((resolve) => { retryTimer = window.setTimeout(resolve, 1500) })
+        }
+      }
+    }
+    void watch()
+    return () => { stopped = true; controller.abort(); if (retryTimer !== undefined) window.clearTimeout(retryTimer) }
+  }, [token, load])
+  if (!token.trim()) return <><PageIntro kicker="ARTIFACTS" title="文件与工件" /><section className="panel empty-ready"><h3>等待 Admin Token</h3><p>在系统设置输入 Admin Token 后，这里展示文件传输状态、进度和生命周期。</p></section></>
+  const needle = query.trim().toLocaleLowerCase()
+  const visible = (rows ?? []).filter((item) => !needle || [item.artifactId, item.transferId, item.taskId, item.principalId, item.machineId, item.fileName, item.status, item.transferStatus].filter(Boolean).some((value) => String(value).toLocaleLowerCase().includes(needle)))
+  const action = async (id: string, kind: 'delete' | 'extend' | 'pin') => {
+    setBusy(`${kind}:${id}`); setMessage('')
+    try { if (kind === 'delete') await deleteArtifact(token, id); else if (kind === 'pin') await extendArtifactRetention(token, id, 365 * 24 * 3600, '', 'pinned', true); else await extendArtifactRetention(token, id, 7 * 24 * 3600); await load() } catch (error) { setMessage(error instanceof Error ? error.message : '工件操作失败') } finally { setBusy('') }
+  }
+  return <><PageIntro kicker="ARTIFACTS & TRANSFERS" title="文件与工件" action="刷新" onAction={() => void load()} /><section className="panel form-panel artifact-toolbar"><label>机器筛选<select value={machineId} onChange={(event) => setMachineId(event.target.value)}><option value="">全部机器</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name} · {machine.id}</option>)}</select></label><span className="form-message">{visible.length} 个对象 · 状态和进度来自 Center Transfer metadata</span></section>{message && <p className="form-message" role="alert">{message}</p>}<section className="panel table-panel">{visible.length ? visible.map((item) => { const expected = Math.max(0, item.bytes); const progress = expected > 0 ? Math.min(100, Math.round((item.bytesTransferred / expected) * 100)) : item.transferStatus === 'delivered' ? 100 : 0; return <div className="table-row artifact-row" key={item.artifactId}><span><strong>{item.fileName}</strong><small>{item.artifactId} · {item.mimeType ?? 'application/octet-stream'} · {item.retentionPolicy ?? 'task-bound'}{item.pinned ? ' · pinned' : ''}</small></span><span>{item.transferStatus}<small>{item.bytesTransferred.toLocaleString()} / {expected.toLocaleString()} B</small><span className="progress-track"><i style={{ width: `${progress}%` }} /></span></span><span>{item.machineId ?? '—'}<small>{item.principalId}</small></span><span>{item.expiresAt ? new Date(item.expiresAt).toLocaleString() : '—'}</span><span className="row-actions"><button className="secondary compact-action" onClick={() => void action(item.artifactId, 'extend')} disabled={busy !== ''}>{busy === `extend:${item.artifactId}` ? '处理中…' : '延长 7 天'}</button><button className="secondary compact-action" onClick={() => void action(item.artifactId, 'pin')} disabled={busy !== '' || item.pinned}>{busy === `pin:${item.artifactId}` ? '处理中…' : item.pinned ? '已固定' : '固定'}</button><button className="secondary compact-action danger-action" onClick={() => void action(item.artifactId, 'delete')} disabled={busy !== ''}>{busy === `delete:${item.artifactId}` ? '删除中…' : '删除'}</button></span></div> }) : <div className="filtered-empty">暂无文件工件</div>}</section></>
 }
 
 function TaskComposer({ machines, projects, token, onCreated }: { machines: Machine[]; projects: Project[]; token: string; onCreated: () => void }) {
@@ -686,6 +730,10 @@ function Upgrades({ token, rows, releases, machines, onRefresh, onRefreshRelease
   const [version, setVersion] = useState('')
   const [canary, setCanary] = useState('1')
   const [batch, setBatch] = useState('3')
+  const [componentMode, setComponentMode] = useState<'all' | 'command' | 'selected'>('all')
+  const [componentCatalog, setComponentCatalog] = useState<UpgradeComponentCatalog | null>(null)
+  const [selectedComponents, setSelectedComponents] = useState<Record<string, boolean>>({ 'desktop-companion': true, 'browser-agent': true })
+  const [componentLoading, setComponentLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState('')
   const paged = usePagedTail(rows, 100, (offset, limit) => listUpgradesPage(token, offset, limit))
@@ -696,6 +744,22 @@ function Upgrades({ token, rows, releases, machines, onRefresh, onRefreshRelease
       ?? releases.items[0]
     if (preferred) setVersion(preferred.version)
   }, [releases, version])
+  useEffect(() => {
+    if (!token || !version.trim()) { setComponentCatalog(null); return }
+    let active = true
+    setComponentLoading(true)
+    void listReleaseComponents(token, version.trim()).then((catalog) => {
+      if (!active) return
+      setComponentCatalog(catalog)
+      const names = new Set(Object.values(catalog.components).flat().map((item) => item.component))
+      setSelectedComponents((current) => {
+        const next = { ...current }
+        names.forEach((name) => { if (!(name in next)) next[name] = true })
+        return next
+      })
+    }).catch(() => { if (active) setComponentCatalog(null) }).finally(() => { if (active) setComponentLoading(false) })
+    return () => { active = false }
+  }, [token, version])
   const names = Object.fromEntries(machines.map((machine) => [machine.id, machine.name]))
   const needle = query.trim().toLocaleLowerCase()
   const filteredRows = paged.rows?.filter((campaign) => {
@@ -707,7 +771,17 @@ function Upgrades({ token, rows, releases, machines, onRefresh, onRefreshRelease
     if (!version.trim()) { setMessage('请选择一个已发布 Release 版本'); return }
     setSubmitting(true); setMessage('')
     try {
-      await createUpgrade(token, { version: version.trim(), canary_count: Number(canary) || 1, batch_size: Number(batch) || 3 })
+      const payload: Record<string, unknown> = { version: version.trim(), canary_count: Number(canary) || 1, batch_size: Number(batch) || 3 }
+      if (componentMode !== 'all' && componentCatalog) {
+        const componentPlans: Record<string, unknown[]> = {}
+        Object.entries(componentCatalog.components).forEach(([platform, plans]) => {
+          componentPlans[platform] = componentMode === 'command'
+            ? []
+            : plans.filter((plan) => selectedComponents[plan.component])
+        })
+        payload.component_plans = componentPlans
+      }
+      await createUpgrade(token, payload)
       setMessage('升级活动已创建，Agent 将在下一次心跳中领取任务。')
       setVersion(''); onRefresh()
     } catch (error) { setMessage(error instanceof Error ? error.message : '创建升级活动失败') }
@@ -730,7 +804,9 @@ function Upgrades({ token, rows, releases, machines, onRefresh, onRefreshRelease
         <div className="release-catalog-row"><label>目标 Release<select value={version} onChange={(event) => setVersion(event.target.value)} disabled={!releases?.items.length}><option value="">{releases?.items.length ? '请选择版本' : '等待版本目录'}</option>{releases?.items.map((release) => { const ready = release.assets.filter((asset) => asset.available && asset.checksumAvailable).length; return <option key={release.version} value={release.version}>{release.version}{release.prerelease ? ' · 预发布' : ''} · {ready}/{release.assets.length} 平台资产</option> })}</select></label><button className="secondary release-refresh" onClick={onRefreshReleases} disabled={!token}>刷新目录</button></div>
         <div className="release-catalog-meta">{releases?.refreshedAt && <span>目录刷新：{new Date(releases.refreshedAt).toLocaleString()}</span>}{releases?.stale && <span className="warning">{releases.warning || '目录为缓存数据'}</span>}{releases && !releases.items.length && <span>暂无可选 Java Release；也可以在下方手动填写已知版本。</span>}</div>
         <details className="manual-release"><summary>高级：手动填写版本</summary><input value={version} onChange={(event) => setVersion(event.target.value)} placeholder="例如 v0.1.15" /></details>
-        <div className="composer-grid"><label>首批 canary<input type="number" min="1" value={canary} onChange={(event) => setCanary(event.target.value)} /></label><label>后续批次<input type="number" min="1" value={batch} onChange={(event) => setBatch(event.target.value)} /></label></div>
+         <div className="composer-grid"><label>首批 canary<input type="number" min="1" value={canary} onChange={(event) => setCanary(event.target.value)} /></label><label>后续批次<input type="number" min="1" value={batch} onChange={(event) => setBatch(event.target.value)} /></label></div>
+         <label>组件范围<select value={componentMode} onChange={(event) => setComponentMode(event.target.value as 'all' | 'command' | 'selected')}><option value="all">跟随 Release：command + 可用 companion</option><option value="command">仅升级 command-agent</option><option value="selected">按组件选择</option></select></label>
+         {componentMode === 'selected' && <div className="component-picker">{componentLoading && <span className="muted">正在读取 Release 组件清单…</span>}{componentCatalog && Array.from(new Set(Object.values(componentCatalog.components).flat().map((item) => item.component))).map((component) => <label key={component} className="check-row"><input type="checkbox" checked={selectedComponents[component] !== false} onChange={(event) => setSelectedComponents((current) => ({ ...current, [component]: event.target.checked }))} />{component}</label>)}{!componentLoading && !componentCatalog && <span className="muted">该 Release 没有可用组件清单，将只升级 command-agent。</span>}</div>}
         <div className="composer-actions"><button className="primary" onClick={() => void submit()} disabled={submitting || !token || !version.trim()}>{submitting ? '创建中…' : '开始升级'}</button>{message && <span className="form-message">{message}</span>}</div>
       </section>
       <section className="upgrade-list">
@@ -742,9 +818,9 @@ function Upgrades({ token, rows, releases, machines, onRefresh, onRefreshRelease
             const retryAllowed = campaign.status !== 'completed' && campaign.status !== 'canceled'
             return <article className="panel upgrade-card" key={campaign.id}>
               <div className="upgrade-card-head"><div><span className="mono">{campaign.id}</span><h3>{campaign.version}</h3></div><div className="row"><span className={`state ${campaign.status === 'completed' ? 'good' : campaign.status === 'paused' ? 'bad' : 'accent'}`}><i />{campaign.status}</span>{campaign.status === 'paused' && <button className="secondary" onClick={() => void action(campaign.id, 'resume')}>恢复</button>}{campaign.status === 'running' && <button className="secondary" onClick={() => void action(campaign.id, 'cancel')}>取消</button>}</div></div>
-              <div className="upgrade-meta"><span>目标 <b>{campaign.targets.length}</b> 台</span><span>完成 <b>{done}</b></span>{failed > 0 && <span>失败 <b>{failed}</b></span>}<span>canary {campaign.canaryCount} · 每批 {campaign.batchSize}</span></div>
+              <div className="upgrade-meta"><span>目标 <b>{campaign.targets.length}</b> 台</span><span>完成 <b>{done}</b></span>{failed > 0 && <span>失败 <b>{failed}</b></span>}<span>canary {campaign.canaryCount} · 每批 {campaign.batchSize}</span>{campaign.componentPlans && Object.values(campaign.componentPlans).flat().length > 0 && <span>组件 <b>{Array.from(new Set(Object.values(campaign.componentPlans).flat().map((item) => item.component))).join(' · ')}</b></span>}</div>
               <div className="progress-track"><span style={{ width: `${percent}%` }} /></div>
-              <div className="task-list">{campaign.targets.map((target) => <div className="task-row" key={target.machineId}><div><strong>{names[target.machineId] ?? target.machineId}</strong><span>{target.status}{target.error ? ` · ${target.error}` : ''}</span></div><div className="row"><span className="mono">{target.attempts} 次</span>{target.status === 'failed' && retryAllowed && <button className="secondary compact-action" onClick={() => void retryTarget(campaign, target.machineId)}>重试该机</button>}</div></div>)}</div>
+              <div className="task-list">{campaign.targets.map((target) => <div className="task-row" key={target.machineId}><div><strong>{names[target.machineId] ?? target.machineId}</strong><span>{target.status}{target.error ? ` · ${target.error}` : ''}</span>{target.componentStatuses && Object.keys(target.componentStatuses).length > 0 && <small className="mono">{Object.entries(target.componentStatuses).map(([component, status]) => `${component}:${status}`).join(' · ')}</small>}</div><div className="row"><span className="mono">{target.attempts} 次</span>{target.status === 'failed' && retryAllowed && <button className="secondary compact-action" onClick={() => void retryTarget(campaign, target.machineId)}>重试该机</button>}</div></div>)}</div>
             </article>
           })}
           {paged.rows && (paged.hasMore || paged.loadingMore || paged.loadError) && <div className="pagination-bar"><span>{paged.loadError || '升级活动按页加载，避免在控制台一次展开历史活动'}</span><button className="secondary" onClick={() => void paged.loadMore()} disabled={paged.loadingMore || !paged.hasMore}>{paged.loadingMore ? '加载中…' : paged.hasMore ? '加载下一页' : '已加载全部'}</button></div>}

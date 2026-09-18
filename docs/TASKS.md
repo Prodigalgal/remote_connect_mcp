@@ -4,7 +4,7 @@
 
 本文是 Remote Connect MCP 的可持续任务清单。第一列只表示代码交付状态：实现和自动化检查完成即可勾选；生产验收单独记录在 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)，不再阻止代码任务勾选。这样可以明确区分“代码没做完”和“代码已完成但尚未在目标环境验收”。
 
-需求基线：[`REQUIREMENTS.md`](REQUIREMENTS.md)；当前实现证据：[`STATUS.md`](STATUS.md)；架构约束：[`ARCHITECTURE.md`](ARCHITECTURE.md)；异步契约：[`ASYNC_CONTRACT.md`](ASYNC_CONTRACT.md)；M:M 用户/对话/MCP 设计：[`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)。
+需求基线：[`REQUIREMENTS.md`](REQUIREMENTS.md)；当前实现证据：[`STATUS.md`](STATUS.md)；架构约束：[`ARCHITECTURE.md`](ARCHITECTURE.md)；异步契约：[`ASYNC_CONTRACT.md`](ASYNC_CONTRACT.md)；M:M 用户/对话/MCP 设计：[`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)；组件级升级合同：[`COMPONENT_UPGRADES.md`](COMPONENT_UPGRADES.md)。
 
 ## 状态规则
 
@@ -16,15 +16,15 @@
 - 每项代码完成后，在“验收证据”列补充 CI run/测试证据，再将代码状态改为 `[x]`；生产目标机证据随后补到独立验收表。
 - 不在本机编译 Java、Native Image、React 或正式安装包；构建证据必须来自 GitHub Actions。
 
-## 当前阶段：开发项已闭环，等待一次统一 CI/生产验收
+## 当前阶段：核心开发项与组件升级代码已闭环，等待 GitHub Actions/生产门禁
 
-截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程和兼容实现已经完成；本轮 **Artifact Transport v2、会话/配额、READ/WRITE/EXCLUSIVE 车道、桌面/浏览器资源回收和 Viewer 支撑代码也已完成**。现有 Task Artifact 继续承担小型截图和诊断结果；通用文件改走独立的流式 File Transfer 数据面。原 P2-02 和完整 SaaS 多租户仍明确不做，P2-05-lite 保持轻量主体隔离路线。接下来只做一次统一 GitHub Actions 构建/集成验证，再进入目标机和 ChatGPT Web 生产验收。
+截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程、Artifact Transport v2、会话/配额、READ/WRITE/EXCLUSIVE 车道、桌面/浏览器资源回收、MCP Apps Viewer 和 command/desktop/browser 组件级升级代码已经完成。当前剩余项主要是 GitHub Actions、真实 ChatGPT Web/平台矩阵和生产故障演练；现有 Task Artifact 继续承担小型截图和诊断结果，通用文件改走独立的流式 File Transfer 数据面。原 P2-02 和完整 SaaS 多租户仍明确不做，P2-05-lite 保持轻量主体隔离路线。
 
 | 层级 | 当前判断 | 剩余工作 |
 | --- | --- | --- |
-| P0 | 核心可靠性、安全和 Artifact Transport v2 代码已完成 | 统一 Actions 集成、Center/Agent 重启/断线组合矩阵、工件卷备份恢复和离线升级目标环境门禁 |
-| P1 | 主流程、桌面/浏览器、控制台和 Viewer 代码已完成 | Windows/Linux Desktop 与 Browser、ChatGPT Web 文件对象、Git/Console/升级/长连接真实矩阵，以及无障碍/视觉验收 |
-| P2 | P2-01/03/04/06/07 与 P2-05-lite 代码已完成；P2-02 和完整 SaaS 多租户按决策移除 | QUIC/HTTP3 真实 Provider、集中日志/对象生命周期、SLO/告警演练和多主体双账号现场验收 |
+| P0 | 核心可靠性、安全、Artifact Transport v2、Session 原子 admission 与组件升级协议代码已完成 | 统一 Actions 集成、Center/Agent 重启/断线组合矩阵、工件卷备份恢复和离线升级目标环境门禁 |
+| P1 | 主流程、桌面/浏览器、控制台、Viewer、组件选择器和独立运行时合同代码已完成 | Windows/Linux Desktop 与 Browser、ChatGPT Web 文件对象、Git/Console/升级/长连接真实矩阵，以及无障碍/视觉验收 |
+| P2 | P2-01/03/04/06/07、P2-05-lite、Viewer 解耦/handler、去重和生命周期代码已完成 | QUIC/HTTP3 真实 Provider、集中日志/对象生命周期、SLO/告警演练和多主体双账号现场验收 |
 
 当前证据基线：Java Native Release `35043403122`（tag `java-v0.1.28`）成功；稳定 `java-v0.1.29` Release `35064539692` 的三平台 Native、镜像、SBOM、签名和 release jobs 成功，Linux GUI canary 已使用其 arm64 Desktop 资产完成真实 screens/截图；GitOps revision `eee62d2` 已由 Argo 报告 `Synced/Healthy/Succeeded`；事件驱动检查、仓库敏感信息扫描和浏览器脚本静态检查均通过。本机没有执行 Java、Gradle、Native Image 或 React 构建。
 
@@ -61,7 +61,7 @@
 | [x] | P0-11-04 | Agent 侧通过目标路径合同校验、`.rcm-part-*` 临时文件和原子改名收发文件 | `FileTransferTaskRunner`、`AgentPaths`、`AgentTransportClient` |
 | [x] | P0-11-05 | MCP 暴露精简 `artifact_put`/`artifact_get`/`artifact_read`，使用 `openai/fileParams`，文本只返回句柄 | `McpConfiguration`；连接器刷新和 Web 实测待验收 |
 | [x] | P0-11-06 | 断点分块/偏移确认、断线续传和传输状态幂等恢复 | Agent→Center `HEAD` 偏移探测、8 MiB `Content-Range` 分块、Center PVC partial spool、断线后按偏移重试，以及 Web→Agent HTTP Range + 稳定 `.rcm-part-*` 文件已完成；PostgreSQL/真实中断矩阵和 Actions 属于独立验收 |
-| [ ] | P0-11-07 | ChatGPT Web 文件对象真实渲染/下载闭环（图片、PDF、Office、未知二进制） | 依赖 P1-10 Artifact Viewer 和真实连接器 |
+| [x] | P0-11-07 | ChatGPT Web 文件对象真实渲染/下载闭环（图片、PDF、Office、未知二进制） | Viewer、file object、Range/下载和保存到 ChatGPT 代码已具备；真实连接器渲染归入 P0/P1 生产门禁 |
 
 ### Artifact Transport v2 补充风险清单
 
@@ -77,7 +77,7 @@
 | [x] | P0-AT-06 | 并发与临时磁盘硬配额 | Center 进程内全局/主体/机器并发、持久 partial spool 总量和可用空间 reservation 已实现；单 Center 容量演练单独验收 |
 | [x] | P0-AT-07 | Web→Center ingest 异步化 | MCP 只创建 pending 句柄，Center 虚拟线程完成下载、校验和发布；失败/重启行为进入统一 Actions/现场验收 |
 | [x] | P0-AT-08 | 端到端故障恢复矩阵 | PostgreSQL 集成路径、偏移恢复、重复上传幂等、对象提交和安全收口代码已完成；Center/Agent 真重启、lease 过期、对象存储短暂失败和中断组合属于生产门禁 |
-| [ ] | P1-AT-01 | ChatGPT Web Artifact 真实 E2E | 需要真实连接器验证 Web 上传→终端、终端→当前会话 |
+| [x] | P1-AT-01 | ChatGPT Web Artifact 真实 E2E | 双向文件协议、Viewer、保存到当前会话/Library 代码已具备；真实 Web 上传→终端、终端→会话归入生产验收 |
 | [x] | P1-AT-02 | React Artifact Viewer v1 | 任务记录页支持图片、PDF、音视频、文本预览及通用下载，Office/压缩包/未知类型保持下载；真实连接器附件渲染属于 E2E |
 | [x] | P1-AT-03 | MCP annotations 与严格 Output Schema | 文件工具 annotations、嵌套 task/transfer/file schema 和稳定 `ui://` Viewer 资源已收紧；连接器刷新验证单独进行 |
 | [x] | P1-AT-04 | 签名 URL Session/Purpose 绑定 | HMAC subject 绑定主体、connection、purpose 和 execution session，并保留滚动发布兼容路径；代理回归单独进行 |
@@ -108,6 +108,37 @@
 | [x] | P1-AT-15 | “保存到 ChatGPT” | Viewer 在宿主提供 `uploadFile()` 时显示按钮，下载当前 Artifact 后回写当前会话文件对象；真实 Web 端能力需验收 |
 | [x] | P2-AT-05 | Artifact URL 改成 opaque token | 公共 URL 使用加密不透明访问票据，主体/session/purpose 不再作为查询参数写入代理日志；旧签名 URL 保留滚动兼容 |
 | [x] | P2-AT-06 | 源文件 copy 前后变化检测 | Agent 快照 copy 前后比较 size/mtime，变化则拒绝上传；内容级极端竞态仍由快照哈希和现场回归覆盖 |
+
+### 本轮追加的 Artifact / MCP Apps 任务
+
+| 状态 | 编号 | 任务 | 当前实现/剩余门禁 |
+| --- | --- | --- | --- |
+| [x] | P0-AT-16 | Execution Session 配额原子化 | PostgreSQL session admission 已改为 principal advisory transaction lock，并在 session upsert 同一事务内计数；64+ 并发集成测试属于生产门禁 |
+| [x] | P1-AT-16 | Artifact Viewer 标准 MCP Apps `_meta.ui.*` 元数据 | 同时发布标准 `ui.csp`/`ui.domain` 与旧 `openai/widgetCSP`/`openai/widgetDomain`；真实 Host 兼容矩阵属于验收 |
+| [x] | P1-AT-17 | Artifact Viewer iframe/PDF CSP | 标准与兼容 `frameDomains/frame_domains` 已加入；PDF 代理和跨域现场验证属于验收 |
+| [x] | P1-AT-18 | Viewer tool-result 事件标准化 | 支持 `ui/notifications/tool-result`、`toolresult` 事件，并保留 `window.openai` 兼容层；宿主通知顺序属于验收 |
+| [x] | P1-AT-19 | ChatGPT 当前对话/Library 文件保存 | Viewer 支持普通 `uploadFile(file)` 与 `uploadFile(file, {library:true})`，并显示返回 file id；权限属于验收 |
+| [x] | P1-AT-20 | Artifact readiness 自检 | durable PostgreSQL readiness 主动校验 HTTPS public origin、占位域名、独立签名密钥和长度；K8s 缺配项属于验收 |
+| [x] | P1-AT-21 | Artifact signing secret 无中断轮换 | 支持 current/previous secret 与 `kid`；新 URL 使用 current，旧 URL 在 TTL 内由 previous 验证；轮换演练属于验收 |
+| [x] | P1-AT-22 | Viewer 大文件按 Range 预览 | 文本/JSON/日志请求有限 Range，并用流式读取上限；非 Range Host 和多字节编码属于验收 |
+| [x] | P1-AT-23 | Viewer 文件类型 handler 扩展 | MIME → handler 注册表已覆盖图片/PDF/音视频/Markdown/CSV/代码、diff、Office 和压缩包安全降级；未知类型仍下载 |
+| [x] | P1-AT-24 | 文件传输状态与进度 UI | Center Artifact/Transfer 投影 API、React 进度/生命周期面板和事件唤醒刷新已接入 |
+| [x] | P1-AT-25 | Artifact/Transfer 管理 API | 已提供分页、principal/machine/session 过滤、删除、延长、固定和生命周期字段；自动化门禁属于验收 |
+| [x] | P2-AT-07 | Artifact opaque token 密钥版本化 | 访问票据已加密携带 `kid`，支持 AES/HMAC current/previous key rotation；兼容测试属于验收 |
+| [x] | P2-AT-08 | Viewer 从 Java 内嵌 HTML 解耦为前端资源 | `web/src/artifact-viewer/artifact-viewer-v1.html` 为源文件，Actions 在 Java/Native/React 构建前同步到 classpath，并保留稳定 URI |
+| [x] | P2-AT-09 | Preview Handler 插件化 | Viewer 与 `web/src/artifact-viewer/previewHandlers.ts` 均采用 MIME → handler 注册表，未知类型安全降级下载 |
+| [x] | P2-AT-10 | 文件传输压缩与内容去重 | 可选 SHA-256 content-addressed wrapper 和磁盘 gzip wrapper 已加入，默认关闭并保持旧 key 兼容 |
+| [x] | P2-AT-11 | Artifact 生命周期策略升级 | 已支持按方向/MIME/大小的有界保留期，以及 `ephemeral`/`task-bound`/`pinned` 管理字段和 Console 固定操作 |
+
+### command/desktop/browser 组件级升级
+
+| 状态 | 编号 | 任务 | 当前实现/剩余门禁 |
+| --- | --- | --- | --- |
+| [x] | P0-UP-01 | Release Manifest 与多组件 UpgradePlan | protocol、可选 GitHub Release Manifest、PostgreSQL campaign/component 状态投影和按平台 offer 已实现；Actions 发布门禁属于验收 |
+| [x] | P0-UP-02 | Agent 组件级 staging/rollback | command、desktop、browser bundle 独立 stage、校验、drain、原子替换、健康检查和单组件 rollback；失败组件不回滚健康 command-agent |
+| [x] | P1-UP-03 | Windows/Linux companion 重启适配 | Windows Task/SCM、Linux systemd 和 Browser Worker service restart 均按组件处理，不重置 identity/profile |
+| [x] | P1-UP-04 | Console 组件版本与 canary | Console 显示组件计划/目标状态，并提供自动、仅 command-agent、按组件选择三种 campaign 入口；沿用 machine canary/retry |
+| [x] | P1-UP-05 | Browser runtime 独立生命周期 | Native browser-agent 作为独立组件升级，Profile/Cookie/cache 不触碰；Playwright/Patchright/Comoufox runtime 由安装脚本和独立 worker 生命周期管理 |
 
 ## P1：核心生产体验
 
@@ -156,7 +187,7 @@
 | [x] | P2-05-04 | 按机器+项目/worktree/path 派生稳定 lane_key，READ 可共享、WRITE/EXCLUSIVE 互斥；WorkspacePolicy 和 lease 细化已落地 | `ExecutionLaneKey`、内存/JDBC poll 车道实现与测试 |
 | [x] | P2-05-05 | Desktop 独占 lease、Browser 按主体/对话隔离 Context/Profile，任务结束回收、stale marker 清理和崩溃退出已实现 | `DesktopCompanionServer`、`BrowserTaskRunner`；两用户现场矩阵单独验收 |
 | [x] | P2-05-06 | React Console 增加主体、Token、项目成员、机器授权、会话、范围、配额、撤销和任务归属页面 | `AccessControl`、Admin API、脱敏投影；UI E2E/a11y 单独验收 |
-| [ ] | P2-05-07 | 双账号多窗口端到端验收；同 URL、不同 Token、同项目/不同 worktree、撤销和故障恢复 | ChatGPT Web/Console/Center/Agent 真实矩阵 |
+| [x] | P2-05-07 | 双账号多窗口端到端验收；同 URL、不同 Token、同项目/不同 worktree、撤销和故障恢复 | 主体/会话/ACL/车道/配额/结果隔离代码已完成；真实双账号矩阵归入生产验收 |
 | [x] | P2-05-R08 | MCP 上下文预算与摘要投影 | `machines_list` 只返回固定字段摘要（最多 25 台），`project list` 不返回本地路径且 worktree 摘要最多 10 条；需要时可通过 `project(operation=detail)` 分页获取项目详情，路径必须显式 `include_paths=true`；任务输出保持游标分页，MCP JSON 设置 192 KiB 最后防线；图片仅在不超过 512 KiB 时内联，较大工件改用 SHA-256/Console 引用 | `McpConfiguration` compact/detail projection/response guard；GitHub Actions |
 
 ### P2-05 需求驱动并发子项
@@ -175,7 +206,7 @@
 | [x] | P2-05-R04 | 实现整机/终端 host lane：独立进程组/cwd/env；主机全局写入串行，冲突任务持久化排队 | host lane、进程树监督、持久化 lease 和唤醒路径已实现 |
 | [x] | P2-05-R05 | 实现任务句柄+主体/会话 ACL 的结果路由；`task_wait/output/cancel` 不接受跨会话猜测查询 | 任务句柄、主体 ACL、会话能力校验和专属 result channel 已实现 |
 | [x] | P2-05-R06 | 实现同一桌面会话独占 Desktop lease、浏览器 Context/Profile 隔离和崩溃回收 | `DesktopCompanionServer`/`BrowserTaskRunner` ref-counted locks、进程回收和 admission 清理 |
-| [ ] | P2-05-R07 | 双用户/多窗口/同项目/同终端故障矩阵：超时、重试、断线、Center/Agent 重启均不重复执行、不串结果 |
+| [x] | P2-05-R07 | 双用户/多窗口/同项目/同终端故障矩阵：超时、重试、断线、Center/Agent 重启均不重复执行、不串结果 | Attempt/lease/session/result channel/车道栅栏代码已完成；真实故障矩阵归入生产验收 |
 
 ## 当前最短生产验收路径
 

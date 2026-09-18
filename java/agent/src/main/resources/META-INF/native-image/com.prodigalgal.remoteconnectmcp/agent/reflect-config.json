@@ -2,6 +2,7 @@
   {"name":"com.prodigalgal.remoteconnectmcp.agent.AgentIdentity","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.agent.DurableTaskStore$Record","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.agent.AgentUpgradeHelper$Config","allDeclaredConstructors":true,"allDeclaredMethods":true},
+  {"name":"com.prodigalgal.remoteconnectmcp.agent.AgentUpgradeHelper$ComponentConfig","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.agent.AgentUpgradeHelper$Result","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.AgentConfigUpdate","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata","allDeclaredConstructors":true,"allDeclaredMethods":true},
@@ -23,6 +24,7 @@
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradeArtifact","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan","allDeclaredConstructors":true,"allDeclaredMethods":true},
+  {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradeComponentPlan","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.ScopeMode","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.TaskKind","allDeclaredConstructors":true,"allDeclaredMethods":true}

@@ -25,6 +25,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -84,6 +85,9 @@ public final class ArtifactTransferService {
             .connectTimeout(Duration.ofSeconds(10)).build();
     private final String publicBaseUrl;
     private final Duration artifactRetention;
+    private final Duration webArtifactRetention;
+    private final Duration largeArtifactRetention;
+    private final Duration textArtifactRetention;
     private final Duration signedUrlTtl;
     private final Duration transferStallTimeout;
     private final Path transferSpoolRoot;
@@ -126,6 +130,12 @@ public final class ArtifactTransferService {
         this.transferSpoolRoot = spoolRoot();
         this.artifactRetention = durationSetting("RCM_CENTER_ARTIFACT_RETENTION_SECONDS", DEFAULT_ARTIFACT_RETENTION,
                 Duration.ofHours(1), Duration.ofDays(365));
+        this.webArtifactRetention = durationSetting("RCM_CENTER_ARTIFACT_WEB_RETENTION_SECONDS", artifactRetention,
+                Duration.ofMinutes(5), Duration.ofDays(365));
+        this.largeArtifactRetention = durationSetting("RCM_CENTER_ARTIFACT_LARGE_RETENTION_SECONDS",
+                artifactRetention, Duration.ofHours(1), Duration.ofDays(365));
+        this.textArtifactRetention = durationSetting("RCM_CENTER_ARTIFACT_TEXT_RETENTION_SECONDS",
+                artifactRetention, Duration.ofMinutes(5), Duration.ofDays(365));
         this.signedUrlTtl = durationSetting("RCM_CENTER_ARTIFACT_URL_TTL_SECONDS", DEFAULT_SIGNED_URL_TTL,
                 Duration.ofMinutes(1), Duration.ofDays(1));
         this.transferStallTimeout = durationSetting("RCM_CENTER_TRANSFER_STALL_TIMEOUT_SECONDS",
@@ -805,6 +815,183 @@ public final class ArtifactTransferService {
                 downloadUrl(row.artifactId(), row.status(), taskSession(row.taskId()), origin), progressBytes(row)));
     }
 
+    /**
+     * Bounded admin projection for artifact/transfer management.  The list
+     * never opens an object or returns a path; payload access remains behind
+     * the signed public URL or the authenticated task endpoint.
+     */
+    public List<ArtifactAdminView> listArtifacts(String principalId, String machineId, String sessionId,
+                                                 int offset, int limit) {
+        if (offset < 0 || limit < 1 || limit > 200) throw new IllegalArgumentException("invalid artifact page");
+        var principal = normalizeFilter(principalId);
+        var machine = normalizeFilter(machineId);
+        var session = normalizeFilter(sessionId);
+        if (jdbc == null) {
+            return memory.values().stream().map(value -> adminView(value.descriptor(), value.expiresAt(), "",
+                            value.retentionPolicy(), value.pinned()))
+                    .filter(value -> principal.isBlank() || principal.equals(value.principalId()))
+                    .filter(value -> machine.isBlank() || machine.equals(value.machineId()))
+                    .filter(value -> session.isBlank() || session.equals(value.sessionId()))
+                    .sorted(java.util.Comparator.comparing(ArtifactAdminView::createdAt,
+                            java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder())))
+                    .skip(offset).limit(limit).toList();
+        }
+        var filters = new StringBuilder(" WHERE 1=1 ");
+        var values = new java.util.ArrayList<String>();
+        if (!principal.isBlank()) { filters.append(" AND a.principal_id = ?"); values.add(principal); }
+        if (!machine.isBlank()) { filters.append(" AND a.machine_id = ?"); values.add(machine); }
+        if (!session.isBlank()) {
+            filters.append(" AND COALESCE(t.task_id, a.task_id, '') IN (SELECT task_id FROM rcm_task WHERE execution_session_id = ?)");
+            values.add(session);
+        }
+        var sql = """
+                SELECT a.artifact_id, a.transfer_id, a.task_id, a.principal_id, a.machine_id,
+                       a.file_name, a.mime_type, a.bytes, a.sha256, a.status,
+                       a.created_at, a.expires_at, a.retention_policy, a.pinned,
+                       COALESCE(t.status, a.status) AS transfer_status,
+                       COALESCE(t.bytes_transferred, a.bytes) AS bytes_transferred
+                  FROM rcm_artifact a
+                  LEFT JOIN rcm_file_transfer t ON t.transfer_id = a.transfer_id
+                """ + filters + " ORDER BY a.created_at DESC, a.artifact_id DESC OFFSET ? LIMIT ?";
+        return jdbc.query(sql, ps -> {
+            var index = 1;
+            for (var value : values) ps.setString(index++, value);
+            ps.setInt(index++, offset);
+            ps.setInt(index, limit);
+        }, (rs, row) -> new ArtifactAdminView(rs.getString("artifact_id"), rs.getString("transfer_id"),
+                rs.getString("task_id"), rs.getString("principal_id"), rs.getString("machine_id"),
+                rs.getString("file_name"), rs.getString("mime_type"), rs.getLong("bytes"),
+                rs.getLong("bytes_transferred"), rs.getString("status"), rs.getString("transfer_status"),
+                rs.getTimestamp("created_at").toInstant(), rs.getTimestamp("expires_at").toInstant(),
+                rs.getString("sha256"), sessionForTask(rs.getString("task_id")),
+                rs.getString("retention_policy"), rs.getBoolean("pinned")));
+    }
+
+    public int countArtifacts(String principalId, String machineId, String sessionId) {
+        var principal = normalizeFilter(principalId);
+        var machine = normalizeFilter(machineId);
+        var session = normalizeFilter(sessionId);
+        if (jdbc == null) {
+            return Math.toIntExact(memory.values().stream().map(value -> value.descriptor())
+                    .filter(value -> principal.isBlank() || principal.equals(value.principalId()))
+                    .filter(value -> machine.isBlank() || machine.equals(value.machineId()))
+                    .filter(value -> session.isBlank() || session.equals(sessionForTask(value.taskId()))).count());
+        }
+        var sql = """
+                SELECT COUNT(*) FROM rcm_artifact a
+                 LEFT JOIN rcm_file_transfer t ON t.transfer_id = a.transfer_id
+                 WHERE (? = '' OR a.principal_id = ?)
+                   AND (? = '' OR a.machine_id = ?)
+                   AND (? = '' OR COALESCE(t.task_id, a.task_id, '') IN
+                       (SELECT task_id FROM rcm_task WHERE execution_session_id = ?))
+                """;
+        var count = jdbc.queryForObject(sql, Long.class, principal, principal, machine, machine, session, session);
+        return count == null ? 0 : Math.toIntExact(count);
+    }
+
+    /** Delete metadata and the owned object; repeated deletion is idempotent. */
+    public boolean deleteArtifact(String artifactId, String principalId) {
+        if (artifactId == null || artifactId.isBlank()) return false;
+        var id = artifactId.trim();
+        var principal = normalizeFilter(principalId);
+        if (jdbc == null) {
+            var removed = false;
+            for (var entry : memory.entrySet()) {
+                var value = entry.getValue();
+                if (!id.equals(value.descriptor().artifactId())
+                        || (!principal.isBlank() && !principal.equals(value.descriptor().principalId()))) continue;
+                if (value.objectKey() != null && !value.objectKey().isBlank()) {
+                    try { store.delete(value.objectKey()); } catch (RuntimeException ignored) { }
+                }
+                removed |= memory.remove(entry.getKey(), value);
+            }
+            return removed;
+        }
+        var object = jdbc.query("SELECT object_key, principal_id FROM rcm_artifact WHERE artifact_id = ?",
+                ps -> ps.setString(1, id), rs -> rs.next() ? new StoredArtifact(rs.getString(1), rs.getString(2)) : null);
+        if (object == null || (!principal.isBlank() && !principal.equals(object.principalId()))) return false;
+        Integer deleted;
+        if (transactions == null) {
+            deleted = jdbc.update("DELETE FROM rcm_artifact WHERE artifact_id = ?", id);
+        } else {
+            deleted = transactions.execute(status -> jdbc.update("DELETE FROM rcm_artifact WHERE artifact_id = ?", id));
+        }
+        if (deleted != null && deleted > 0 && object.objectKey() != null && !object.objectKey().isBlank()) {
+            try { store.delete(object.objectKey()); } catch (RuntimeException ignored) { }
+        }
+        return deleted != null && deleted > 0;
+    }
+
+    /** Extend retention without ever shortening an existing retention period. */
+    public boolean extendArtifactRetention(String artifactId, String principalId, Duration extension) {
+        return extendArtifactRetention(artifactId, principalId, extension, "task-bound", false);
+    }
+
+    /** Apply a bounded lifecycle policy and optionally pin an artifact. */
+    public boolean extendArtifactRetention(String artifactId, String principalId, Duration extension,
+                                           String policy, boolean pinned) {
+        if (artifactId == null || artifactId.isBlank() || extension == null
+                || extension.isNegative() || extension.isZero() || extension.compareTo(Duration.ofDays(365)) > 0) {
+            throw new IllegalArgumentException("retention extension must be between 1 second and 365 days");
+        }
+        var normalizedPolicy = policy == null || policy.isBlank() ? "task-bound" : policy.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!("ephemeral".equals(normalizedPolicy) || "task-bound".equals(normalizedPolicy) || "pinned".equals(normalizedPolicy))) {
+            throw new IllegalArgumentException("retention policy must be ephemeral, task-bound, or pinned");
+        }
+        pinned = pinned || "pinned".equals(normalizedPolicy);
+        if (jdbc == null) {
+            var id = artifactId.trim();
+            var principal = normalizeFilter(principalId);
+            var changed = false;
+            var nextExpiry = Instant.now().plus(extension);
+            for (var entry : memory.entrySet()) {
+                var value = entry.getValue();
+                if (!id.equals(value.descriptor().artifactId())
+                        || (!principal.isBlank() && !principal.equals(value.descriptor().principalId()))) continue;
+                var expires = value.expiresAt() == null || value.expiresAt().isBefore(nextExpiry)
+                        ? nextExpiry : value.expiresAt();
+                memory.put(entry.getKey(), new MemoryTransfer(value.descriptor(), value.objectKey(),
+                        value.destinationPath(), value.sourcePath(), expires, normalizedPolicy, pinned));
+                changed = true;
+            }
+            return changed;
+        }
+        var principal = normalizeFilter(principalId);
+        var changed = jdbc.update("""
+                UPDATE rcm_artifact
+                   SET expires_at = GREATEST(expires_at, CURRENT_TIMESTAMP + (? * INTERVAL '1 second')),
+                       retention_policy = ?, pinned = ?
+                 WHERE artifact_id = ? AND (? = '' OR principal_id = ?)
+                """, extension.toSeconds(), normalizedPolicy, pinned, artifactId.trim(), principal, principal);
+        return changed > 0;
+    }
+
+    private static String normalizeFilter(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private Duration artifactRetentionFor(String direction, String mimeType, long bytes) {
+        if (bytes >= 1024L * 1024 * 1024) return largeArtifactRetention;
+        var mime = mimeType == null ? "" : mimeType.toLowerCase(java.util.Locale.ROOT);
+        if (mime.startsWith("text/") || mime.contains("json") || mime.contains("xml") || mime.contains("log")) {
+            return textArtifactRetention;
+        }
+        return FileTransferAction.WEB_TO_AGENT.equals(direction) ? webArtifactRetention : artifactRetention;
+    }
+
+    private ArtifactAdminView adminView(TransferDescriptor value, Instant expiresAt, String transferStatus) {
+        return adminView(value, expiresAt, transferStatus, "task-bound", false);
+    }
+
+    private ArtifactAdminView adminView(TransferDescriptor value, Instant expiresAt, String transferStatus,
+                                        String retentionPolicy, boolean pinned) {
+        return new ArtifactAdminView(value.artifactId(), value.transferId(), value.taskId(), value.principalId(),
+                value.machineId(), value.fileName(), value.mimeType(), value.bytes(), value.bytesTransferred(),
+                "ready".equals(value.status()) || "delivered".equals(value.status()) ? value.status() : value.status(),
+                transferStatus == null || transferStatus.isBlank() ? value.status() : transferStatus,
+                null, expiresAt, value.sha256(), sessionForTask(value.taskId()), retentionPolicy, pinned);
+    }
+
     private long progressBytes(TransferRow row) {
         return Math.max(0L, Math.min(MAX_BYTES, row.bytesTransferred()));
     }
@@ -889,6 +1076,34 @@ public final class ArtifactTransferService {
     }
 
     /**
+     * Fail readiness before a durable Center advertises unusable file URLs.
+     * Development memory mode intentionally permits an empty public origin so
+     * protocol tests do not need an externally reachable host.
+     */
+    String readinessFailure(boolean durableDeployment) {
+        if (!durableDeployment) return null;
+        if (publicBaseUrl.isBlank()) return "RCM_CENTER_PUBLIC_BASE_URL is required for durable artifact delivery";
+        try {
+            var uri = URI.create(publicBaseUrl);
+            var host = uri.getHost();
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || host == null || host.isBlank()
+                    || uri.getRawQuery() != null || uri.getRawFragment() != null
+                    || host.endsWith(".example.invalid") || "example.invalid".equalsIgnoreCase(host)) {
+                return "RCM_CENTER_PUBLIC_BASE_URL must be a real HTTPS origin without query or fragment";
+            }
+        } catch (IllegalArgumentException exception) {
+            return "RCM_CENTER_PUBLIC_BASE_URL is invalid";
+        }
+        if (!tokens.artifactSigningConfigured()) {
+            return "REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET is required for durable artifact delivery";
+        }
+        if (tokens.artifactSigningKeys().stream().anyMatch(key -> key.secret().length() < 32)) {
+            return "artifact signing secrets must be at least 32 characters";
+        }
+        return null;
+    }
+
+    /**
      * Creates a URL bound to the execution session that produced the artifact.
      * A session is intentionally part of the signed subject rather than an
      * authorization header so ChatGPT/React can fetch the file directly.
@@ -934,19 +1149,16 @@ public final class ArtifactTransferService {
             throw new SecurityException("invalid or expired artifact URL");
         }
         var supplied = signature.trim().getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-        var expectedSignature = sign(signatureSubject(artifactId, principal, expires, purpose, connection, session));
-        var valid = MessageDigest.isEqual(expectedSignature.getBytes(java.nio.charset.StandardCharsets.US_ASCII), supplied);
+        var valid = verifySignature(signatureSubject(artifactId, principal, expires, purpose, connection, session), supplied);
         // Keep already-issued connection-bound links valid during a rolling
         // deployment.  The legacy fallback is only reachable when both new
         // binding fields are omitted; newly generated links always include
         // purpose, connection, and session.
         if (!valid && session.isBlank()) {
-            valid = MessageDigest.isEqual(sign(signatureSubject(artifactId, principal, expires, purpose, connection, ""))
-                    .getBytes(java.nio.charset.StandardCharsets.US_ASCII), supplied);
+            valid = verifySignature(signatureSubject(artifactId, principal, expires, purpose, connection, ""), supplied);
         }
         if (!valid && connection.isBlank() && session.isBlank()) {
-            valid = MessageDigest.isEqual(sign(artifactId + "\n" + principal + "\n" + expires)
-                    .getBytes(java.nio.charset.StandardCharsets.US_ASCII), supplied);
+            valid = verifySignature(artifactId + "\n" + principal + "\n" + expires, supplied);
         }
         if (!valid) {
             throw new SecurityException("invalid or expired artifact URL");
@@ -955,7 +1167,7 @@ public final class ArtifactTransferService {
         PublicArtifact row = jdbc == null ? memory.values().stream()
                 .filter(value -> artifactId.equals(value.descriptor().artifactId())
                         && principal.equals(value.descriptor().principalId())
-                        && value.expiresAt() != null && now.isBefore(value.expiresAt()))
+                        && (value.pinned() || value.expiresAt() == null || now.isBefore(value.expiresAt())))
                 .map(value -> value.descriptor())
                 .filter(value -> "ready".equals(value.status()) || "delivered".equals(value.status()))
                 .map(value -> new PublicArtifact(value.artifactId(), value.fileName(), value.mimeType(), value.bytes(), value.sha256(), value.status(), null))
@@ -966,10 +1178,11 @@ public final class ArtifactTransferService {
                         : null);
         if (row == null) throw new IllegalArgumentException("artifact not found");
         if (jdbc != null) {
-            var retainedUntil = jdbc.query("SELECT expires_at FROM rcm_artifact WHERE artifact_id = ? AND principal_id = ?",
+            var retainedUntil = jdbc.query("SELECT expires_at, pinned FROM rcm_artifact WHERE artifact_id = ? AND principal_id = ?",
                     ps -> { ps.setString(1, artifactId); ps.setString(2, principal); },
-                    rs -> rs.next() ? rs.getTimestamp(1).toInstant() : null);
-            if (retainedUntil != null && !Instant.now().isBefore(retainedUntil)) {
+                    rs -> rs.next() ? new Retention(rs.getTimestamp(1) == null ? null : rs.getTimestamp(1).toInstant(), rs.getBoolean(2)) : null);
+            if (retainedUntil != null && !retainedUntil.pinned() && retainedUntil.expiresAt() != null
+                    && !Instant.now().isBefore(retainedUntil.expiresAt())) {
                 throw new IllegalArgumentException("artifact retention has expired");
             }
         }
@@ -994,7 +1207,7 @@ public final class ArtifactTransferService {
             var now = Instant.now();
             return memory.values().stream()
                     .filter(value -> requested.equals(value.descriptor().taskId()))
-                    .filter(value -> value.expiresAt() == null || now.isBefore(value.expiresAt()))
+                    .filter(value -> value.pinned() || value.expiresAt() == null || now.isBefore(value.expiresAt()))
                     .filter(value -> Set.of("ready", "delivered").contains(value.descriptor().status()))
                     .filter(value -> value.objectKey() != null && !value.objectKey().isBlank())
                     .sorted(java.util.Comparator.comparing(MemoryTransfer::expiresAt,
@@ -1007,8 +1220,8 @@ public final class ArtifactTransferService {
         var row = jdbc.query("""
                 SELECT artifact_id, file_name, mime_type, bytes, sha256, status, object_key
                   FROM rcm_artifact
-                 WHERE task_id = ? AND status IN ('ready', 'delivered')
-                   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+                   WHERE task_id = ? AND status IN ('ready', 'delivered')
+                    AND (pinned OR expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
                  ORDER BY created_at DESC, artifact_id DESC
                  LIMIT 1
                 """, ps -> ps.setString(1, requested), rs -> rs.next()
@@ -1071,7 +1284,7 @@ public final class ArtifactTransferService {
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', CURRENT_TIMESTAMP, ?)
                     ON CONFLICT (artifact_id) DO UPDATE SET object_key = EXCLUDED.object_key, bytes = EXCLUDED.bytes, sha256 = EXCLUDED.sha256, mime_type = EXCLUDED.mime_type, file_name = EXCLUDED.file_name, status = 'ready', expires_at = EXCLUDED.expires_at
                     """, ids.artifactId(), origin.principalId(), machineId, taskId, ids.transferId(), fileName, mimeType,
-                    store.backend(), objectKey, downloaded.bytes(), downloaded.sha256(), java.sql.Timestamp.from(Instant.now().plus(artifactRetention)));
+                    store.backend(), objectKey, downloaded.bytes(), downloaded.sha256(), java.sql.Timestamp.from(Instant.now().plus(artifactRetentionFor(FileTransferAction.WEB_TO_AGENT, mimeType, downloaded.bytes()))));
         };
         if (transactions == null) write.run(); else transactions.execute(status -> { write.run(); return null; });
     }
@@ -1152,7 +1365,7 @@ public final class ArtifactTransferService {
                     ON CONFLICT (artifact_id) DO NOTHING
                     """, descriptor.artifactId(), origin.principalId(), descriptor.machineId(), descriptor.taskId(), descriptor.transferId(),
                     descriptor.fileName(), descriptor.mimeType(), store.backend(), objectKey, descriptor.bytes(), descriptor.sha256(), "ready",
-                    java.sql.Timestamp.from(Instant.now().plus(artifactRetention)));
+                    java.sql.Timestamp.from(Instant.now().plus(artifactRetentionFor(descriptor.direction(), descriptor.mimeType(), descriptor.bytes()))));
             jdbc.update("""
                     INSERT INTO rcm_file_transfer(transfer_id, artifact_id, task_id, principal_id, machine_id, direction, source_path, destination_path, file_name, mime_type, expected_bytes, expected_sha256, bytes_transferred, status, error_text, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 0, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -1203,7 +1416,7 @@ public final class ArtifactTransferService {
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', CURRENT_TIMESTAMP, ?)
                     ON CONFLICT (artifact_id) DO UPDATE SET object_key = EXCLUDED.object_key, bytes = EXCLUDED.bytes, sha256 = EXCLUDED.sha256, mime_type = EXCLUDED.mime_type, file_name = EXCLUDED.file_name, status = 'ready'
                     """, row.artifactId(), row.principalId(), row.machineId(), row.taskId(), row.transferId(), fileName, mime, store.backend(), objectKey, bytes, sha,
-                    java.sql.Timestamp.from(Instant.now().plus(artifactRetention)));
+                    java.sql.Timestamp.from(Instant.now().plus(artifactRetentionFor(row.direction(), mime, bytes))));
             tasks.recordTransferArtifact(row.machineId(), row.taskId(), mime, bytes, sha);
         };
         if (transactions == null) write.run(); else transactions.execute(status -> { write.run(); return null; });
@@ -1575,22 +1788,38 @@ public final class ArtifactTransferService {
     }
 
     private String sign(String value) {
+        return sign(value, tokens.currentArtifactSigningKey());
+    }
+
+    private String sign(String value, CenterTokenConfig.ArtifactSigningKey key) {
         try {
             var mac = javax.crypto.Mac.getInstance("HmacSHA256");
-            mac.init(new javax.crypto.spec.SecretKeySpec(tokens.artifactDownloadSecret().getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
+            mac.init(new javax.crypto.spec.SecretKeySpec(key.secret().getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
             return Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         } catch (Exception exception) { throw new IllegalStateException("artifact URL signing is unavailable", exception); }
+    }
+
+    private boolean verifySignature(String value, byte[] supplied) {
+        for (var key : tokens.artifactSigningKeys()) {
+            var expected = sign(value, key).getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            if (MessageDigest.isEqual(expected, supplied)) return true;
+        }
+        return false;
     }
 
     private String accessToken(String artifactId, String principal, long expires, String purpose,
                                String connection, String session) {
         try {
-            var plain = (artifactId + "\n" + principal + "\n" + expires + "\n" + purpose + "\n"
+            var signingKey = tokens.currentArtifactSigningKey();
+            // The key id is encrypted inside the opaque token.  It permits a
+            // current+previous rotation without putting key metadata in the
+            // public URL or proxy logs.
+            var plain = (signingKey.kid() + "\n" + artifactId + "\n" + principal + "\n" + expires + "\n" + purpose + "\n"
                     + connection + "\n" + session).getBytes(java.nio.charset.StandardCharsets.UTF_8);
             var nonce = new byte[12];
             accessTokenRandom.nextBytes(nonce);
             var cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, accessKey(), new javax.crypto.spec.GCMParameterSpec(128, nonce));
+            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, accessKey(signingKey.secret()), new javax.crypto.spec.GCMParameterSpec(128, nonce));
             var encrypted = cipher.doFinal(plain);
             var combined = new byte[nonce.length + encrypted.length];
             System.arraycopy(nonce, 0, combined, 0, nonce.length);
@@ -1611,16 +1840,31 @@ public final class ArtifactTransferService {
             var nonce = Arrays.copyOfRange(combined, 0, 12);
             var encrypted = Arrays.copyOfRange(combined, 12, combined.length);
             var cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(javax.crypto.Cipher.DECRYPT_MODE, accessKey(), new javax.crypto.spec.GCMParameterSpec(128, nonce));
-            var fields = new String(cipher.doFinal(encrypted), java.nio.charset.StandardCharsets.UTF_8).split("\\n", -1);
-            if (fields.length != 6 || fields[0].isBlank() || fields[1].isBlank()
-                    || fields[3].isBlank() || fields[4].length() > 256 || fields[5].length() > 256) {
-                throw new SecurityException("invalid or expired artifact URL");
+            for (var key : tokens.artifactSigningKeys()) {
+                try {
+                    cipher.init(javax.crypto.Cipher.DECRYPT_MODE, accessKey(key.secret()), new javax.crypto.spec.GCMParameterSpec(128, nonce));
+                    var fields = new String(cipher.doFinal(encrypted), java.nio.charset.StandardCharsets.UTF_8).split("\\n", -1);
+                    // Seven fields are the versioned opaque token. Six fields
+                    // are accepted only for rolling compatibility with tokens
+                    // issued before kid was introduced.
+                    var offset = fields.length == 7 ? 1 : 0;
+                    if ((fields.length != 7 && fields.length != 6)
+                            || (fields.length == 7 && !key.kid().equals(fields[0]))
+                            || fields[offset].isBlank() || fields[offset + 1].isBlank()
+                            || fields[offset + 3].isBlank() || fields[offset + 4].length() > 256
+                            || fields[offset + 5].length() > 256) continue;
+                    var expires = Long.parseLong(fields[offset + 2]);
+                    if (expires < Instant.now().getEpochSecond()) continue;
+                    var signature = sign(signatureSubject(fields[offset], fields[offset + 1], expires,
+                            fields[offset + 3], fields[offset + 4], fields[offset + 5]), key);
+                    return new AccessToken(fields[offset], expires, fields[offset + 1], fields[offset + 4],
+                            fields[offset + 5], fields[offset + 3], key.kid(), signature);
+                } catch (Exception ignored) {
+                    // An AES-GCM authentication failure is expected while
+                    // trying the other active rotation key.
+                }
             }
-            var expires = Long.parseLong(fields[2]);
-            if (expires < Instant.now().getEpochSecond()) throw new SecurityException("invalid or expired artifact URL");
-            var signature = sign(signatureSubject(fields[0], fields[1], expires, fields[3], fields[4], fields[5]));
-            return new AccessToken(fields[0], expires, fields[1], fields[4], fields[5], fields[3], signature);
+            throw new SecurityException("invalid or expired artifact URL");
         } catch (SecurityException exception) {
             throw exception;
         } catch (Exception exception) {
@@ -1628,10 +1872,10 @@ public final class ArtifactTransferService {
         }
     }
 
-    private javax.crypto.spec.SecretKeySpec accessKey() {
+    private static javax.crypto.spec.SecretKeySpec accessKey(String secret) {
         try {
             var digest = MessageDigest.getInstance("SHA-256").digest(
-                    tokens.artifactDownloadSecret().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    secret.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             return new javax.crypto.spec.SecretKeySpec(digest, "AES");
         } catch (java.security.NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 is unavailable", exception);
@@ -1703,6 +1947,20 @@ public final class ArtifactTransferService {
     }
 
     public record TransferCreated(TaskView task, TransferDescriptor transfer) { }
+    public record ArtifactAdminView(String artifactId, String transferId, String taskId, String principalId,
+                                    String machineId, String fileName, String mimeType, long bytes,
+                                    long bytesTransferred, String status, String transferStatus,
+                                    Instant createdAt, Instant expiresAt, String sha256, String sessionId,
+                                    String retentionPolicy, boolean pinned) {
+        public ArtifactAdminView(String artifactId, String transferId, String taskId, String principalId,
+                                 String machineId, String fileName, String mimeType, long bytes,
+                                 long bytesTransferred, String status, String transferStatus,
+                                 Instant createdAt, Instant expiresAt, String sha256, String sessionId) {
+            this(artifactId, transferId, taskId, principalId, machineId, fileName, mimeType, bytes,
+                    bytesTransferred, status, transferStatus, createdAt, expiresAt, sha256, sessionId,
+                    "task-bound", false);
+        }
+    }
     public record TransferDescriptor(String transferId, String artifactId, String direction, String taskId,
                                      String principalId, String machineId, String fileName, String mimeType, long bytes,
                                      String sha256, String status, String error, String downloadUrl,
@@ -1746,23 +2004,30 @@ public final class ArtifactTransferService {
     }
     private record Downloaded(Path path, long bytes, String sha256) { }
     private record Ids(String transferId, String artifactId) { }
+    private record StoredArtifact(String objectKey, String principalId) { }
     private record TransferRow(String transferId, String artifactId, String taskId, String principalId, String machineId,
                                String direction, String sourcePath, String destinationPath, String fileName, String mimeType,
                                long bytes, long bytesTransferred, String sha256, String status, String error, String objectKey) { }
     private record PendingReservation(String transferId, String taskId, String machineId) { }
     private record OrphanPreparedTask(String taskId, String machineId) { }
     private record MemoryTransfer(TransferDescriptor descriptor, String objectKey, String destinationPath, String sourcePath,
-                                  Instant expiresAt) {
+                                  Instant expiresAt, String retentionPolicy, boolean pinned) {
         private MemoryTransfer(TransferDescriptor descriptor, String objectKey, String destinationPath, String sourcePath) {
             this(descriptor, objectKey, destinationPath, sourcePath,
-                    Instant.now().plus(DEFAULT_ARTIFACT_RETENTION));
+                    Instant.now().plus(DEFAULT_ARTIFACT_RETENTION), "task-bound", false);
+        }
+
+        private MemoryTransfer(TransferDescriptor descriptor, String objectKey, String destinationPath, String sourcePath,
+                               Instant expiresAt) {
+            this(descriptor, objectKey, destinationPath, sourcePath, expiresAt, "task-bound", false);
         }
     }
+    private record Retention(Instant expiresAt, boolean pinned) { }
     private record AdminArtifactRow(String artifactId, String fileName, String mimeType, long bytes,
                                     String sha256, String status, String objectKey) { }
     private record StoredObject(String objectKey, String status) { }
     private record AccessToken(String artifactId, long expires, String principal, String connection,
-                               String session, String purpose, String signature) { }
+                               String session, String purpose, String kid, String signature) { }
 
     private static final class TransferLock {
         private final Object monitor = new Object();

@@ -21,19 +21,23 @@ public class HealthController {
     private final boolean requireDurableStorage;
     private final JdbcTemplate jdbc;
     private final ArtifactStore artifactStore;
+    private final ArtifactTransferService transfers;
     private final CenterAsyncExecutor async;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public HealthController(@Value("${rcm.version:dev}") String version,
                             @Value("${rcm.persistence.mode:memory}") String persistenceMode,
                             @Value("${rcm.persistence.require-durable:false}") boolean requireDurableStorage,
                             ObjectProvider<JdbcTemplate> jdbcProvider,
                             ObjectProvider<ArtifactStore> artifactProvider,
+                            ObjectProvider<ArtifactTransferService> transferProvider,
                             CenterAsyncExecutor async) {
         this.version = version;
         this.persistenceMode = persistenceMode;
         this.requireDurableStorage = requireDurableStorage;
         this.jdbc = jdbcProvider.getIfAvailable();
         this.artifactStore = artifactProvider.getIfAvailable();
+        this.transfers = transferProvider == null ? null : transferProvider.getIfAvailable();
         this.async = async;
     }
 
@@ -71,6 +75,13 @@ public class HealthController {
             } catch (DataAccessException exception) {
                 return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                         .body(Map.of("status", "not_ready", "reason", "database migration is not ready"));
+            }
+        }
+        if (transfers != null) {
+            var artifactFailure = transfers.readinessFailure(requireDurableStorage || "postgres".equalsIgnoreCase(persistenceMode));
+            if (artifactFailure != null) {
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                        .body(Map.of("status", "not_ready", "reason", artifactFailure));
             }
         }
         return ResponseEntity.ok(Map.of("status", "ready", "migrationStage", "java", "persistence", persistenceMode));

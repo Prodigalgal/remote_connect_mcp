@@ -54,6 +54,7 @@ public final class AdminController {
     private final AuditService audit;
     private final McpQuotaService quota;
     private final ArtifactTransferService transfers;
+    private final ReleaseManifestService manifests;
 
     @org.springframework.beans.factory.annotation.Autowired
     public AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
@@ -67,7 +68,8 @@ public final class AdminController {
                            ObjectProvider<ReleaseCatalogService> releaseProvider,
                            ObjectProvider<AuditService> auditProvider,
                            ObjectProvider<McpQuotaService> quotaProvider,
-                           ObjectProvider<ArtifactTransferService> transferProvider) {
+                           ObjectProvider<ArtifactTransferService> transferProvider,
+                           ObjectProvider<ReleaseManifestService> manifestProvider) {
         this.tokens = tokens;
         this.agents = agents;
         this.tasks = tasks;
@@ -85,13 +87,14 @@ public final class AdminController {
         this.audit = auditProvider == null ? null : auditProvider.getIfAvailable();
         this.quota = quotaProvider == null ? null : quotaProvider.getIfAvailable();
         this.transfers = transferProvider == null ? null : transferProvider.getIfAvailable();
+        this.manifests = manifestProvider == null ? null : manifestProvider.getIfAvailable();
     }
 
     /** Compatibility constructor for direct protocol/controller tests. */
     AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                     EnrollmentTokenService enrollments, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
-        this(tokens, agents, tasks, null, null, null, enrollments, upgrades, configurations, async, null, null, null, null, null, null, null);
+        this(tokens, agents, tasks, null, null, null, enrollments, upgrades, configurations, async, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -417,6 +420,55 @@ public final class AdminController {
         });
     }
 
+    /** Bounded first-class Artifact/Transfer projection for Console and support tooling. */
+    @GetMapping("/artifacts")
+    public CompletableFuture<ResponseEntity<?>> artifacts(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "") String principalId,
+            @RequestParam(defaultValue = "") String machineId,
+            @RequestParam(defaultValue = "") String sessionId,
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestParam(defaultValue = "50") int limit) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (transfers == null) throw new IllegalStateException("artifact transfer service is unavailable");
+            var items = transfers.listArtifacts(principalId, machineId, sessionId, offset, limit);
+            var total = transfers.countArtifacts(principalId, machineId, sessionId);
+            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
+                    "total", total, "has_more", hasMore(offset, items.size(), total)));
+        });
+    }
+
+    @DeleteMapping("/artifacts/{artifactId}")
+    public CompletableFuture<ResponseEntity<?>> deleteArtifact(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String artifactId,
+            @RequestParam(defaultValue = "") String principalId) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (transfers == null) throw new IllegalStateException("artifact transfer service is unavailable");
+            var deleted = transfers.deleteArtifact(artifactId, principalId);
+            return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+        });
+    }
+
+    @PostMapping("/artifacts/{artifactId}/retention")
+    public CompletableFuture<ResponseEntity<?>> extendArtifactRetention(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String artifactId,
+            @RequestParam(defaultValue = "86400") long extensionSeconds,
+            @RequestParam(defaultValue = "") String principalId,
+            @RequestParam(defaultValue = "task-bound") String policy,
+            @RequestParam(defaultValue = "false") boolean pinned) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (transfers == null) throw new IllegalStateException("artifact transfer service is unavailable");
+            var extended = transfers.extendArtifactRetention(artifactId, principalId, Duration.ofSeconds(extensionSeconds), policy, pinned);
+            return extended ? ResponseEntity.ok(Map.of("artifact_id", artifactId, "extended", true, "retention_policy", policy, "pinned", pinned))
+                    : ResponseEntity.notFound().build();
+        });
+    }
+
     /** Issue one opaque user MCP token; plaintext is returned exactly once. */
     @PostMapping("/mcp-tokens")
     public CompletableFuture<ResponseEntity<?>> issueMcpToken(
@@ -675,6 +727,24 @@ public final class AdminController {
             if (releases == null) throw new IllegalStateException("release catalog is unavailable");
             return ResponseEntity.ok().header("Cache-Control", "no-store")
                     .body(releases.list(limit, includePrerelease, refresh));
+        });
+    }
+
+    /**
+     * Return the signed component plans available for one release.  This is a
+     * bounded admin projection used by the Console's component selector; the
+     * Agent offer still resolves/validates the immutable manifest at campaign
+     * creation time, so a stale UI cannot inject an arbitrary download URL.
+     */
+    @GetMapping("/releases/{version}/components")
+    public CompletableFuture<ResponseEntity<?>> releaseComponents(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String version) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (manifests == null) throw new IllegalStateException("release manifest service is unavailable");
+            return ResponseEntity.ok().header("Cache-Control", "private, no-store")
+                    .body(Map.of("version", version, "components", manifests.allComponents(version)));
         });
     }
 

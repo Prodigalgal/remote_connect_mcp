@@ -3,6 +3,9 @@
     "includes": [
       {
         "pattern": "db/changelog/.*"
+      },
+      {
+        "pattern": "mcp/artifact-viewer-v1\\.html"
       }
     ]
   }

@@ -49,3 +49,7 @@ databaseChangeLog:
       file: db/changelog/024-transfer-progress.yaml
   - include:
       file: db/changelog/025-task-artifact-projection.yaml
+  - include:
+      file: db/changelog/026-upgrade-components.yaml
+  - include:
+      file: db/changelog/027-artifact-lifecycle-policy.yaml

@@ -111,6 +111,26 @@ spec:
                 secretKeyRef:
                   name: remote-connect-mcp-java-secrets
                   key: artifact-signing-secret
+            # Optional rolling-rotation key. Keep the previous key until the
+            # longest signed URL TTL has elapsed, then remove it.
+            - name: REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: remote-connect-mcp-java-secrets
+                  key: artifact-signing-secret-previous
+                  optional: true
+            - name: REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID
+              valueFrom:
+                secretKeyRef:
+                  name: remote-connect-mcp-java-secrets
+                  key: artifact-signing-kid
+                  optional: true
+            - name: REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: remote-connect-mcp-java-secrets
+                  key: artifact-signing-kid-previous
+                  optional: true
           readinessProbe:
             httpGet:
               path: /api/v1/readyz

@@ -1,0 +1,48 @@
+databaseChangeLog:
+  - changeSet:
+      id: 027-artifact-lifecycle-policy
+      author: remote-connect-mcp
+      labels: artifact,lifecycle
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_artifact
+            columns:
+              - column:
+                  name: retention_policy
+                  type: varchar(24)
+                  defaultValue: task-bound
+                  constraints:
+                    nullable: false
+              - column:
+                  name: pinned
+                  type: boolean
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: ALTER TABLE rcm_artifact ADD CONSTRAINT ck_rcm_artifact_retention_policy CHECK (retention_policy IN ('ephemeral', 'task-bound', 'pinned'))
+        - createIndex:
+            tableName: rcm_artifact
+            indexName: idx_rcm_artifact_lifecycle
+            columns:
+              - column:
+                  name: retention_policy
+              - column:
+                  name: expires_at
+      rollback:
+        - dropIndex:
+            tableName: rcm_artifact
+            indexName: idx_rcm_artifact_lifecycle
+        - sql:
+            sql: ALTER TABLE rcm_artifact DROP CONSTRAINT ck_rcm_artifact_retention_policy
+        - dropColumn:
+            tableName: rcm_artifact
+            columnName: pinned
+        - dropColumn:
+            tableName: rcm_artifact
+            columnName: retention_policy

@@ -1,0 +1,46 @@
+databaseChangeLog:
+  - changeSet:
+      id: 026-upgrade-components
+      author: remote-connect-mcp
+      labels: upgrades,components
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_upgrade_campaign
+            columns:
+              - column:
+                  name: component_plans
+                  type: jsonb
+                  defaultValueComputed: "'{}'::jsonb"
+                  constraints:
+                    nullable: false
+                  remarks: Platform-keyed independent command/desktop/browser component upgrade plans
+        - createIndex:
+            tableName: rcm_upgrade_campaign
+            indexName: idx_rcm_upgrade_campaign_component_plans
+            columns:
+              - column:
+                  name: component_plans
+        - addColumn:
+            tableName: rcm_upgrade_target
+            columns:
+              - column:
+                  name: component_statuses
+                  type: jsonb
+                  defaultValueComputed: "'{}'::jsonb"
+                  constraints:
+                    nullable: false
+      rollback:
+        - dropIndex:
+            tableName: rcm_upgrade_campaign
+            indexName: idx_rcm_upgrade_campaign_component_plans
+        - dropColumn:
+            tableName: rcm_upgrade_target
+            columnName: component_statuses
+        - dropColumn:
+            tableName: rcm_upgrade_campaign
+            columnName: component_plans

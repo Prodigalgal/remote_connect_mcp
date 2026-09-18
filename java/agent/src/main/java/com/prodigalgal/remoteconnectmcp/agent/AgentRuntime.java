@@ -309,7 +309,7 @@ public final class AgentRuntime {
     private boolean startUpgrade(com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan plan,
                                  AgentIdentity identity, ExecutorService executor, com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata metadata) {
         if (plan == null || plan.version() == null || plan.version().isBlank()
-                || plan.version().equals(metadata.version())) {
+                || (plan.version().equals(metadata.version()) && plan.components().isEmpty())) {
             return false;
         }
         // A timed command is attached to the current Agent process and cannot
@@ -358,7 +358,7 @@ public final class AgentRuntime {
             var result = JsonCodec.read(Files.readAllBytes(resultFile), AgentUpgradeHelper.Result.class);
             AgentRetry.call(LOG, "upgrade result " + result.campaignId(), () -> {
                 transport.reportUpgrade(identity.machineId(), identity.token(),
-                        new UpgradeStatusRequest(result.campaignId(), result.status(), result.error(), result.attempt()));
+                        new UpgradeStatusRequest(result.campaignId(), result.status(), result.error(), result.attempt(), result.componentStatuses()));
                 return null;
             });
             Files.deleteIfExists(resultFile);

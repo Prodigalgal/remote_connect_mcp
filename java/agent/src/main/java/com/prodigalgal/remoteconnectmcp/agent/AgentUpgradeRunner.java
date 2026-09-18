@@ -24,6 +24,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Locale;
+import java.util.ArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
@@ -75,11 +76,22 @@ final class AgentUpgradeRunner implements Runnable {
             staged = directory.resolve("agent-" + safeVersion + ".new" + (archive ? bundleSuffix : executableSuffix()));
             downloadVerified(plan.url(), plan.sha256(), staged);
 
+            var componentConfigs = new ArrayList<AgentUpgradeHelper.ComponentConfig>();
+            for (var component : plan.components()) {
+                var componentTarget = resolveComponentTarget(component.component());
+                var componentStaged = directory.resolve(safeComponent(component.component()) + "-" + safeComponent(component.version())
+                        + ".new" + (archiveSuffix(component.url()) == null ? ".zip" : archiveSuffix(component.url())));
+                downloadVerified(component.url(), component.sha256(), componentStaged);
+                componentConfigs.add(new AgentUpgradeHelper.ComponentConfig(component.component(), component.version(),
+                        componentStaged.toString(), componentTarget.toString(), config.stateDir().toAbsolutePath().normalize().toString(),
+                        componentServiceName(component.component()), true, component.restartPolicy()));
+            }
+
             var target = resolveTargetBinary();
             var helperConfig = new AgentUpgradeHelper.Config(
                     plan.campaignId(), plan.version(), staged.toString(), target.toString(),
                     config.stateDir().toAbsolutePath().normalize().toString(), serviceName(),
-                    ProcessHandle.current().pid(), archive, plan.attempt());
+                    ProcessHandle.current().pid(), archive, plan.attempt(), componentConfigs);
             var configPath = directory.resolve("helper-" + safeVersion + ".json");
             writeConfig(configPath, helperConfig);
             report("installing", null);
@@ -215,6 +227,48 @@ final class AgentUpgradeRunner implements Runnable {
         var uri = URI.create(value.url() == null ? "" : value.url().trim());
         if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null) throw new IllegalArgumentException("upgrade URL must use HTTPS");
         if (value.sha256() == null || !value.sha256().trim().matches("(?i)[0-9a-f]{64}")) throw new IllegalArgumentException("upgrade SHA-256 is invalid");
+        var names = new java.util.HashSet<String>();
+        for (var component : value.components()) {
+            if (component == null || component.component().isBlank() || !names.add(component.component())) {
+                throw new IllegalArgumentException("upgrade component is duplicated or missing");
+            }
+            var componentUri = URI.create(component.url() == null ? "" : component.url().trim());
+            if (component.url().isBlank() || component.url().length() > 4096
+                    || archiveSuffix(component.url()) == null
+                    || !"https".equalsIgnoreCase(componentUri.getScheme())
+                    || componentUri.getHost() == null || componentUri.getUserInfo() != null
+                    || componentUri.getFragment() != null
+                    || !component.sha256().matches("(?i)[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("upgrade component artifact is invalid");
+            }
+            var policy = component.restartPolicy() == null ? "" : component.restartPolicy().trim().toLowerCase(Locale.ROOT);
+            if (!("drain-and-restart".equals(policy) || "restart".equals(policy) || "manual".equals(policy))) {
+                throw new IllegalArgumentException("upgrade component restart policy is invalid");
+            }
+        }
+    }
+
+    private Path resolveComponentTarget(String component) throws IOException {
+        var key = component == null ? "" : component.trim().toLowerCase(Locale.ROOT);
+        var env = switch (key) {
+            case "desktop-companion", "desktop" -> "REMOTE_CONNECT_MCP_DESKTOP_BINARY_PATH";
+            case "browser-agent", "browser" -> "REMOTE_CONNECT_MCP_BROWSER_BINARY_PATH";
+            default -> "REMOTE_CONNECT_MCP_" + key.replace('-', '_').toUpperCase(Locale.ROOT) + "_BINARY_PATH";
+        };
+        var configured = System.getenv(env);
+        if (configured == null || configured.isBlank()) throw new IOException(env + " is required for component upgrade");
+        var target = Path.of(configured.trim()).toAbsolutePath().normalize();
+        return target;
+    }
+
+    private static String componentServiceName(String component) {
+        var key = component == null ? "" : component.trim().toLowerCase(Locale.ROOT);
+        var env = switch (key) {
+            case "desktop-companion", "desktop" -> "REMOTE_CONNECT_MCP_DESKTOP_SERVICE_NAME";
+            case "browser-agent", "browser" -> "REMOTE_CONNECT_MCP_BROWSER_SERVICE_NAME";
+            default -> "REMOTE_CONNECT_MCP_" + key.replace('-', '_').toUpperCase(Locale.ROOT) + "_SERVICE_NAME";
+        };
+        return System.getenv().getOrDefault(env, "").trim();
     }
 
     private static String safeComponent(String value) {

@@ -216,6 +216,39 @@ public final class McpQuotaService {
         }
     }
 
+    /**
+     * Authoritative JDBC session admission.  The advisory transaction lock is
+     * acquired before the active-session count and is held through the caller's
+     * session INSERT/UPSERT.  This closes the remaining count/insert TOCTOU
+     * window when two conversations create different sessions concurrently.
+     *
+     * <p>The non-transactional method above remains for the in-memory protocol
+     * test mode.  Production PostgreSQL callers must use this method from the
+     * same transaction that writes {@code rcm_execution_session}.</p>
+     */
+    boolean assertSessionAdmissionInTransaction(TaskOrigin origin, String sessionId) {
+        if (origin == null || origin.isShared() || jdbc == null || sessionId == null || sessionId.isBlank()) {
+            return false;
+        }
+        var principal = origin.principalId();
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+                ps -> ps.setString(1, principal), rs -> null);
+        var existing = jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM rcm_execution_session
+                                WHERE principal_id = ? AND session_id = ?
+                                  AND status = 'active' AND expires_at > CURRENT_TIMESTAMP)
+                """, Boolean.class, principal, sessionId.trim());
+        if (Boolean.TRUE.equals(existing)) return true;
+        var active = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM rcm_execution_session
+                 WHERE principal_id = ? AND status = 'active' AND expires_at > CURRENT_TIMESTAMP
+                """, Long.class, principal);
+        if ((active == null ? 0L : active) >= maxSessions) {
+            throw new IllegalStateException("principal execution-session quota exceeded");
+        }
+        return false;
+    }
+
     /** Check durable transfer bytes before opening a remote input stream. */
     public void assertTransferAdmission(TaskOrigin origin, long expectedBytes) {
         assertTransferAdmission(origin, expectedBytes, null);

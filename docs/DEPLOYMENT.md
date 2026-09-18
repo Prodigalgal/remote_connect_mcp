@@ -91,12 +91,23 @@ RCM_CENTER_PUBLIC_BASE_URL=https://remote-connect-mcp-center.example.invalid
 RCM_CENTER_DATABASE_URL=jdbc:postgresql://<host>:5432/remote_connect_mcp
 RCM_CENTER_DATABASE_USERNAME=<user>
 RCM_CENTER_DATABASE_PASSWORD=<password>
+REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET=<at-least-32-char-secret>
+# Optional during a rolling rotation; remove after the signed URL TTL window.
+REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET_PREVIOUS=<previous-secret>
+REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID=v2
+REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID_PREVIOUS=v1
 ```
 
 `RCM_CENTER_PUBLIC_BASE_URL` 必须是用户/ChatGPT Web 能访问的稳定 HTTPS Center
 Origin；它用于签名 Artifact URL 和 MCP Apps Viewer 的 CSP 元数据。Artifact URL
 签名使用独立的 `REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET`，不要复用 MCP
 或 Admin Token。
+
+Artifact signing supports a current and previous key simultaneously. New URLs
+use the current `KID`; verification accepts both keys, so rotating the current
+secret does not invalidate in-flight Viewer downloads. Keep the previous key
+for at least the configured `RCM_CENTER_ARTIFACT_URL_TTL_SECONDS` and then
+remove it in a later deployment.
 
 Java 发布工作流使用 `java-vX.Y.Z` 作为 Git Tag，但升级活动中填写的版本保持
 `vX.Y.Z`。因此生产 Center 默认使用 `RCM_CENTER_RELEASE_TAG_PREFIX=java-`，它只影响
@@ -312,3 +323,25 @@ Agent 烟测同时在注册后的空闲/命令阶段采样 Agent 工作集，生
 ## Agent 资源预算
 
 默认值按 1C/1G 级别终端设计：空闲 Agent 只保持一个最长 25 秒的 HTTPS 长轮询请求，不运行固定 5 秒心跳；事件到达或服务端 deadline 才结束请求，断线时才使用指数退避。`MAX_CONCURRENCY=1` 限制同时子进程数，`MAX_BROWSER_WORKERS=1` 再对浏览器适配器做独立上限；每任务 stdout/stderr 默认为 64 MiB，普通任务共享 `MAX_AGGREGATE_OUTPUT_BYTES` 聚合 spool 上限（默认随并发增长但不超过 256 MiB）；输出上传使用 16 KiB 分片。每个运行中的任务另外由任务级监督器限制进程树（默认 32）、合同/任务墙钟时长，并可通过 `MAX_RSS_BYTES`（Linux procfs）、`MAX_CPU_SECONDS` 和采样间隔启用资源硬边界；在 Linux 可将预创建的 cgroup v2 目录通过 `REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH` 交给每个任务，Agent 无法附加时 fail-closed；Windows 由 JDK 进程树监督配合内置启动任务，暂不伪造 Job Object 已启用。command 任务和 browser-agent supervisor 共享 `MAX_TOTAL_CHILD_PROCESSES` Agent 级总进程预算（默认 `min(256,max(32,MAX_CONCURRENCY*32))`，范围 1–4096），超额任务在启动后立即 fail-closed，现有任务结束即归还名额；desktop-companion 不进入该预算。超限会终止整棵子进程树并回传明确失败原因，不会给空闲 Agent 增加轮询。Browser 任务无显式超时时默认 300 秒，最长 24 小时；配置 `REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR` 后，Playwright/Patchright/Comoufox Worker 使用目标机持久 Profile，Center 只看到脱敏 origin/path 标记；引擎、浏览器和 headless 选项均为 Agent 本地环境配置。引用失效时 Worker 返回一次新的有界 snapshot 建议，不会盲目重放动作。durable 日志看门器由 fsnotify/WatchService 文件事件驱动，只有极旧系统没有可等待进程句柄时才保留显式、低频的 5 秒兼容回退。Desktop companion 另有最多 4 个并发 IPC 请求和 16 个活动启动进程，并通过文件锁保证单实例；没有用户会话时 command-agent 只返回明确的 companion 不可用错误。聚合上限达到时普通任务继续执行并标记输出截断，只有 durable 任务达到其硬上限才会终止，确保节约资源不会把可恢复任务静默杀掉。确需并行时逐台提高并发并观察 RSS、磁盘和 Center 延迟，不建议在小规格主机上直接设置 32 个槽位或 1 GiB 输出上限。
+### Artifact deduplication and optional compression
+
+The Center keeps the original SHA-256/size in PostgreSQL and can optionally
+store equal content once. These switches are off by default for rolling
+compatibility:
+
+```text
+RCM_CENTER_ARTIFACT_DEDUP_ENABLED=true
+RCM_CENTER_ARTIFACT_COMPRESSION=off   # off or gzip; gzip is disk-spooled
+RCM_CENTER_TRANSFER_SPOOL_ROOT=/var/lib/remote-connect-mcp-center/transfer
+RCM_CENTER_ARTIFACT_RETENTION_SECONDS=604800
+RCM_CENTER_ARTIFACT_WEB_RETENTION_SECONDS=604800
+RCM_CENTER_ARTIFACT_LARGE_RETENTION_SECONDS=259200
+RCM_CENTER_ARTIFACT_TEXT_RETENTION_SECONDS=1209600
+```
+
+控制台生命周期策略支持 `ephemeral`、`task-bound` 和 `pinned`；固定为
+`pinned` 的工件不会因 `expires_at` 到期而被公共 URL 拒绝，但仍只能由管理员显式删除。
+
+Enable gzip only when the object-store gateway and the PVC have enough
+temporary capacity. The opaque `gzip-v1/...` key is decoded by Center, so
+Agents and MCP URLs continue to use the original file hash and byte count.

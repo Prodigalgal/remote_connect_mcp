@@ -31,7 +31,13 @@ button { cursor: pointer; }
 .upgrade-meta b { color: var(--text); font-family: 'DM Mono', monospace; }
 .progress-track { height: 5px; margin: 0 22px 8px; border-radius: 99px; background: #0a1524; overflow: hidden; }
 .progress-track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #54d39a, #51b5ff); transition: width .25s ease; }
+.progress-track i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #54d39a, #51b5ff); transition: width .25s ease; }
+.artifact-toolbar { display: flex; align-items: end; gap: 18px; padding: 16px 20px; margin-bottom: 14px; }.artifact-toolbar label { display: grid; gap: 7px; color: var(--muted); font-size: 12px; }.artifact-toolbar select { min-width: 240px; border: 1px solid #2e4d6e; border-radius: 8px; padding: 9px 11px; color: var(--text); background: #0c1c30; }.artifact-row { grid-template-columns: 1.45fr 1.15fr .9fr 1fr 1.2fr; }.artifact-row strong, .artifact-row small { display: block; }.artifact-row strong { color: var(--text); }.artifact-row small { margin-top: 4px; color: #617c9a; font-size: 10px; }.artifact-row .progress-track { margin: 7px 0 0; width: min(180px, 100%); }.row-actions { display: flex; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }.compact-action { padding: 6px 9px; font-size: 10px; }.danger-action { color: #f2aaaa; border-color: rgba(224,119,119,.4); }
 .upgrade-card .task-list { border-top: 1px solid rgba(34,54,83,.66); border-radius: 0; background: rgba(11,22,37,.35); }
+.component-picker { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 0 0; color: var(--muted); font-size: 12px; }
+.check-row { display: inline-flex; align-items: center; gap: 6px; }
+.check-row input { accent-color: var(--accent); }
+.muted { color: var(--muted); }
 .task-composer { display: grid; gap: 18px; margin-bottom: 16px; }
 .composer-grid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 14px; }
 .composer-wide { grid-column: 1 / -1; }

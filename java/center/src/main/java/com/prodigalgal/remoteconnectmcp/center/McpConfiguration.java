@@ -90,6 +90,7 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         TaskCommand.DesktopAction.class, com.prodigalgal.remoteconnectmcp.protocol.FileTransferAction.class,
         com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse.class, TaskUpdateRequest.class,
         UpgradeArtifact.class, UpgradePlan.class, UpgradeStatusRequest.class,
+        com.prodigalgal.remoteconnectmcp.protocol.UpgradeComponentPlan.class,
         // Admin API projections/requests are also Java records.  They are
         // serialized outside the MCP handler (for example /machines and
         // /tasks), so Native Image must retain their record component
@@ -109,6 +110,7 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         McpQuotaService.QuotaView.class,
         ArtifactTransferService.TransferCreated.class, ArtifactTransferService.TransferDescriptor.class,
         ArtifactTransferService.AgentDownload.class, ArtifactTransferService.PublicArtifact.class,
+        ArtifactTransferService.ArtifactAdminView.class,
         McpConfiguration.ArtifactFile.class, McpConfiguration.ArtifactPutArgs.class,
         McpConfiguration.ArtifactGetArgs.class, McpConfiguration.ArtifactReadArgs.class,
         TaskService.ArtifactGcResult.class})
@@ -213,18 +215,53 @@ public class McpConfiguration {
         var csp = new LinkedHashMap<String, Object>();
         csp.put("connect_domains", domains);
         csp.put("resource_domains", domains);
+        csp.put("frame_domains", domains);
+        var standardCsp = new LinkedHashMap<String, Object>();
+        standardCsp.put("connectDomains", domains);
+        standardCsp.put("resourceDomains", domains);
+        standardCsp.put("frameDomains", domains);
         var resourceMeta = new LinkedHashMap<String, Object>();
         resourceMeta.put("openai/widgetCSP", csp);
         if (!domains.isEmpty()) resourceMeta.put("openai/widgetDomain", domains.getFirst());
+        resourceMeta.put("ui.csp", standardCsp);
+        if (!domains.isEmpty()) resourceMeta.put("ui.domain", domains.getFirst());
+        var resourceUi = new LinkedHashMap<String, Object>();
+        resourceUi.put("csp", standardCsp);
+        if (!domains.isEmpty()) resourceUi.put("domain", domains.getFirst());
+        resourceMeta.put("ui", resourceUi);
         var resource = McpSchema.Resource.builder(ARTIFACT_VIEWER_URI, "Remote Connect Artifact Viewer")
                 .description("Render an artifact file object returned by artifact_read")
                 .mimeType("text/html;profile=mcp-app")
                 .meta(resourceMeta)
                 .build();
+        // MCP Apps hosts consume the standard metadata from the resource
+        // contents. Keep the resource-level copy above for older hosts which
+        // only inspect the discovery entry.
+        var contentMeta = new LinkedHashMap<String, Object>();
+        var contentUi = new LinkedHashMap<String, Object>();
+        contentUi.put("csp", standardCsp);
+        if (!domains.isEmpty()) contentUi.put("domain", domains.getFirst());
+        contentMeta.put("ui", contentUi);
+        contentMeta.put("openai/widgetCSP", csp);
+        if (!domains.isEmpty()) contentMeta.put("openai/widgetDomain", domains.getFirst());
         return new McpServerFeatures.AsyncResourceSpecification(resource, (exchange, request) ->
                 Mono.fromSupplier(() -> McpSchema.ReadResourceResult.builder(List.of(
-                        McpSchema.TextResourceContents.builder(ARTIFACT_VIEWER_URI, ARTIFACT_VIEWER_HTML)
-                                .mimeType("text/html;profile=mcp-app").build())).build()));
+                        McpSchema.TextResourceContents.builder(ARTIFACT_VIEWER_URI, artifactViewerHtml())
+                                .mimeType("text/html;profile=mcp-app").meta(contentMeta).build())).build()));
+    }
+
+    /**
+     * Keep the Viewer as a separately editable frontend resource. The inline
+     * constant remains a compatibility fallback for minimal/legacy packaging,
+     * while normal Center builds serve the classpath artifact directly.
+     */
+    private static String artifactViewerHtml() {
+        try (var stream = McpConfiguration.class.getResourceAsStream("/mcp/artifact-viewer-v1.html")) {
+            if (stream == null) return ARTIFACT_VIEWER_HTML;
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException ignored) {
+            return ARTIFACT_VIEWER_HTML;
+        }
     }
 
     private static final String ARTIFACT_VIEWER_HTML = """
@@ -232,12 +269,15 @@ public class McpConfiguration {
             <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
             <title>Remote Connect Artifact</title>
             <style>body{font:14px system-ui,sans-serif;margin:16px;color:#172033;background:#fff}main{display:grid;gap:10px}header{font-weight:600;word-break:break-word}small{color:#65718a}img,video,iframe{max-width:100%;max-height:70vh;border:1px solid #d9dfeb;border-radius:6px}pre{white-space:pre-wrap;max-height:60vh;overflow:auto;background:#f5f7fb;padding:10px;border-radius:6px}a{color:#1769e0}button{padding:6px 10px;border:1px solid #b7c2d6;border-radius:5px;background:#f5f7fb;cursor:pointer}</style></head>
-            <body><main><header id="name">Artifact</header><small id="meta"></small><section id="preview"></section><a id="download" rel="noreferrer" download>Download</a><button id="save" hidden>Save to ChatGPT</button><button id="refresh" hidden>Refresh</button></main>
+            <body><main><header id="name">Artifact</header><small id="meta"></small><section id="preview"></section><a id="download" rel="noreferrer" download>Download</a><button id="save" hidden>Save to ChatGPT</button><button id="library" hidden>Save to Library</button><button id="refresh" hidden>Refresh</button></main>
             <script>
             (function(){
+              let latestResult=null;
               const output=()=>window.openai&&window.openai.toolOutput?window.openai.toolOutput:null;
-              const pick=()=>{const o=output()||{}; return o.file||o.artifact||o;};
+              const pick=()=>{const result=latestResult||{}; const o=result.structuredContent||result.structured_content||output()||result||{}; return o.file||o.artifact||o;};
               const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+              const readPreview=async(url,limit)=>{const response=await fetch(url,{credentials:'omit',headers:{Range:'bytes=0-'+(limit-1)}});if(!response.ok&&response.status!==206)throw new Error('preview request failed');if(!response.body)return (await response.text()).slice(0,limit);const reader=response.body.getReader(),chunks=[],decoder=new TextDecoder(),parts=[];let total=0;try{while(total<limit){const next=await reader.read();if(next.done)break;const remaining=limit-total;const chunk=next.value.slice(0,remaining);chunks.push(chunk);parts.push(decoder.decode(chunk,{stream:total+chunk.length<limit}));total+=chunk.length;if(chunk.length<next.value.length||total>=limit){try{await reader.cancel()}catch(error){}break;}}}finally{try{reader.releaseLock()}catch(error){}}return parts.join('')};
+              const resultHandler=result=>{latestResult=result&&result.params?result.params:result;render()};
               const render=()=>{const f=pick(), url=f.preview_url||f.download_url||f.url||'', downloadUrl=f.download_url||f.url||url, name=f.file_name||f.name||'artifact', mime=(f.mime_type||f.mime||'application/octet-stream').toLowerCase();
                 document.querySelector('#name').textContent=name; document.querySelector('#meta').textContent=[mime,f.bytes?Number(f.bytes).toLocaleString()+' bytes':'',f.sha256?'sha256 '+f.sha256:''].filter(Boolean).join(' · ');
                 const p=document.querySelector('#preview'); p.replaceChildren(); const safe=esc(url);
@@ -246,15 +286,28 @@ public class McpConfiguration {
                 else if(mime==='application/pdf') p.innerHTML='<iframe title="'+esc(name)+'" src="'+safe+'" style="width:100%;height:70vh"></iframe>';
                 else if(mime.startsWith('video/')) p.innerHTML='<video controls src="'+safe+'"></video>';
                 else if(mime.startsWith('audio/')) p.innerHTML='<audio controls src="'+safe+'"></audio>';
-                else if(mime.startsWith('text/')||mime.includes('json')||mime.includes('xml')){fetch(url,{credentials:'omit'}).then(r=>r.text()).then(t=>{p.innerHTML='<pre>'+esc(t.slice(0,262144))+'</pre>'}).catch(()=>{p.innerHTML='<small>Preview unavailable; use download.</small>'})}
-                else p.innerHTML='<small>This file type is download-only.</small>';
+                else if(mime.startsWith('text/')||mime.includes('json')||mime.includes('xml')||mime.includes('csv')||mime.includes('javascript')||mime.includes('yaml')||mime.includes('markdown')){readPreview(url,262144).then(t=>{p.innerHTML='<pre>'+esc(t)+'</pre>'}).catch(()=>{p.innerHTML='<small>Preview unavailable; use download.</small>'})}
+                else if(/\.(md|markdown|csv|json|ya?ml|toml|ini|log|txt|xml|html?|css|js|ts|java|go|py|sh|ps1|sql)$/i.test(name)){readPreview(url,262144).then(t=>{p.innerHTML='<pre>'+esc(t)+'</pre>'}).catch(()=>{p.innerHTML='<small>Preview unavailable; use download.</small>'})}
+                else p.innerHTML='<small>This file type is download-only. The original file remains available for download.</small>';
                  const a=document.querySelector('#download');a.href=downloadUrl;a.download=name;a.textContent='Download '+name;
                  const save=document.querySelector('#save');
-                 if(save){save.hidden=!downloadUrl||!(window.openai&&typeof window.openai.uploadFile==='function');save.onclick=async()=>{save.disabled=true;try{const response=await fetch(downloadUrl,{credentials:'omit'});if(!response.ok)throw new Error('download failed');const blob=await response.blob();const file=new File([blob],name,{type:mime});await window.openai.uploadFile(file);save.textContent='Saved to ChatGPT';}catch(error){save.textContent='Save failed';}finally{save.disabled=false;}};}
+                 const library=document.querySelector('#library');
+                 const canUpload=!!(window.openai&&typeof window.openai.uploadFile==='function');
+                 const upload=async(target,libraryMode)=>{target.disabled=true;try{const response=await fetch(downloadUrl,{credentials:'omit'});if(!response.ok)throw new Error('download failed');const blob=await response.blob();const file=new File([blob],name,{type:mime});const uploaded=libraryMode?await window.openai.uploadFile(file,{library:true}):await window.openai.uploadFile(file);const id=uploaded&&(uploaded.id||uploaded.file_id||uploaded.fileId);target.textContent=libraryMode?'Saved to Library':'Saved to ChatGPT';if(id)document.querySelector('#meta').textContent+=' · file '+id;}catch(error){target.textContent=libraryMode?'Library save failed':'Save failed';}finally{target.disabled=false;}};
+                 if(save){save.hidden=!downloadUrl||!canUpload;save.onclick=()=>upload(save,false);}
+                 if(library){library.hidden=!downloadUrl||!canUpload;library.onclick=()=>upload(library,true);}
               };
               render();
+              // Standard MCP Apps transport: the host sends the result as a
+              // ui/notifications/tool-result notification to the iframe.
+              window.addEventListener('message',event=>{const data=event&&event.data;if(data&&data.method==='ui/notifications/tool-result')resultHandler(data.params||{});});
+              const app=window.mcpApp||window.mcp||window.app;
+              if(app&&typeof app.addEventListener==='function')app.addEventListener('toolresult',resultHandler);
+              if(app&&typeof app.ontoolresult==='function')app.ontoolresult=resultHandler;
+              // OpenAI host compatibility remains a fallback, not the primary
+              // event mechanism; old clients only expose onToolOutput.
               const notify=window.openai&&window.openai.onToolResult?window.openai.onToolResult:window.openai&&window.openai.onToolOutput;
-              if(typeof notify==='function')notify(render);
+              if(typeof notify==='function')notify(resultHandler);
             })();</script></body></html>
             """;
 

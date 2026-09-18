@@ -62,7 +62,11 @@ public final class ExecutionSessionService {
         var existingBefore = jdbc == null ? memory.get(key(principal, sessionId)) : null;
         var existingReservation = existingBefore != null && "active".equals(existingBefore.status())
                 && existingBefore.expiresAt() != null && now.isBefore(existingBefore.expiresAt());
-        if (quota != null) quota.assertSessionAdmission(origin, sessionId);
+        // Memory mode keeps its bounded reservation in the quota service. In
+        // PostgreSQL mode admission is performed inside the same transaction
+        // as the session upsert below; doing a read here would reintroduce a
+        // count/insert TOCTOU window across concurrent conversations.
+        if (quota != null && jdbc == null) quota.assertSessionAdmission(origin, sessionId);
         var state = new SessionState(principal, sessionId, conversationId, contract.machineId(),
                 contract, "active", now, contract.expiresAt(), now, now);
         try {
@@ -83,6 +87,7 @@ public final class ExecutionSessionService {
             } else {
                 var contractJson = new String(JsonCodec.write(contract), StandardCharsets.UTF_8);
                 runInTransaction(() -> {
+                    if (quota != null) quota.assertSessionAdmissionInTransaction(origin, sessionId);
                     var existing = existingSessionForUpdate(principal, sessionId);
                     if (existing != null && "active".equals(existing.status())
                             && existing.expiresAt() != null && now.isBefore(existing.expiresAt())

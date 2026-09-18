@@ -101,6 +101,7 @@ export type UpgradeTarget = {
   updatedAt?: string
   finishedAt?: string
   leaseUntil?: string
+  componentStatuses?: Record<string, string>
 }
 
 export type UpgradeCampaign = {
@@ -110,10 +111,27 @@ export type UpgradeCampaign = {
   canaryCount: number
   batchSize: number
   activeLimit: number
+  componentPlans?: Record<string, Array<{ component: string; version: string; os: string; arch: string; restartPolicy?: string }>>
   targets: UpgradeTarget[]
   createdAt?: string
   updatedAt?: string
   finishedAt?: string
+}
+
+export type UpgradeComponentPlan = {
+  component: string
+  version: string
+  os: string
+  arch: string
+  url: string
+  sha256: string
+  bytes?: number
+  restartPolicy?: string
+}
+
+export type UpgradeComponentCatalog = {
+  version: string
+  components: Record<string, UpgradeComponentPlan[]>
 }
 
 export type ReleaseAsset = {
@@ -473,6 +491,7 @@ function mapUpgradeTarget(item: Record<string, unknown>): UpgradeTarget {
     updatedAt: item.updated_at as string | undefined,
     finishedAt: item.finished_at as string | undefined,
     leaseUntil: item.lease_until as string | undefined,
+    componentStatuses: item.component_statuses && typeof item.component_statuses === 'object' ? item.component_statuses as Record<string, string> : undefined,
   }
 }
 
@@ -484,6 +503,7 @@ function mapUpgrade(item: Record<string, unknown>): UpgradeCampaign {
     canaryCount: Number(item.canary_count ?? 0),
     batchSize: Number(item.batch_size ?? 0),
     activeLimit: Number(item.active_limit ?? 0),
+    componentPlans: (item.component_plans && typeof item.component_plans === 'object') ? item.component_plans as UpgradeCampaign['componentPlans'] : undefined,
     targets: Array.isArray(item.targets) ? item.targets.map((target) => mapUpgradeTarget(target as Record<string, unknown>)) : [],
     createdAt: item.created_at as string | undefined,
     updatedAt: item.updated_at as string | undefined,
@@ -626,6 +646,28 @@ export async function createUpgrade(token: string, payload: unknown): Promise<Up
   return mapUpgrade(body)
 }
 
+export async function listReleaseComponents(token: string, version: string): Promise<UpgradeComponentCatalog> {
+  const body = await request<Record<string, unknown>>(`/api/v1/admin/releases/${encodeURIComponent(version)}/components`, token)
+  const raw = body.components && typeof body.components === 'object' ? body.components as Record<string, unknown> : {}
+  const components: Record<string, UpgradeComponentPlan[]> = {}
+  Object.entries(raw).forEach(([platform, value]) => {
+    if (!Array.isArray(value)) return
+    components[platform] = value
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+      .map((item) => ({
+        component: String(item.component ?? ''),
+        version: String(item.version ?? ''),
+        os: String(item.os ?? ''),
+        arch: String(item.arch ?? ''),
+        url: String(item.url ?? ''),
+        sha256: String(item.sha256 ?? ''),
+        bytes: item.bytes == null ? undefined : Number(item.bytes),
+        restartPolicy: item.restart_policy as string | undefined,
+      }))
+  })
+  return { version: String(body.version ?? version), components }
+}
+
 export async function controlUpgrade(token: string, campaignId: string, action: 'resume' | 'cancel'): Promise<UpgradeCampaign> {
   const body = await request<Record<string, unknown>>(`/api/v1/admin/upgrades/${encodeURIComponent(campaignId)}/${action}`, token, { method: 'POST' })
   return mapUpgrade(body)
@@ -700,6 +742,62 @@ export type Quota = {
   maxTransferBytes: number
   reservedTransferBytes: number
   transferredTransferBytes: number
+}
+
+export type ArtifactAdmin = {
+  artifactId: string
+  transferId?: string
+  taskId?: string
+  principalId: string
+  machineId?: string
+  fileName: string
+  mimeType?: string
+  bytes: number
+  bytesTransferred: number
+  status: string
+  transferStatus: string
+  createdAt?: string
+  expiresAt?: string
+  sha256?: string
+  sessionId?: string
+  retentionPolicy?: string
+  pinned: boolean
+}
+
+function mapArtifactAdmin(item: Record<string, unknown>): ArtifactAdmin {
+  return {
+    artifactId: String(item.artifact_id ?? ''), transferId: item.transfer_id as string | undefined,
+    taskId: item.task_id as string | undefined, principalId: String(item.principal_id ?? ''),
+    machineId: item.machine_id as string | undefined, fileName: String(item.file_name ?? ''),
+    mimeType: item.mime_type as string | undefined, bytes: Number(item.bytes ?? 0),
+    bytesTransferred: Number(item.bytes_transferred ?? 0), status: String(item.status ?? ''),
+    transferStatus: String(item.transfer_status ?? item.status ?? ''), createdAt: item.created_at as string | undefined,
+    expiresAt: item.expires_at as string | undefined, sha256: item.sha256 as string | undefined,
+    sessionId: item.session_id as string | undefined, retentionPolicy: item.retention_policy as string | undefined,
+    pinned: Boolean(item.pinned),
+  }
+}
+
+export async function listArtifacts(token: string, filters: { principalId?: string; machineId?: string; sessionId?: string } = {}, offset = 0, limit = 50): Promise<PageResult<ArtifactAdmin>> {
+  const params = new URLSearchParams({ offset: String(Math.max(0, Math.trunc(offset))), limit: String(Math.min(200, Math.max(1, Math.trunc(limit)))) })
+  if (filters.principalId?.trim()) params.set('principalId', filters.principalId.trim())
+  if (filters.machineId?.trim()) params.set('machineId', filters.machineId.trim())
+  if (filters.sessionId?.trim()) params.set('sessionId', filters.sessionId.trim())
+  const body = await request<{ items?: Array<Record<string, unknown>>; offset?: number; limit?: number; total?: number; has_more?: boolean }>(`/api/v1/admin/artifacts?${params.toString()}`, token)
+  return pageResult((body.items ?? []).map(mapArtifactAdmin), body, offset, limit)
+}
+
+export async function deleteArtifact(token: string, artifactId: string, principalId = ''): Promise<void> {
+  const suffix = principalId.trim() ? `?principalId=${encodeURIComponent(principalId.trim())}` : ''
+  await request(`/api/v1/admin/artifacts/${encodeURIComponent(artifactId)}${suffix}`, token, { method: 'DELETE' })
+}
+
+export async function extendArtifactRetention(token: string, artifactId: string, extensionSeconds: number, principalId = '', policy = 'task-bound', pinned = false): Promise<void> {
+  const params = new URLSearchParams({ extensionSeconds: String(Math.max(1, Math.trunc(extensionSeconds))) })
+  if (principalId.trim()) params.set('principalId', principalId.trim())
+  params.set('policy', policy)
+  params.set('pinned', String(pinned))
+  await request(`/api/v1/admin/artifacts/${encodeURIComponent(artifactId)}/retention?${params.toString()}`, token, { method: 'POST' })
 }
 
 function mapToken(item: Record<string, unknown>): McpToken {

@@ -4,6 +4,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeArtifact;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan;
+import com.prodigalgal.remoteconnectmcp.protocol.UpgradeComponentPlan;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
@@ -74,6 +75,7 @@ public final class UpgradeService {
     private final TaskChangeRegistry changes;
     private final AgentWakeRegistry wakes;
     private final AuditService audit;
+    private final ReleaseManifestService manifests;
     private final Map<String, Campaign> memory = new ConcurrentHashMap<>();
     private final ReentrantLock memoryLock = new ReentrantLock();
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
@@ -85,7 +87,8 @@ public final class UpgradeService {
                            ObjectProvider<TransactionTemplate> transactionProvider,
                            ObjectProvider<TaskChangeRegistry> changeProvider,
                            ObjectProvider<AgentWakeRegistry> wakeProvider,
-                           ObjectProvider<AuditService> auditProvider) {
+                           ObjectProvider<AuditService> auditProvider,
+                           ObjectProvider<ReleaseManifestService> manifestProvider) {
         this.agents = agents;
         this.tasks = tasks;
         this.config = config;
@@ -94,6 +97,7 @@ public final class UpgradeService {
         this.changes = changeProvider == null ? null : changeProvider.getIfAvailable();
         this.wakes = wakeProvider == null ? null : wakeProvider.getIfAvailable();
         this.audit = auditProvider == null ? null : auditProvider.getIfAvailable();
+        this.manifests = manifestProvider == null ? null : manifestProvider.getIfAvailable();
         if (jdbc != null && transactions == null) {
             throw new IllegalStateException("TransactionTemplate is required when PostgreSQL persistence is enabled");
         }
@@ -108,6 +112,7 @@ public final class UpgradeService {
         this.changes = null;
         this.wakes = null;
         this.audit = null;
+        this.manifests = null;
     }
 
     public UpgradeCampaignView create(CreateUpgradeCampaignRequest request) {
@@ -118,13 +123,18 @@ public final class UpgradeService {
                 request == null || request.includeOffline());
         if (selected.isEmpty()) throw new IllegalArgumentException("at least one machine is required");
         var artifacts = resolveArtifacts(version, selected, request == null ? Map.of() : request.artifacts());
+        var componentPlans = resolveComponentPlans(version, selected,
+                request == null ? Map.of() : request.componentPlans());
         var canary = normalizePositive(request == null ? null : request.canaryCount(), 1, selected.size());
         var batch = normalizePositive(request == null ? null : request.batchSize(), 3, 200);
         var now = Instant.now();
         var campaign = new Campaign("upgrade_" + UUID.randomUUID().toString().replace("-", ""), version,
-                RUNNING, canary, batch, Math.min(canary, selected.size()), artifacts, new ArrayList<>(), now, now, null);
+                RUNNING, canary, batch, Math.min(canary, selected.size()), artifacts, componentPlans,
+                new ArrayList<>(), now, now, null);
         for (var machine : selected) {
-            var status = version.equals(machine.version()) ? COMPLETED : PENDING;
+            var machinePlatform = platform(machine.os(), machine.arch());
+            var hasComponentWork = !componentPlans.getOrDefault(machinePlatform, List.of()).isEmpty();
+            var status = version.equals(machine.version()) && !hasComponentWork ? COMPLETED : PENDING;
             var finished = COMPLETED.equals(status) ? now : null;
             campaign.targets.add(new Target(machine.id(), status, "", 0, now, finished, null));
         }
@@ -224,6 +234,7 @@ public final class UpgradeService {
                     if (FAILED.equals(target.status)) {
                         target.status = PENDING;
                         target.error = "";
+                        target.componentStatuses = Map.of();
                         target.leaseUntil = null;
                         target.finishedAt = null;
                         target.updatedAt = now;
@@ -282,6 +293,7 @@ public final class UpgradeService {
             var now = Instant.now();
             target.status = PENDING;
             target.error = "";
+            target.componentStatuses = Map.of();
             target.leaseUntil = null;
             target.finishedAt = null;
             target.updatedAt = now;
@@ -328,7 +340,7 @@ public final class UpgradeService {
             throw new IllegalArgumentException("invalid upgrade status: " + status);
         }
         if (jdbc != null) {
-            var result = transactions.execute(tx -> updateStatusJdbc(machineId, id, status, request.error(), request.attempt()));
+            var result = transactions.execute(tx -> updateStatusJdbc(machineId, id, status, request.error(), request.attempt(), request.componentStatuses()));
             signalChange();
             signalTargets(result.targets());
             audit("upgrade.status", "agent", machineId, status, "campaign=" + id);
@@ -351,7 +363,7 @@ public final class UpgradeService {
             }
             var now = Instant.now();
             if (!statusMayAdvance(target, status, now)) return view(campaign);
-            applyStatus(campaign, target, status, request.error(), now);
+            applyStatus(campaign, target, status, request.error(), now, request.componentStatuses());
             reconcile(campaign, machinesById(agents.listAllMachines(now)), now);
             var result = view(campaign);
             signalChange();
@@ -439,7 +451,8 @@ public final class UpgradeService {
         target.updatedAt = now;
         target.leaseUntil = now.plus(OFFER_LEASE);
         campaign.updatedAt = now;
-        return new UpgradePlan(campaign.id, campaign.version, artifact.url(), artifact.sha256(), target.attempts);
+        var components = campaign.componentPlans.getOrDefault(platform(machine.os(), machine.arch()), List.of());
+        return new UpgradePlan(campaign.id, campaign.version, artifact.url(), artifact.sha256(), target.attempts, components);
     }
 
     private boolean safeForUpgrade(MachineView machine, PollRequest request) {
@@ -456,20 +469,22 @@ public final class UpgradeService {
         return transactions.execute(status -> {
             ensureNoActiveJdbc();
             var artifacts = new String(JsonCodec.write(campaign.artifacts.values()), StandardCharsets.UTF_8);
+            var componentPlans = new String(JsonCodec.write(campaign.componentPlans), StandardCharsets.UTF_8);
             jdbc.update("""
                     INSERT INTO rcm_upgrade_campaign(campaign_id, version, status, canary_count, batch_size, active_limit,
-                        artifacts, created_at, updated_at, finished_at)
-                    VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?)
+                        artifacts, component_plans, created_at, updated_at, finished_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?)
                     """, campaign.id, campaign.version, campaign.status, campaign.canaryCount, campaign.batchSize,
-                    campaign.activeLimit, artifacts, timestamp(campaign.createdAt), timestamp(campaign.updatedAt), timestamp(campaign.finishedAt));
+                    campaign.activeLimit, artifacts, componentPlans, timestamp(campaign.createdAt), timestamp(campaign.updatedAt), timestamp(campaign.finishedAt));
             for (int index = 0; index < campaign.targets.size(); index++) {
                 var target = campaign.targets.get(index);
                 jdbc.update("""
                         INSERT INTO rcm_upgrade_target(campaign_id, target_index, agent_id, status, error_text, attempts,
-                            updated_at, finished_at, lease_until)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            updated_at, finished_at, lease_until, component_statuses)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb))
                         """, campaign.id, index, target.machineId, target.status, target.error, target.attempts,
-                        timestamp(target.updatedAt), timestamp(target.finishedAt), timestamp(target.leaseUntil));
+                        timestamp(target.updatedAt), timestamp(target.finishedAt), timestamp(target.leaseUntil),
+                        new String(JsonCodec.write(target.componentStatuses), StandardCharsets.UTF_8));
             }
             return view(campaign);
         });
@@ -483,6 +498,7 @@ public final class UpgradeService {
             for (var target : campaign.targets) {
                 if (FAILED.equals(target.status)) {
                     target.status = PENDING; target.error = ""; target.leaseUntil = null; target.finishedAt = null; target.updatedAt = now;
+                    target.componentStatuses = Map.of();
                     updateTargetJdbc(campaign.id, target);
                 }
             }
@@ -496,7 +512,8 @@ public final class UpgradeService {
         return view(campaign);
     }
 
-    private UpgradeCampaignView updateStatusJdbc(String machineId, String id, String status, String error, Integer attempt) {
+    private UpgradeCampaignView updateStatusJdbc(String machineId, String id, String status, String error, Integer attempt,
+                                                 Map<String, String> componentStatuses) {
         var campaign = requiredJdbc(id, true);
         // A late status report from an Agent that was already offered an
         // upgrade must not mutate a campaign the operator canceled while the
@@ -512,7 +529,7 @@ public final class UpgradeService {
         }
         var now = Instant.now();
         if (!statusMayAdvance(target, status, now)) return view(campaign);
-        applyStatus(campaign, target, status, error, now);
+        applyStatus(campaign, target, status, error, now, componentStatuses);
         updateTargetJdbc(campaign.id, target);
         reconcileJdbc(campaign, now);
         updateCampaignJdbc(campaign);
@@ -533,14 +550,15 @@ public final class UpgradeService {
 
     private void updateTargetJdbc(String campaignId, Target target) {
         jdbc.update("""
-                 UPDATE rcm_upgrade_target SET status = ?, error_text = ?, attempts = ?, updated_at = ?, finished_at = ?, lease_until = ?
+                 UPDATE rcm_upgrade_target SET status = ?, error_text = ?, attempts = ?, updated_at = ?, finished_at = ?, lease_until = ?, component_statuses = CAST(? AS jsonb)
                  WHERE campaign_id = ? AND agent_id = ?
                    AND EXISTS (
                        SELECT 1 FROM rcm_upgrade_campaign c
                         WHERE c.campaign_id = ? AND c.status <> ?
                    )
                 """, target.status, target.error, target.attempts, timestamp(target.updatedAt), timestamp(target.finishedAt),
-                timestamp(target.leaseUntil), campaignId, target.machineId, campaignId, CANCELED);
+                timestamp(target.leaseUntil), new String(JsonCodec.write(target.componentStatuses), StandardCharsets.UTF_8),
+                campaignId, target.machineId, campaignId, CANCELED);
     }
 
     private void updateCampaignJdbc(Campaign campaign) {
@@ -585,18 +603,20 @@ public final class UpgradeService {
 
     private Campaign loadJdbc(String id, boolean forUpdate) {
         var lock = forUpdate ? " FOR UPDATE" : "";
-        var rows = jdbc.query("SELECT campaign_id, version, status, canary_count, batch_size, active_limit, artifacts, created_at, updated_at, finished_at FROM rcm_upgrade_campaign WHERE campaign_id = ?" + lock,
+        var rows = jdbc.query("SELECT campaign_id, version, status, canary_count, batch_size, active_limit, artifacts, component_plans, created_at, updated_at, finished_at FROM rcm_upgrade_campaign WHERE campaign_id = ?" + lock,
                 ps -> ps.setString(1, id), (rs, row) -> {
                     var artifacts = readArtifacts(rs.getString("artifacts"));
+                    var componentPlans = readComponentPlans(rs.getString("component_plans"));
                     return new Campaign(rs.getString("campaign_id"), rs.getString("version"), rs.getString("status"),
                             rs.getInt("canary_count"), rs.getInt("batch_size"), rs.getInt("active_limit"), artifacts,
-                            new ArrayList<>(), instant(rs, "created_at"), instant(rs, "updated_at"), instant(rs, "finished_at"));
+                            componentPlans, new ArrayList<>(), instant(rs, "created_at"), instant(rs, "updated_at"), instant(rs, "finished_at"));
                 });
         if (rows.isEmpty()) return null;
         var campaign = rows.get(0);
-        campaign.targets.addAll(jdbc.query("SELECT agent_id, status, error_text, attempts, updated_at, finished_at, lease_until FROM rcm_upgrade_target WHERE campaign_id = ? ORDER BY target_index" + lock,
+            campaign.targets.addAll(jdbc.query("SELECT agent_id, status, error_text, attempts, updated_at, finished_at, lease_until, component_statuses FROM rcm_upgrade_target WHERE campaign_id = ? ORDER BY target_index" + lock,
                 ps -> ps.setString(1, id), (rs, row) -> new Target(rs.getString("agent_id"), rs.getString("status"),
-                        rs.getString("error_text"), rs.getInt("attempts"), instant(rs, "updated_at"), instant(rs, "finished_at"), instant(rs, "lease_until"))));
+                        rs.getString("error_text"), rs.getInt("attempts"), instant(rs, "updated_at"), instant(rs, "finished_at"), instant(rs, "lease_until"),
+                        readStringMap(rs.getString("component_statuses")))));
         return campaign;
     }
 
@@ -612,6 +632,19 @@ public final class UpgradeService {
     }
 
     private void applyStatus(Campaign campaign, Target target, String status, String error, Instant now) {
+        applyStatus(campaign, target, status, error, now, Map.of());
+    }
+
+    private void applyStatus(Campaign campaign, Target target, String status, String error, Instant now,
+                             Map<String, String> componentStatuses) {
+        if (componentStatuses != null && !componentStatuses.isEmpty()) {
+            target.componentStatuses = componentStatuses.entrySet().stream()
+                    .filter(entry -> entry.getKey() != null && entry.getKey().matches("[a-z][a-z0-9-]{1,63}")
+                            && entry.getValue() != null)
+                    .limit(16)
+                    .collect(java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                            entry -> compactComponentStatus(entry.getValue())));
+        }
         if (DOWNLOADING.equals(status) || INSTALLING.equals(status)) {
             target.status = status; target.error = ""; target.leaseUntil = now.plus(STATUS_LEASE);
         } else if (FAILED.equals(status)) {
@@ -621,6 +654,11 @@ public final class UpgradeService {
         }
         target.updatedAt = now;
         campaign.updatedAt = now;
+    }
+
+    private static String compactComponentStatus(String value) {
+        var normalized = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.length() <= 32 ? normalized : normalized.substring(0, 32);
     }
 
     /**
@@ -649,7 +687,10 @@ public final class UpgradeService {
         var allCompleted = true;
         for (var target : campaign.targets) {
             var machine = machines.get(target.machineId);
-            if (machine != null && campaign.version.equals(machine.version()) && !COMPLETED.equals(target.status)) {
+            var componentWork = machine == null ? List.<UpgradeComponentPlan>of()
+                    : campaign.componentPlans.getOrDefault(platform(machine.os(), machine.arch()), List.of());
+            if (machine != null && campaign.version.equals(machine.version()) && componentWork.isEmpty()
+                    && !COMPLETED.equals(target.status)) {
                 target.status = COMPLETED; target.error = ""; target.leaseUntil = null; target.updatedAt = now; target.finishedAt = now;
             }
             if (FAILED.equals(target.status)) campaign.status = PAUSED;
@@ -794,9 +835,10 @@ public final class UpgradeService {
     private static UpgradeCampaignView view(Campaign campaign) {
         var targets = campaign.targets.stream().map(value -> new UpgradeTargetView(value.machineId, value.status,
                 value.error == null || value.error.isBlank() ? null : value.error, value.attempts, value.updatedAt,
-                value.finishedAt, value.leaseUntil)).toList();
+                value.finishedAt, value.leaseUntil, value.componentStatuses)).toList();
         return new UpgradeCampaignView(campaign.id, campaign.version, campaign.status, campaign.canaryCount, campaign.batchSize,
-                campaign.activeLimit, campaign.artifacts, targets, campaign.createdAt, campaign.updatedAt, campaign.finishedAt);
+                campaign.activeLimit, campaign.artifacts, campaign.componentPlans, targets, campaign.createdAt,
+                campaign.updatedAt, campaign.finishedAt);
     }
 
     private static Map<String, UpgradeArtifact> readArtifacts(String value) {
@@ -805,6 +847,99 @@ public final class UpgradeService {
         var result = new LinkedHashMap<String, UpgradeArtifact>();
         for (var artifact : records) if (artifact != null && artifact.os() != null && artifact.arch() != null) result.put(platform(artifact.os(), artifact.arch()), artifact);
         return result;
+    }
+
+    /**
+     * Resolve optional desktop/browser plans once at campaign creation. The
+     * resulting JSON is immutable, so a later GitHub release change cannot
+     * mutate an in-flight campaign or make two machines receive different
+     * bytes. Explicit request plans win over the published manifest.
+     */
+    private Map<String, List<UpgradeComponentPlan>> resolveComponentPlans(
+            String version, List<MachineView> machines,
+            Map<String, List<UpgradeComponentPlan>> supplied) {
+        var result = new LinkedHashMap<String, List<UpgradeComponentPlan>>();
+        var platforms = machines.stream().map(value -> platform(value.os(), value.arch())).distinct().toList();
+        for (var key : platforms) {
+            var plans = supplied == null ? null : supplied.get(key);
+            if (plans == null && supplied != null) plans = supplied.get(key.toLowerCase(java.util.Locale.ROOT));
+            if (plans == null && manifests != null) {
+                var parts = key.split("/", 2);
+                plans = manifests.components(version, parts[0], parts[1]);
+            }
+            if (plans == null || plans.isEmpty()) continue;
+            var normalized = new ArrayList<UpgradeComponentPlan>();
+            var names = new java.util.HashSet<String>();
+            for (var plan : plans) {
+                validateComponentPlan(key, plan);
+                if (!names.add(plan.component())) throw new IllegalArgumentException("duplicate component plan: " + plan.component());
+                normalized.add(plan);
+            }
+            result.put(key, List.copyOf(normalized));
+        }
+        return Map.copyOf(result);
+    }
+
+    private static void validateComponentPlan(String platform, UpgradeComponentPlan plan) {
+        if (plan == null || !platform.equals(plan.os() + "/" + plan.arch())) {
+            throw new IllegalArgumentException("component plan platform does not match " + platform);
+        }
+        if (plan.version().isBlank() || !VERSION.matcher(plan.version()).matches()) {
+            throw new IllegalArgumentException("component version is invalid");
+        }
+        if (plan.url().isBlank() || plan.url().length() > 4096
+                || !SHA256.matcher(plan.sha256()).matches()) {
+            throw new IllegalArgumentException("component artifact is incomplete");
+        }
+        var uri = URI.create(plan.url());
+        if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                || uri.getUserInfo() != null || uri.getFragment() != null) {
+            throw new IllegalArgumentException("component artifact URL must use HTTPS");
+        }
+        var path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(java.util.Locale.ROOT);
+        if (!path.endsWith(".zip")) throw new IllegalArgumentException("component artifact must be a ZIP bundle");
+        var policy = plan.restartPolicy().toLowerCase(java.util.Locale.ROOT);
+        if (!("drain-and-restart".equals(policy) || "restart".equals(policy) || "manual".equals(policy))) {
+            throw new IllegalArgumentException("unsupported component restart policy");
+        }
+        if (plan.bytes() != null && (plan.bytes() < 0 || plan.bytes() > 256L * 1024 * 1024)) {
+            throw new IllegalArgumentException("component artifact exceeds 256 MiB");
+        }
+    }
+
+    private static Map<String, List<UpgradeComponentPlan>> readComponentPlans(String value) {
+        if (value == null || value.isBlank()) return Map.of();
+        try {
+            var raw = JsonCodec.read(value.getBytes(StandardCharsets.UTF_8), Map.class);
+            if (raw == null || raw.isEmpty()) return Map.of();
+            var result = new LinkedHashMap<String, List<UpgradeComponentPlan>>();
+            raw.forEach((key, entry) -> {
+                if (!(entry instanceof List<?> values)) return;
+                var plans = values.stream()
+                        .map(item -> JsonCodec.write(item))
+                        .map(bytes -> JsonCodec.read(bytes, UpgradeComponentPlan.class))
+                        .toList();
+                result.put(String.valueOf(key).toLowerCase(java.util.Locale.ROOT), List.copyOf(plans));
+            });
+            return Map.copyOf(result);
+        } catch (RuntimeException ignored) {
+            return Map.of();
+        }
+    }
+
+    private static Map<String, String> readStringMap(String value) {
+        if (value == null || value.isBlank()) return Map.of();
+        try {
+            var raw = JsonCodec.read(value.getBytes(StandardCharsets.UTF_8), Map.class);
+            if (raw == null || raw.isEmpty()) return Map.of();
+            var result = new LinkedHashMap<String, String>();
+            raw.forEach((key, entry) -> {
+                if (key != null && entry != null) result.put(String.valueOf(key), String.valueOf(entry));
+            });
+            return Map.copyOf(result);
+        } catch (RuntimeException ignored) {
+            return Map.of();
+        }
     }
 
     private static Instant instant(java.sql.ResultSet rs, String name) throws java.sql.SQLException {
@@ -842,16 +977,22 @@ public final class UpgradeService {
         private final int batchSize;
         private int activeLimit;
         private final Map<String, UpgradeArtifact> artifacts;
+        private final Map<String, List<UpgradeComponentPlan>> componentPlans;
         private final List<Target> targets;
         private final Instant createdAt;
         private Instant updatedAt;
         private Instant finishedAt;
 
         private Campaign(String id, String version, String status, int canaryCount, int batchSize, int activeLimit,
-                         Map<String, UpgradeArtifact> artifacts, List<Target> targets, Instant createdAt,
+                         Map<String, UpgradeArtifact> artifacts, Map<String, List<UpgradeComponentPlan>> componentPlans,
+                         List<Target> targets, Instant createdAt,
                          Instant updatedAt, Instant finishedAt) {
             this.id = id; this.version = version; this.status = status; this.canaryCount = canaryCount; this.batchSize = batchSize;
-            this.activeLimit = activeLimit; this.artifacts = new LinkedHashMap<>(artifacts); this.targets = targets;
+            this.activeLimit = activeLimit; this.artifacts = new LinkedHashMap<>(artifacts);
+            this.componentPlans = componentPlans == null ? Map.of() : componentPlans.entrySet().stream()
+                    .collect(java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                            entry -> entry.getValue() == null ? List.of() : List.copyOf(entry.getValue())));
+            this.targets = targets;
             this.createdAt = createdAt; this.updatedAt = updatedAt; this.finishedAt = finishedAt;
         }
     }
@@ -864,10 +1005,17 @@ public final class UpgradeService {
         private Instant updatedAt;
         private Instant finishedAt;
         private Instant leaseUntil;
+        private Map<String, String> componentStatuses;
 
         private Target(String machineId, String status, String error, int attempts, Instant updatedAt, Instant finishedAt, Instant leaseUntil) {
+            this(machineId, status, error, attempts, updatedAt, finishedAt, leaseUntil, Map.of());
+        }
+
+        private Target(String machineId, String status, String error, int attempts, Instant updatedAt, Instant finishedAt, Instant leaseUntil,
+                       Map<String, String> componentStatuses) {
             this.machineId = machineId; this.status = status; this.error = error == null ? "" : error; this.attempts = attempts;
             this.updatedAt = updatedAt; this.finishedAt = finishedAt; this.leaseUntil = leaseUntil;
+            this.componentStatuses = componentStatuses == null ? Map.of() : Map.copyOf(componentStatuses);
         }
     }
 }
