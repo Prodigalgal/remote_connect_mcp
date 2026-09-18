@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const MAX_COMMAND_BYTES = 64 * 1024;
@@ -439,7 +439,10 @@ async function restoreSessionPage(page, operation) {
   if (!profileDir || !sessionFile || operation === "navigate") return;
   if (page.url() && !page.url().startsWith("about:blank")) return;
   try {
-    const bytes = await readFile(path.resolve(sessionFile));
+    const marker = path.resolve(sessionFile);
+    const info = await lstat(marker);
+    if (!info.isFile()) return;
+    const bytes = await readFile(marker);
     if (bytes.length > 16 * 1024) return;
     const saved = JSON.parse(bytes.toString("utf8"));
     const url = sanitizeSessionUrl(saved?.url);
@@ -457,6 +460,12 @@ async function persistSessionPage(page) {
   const temporary = target + "." + randomUUID() + ".tmp";
   try {
     await mkdir(path.dirname(target), { recursive: true });
+    try {
+      const existing = await lstat(target);
+      if (!existing.isFile()) return;
+    } catch (error) {
+      if (error?.code !== "ENOENT") return;
+    }
     await writeFile(temporary, JSON.stringify({ url, updated_at: new Date().toISOString() }), { encoding: "utf8", mode: 0o600 });
     await rename(temporary, target);
   } catch {
@@ -549,8 +558,8 @@ async function writeResult(value) {
 }
 
 async function assertRegularFile(file) {
-  const info = await stat(file);
-  if (!info.isFile() || info.size <= 0) throw new Error("browser artifact is empty or not a regular file");
+  const info = await lstat(file);
+  if (!info.isFile()) throw new Error("browser artifact is not a regular file");
 }
 
 function parseCommand(command) {
