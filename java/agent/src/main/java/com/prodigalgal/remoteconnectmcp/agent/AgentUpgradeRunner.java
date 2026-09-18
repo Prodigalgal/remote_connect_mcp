@@ -43,6 +43,8 @@ final class AgentUpgradeRunner implements Runnable {
     // uncompressed bundle ceiling.
     private static final long MAX_ARTIFACT_BYTES = 256L * 1024 * 1024;
     private static final Duration DOWNLOAD_TIMEOUT = Duration.ofMinutes(15);
+    private static final int MAX_DOWNLOAD_ATTEMPTS = 3;
+    private static final Duration DOWNLOAD_RETRY_DELAY = Duration.ofSeconds(2);
     private static final int COPY_BUFFER = 64 * 1024;
 
     private final AgentConfig config;
@@ -50,7 +52,13 @@ final class AgentUpgradeRunner implements Runnable {
     private final AgentTransport transport;
     private final UpgradePlan plan;
     private final Runnable requestShutdown;
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
+    private final HttpClient http = HttpClient.newBuilder()
+            // GitHub release redirects intermittently terminate HTTP/2 streams
+            // on long Native Image ZIP downloads.  Keep the control plane
+            // websocket/HTTPS paths unchanged, but use a deterministic HTTP/1.1
+            // connection for the bounded upgrade artifact fetch.
+            .version(HttpClient.Version.HTTP_1_1)
+            .connectTimeout(Duration.ofSeconds(10))
             .followRedirects(HttpClient.Redirect.NORMAL).build();
 
     AgentUpgradeRunner(AgentConfig config, AgentIdentity identity, AgentTransport transport,
@@ -120,6 +128,24 @@ final class AgentUpgradeRunner implements Runnable {
     }
 
     private void downloadVerified(String rawUrl, String expected, Path destination)
+            throws IOException, InterruptedException {
+        IOException last = null;
+        for (int attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt++) {
+            try {
+                downloadVerifiedOnce(rawUrl, expected, destination);
+                return;
+            } catch (IOException exception) {
+                last = exception;
+                if (attempt == MAX_DOWNLOAD_ATTEMPTS || !isRetryableDownloadFailure(exception)) throw exception;
+                LOG.log(Level.INFO, "retrying Agent upgrade download ({0}/{1}): {2}",
+                        new Object[]{attempt + 1, MAX_DOWNLOAD_ATTEMPTS, compactError(exception.getMessage())});
+                Thread.sleep(DOWNLOAD_RETRY_DELAY.toMillis());
+            }
+        }
+        throw last == null ? new IOException("Agent upgrade download failed") : last;
+    }
+
+    private void downloadVerifiedOnce(String rawUrl, String expected, Path destination)
             throws IOException, InterruptedException {
         var request = HttpRequest.newBuilder(URI.create(rawUrl.trim()))
                 .timeout(DOWNLOAD_TIMEOUT)
@@ -251,6 +277,12 @@ final class AgentUpgradeRunner implements Runnable {
                 throw new IllegalArgumentException("upgrade component restart policy is invalid");
             }
         }
+    }
+
+    private static boolean isRetryableDownloadFailure(IOException exception) {
+        var message = exception.getMessage() == null ? "" : exception.getMessage().toLowerCase(Locale.ROOT);
+        return message.contains("eof") || message.contains("reset") || message.contains("timed out")
+                || message.contains("connect") || message.contains("closed") || message.contains("no bytes");
     }
 
     private Path resolveComponentTarget(String component) throws IOException {
