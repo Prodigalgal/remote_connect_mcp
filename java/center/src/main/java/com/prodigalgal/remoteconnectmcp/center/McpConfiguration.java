@@ -278,7 +278,7 @@ public class McpConfiguration {
                                                                                     ArtifactTransferService transfers,
                                                                                     ExecutorService mcpVirtualThreadExecutor) {
         var scheduler = Schedulers.fromExecutor(mcpVirtualThreadExecutor);
-        var artifactMeta = Map.of("openai/outputTemplate", ARTIFACT_VIEWER_URI,
+        var artifactMeta = Map.<String, Object>of("openai/outputTemplate", ARTIFACT_VIEWER_URI,
                 "ui/resourceUri", ARTIFACT_VIEWER_URI);
         return List.of(
                 tool("machines", "Discover registered machines or fetch one bounded machine detail. Returns stable IDs and compact capability summaries.",

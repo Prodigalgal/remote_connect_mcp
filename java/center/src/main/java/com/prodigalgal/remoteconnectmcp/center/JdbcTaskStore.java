@@ -841,7 +841,7 @@ final class JdbcTaskStore {
                 && (left.contract() == null ? right.contract() == null : left.contract().sameIntent(right.contract()));
     }
 
-    private int currentAttempt(String machineId, String taskId) {
+    int currentAttempt(String machineId, String taskId) {
         var value = jdbc.queryForObject("SELECT attempt FROM rcm_task WHERE task_id = ? AND agent_id = ?", Integer.class,
                 taskId, machineId);
         if (value == null || value < 1) throw new SecurityException("task dispatch attempt is required");
