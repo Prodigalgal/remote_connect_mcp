@@ -300,9 +300,7 @@ class PostgresIntegrationTest {
             var raceTaskId = ids.iterator().next();
             store.cancel(raceTaskId);
             var canceledRace = store.find(raceTaskId).orElseThrow();
-            store.updateState(agentId, raceTaskId,
-                    new TaskUpdateRequest("canceled", null, null, null, Instant.now(), false),
-                    canceledRace.attempt());
+            assertEquals(TaskStatus.CANCELED, canceledRace.status());
         }
 
         // Two independent Center facades must be able to claim different
