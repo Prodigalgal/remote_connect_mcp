@@ -85,5 +85,13 @@ class BrowserTaskRunnerTest {
             artifact.append(new String(data, java.nio.charset.StandardCharsets.UTF_8));
             return new ArtifactResponse(data.length, sha256);
         }
+
+        @Override
+        public com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadTransfer(
+                String machineId, String token, String transferId, Path source, String fileName,
+                String mimeType, long expectedBytes, String expectedSha256, int attempt) {
+            return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
+                    transferId, null, "completed", expectedBytes, expectedSha256, null);
+        }
     }
 }

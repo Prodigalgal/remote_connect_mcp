@@ -614,8 +614,9 @@ public class McpConfiguration {
         try {
             var arguments = modelArguments(request);
             var normalized = new LinkedHashMap<String, Object>();
-            normalized.put("operation", "shortcut".equals(asString(arguments.get("operation"))
-                    .toLowerCase(java.util.Locale.ROOT) ? "key" : requiredModelString(arguments, "operation"));
+            normalized.put("operation", "shortcut".equals(
+                    asString(arguments.get("operation")).toLowerCase(java.util.Locale.ROOT))
+                    ? "key" : requiredModelString(arguments, "operation"));
             normalized.put("machine_id", requiredModelString(arguments, "machine_id"));
             for (var key : List.of("task_id", "executable", "args", "text", "x", "y", "x2", "y2",
                     "duration_ms", "screen", "window_title", "timeout_seconds", "wait_ms")) {

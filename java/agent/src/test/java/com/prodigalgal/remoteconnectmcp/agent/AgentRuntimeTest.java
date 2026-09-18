@@ -279,6 +279,14 @@ class AgentRuntimeTest {
         public ArtifactResponse appendArtifact(String machineId, String token, String taskId, int attempt, String mimeType, String sha256, byte[] data) {
             return new ArtifactResponse(data.length, sha256);
         }
+
+        @Override
+        public com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadTransfer(
+                String machineId, String token, String transferId, Path source, String fileName,
+                String mimeType, long expectedBytes, String expectedSha256, int attempt) {
+            return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
+                    transferId, null, "completed", expectedBytes, expectedSha256, null);
+        }
     }
 
     private static final class HotConfigTransport implements AgentTransport {
@@ -312,6 +320,14 @@ class AgentRuntimeTest {
                                                String sha256, byte[] data) {
             return new ArtifactResponse(data.length, sha256);
         }
+
+        @Override
+        public com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadTransfer(
+                String machineId, String token, String transferId, Path source, String fileName,
+                String mimeType, long expectedBytes, String expectedSha256, int attempt) {
+            return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
+                    transferId, null, "completed", expectedBytes, expectedSha256, null);
+        }
     }
 
     private static class RecordingTransport implements AgentTransport {
@@ -344,6 +360,14 @@ class AgentRuntimeTest {
         @Override
         public ArtifactResponse appendArtifact(String machineId, String token, String taskId, int attempt, String mimeType, String sha256, byte[] data) {
             return new ArtifactResponse(data.length, sha256);
+        }
+
+        @Override
+        public com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse uploadTransfer(
+                String machineId, String token, String transferId, Path source, String fileName,
+                String mimeType, long expectedBytes, String expectedSha256, int attempt) {
+            return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
+                    transferId, null, "completed", expectedBytes, expectedSha256, null);
         }
     }
 
