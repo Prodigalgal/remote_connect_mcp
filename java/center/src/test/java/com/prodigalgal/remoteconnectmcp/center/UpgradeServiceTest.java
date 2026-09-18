@@ -85,7 +85,7 @@ class UpgradeServiceTest {
         var plan = upgrades.offer(first.machineId(), new PollRequest(List.of(), 1, List.of("command")));
         assertNotNull(plan);
         var failed = upgrades.updateStatus(first.machineId(), new UpgradeStatusRequest(
-                campaign.id(), UpgradeService.FAILED, "temporary token=should-not-be-visible", plan.attempt()));
+                campaign.id(), UpgradeService.FAILED, "temporary token=should-not-be-visible", plan.attempt(), Map.of()));
         assertEquals(UpgradeService.PAUSED, failed.status());
         assertEquals("temporary token=[redacted]", failed.targets().stream()
                 .filter(target -> target.machineId().equals(first.machineId())).findFirst().orElseThrow().error());
