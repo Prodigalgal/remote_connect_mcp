@@ -47,6 +47,32 @@ class AgentUpgradeHelperTest {
     }
 
     @Test
+    void mapsCanonicalBundleExecutableToAConfiguredTargetName() throws Exception {
+        var root = Files.createTempDirectory("rcm-upgrade-canonical-name-");
+        try {
+            var targetDir = Files.createDirectories(root.resolve("bin"));
+            var stateDir = Files.createDirectories(root.resolve("state"));
+            var targetName = isWindows() ? "agent-custom.exe" : "agent-custom";
+            var canonicalName = isWindows() ? "rcm-agent.exe" : "rcm-agent";
+            var target = targetDir.resolve(targetName);
+            Files.writeString(target, "old-agent", StandardCharsets.UTF_8);
+            var archive = root.resolve("agent.zip");
+            writeArchive(archive, canonicalName, "new-agent", "java.dll", "new-java");
+            var config = new AgentUpgradeHelper.Config("campaign-canonical-name", "v2.0.0", archive.toString(),
+                    target.toString(), stateDir.toString(), "", ProcessHandle.current().pid());
+
+            invoke("applyArchive", config);
+
+            assertEquals("new-agent", Files.readString(target));
+            assertEquals("new-java", Files.readString(targetDir.resolve("java.dll")));
+            assertFalse(Files.exists(targetDir.resolve(canonicalName)),
+                    "the canonical archive name must not leave a second executable beside the configured target");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    @Test
     void windowsArchiveReplacesRuntimeFilesAndWritesVersionMarker() throws Exception {
         assumeTrue(isWindows(), "Windows Native Image bundles are only applied on Windows");
         var root = Files.createTempDirectory("rcm-upgrade-helper-");

@@ -462,7 +462,8 @@ final class AgentUpgradeHelper {
     }
 
     private static boolean isComponentExecutableFile(String name, String executableName, String component) {
-        if (isExecutableBundleFile(name, executableName)) return true;
+        if (name == null) return false;
+        if (name.equalsIgnoreCase(executableName)) return true;
         var normalized = component == null ? "" : component.replace('-', '_').toLowerCase(Locale.ROOT);
         var lower = name.toLowerCase(Locale.ROOT);
         return lower.equals("rcm-" + normalized + (isWindows() ? ".exe" : ""))
@@ -470,11 +471,19 @@ final class AgentUpgradeHelper {
     }
 
     private static boolean isExecutableBundleFile(String name, String targetName) {
-        return name.equalsIgnoreCase(targetName);
+        return name.equalsIgnoreCase(targetName) || isCanonicalAgentExecutable(name);
+    }
+
+    private static boolean isCanonicalAgentExecutable(String name) {
+        return name != null && name.equalsIgnoreCase(isWindows() ? "rcm-agent.exe" : "rcm-agent");
     }
 
     private static String installedFileName(String archiveName, String targetName) {
-        return archiveName;
+        // Release bundles use the canonical executable name.  Preserve the
+        // configured host target basename when an older installation used a
+        // different one, so the service continues to launch the upgraded
+        // executable without accepting arbitrary archive paths.
+        return isCanonicalAgentExecutable(archiveName) ? targetName : archiveName;
     }
 
     private static String installedComponentFileName(String archiveName, String targetName, String component) {
