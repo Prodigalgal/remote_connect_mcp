@@ -525,7 +525,11 @@ public final class TaskService {
     public TaskView updateFileTransferAction(String machineId, String taskId,
                                              com.prodigalgal.remoteconnectmcp.protocol.FileTransferAction action) {
         if (action == null) throw new IllegalArgumentException("file transfer action is required");
-        ProtocolValidation.validateTask(new TaskCommand("", TaskKind.FILE_TRANSFER,
+        // Validate the action against the durable task identity.  The async
+        // Web->Agent ingest calls this method after the task has already been
+        // created; using an empty id here makes the protocol validator reject
+        // every successfully downloaded file before it can be dispatched.
+        ProtocolValidation.validateTask(new TaskCommand(taskId, TaskKind.FILE_TRANSFER,
                 AgentCapability.FILE_TRANSFER.wireValue(), null, ".", Map.of(), 0, null, Instant.now(), null, action));
         if (jdbcStore != null) {
             var view = jdbcStore.updateFileTransferAction(machineId, taskId, action);

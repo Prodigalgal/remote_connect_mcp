@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
+import com.prodigalgal.remoteconnectmcp.protocol.FileTransferAction;
 import com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
@@ -93,6 +94,27 @@ class TaskServiceTest {
         assertThrows(SecurityException.class, () -> tasks.updateState(registration.machineId(), task.id(),
                 new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), 1));
         assertEquals(2, tasks.find(task.id()).orElseThrow().attempt());
+    }
+
+    @Test
+    void publishesPreparedFileTransferActionAgainstTheDurableTaskId() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("file_transfer")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var pending = new FileTransferAction(FileTransferAction.WEB_TO_AGENT, "transfer-prepared", "artifact-prepared",
+                "", "/srv/input.txt", "input.txt", "text/plain", 0L, "", true);
+        var task = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, "/srv", Map.of(), 0, null, null, null, pending),
+                "prepared-transfer"));
+        var ready = new FileTransferAction(FileTransferAction.WEB_TO_AGENT, "transfer-prepared", "artifact-prepared",
+                "", "/srv/input.txt", "input.txt", "text/plain", 5L,
+                "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", true);
+
+        var updated = tasks.updateFileTransferAction(registration.machineId(), task.id(), ready);
+
+        assertEquals(task.id(), updated.id());
+        assertEquals(ready, tasks.find(task.id()).orElseThrow().command().fileTransfer());
+        assertEquals(TaskStatus.QUEUED, updated.status());
     }
 
     @Test
