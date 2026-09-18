@@ -93,5 +93,11 @@ class BrowserTaskRunnerTest {
             return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
                     transferId, null, "completed", expectedBytes, expectedSha256, null);
         }
+
+        @Override
+        public AgentTransport.TransferResume queryTransferResume(String machineId, String token,
+                                                                 String transferId, int attempt) {
+            return new AgentTransport.TransferResume(0, "ready");
+        }
     }
 }

@@ -287,6 +287,12 @@ class AgentRuntimeTest {
             return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
                     transferId, null, "completed", expectedBytes, expectedSha256, null);
         }
+
+        @Override
+        public AgentTransport.TransferResume queryTransferResume(String machineId, String token,
+                                                                 String transferId, int attempt) {
+            return new AgentTransport.TransferResume(0, "ready");
+        }
     }
 
     private static final class HotConfigTransport implements AgentTransport {
@@ -328,6 +334,12 @@ class AgentRuntimeTest {
             return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
                     transferId, null, "completed", expectedBytes, expectedSha256, null);
         }
+
+        @Override
+        public AgentTransport.TransferResume queryTransferResume(String machineId, String token,
+                                                                 String transferId, int attempt) {
+            return new AgentTransport.TransferResume(0, "ready");
+        }
     }
 
     private static class RecordingTransport implements AgentTransport {
@@ -368,6 +380,12 @@ class AgentRuntimeTest {
                 String mimeType, long expectedBytes, String expectedSha256, int attempt) {
             return new com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse(
                     transferId, null, "completed", expectedBytes, expectedSha256, null);
+        }
+
+        @Override
+        public AgentTransport.TransferResume queryTransferResume(String machineId, String token,
+                                                                 String transferId, int attempt) {
+            return new AgentTransport.TransferResume(0, "ready");
         }
     }
 
