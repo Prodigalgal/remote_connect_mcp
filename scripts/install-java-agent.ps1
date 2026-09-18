@@ -11,7 +11,7 @@ param(
         [ValidateSet("unrestricted", "project", "worktree", "path", "workspace")]
         [string]$ScopeMode = "workspace",
     [string]$WorkspaceRoot = "",
-    [string]$Capabilities = "command,durable_tasks",
+    [string]$Capabilities = "command,durable_tasks,file_transfer",
     [string]$Version = "dev",
     [string]$BrowserAdapter = "",
     [string]$BrowserProfileDir = $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR,

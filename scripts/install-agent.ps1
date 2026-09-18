@@ -13,7 +13,7 @@ param(
     [ValidateSet("unrestricted", "workspace")]
     [string]$ScopeMode = "workspace",
     [string]$WorkspaceRoot = "",
-    [string]$Capabilities = "command,durable_tasks",
+    [string]$Capabilities = "command,durable_tasks,file_transfer",
     [string]$Version = "dev",
     [string]$BrowserAdapter = "",
     [switch]$DesktopEnabled,
