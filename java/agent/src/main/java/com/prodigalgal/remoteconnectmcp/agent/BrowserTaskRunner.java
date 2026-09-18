@@ -136,8 +136,10 @@ final class BrowserTaskRunner implements Runnable {
             // origin/path here so a new task can restore the last page when a
             // persistent profile is configured, without ever persisting query
             // strings, fragments, cookies, or CDP credentials.
-            builder.environment().put("RCM_BROWSER_SESSION_FILE",
-                    config.stateDir().toAbsolutePath().normalize().resolve("browser-session-" + sessionDigest(task) + ".json").toString());
+            var sessionFile = task.contract() == null
+                    ? config.stateDir().toAbsolutePath().normalize().resolve("browser-session.json")
+                    : config.stateDir().toAbsolutePath().normalize().resolve("browser-session-" + sessionDigest(task) + ".json");
+            builder.environment().put("RCM_BROWSER_SESSION_FILE", sessionFile.toString());
             // Every MCP execution session gets a separate browser context.
             // A configured root remains persistent for login continuity, while
             // an unconfigured root is ephemeral and removed after the task.

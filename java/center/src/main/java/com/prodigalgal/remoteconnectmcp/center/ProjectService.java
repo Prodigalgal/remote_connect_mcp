@@ -529,7 +529,7 @@ public final class ProjectService {
                 scopeMode, scopeRoot,
                 worktreeId.isBlank() ? WorkspacePolicyMode.SHARED_SERIAL : WorkspacePolicyMode.ISOLATED,
                 mutating ? LaneMode.WRITE : LaneMode.READ,
-                session, mutating ? "high" : "low", false, origin), "mcp", origin);
+                session, mutating ? "high" : "low", false, origin, !mutating), "mcp", origin);
         audit("git." + normalizedOperation, "admin", project.machineId, project.id, "accepted",
                 "worktree=" + (worktreeId.isBlank() ? "project" : worktreeId));
         return result;

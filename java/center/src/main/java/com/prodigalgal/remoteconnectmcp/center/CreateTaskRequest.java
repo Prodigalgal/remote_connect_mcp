@@ -19,12 +19,13 @@ public record CreateTaskRequest(
         String sessionId,
         String risk,
         boolean elevationRequired,
-        TaskOrigin origin) {
+        TaskOrigin origin,
+        boolean readOnlyLaneHint) {
 
     /** Compatibility constructor for callers written before execution contracts. */
     public CreateTaskRequest(String machineId, TaskCommand command, String idempotencyKey) {
         this(machineId, command, idempotencyKey, "", "", null, "", null, null,
-                "", "low", false, TaskOrigin.shared());
+                "", "low", false, TaskOrigin.shared(), false);
     }
 
     /** Compatibility constructor for the pre-principal request shape. */
@@ -32,7 +33,7 @@ public record CreateTaskRequest(
                              String projectId, String worktreeId, ScopeMode scopeMode, String scopeRoot,
                              String sessionId, String risk, boolean elevationRequired) {
         this(machineId, command, idempotencyKey, projectId, worktreeId, scopeMode, scopeRoot,
-                null, null, sessionId, risk, elevationRequired, TaskOrigin.shared());
+                null, null, sessionId, risk, elevationRequired, TaskOrigin.shared(), false);
     }
 
     /** Compatibility constructor for callers that already carry an owner. */
@@ -40,7 +41,16 @@ public record CreateTaskRequest(
                              String projectId, String worktreeId, ScopeMode scopeMode, String scopeRoot,
                              String sessionId, String risk, boolean elevationRequired, TaskOrigin origin) {
         this(machineId, command, idempotencyKey, projectId, worktreeId, scopeMode, scopeRoot,
-                null, null, sessionId, risk, elevationRequired, origin);
+                null, null, sessionId, risk, elevationRequired, origin, false);
+    }
+
+    /** Compatibility constructor for callers using the full pre-hint shape. */
+    public CreateTaskRequest(String machineId, TaskCommand command, String idempotencyKey,
+                             String projectId, String worktreeId, ScopeMode scopeMode, String scopeRoot,
+                             WorkspacePolicyMode workspacePolicy, LaneMode laneMode, String sessionId,
+                             String risk, boolean elevationRequired, TaskOrigin origin) {
+        this(machineId, command, idempotencyKey, projectId, worktreeId, scopeMode, scopeRoot,
+                workspacePolicy, laneMode, sessionId, risk, elevationRequired, origin, false);
     }
 
     public CreateTaskRequest {

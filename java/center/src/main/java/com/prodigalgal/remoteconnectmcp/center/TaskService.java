@@ -1049,15 +1049,17 @@ public final class TaskService {
         var connectionId = origin == null ? null : origin.connectionId();
         var sessionId = explicitSessionId;
         if (sessionId == null && connectionId != null && !connectionId.isBlank()) {
-            // One MCP connection can legitimately target several machines and
-            // worktrees.  Keep the convenient connection correlation, but do
-            // not make those unrelated contracts overwrite one another in the
-            // session table.  An explicitly supplied session_id is an opt-in
-            // shared context and is checked for contract drift by the session
-            // service.
-            var sessionFingerprint = connectionId + "\u0000" + machine.id() + "\u0000"
-                    + modeFingerprint(request, supplied, mode, projectId, worktreeId, scopeRoot, capability);
-            sessionId = "session_" + sha256(sessionFingerprint).substring(0, 32);
+            // Preserve the legacy shared connection id used by internal and
+            // PostgreSQL integration callers.  Authenticated MCP callers get
+            // a machine/scope fingerprint so one connection can safely span
+            // several independent execution contexts.
+            if (origin == null || origin.isShared()) {
+                sessionId = connectionId.trim();
+            } else {
+                var sessionFingerprint = connectionId + "\u0000" + machine.id() + "\u0000"
+                        + modeFingerprint(request, supplied, mode, projectId, worktreeId, scopeRoot, capability);
+                sessionId = "session_" + sha256(sessionFingerprint).substring(0, 32);
+            }
         }
         if (sessionId == null) {
             sessionId = request.idempotencyKey().isBlank()
@@ -1106,6 +1108,13 @@ public final class TaskService {
                 : supplied != null && supplied.workspacePolicy() != null ? supplied.workspacePolicy()
                 : defaultWorkspacePolicy(mode);
         var inferredLaneMode = defaultLaneMode(original);
+        if (request.readOnlyLaneHint()) {
+            if (original.kind() != TaskKind.COMMAND || request.projectId().isBlank()
+                    || (mode != ScopeMode.PROJECT && mode != ScopeMode.WORKTREE)) {
+                throw new SecurityException("read-only lane hint is not valid for this task");
+            }
+            inferredLaneMode = LaneMode.READ;
+        }
         var requestedLaneMode = request.laneMode() != null ? request.laneMode()
                 : supplied != null && supplied.laneMode() != null ? supplied.laneMode() : inferredLaneMode;
         // A caller may make a task more exclusive, but must not label an
