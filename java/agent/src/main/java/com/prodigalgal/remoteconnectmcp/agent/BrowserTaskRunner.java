@@ -44,6 +44,7 @@ final class BrowserTaskRunner implements Runnable {
     private final AgentTransport transport;
     private final AgentResourceBudget resourceBudget;
     private final AgentProcessBudget processBudget;
+    private final Path browserBinaryOverride;
 
     BrowserTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task, AgentTransport transport) {
         this(config, identity, task, transport, new AgentResourceBudget(config.maxAggregateOutputBytes()),
@@ -59,12 +60,25 @@ final class BrowserTaskRunner implements Runnable {
     BrowserTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
                       AgentTransport transport, AgentResourceBudget resourceBudget,
                       AgentProcessBudget processBudget) {
+        this(config, identity, task, transport, resourceBudget, processBudget, null);
+    }
+
+    /**
+     * Package-private injection seam used by protocol tests. Production calls
+     * resolve the separately installed browser-agent beside command-agent (or
+     * the explicit browser binary environment setting).
+     */
+    BrowserTaskRunner(AgentConfig config, AgentIdentity identity, TaskCommand task,
+                      AgentTransport transport, AgentResourceBudget resourceBudget,
+                      AgentProcessBudget processBudget, Path browserBinaryOverride) {
         this.config = config;
         this.identity = identity;
         this.task = task;
         this.transport = transport;
         this.resourceBudget = resourceBudget;
         this.processBudget = processBudget;
+        this.browserBinaryOverride = browserBinaryOverride == null
+                ? null : browserBinaryOverride.toAbsolutePath().normalize();
     }
 
     @Override
@@ -117,8 +131,12 @@ final class BrowserTaskRunner implements Runnable {
             resultFile = Files.createTempFile(config.stateDir(), "browser-result-", ".json");
             Files.deleteIfExists(resultFile);
             artifactDir = Files.createTempDirectory(config.stateDir(), "browser-artifacts-");
-            var browserBinary = resolveBrowserAgent();
-            var browserCommand = List.of(browserBinary.toString(), "--run-worker");
+            var browserBinary = browserBinaryOverride == null ? resolveBrowserAgent() : browserBinaryOverride;
+            if (!Files.isRegularFile(browserBinary, LinkOption.NOFOLLOW_LINKS)
+                    || (!isWindows() && !Files.isExecutable(browserBinary))) {
+                throw new IOException("browser-agent binary is missing or not executable: " + browserBinary);
+            }
+            var browserCommand = workerCommand(browserBinary);
             var builder = new ProcessBuilder(browserCommand).directory(cwd.toFile()).redirectErrorStream(true);
             cleanSensitiveEnvironment(builder.environment());
             // The standalone browser-agent consumes this local adapter command
@@ -486,6 +504,15 @@ final class BrowserTaskRunner implements Runnable {
 
     private static boolean isWindows() {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private static List<String> workerCommand(Path browserBinary) {
+        var name = browserBinary.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (isWindows() && (name.endsWith(".cmd") || name.endsWith(".bat"))) {
+            return List.of("cmd.exe", "/d", "/s", "/c",
+                    "\"" + browserBinary + "\" --run-worker");
+        }
+        return List.of(browserBinary.toString(), "--run-worker");
     }
 
     private static Path resolveBrowserAgent() throws IOException {

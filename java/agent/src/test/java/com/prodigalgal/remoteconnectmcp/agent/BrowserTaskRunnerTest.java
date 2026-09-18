@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -26,7 +27,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 class BrowserTaskRunnerTest {
     @Test
-    void adapterReceivesBoundedRequestFileAndStreamsOutput(@TempDir Path stateDir) {
+    void adapterReceivesBoundedRequestFileAndStreamsOutput(@TempDir Path stateDir) throws Exception {
         var adapter = System.getProperty("os.name", "").toLowerCase().contains("win")
                 ? "echo {\"status\":\"completed\",\"output\":\"manifest-output\",\"artifact\":{\"path\":\"artifact.txt\",\"mime_type\":\"text/plain\"}} > \"%RCM_BROWSER_RESULT_FILE%\" & echo %RCM_BROWSER_SESSION_FILE% > \"%RCM_BROWSER_SESSION_FILE%\" & echo artifact > \"%RCM_BROWSER_ARTIFACT_DIR%\\artifact.txt\" & type \"%RCM_BROWSER_TASK_REQUEST_FILE%\""
                 : "printf '%s' '{\"status\":\"completed\",\"output\":\"manifest-output\",\"artifact\":{\"path\":\"artifact.txt\",\"mime_type\":\"text/plain\"}}' > \"$RCM_BROWSER_RESULT_FILE\"; printf '%s' \"$RCM_BROWSER_SESSION_FILE\" > \"$RCM_BROWSER_SESSION_FILE\"; printf artifact > \"$RCM_BROWSER_ARTIFACT_DIR/artifact.txt\"; cat \"$RCM_BROWSER_TASK_REQUEST_FILE\"";
@@ -37,10 +38,13 @@ class BrowserTaskRunnerTest {
                 stateDir.toString(), Map.of(), 30, null, Instant.now(),
                 new ExecutionContract("machine-browser", "browser-host", ScopeMode.UNRESTRICTED,
                         null, null, null, "session-test", "browser", ExecutionContract.Budget.defaults(),
-                        Instant.now().plusSeconds(3600), "test-browser", "low", false, "lease-test"));
+                        Instant.now().plusSeconds(3600), "test-browser", "low", false, "lease-test"), 1);
         var transport = new RecordingTransport();
+        var browserAgent = writeBrowserAgent(stateDir);
 
-        new BrowserTaskRunner(config, new AgentIdentity("machine-browser", "daily-browser"), task, transport).run();
+        new BrowserTaskRunner(config, new AgentIdentity("machine-browser", "daily-browser"), task, transport,
+                new AgentResourceBudget(config.maxAggregateOutputBytes()),
+                new AgentProcessBudget(config.maxTotalChildProcesses()), browserAgent).run();
 
         assertTrue(transport.statuses.contains("running"), "statuses=" + transport.statuses);
         assertTrue(transport.statuses.contains("completed"), "statuses=" + transport.statuses);
@@ -49,7 +53,32 @@ class BrowserTaskRunnerTest {
         assertTrue(transport.output.toString().contains("manifest-output"), "manifest=" + transport.output);
         assertTrue(transport.artifactMime.equals("text/plain"), "mime=" + transport.artifactMime);
         assertTrue(transport.artifact.toString().contains("artifact"), "artifact=" + transport.artifact);
-        assertTrue(Files.isRegularFile(stateDir.resolve("browser-session.json")), "session marker was not passed to adapter");
+        try (var files = Files.list(stateDir)) {
+            assertTrue(files.anyMatch(path -> path.getFileName().toString().startsWith("browser-session")
+                    && Files.isRegularFile(path)), "session marker was not passed to adapter");
+        }
+    }
+
+    private static Path writeBrowserAgent(Path stateDir) throws IOException {
+        if (System.getProperty("os.name", "").toLowerCase().contains("win")) {
+            var script = stateDir.resolve("browser-agent.cmd");
+            Files.writeString(script, "@echo off\r\n"
+                    + "> \"%RCM_BROWSER_RESULT_FILE%\" echo {\"status\":\"completed\",\"output\":\"manifest-output\",\"artifact\":{\"path\":\"artifact.txt\",\"mime_type\":\"text/plain\"}}\r\n"
+                    + "> \"%RCM_BROWSER_SESSION_FILE%\" echo %RCM_BROWSER_SESSION_FILE%\r\n"
+                    + "> \"%RCM_BROWSER_ARTIFACT_DIR%\\artifact.txt\" echo artifact\r\n"
+                    + "type \"%RCM_BROWSER_TASK_REQUEST_FILE%\"\r\n", java.nio.charset.StandardCharsets.UTF_8);
+            return script;
+        }
+        var script = stateDir.resolve("browser-agent.sh");
+        Files.writeString(script, "#!/bin/sh\n"
+                + "printf '%s' '{\"status\":\"completed\",\"output\":\"manifest-output\",\"artifact\":{\"path\":\"artifact.txt\",\"mime_type\":\"text/plain\"}}' > \"$RCM_BROWSER_RESULT_FILE\"\n"
+                + "printf '%s' \"$RCM_BROWSER_SESSION_FILE\" > \"$RCM_BROWSER_SESSION_FILE\"\n"
+                + "printf artifact > \"$RCM_BROWSER_ARTIFACT_DIR/artifact.txt\"\n"
+                + "cat \"$RCM_BROWSER_TASK_REQUEST_FILE\"\n", java.nio.charset.StandardCharsets.UTF_8);
+        Files.setPosixFilePermissions(script, java.util.EnumSet.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE));
+        return script;
     }
 
     private static final class RecordingTransport implements AgentTransport {

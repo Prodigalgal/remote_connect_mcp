@@ -156,7 +156,7 @@ class AgentRuntimeTest {
         var task = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand(
                 "task_durable", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND,
                 "command", "echo durable-ok", tempDir.toString(), java.util.Map.of(), 0, null, java.time.Instant.now(),
-                testContract("machine_new", "host", "command"));
+                testContract("machine_new", "host", "command"), 1);
 
         new DurableCommandRunner(config, new AgentIdentity("machine_new", "daily-new"), task, transport, store).run();
 
@@ -173,7 +173,7 @@ class AgentRuntimeTest {
         var task = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand(
                 "task_recover", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND,
                 "command", durableSleepCommand(), tempDir.toString(), java.util.Map.of(), 0, null, java.time.Instant.now(),
-                testContract("machine_new", "host", "command"));
+                testContract("machine_new", "host", "command"), 1);
         var first = new DurableCommandRunner(config, new AgentIdentity("machine_new", "daily-new"), task, transport, store);
         var thread = Thread.startVirtualThread(first);
         for (var i = 0; i < 40 && store.load().isEmpty(); i++) {
@@ -198,7 +198,7 @@ class AgentRuntimeTest {
         var task = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand(
                 "task_durable_limit", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND,
                 "command", noisyCommand(), tempDir.toString(), java.util.Map.of(), 0, null, java.time.Instant.now(),
-                testContract("machine_new", "host", "command"));
+                testContract("machine_new", "host", "command"), 1);
 
         new DurableCommandRunner(config, new AgentIdentity("machine_new", "daily-new"), task, transport, store).run();
 
