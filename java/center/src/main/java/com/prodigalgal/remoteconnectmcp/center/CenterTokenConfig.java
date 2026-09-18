@@ -89,7 +89,19 @@ public class CenterTokenConfig {
      */
     public List<ArtifactSigningKey> artifactSigningKeys() {
         var keys = new ArrayList<ArtifactSigningKey>(2);
-        if (artifactSigningConfigured()) keys.add(new ArtifactSigningKey(artifactSigningKid, artifactSigningSecret));
+        if (artifactSigningConfigured()) {
+            var current = artifactSigningSecret;
+            if (current == null || current.isBlank()) {
+                try {
+                    current = artifactDownloadSecret();
+                } catch (RuntimeException ignored) {
+                    current = null;
+                }
+            }
+            if (current != null && !current.isBlank()) {
+                keys.add(new ArtifactSigningKey(artifactSigningKid, current));
+            }
+        }
         if (artifactSigningSecretPrevious != null && !artifactSigningSecretPrevious.isBlank()
                 && !MessageDigest.isEqual(artifactSigningSecretPrevious.getBytes(StandardCharsets.UTF_8),
                 artifactSigningSecret == null ? new byte[0] : artifactSigningSecret.getBytes(StandardCharsets.UTF_8))) {
