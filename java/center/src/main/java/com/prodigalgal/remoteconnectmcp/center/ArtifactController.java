@@ -54,7 +54,11 @@ public final class ArtifactController {
         };
         var headers = new HttpHeaders();
         headers.setContentType(safeMediaType(artifact.mimeType()));
-        headers.setContentLength(artifact.bytes());
+        // A 206 response must advertise the selected slice, not the full
+        // artifact.  Browsers and resumable clients use this value to decide
+        // whether the range is complete; advertising the full size makes
+        // them wait for bytes that this response intentionally does not send.
+        headers.setContentLength(range.length());
         var disposition = "preview".equalsIgnoreCase(purpose)
                 ? ContentDisposition.inline().filename(artifact.fileName()).build()
                 : ContentDisposition.attachment().filename(artifact.fileName()).build();
