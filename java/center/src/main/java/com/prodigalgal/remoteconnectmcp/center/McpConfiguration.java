@@ -287,7 +287,7 @@ public class McpConfiguration {
                 else if(mime.startsWith('video/')) p.innerHTML='<video controls src="'+safe+'"></video>';
                 else if(mime.startsWith('audio/')) p.innerHTML='<audio controls src="'+safe+'"></audio>';
                 else if(mime.startsWith('text/')||mime.includes('json')||mime.includes('xml')||mime.includes('csv')||mime.includes('javascript')||mime.includes('yaml')||mime.includes('markdown')){readPreview(url,262144).then(t=>{p.innerHTML='<pre>'+esc(t)+'</pre>'}).catch(()=>{p.innerHTML='<small>Preview unavailable; use download.</small>'})}
-                else if(/\.(md|markdown|csv|json|ya?ml|toml|ini|log|txt|xml|html?|css|js|ts|java|go|py|sh|ps1|sql)$/i.test(name)){readPreview(url,262144).then(t=>{p.innerHTML='<pre>'+esc(t)+'</pre>'}).catch(()=>{p.innerHTML='<small>Preview unavailable; use download.</small>'})}
+                else if(/\\.(md|markdown|csv|json|ya?ml|toml|ini|log|txt|xml|html?|css|js|ts|java|go|py|sh|ps1|sql)$/i.test(name)){readPreview(url,262144).then(t=>{p.innerHTML='<pre>'+esc(t)+'</pre>'}).catch(()=>{p.innerHTML='<small>Preview unavailable; use download.</small>'})}
                 else p.innerHTML='<small>This file type is download-only. The original file remains available for download.</small>';
                  const a=document.querySelector('#download');a.href=downloadUrl;a.download=name;a.textContent='Download '+name;
                  const save=document.querySelector('#save');

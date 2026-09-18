@@ -311,7 +311,7 @@ final class AgentUpgradeHelper {
             Files.deleteIfExists(staged);
             deleteTree(extraction);
         } catch (Exception exception) {
-            rollbackComponentArchive(component, manifest);
+            rollbackComponentArchive(component);
             deleteTree(extraction);
             if (exception instanceof IOException io) throw io;
             throw new IOException("component archive replacement failed", exception);
