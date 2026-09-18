@@ -164,8 +164,10 @@ class PostgresIntegrationTest {
         assertEquals("project", worktreeTask.contract().scopeMode().wireValue());
         assertEquals(project.id(), worktreeTask.contract().projectId());
         assertEquals(project.rootPath(), worktreeTask.contract().scopeRoot());
-        projectTasks.updateState(agentId, worktreeTask.id(), new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
-        projectTasks.updateState(agentId, worktreeTask.id(), new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
+        projectTasks.updateState(agentId, worktreeTask.id(),
+                new TaskUpdateRequest("running", null, null, Instant.now(), null, false), worktreeTask.attempt());
+        projectTasks.updateState(agentId, worktreeTask.id(),
+                new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false), worktreeTask.attempt());
         var readyWorktree = projectService.find(project.id()).worktrees().stream()
                 .filter(value -> value.id().equals(worktree.id())).findFirst().orElseThrow();
         assertEquals("ready", readyWorktree.status());

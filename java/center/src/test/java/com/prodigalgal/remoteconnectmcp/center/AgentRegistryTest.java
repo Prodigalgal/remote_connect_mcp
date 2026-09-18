@@ -29,9 +29,12 @@ class AgentRegistryTest {
 
         assertEquals(1, registry.size());
         assertNotEquals("enroll-test", response.token());
-        assertEquals(List.of(), registry.poll(response.machineId(), response.token(), new PollRequest(List.of(), 1, List.of("command"))).cancelTaskIds());
-        assertThrows(SecurityException.class, () -> registry.poll(response.machineId(), "wrong", new PollRequest(List.of(), 1, List.of("command"))));
-        assertThrows(SecurityException.class, () -> registry.poll(null, response.token(), new PollRequest(List.of(), 1, List.of("command"))));
+        assertEquals(List.of(), registry.poll(response.machineId(), response.token(),
+                new PollRequest(List.of(), 1, List.of("command"), request.metadata())).cancelTaskIds());
+        assertThrows(SecurityException.class, () -> registry.poll(response.machineId(), "wrong",
+                new PollRequest(List.of(), 1, List.of("command"), request.metadata())));
+        assertThrows(SecurityException.class, () -> registry.poll(null, response.token(),
+                new PollRequest(List.of(), 1, List.of("command"), request.metadata())));
     }
 
     @Test
@@ -43,8 +46,9 @@ class AgentRegistryTest {
 
         assertEquals(first.machineId(), second.machineId());
         assertNotEquals(first.token(), second.token());
-        assertThrows(SecurityException.class, () -> registry.poll(first.machineId(), first.token(), new PollRequest(List.of(), 1, List.of("command"))));
-        registry.poll(second.machineId(), second.token(), new PollRequest(List.of(), 1, List.of("command")));
+        assertThrows(SecurityException.class, () -> registry.poll(first.machineId(), first.token(),
+                new PollRequest(List.of(), 1, List.of("command"), request.metadata())));
+        registry.poll(second.machineId(), second.token(), new PollRequest(List.of(), 1, List.of("command"), request.metadata()));
     }
 
     @Test
@@ -56,7 +60,8 @@ class AgentRegistryTest {
 
         assertThrows(IllegalArgumentException.class, () -> registry.register(secondRequest, "enroll-test"));
         assertEquals(1, registry.size());
-        registry.poll(first.machineId(), first.token(), new PollRequest(List.of(), 1, List.of("command")));
+        registry.poll(first.machineId(), first.token(),
+                new PollRequest(List.of(), 1, List.of("command"), firstRequest.metadata()));
     }
 
     @Test
@@ -121,7 +126,8 @@ class AgentRegistryTest {
         var response = registry.register(request, "enroll-test");
         jdbc.storedTokenHash = sha256Hex(response.token());
 
-        registry.poll(response.machineId(), response.token(), new PollRequest(List.of(), 1, List.of("command")));
+        registry.poll(response.machineId(), response.token(),
+                new PollRequest(List.of(), 1, List.of("command"), request.metadata()));
 
         assertEquals(1, registry.size());
         var insertIndex = jdbc.sqls.indexOf(jdbc.sqls.stream().filter(sql -> sql.contains("INSERT INTO rcm_agent")).findFirst().orElseThrow());
@@ -155,6 +161,16 @@ class AgentRegistryTest {
         @SuppressWarnings("unchecked")
         public <T> T query(String sql, PreparedStatementSetter pss, ResultSetExtractor<T> rse) {
             sqls.add(sql);
+            if (sql.contains("SELECT machine_name, host_id")) {
+                try {
+                    var type = Class.forName("com.prodigalgal.remoteconnectmcp.center.AgentRegistry$RegisteredIdentity");
+                    var constructor = type.getDeclaredConstructor(String.class, String.class);
+                    constructor.setAccessible(true);
+                    return (T) constructor.newInstance("command-agent", "host-a");
+                } catch (ReflectiveOperationException exception) {
+                    throw new AssertionError(exception);
+                }
+            }
             return (T) storedTokenHash;
         }
 

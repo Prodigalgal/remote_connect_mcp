@@ -35,13 +35,13 @@ class MetricsControllerTest {
             assertEquals(200, authorized.getStatusCode().value());
             var body = authorized.getBody();
             assertTrue(body.contains("remote_connect_mcp_machines_total 1"));
-            assertTrue(body.contains("remote_connect_mcp_tasks_total{status=\"queued\"} 1"));
+            assertTrue(body.contains("remote_connect_mcp_tasks_total{status=\"dispatching\"} 1"));
             assertTrue(body.contains("remote_connect_mcp_task_output_bytes_total 5"));
             assertTrue(!body.contains("secret-command"));
             assertTrue(!body.contains("/private/path"));
             assertTrue(!body.contains("hidden"));
             assertTrue(body.contains("remote_connect_mcp_tasks_success_ratio 0.0"));
-            assertTrue(body.contains("remote_connect_mcp_tasks_queue_depth 1"));
+            assertTrue(body.contains("remote_connect_mcp_tasks_queue_depth 0"));
             assertTrue(body.contains("remote_connect_mcp_file_transfers_active 0"));
             assertTrue(body.contains("remote_connect_mcp_audit_queue_depth"));
         } finally {
