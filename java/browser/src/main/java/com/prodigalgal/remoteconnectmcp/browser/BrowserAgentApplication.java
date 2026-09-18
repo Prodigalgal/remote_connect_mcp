@@ -31,7 +31,7 @@ public final class BrowserAgentApplication {
         Process worker = null;
         try {
             var builder = new ProcessBuilder(shell(adapter.trim())).redirectErrorStream(true);
-        cleanSensitiveEnvironment(builder.environment());
+            cleanSensitiveEnvironment(builder.environment());
             worker = builder.start();
             var startedWorker = worker;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> terminate(startedWorker),

@@ -1,6 +1,6 @@
 # Artifact Transport v2
 
-更新时间：2026-09-17（Asia/Shanghai）
+更新时间：2026-09-18（Asia/Shanghai）
 
 ## 目标
 
@@ -41,6 +41,7 @@ overwrite
 ```
 
 Agent 使用自身 Agent Token 从 Center 流式读取文件，写入目标路径旁路的 `.rcm-part-*` 临时文件，完成大小、哈希和本地 scope 校验后再原子改名。
+`destination_path`/`source_path` 始终是完整目标/源文件路径；`file_name` 只是展示覆盖名，省略时取路径最后一段，绝不会再拼接到目标路径。
 
 ### 终端 → ChatGPT Web
 
@@ -103,6 +104,8 @@ spool 的确认偏移；Web→Agent 方向使用 HTTP `Range`，并把本地 `.r
 证明成功时才进入终态。Center 在确认每个 8 MiB 分块前强制刷新 PVC 文件；`HEAD` 同时返回偏移和
 `X-RCM-Transfer-Status`，只有 `delivered` 才允许 Agent 仅凭最终偏移恢复，完整但仍处于
 `delivering` 的暂存会走一次幂等整流收口，避免伪造成功 ACK。中断后不会覆盖已确认字节，也不会把一次完整流重试误称为断点续传。
+每个分块写入前都会同时申请进程内并发、主体/机器传输配额和持久 spool 容量 reservation；
+Center 重启后会重新扫描已有 partial 文件并把它们计入容量，不会因内存计数丢失而超卖磁盘。
 `pending` ingest 的
 ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation 一次性标记失败，
 调用方需要使用新幂等键重新提交。
@@ -116,7 +119,7 @@ ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation
 | `artifact_put` | Web 文件写入终端 | transfer_id、任务状态和摘要 |
 | `artifact_get` | 终端文件回传 Web | artifact_id、文件元数据 |
 | `artifact_read` | 按需读取元数据和短期文件对象 | `structuredContent.file`（仅句柄）和有界摘要 |
-| `artifact_present` | 调起 Web Artifact Viewer（P1 计划） | 当前未注册；待 UI 资源 URI 稳定后启用 |
+| `artifact_read` | 按需读取元数据和短期文件对象 | `structuredContent.file` + `ui://remote-connect-mcp/artifact-viewer-v1.html` Viewer |
 
 现有 `command`、`desktop`、`browser`、`task_wait` 工具保持不变；它们只引用 Artifact，不复制文件传输逻辑。
 
@@ -128,8 +131,8 @@ ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation
 {
   "_meta": {
     "openai/fileParams": ["file"],
-    "ui": { "resourceUri": "ui://remote-connect/artifact-viewer-v1.html" },
-    "openai/outputTemplate": "ui://remote-connect/artifact-viewer-v1.html"
+    "ui": { "resourceUri": "ui://remote-connect-mcp/artifact-viewer-v1.html" },
+    "openai/outputTemplate": "ui://remote-connect-mcp/artifact-viewer-v1.html"
   }
 }
 ```
@@ -149,15 +152,16 @@ ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation
   进度按 4 MiB 或 1 秒节流写入 `bytes_transferred`，超时会关闭输入流并将 Transfer/Task 收口为失败。
 - 日志只记录 transfer_id、artifact_id、大小、结果和错误摘要，不记录文件内容或长期凭据。
 - Center 重启、Agent 离线或网络中断不会产生重复文件或半成品目标文件；partial spool
-  只在最终 SHA-256 校验和对象提交成功后删除，任务重试会从确认偏移继续。
+  只在最终 SHA-256 校验和对象提交成功后删除，任务重试会从确认偏移继续。Agent 端
+  上传使用稳定快照，hash 与上传读取同一份文件；`overwrite=false` 的最终原子 move
+  负责最后一次存在性检查，并拒绝符号链接和特殊文件。
 - 分块读写的连接中断返回可重试的 503；Agent 使用有界指数退避保持同一任务存活，
   不把临时公网抖动立即写成终态失败。参数校验、凭据错误和哈希冲突仍是不可重试错误。
 
 ## 实施顺序
 
-1. P0（当前）：协议记录、Artifact/Transfer 表、流式 Object Store、Agent 拉取/上传、完整流校验和带偏移确认的断点分块。
-2. P0（下一步）：`artifact_put`/`artifact_get` 的 GitHub Actions/JDBC/Native 故障矩阵，覆盖 Center/Agent 重启、重复 chunk、lease 过期和对象存储短暂失败。
-3. P1：React Artifact Viewer、文件预览、下载和可选保存到 ChatGPT。
-4. P2：WebSocket/HTTP2 数据通道、对象生命周期、容量压测和多用户多会话矩阵。
+1. **代码已完成**：协议记录、Artifact/Transfer 表、流式 Object Store、Agent 拉取/上传、完整流校验、分块/Range 续传、状态机/ACK、幂等预约、配额和安全边界。
+2. **统一 CI 验证**：GitHub Actions 一次性覆盖 JDBC/Native/React、重复 chunk、lease 过期、Center/Agent 重启和对象流故障矩阵。
+3. **生产验收**：React/Apps SDK Viewer、ChatGPT Web 双向附件、跨平台大文件和多用户多会话真实场景；通过后才更新生产验收表。
 
 本项目禁止在开发机执行 Java、Native Image 或 React 构建；所有编译和集成测试由 GitHub Actions 完成。

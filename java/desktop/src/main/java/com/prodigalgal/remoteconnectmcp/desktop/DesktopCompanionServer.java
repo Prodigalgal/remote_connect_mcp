@@ -44,6 +44,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.imageio.ImageIO;
@@ -61,6 +64,7 @@ public final class DesktopCompanionServer {
     private static final int MAX_ALLOWED_CONNECTIONS = 16;
     private static final int DEFAULT_MAX_LAUNCHED_PROCESSES = 16;
     private static final int MAX_ALLOWED_LAUNCHED_PROCESSES = 64;
+    private static final int MAX_WINDOW_METADATA_BYTES = 64 * 1024;
     private static final String TOKEN_FILE = DesktopCompanionProtocol.TOKEN_FILE;
     private static final String COMPANION_DIR = DesktopCompanionProtocol.COMPANION_DIR;
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -70,10 +74,15 @@ public final class DesktopCompanionServer {
     private final int requestedPort;
     private final int maxConnections;
     private final int maxLaunchedProcesses;
+    private final java.time.Duration launchLifetime;
     private final DesktopCompanionProtocol.Policy policy;
     private final Semaphore connectionSlots;
     private final Semaphore launchSlots;
+    /** One input/screen controller at a time per logged-in OS desktop. */
+    private final Semaphore desktopLease = new Semaphore(1);
     private final ConcurrentMap<Long, ProcessHandle> launchedProcesses = new ConcurrentHashMap<>();
+    /** Serialize GUI mutations within one user/conversation session. */
+    private final ConcurrentMap<String, SessionGuard> sessionLocks = new ConcurrentHashMap<>();
 
     DesktopCompanionServer(Path stateDir, String token, int requestedPort) {
         this(stateDir, token, requestedPort, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_LAUNCHED_PROCESSES);
@@ -93,6 +102,8 @@ public final class DesktopCompanionServer {
         this.maxConnections = bounded(maxConnections, 1, MAX_ALLOWED_CONNECTIONS, "desktop companion max connections");
         this.maxLaunchedProcesses = bounded(maxLaunchedProcesses, 1, MAX_ALLOWED_LAUNCHED_PROCESSES,
                 "desktop companion max launched processes");
+        this.launchLifetime = configuredDuration("REMOTE_CONNECT_MCP_AGENT_DESKTOP_PROCESS_TTL_SECONDS",
+                java.time.Duration.ofHours(8), java.time.Duration.ofMinutes(1), java.time.Duration.ofDays(30));
         this.connectionSlots = new Semaphore(this.maxConnections);
         this.launchSlots = new Semaphore(this.maxLaunchedProcesses);
         this.policy = policy == null ? new DesktopCompanionProtocol.Policy(ScopeMode.UNRESTRICTED, null) : policy;
@@ -241,9 +252,33 @@ public final class DesktopCompanionServer {
         var operation = request.operation() == null ? "" : request.operation().trim().toLowerCase(Locale.ROOT);
         validate(request, operation);
         validateScope(request);
-        return switch (operation) {
+        var sessionId = request.sessionId() == null || request.sessionId().isBlank()
+                ? "legacy" : request.sessionId().trim();
+        if (sessionId.length() > 256 || sessionId.indexOf('\u0000') >= 0
+                || sessionId.indexOf('\r') >= 0 || sessionId.indexOf('\n') >= 0) {
+            throw new IllegalArgumentException("desktop session id is invalid");
+        }
+        var sessionGuard = sessionLocks.compute(sessionId, (ignored, current) -> {
+            var guard = current == null ? new SessionGuard() : current;
+            guard.references.incrementAndGet();
+            return guard;
+        });
+        var sessionLock = sessionGuard.semaphore;
+        var sessionAcquired = false;
+        var desktopAcquired = false;
+        try {
+            if (!sessionLock.tryAcquire(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new IOException("desktop session is busy; retry after the active action completes");
+            }
+            sessionAcquired = true;
+            if (!desktopLease.tryAcquire(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new IOException("desktop session is controlled by another task; retry after it completes");
+            }
+            desktopAcquired = true;
+            return switch (operation) {
             case "screenshot" -> screenshot(request);
             case "screens" -> screens();
+            case "windows" -> windows();
             case "launch" -> launch(request);
             case "click" -> click(request);
             case "double_click" -> click(request, InputEvent.BUTTON1_DOWN_MASK, 2);
@@ -257,19 +292,58 @@ public final class DesktopCompanionServer {
             case "clipboard_write" -> clipboardWrite(request);
             case "focus" -> focus(request);
             default -> throw new IllegalArgumentException("unsupported desktop operation: " + operation);
-        };
+            };
+        } finally {
+            if (desktopAcquired) desktopLease.release();
+            if (sessionAcquired) sessionLock.release();
+            if (sessionGuard.references.decrementAndGet() == 0 && sessionLock.availablePermits() > 0) {
+                // Removal must be serialized with a new request acquiring the
+                // same guard.  A plain remove() can evict the guard after a
+                // concurrent caller increments its reference count, allowing
+                // the next caller to create a second semaphore for one GUI
+                // session.
+                sessionLocks.computeIfPresent(sessionId, (ignored, current) ->
+                        current == sessionGuard && current.references.get() == 0
+                                && current.semaphore.availablePermits() > 0 ? null : current);
+            }
+        }
     }
 
     private DesktopCompanionProtocol.Response screenshot(DesktopCompanionProtocol.Request request) throws Exception {
-        ensureDisplay();
-        var bounds = virtualBounds(request.screen());
-        return encodeScreenshot(new Robot().createScreenCapture(bounds), "screenshot captured");
+        try {
+            ensureDisplay();
+            var bounds = virtualBounds(request.screen());
+            return encodeScreenshot(new Robot().createScreenCapture(bounds), "screenshot captured");
+        } catch (Throwable failure) {
+            if (failure instanceof VirtualMachineError) throw (VirtualMachineError) failure;
+            // Wayland compositors commonly expose a display while denying AWT
+            // capture.  Prefer a native compositor helper when available;
+            // this keeps the companion cross-platform without linking a
+            // heavyweight desktop automation library into the Agent.
+            var nativeCapture = nativeScreenshot(request.screen());
+            if (nativeCapture != null) return new DesktopCompanionProtocol.Response(true,
+                    "screenshot captured by native display helper (" + nativeCapture.length + " bytes)",
+                    "image/png", Base64.getEncoder().encodeToString(nativeCapture), null);
+            if (failure instanceof Exception exception) throw exception;
+            throw new IllegalStateException(failure.getMessage() == null ? "desktop capture failed" : failure.getMessage(), failure);
+        }
     }
 
     private DesktopCompanionProtocol.Response screenshotRegion(DesktopCompanionProtocol.Request request) throws Exception {
-        ensureDisplay();
-        var bounds = new Rectangle(request.x(), request.y(), request.x2() - request.x(), request.y2() - request.y());
-        return encodeScreenshot(new Robot().createScreenCapture(bounds), "region screenshot captured");
+        try {
+            ensureDisplay();
+            var bounds = new Rectangle(request.x(), request.y(), request.x2() - request.x(), request.y2() - request.y());
+            return encodeScreenshot(new Robot().createScreenCapture(bounds), "region screenshot captured");
+        } catch (Throwable failure) {
+            if (failure instanceof VirtualMachineError) throw (VirtualMachineError) failure;
+            var nativeCapture = nativeScreenshotRegion(request.x(), request.y(),
+                    request.x2() - request.x(), request.y2() - request.y());
+            if (nativeCapture != null) return new DesktopCompanionProtocol.Response(true,
+                    "region screenshot captured by native display helper (" + nativeCapture.length + " bytes)",
+                    "image/png", Base64.getEncoder().encodeToString(nativeCapture), null);
+            if (failure instanceof Exception exception) throw exception;
+            throw new IllegalStateException(failure.getMessage() == null ? "region desktop capture failed" : failure.getMessage(), failure);
+        }
     }
 
     private DesktopCompanionProtocol.Response encodeScreenshot(BufferedImage image, String description) throws IOException {
@@ -303,22 +377,37 @@ public final class DesktopCompanionServer {
         if (!launchSlots.tryAcquire()) {
             throw new IOException("desktop launch limit reached (" + maxLaunchedProcesses + ")");
         }
-        var command = new ArrayList<String>();
-        command.add(request.executable());
-        command.addAll(request.args() == null ? List.of() : request.args());
-        var builder = new ProcessBuilder(command);
-        if (request.cwd() != null && !request.cwd().isBlank()) {
-            var cwd = Path.of(request.cwd()).toAbsolutePath().normalize();
-            if (!Files.isDirectory(cwd)) throw new IOException("desktop cwd is not a directory");
-            builder.directory(cwd.toFile());
-        }
-        builder.environment().keySet().removeIf(DesktopCompanionServer::sensitiveEnvironment);
         try {
+            var command = new ArrayList<String>();
+            command.add(request.executable());
+            command.addAll(request.args() == null ? List.of() : request.args());
+            var builder = new ProcessBuilder(command);
+            if (request.cwd() != null && !request.cwd().isBlank()) {
+                // Resolve the existing prefix once more immediately before
+                // ProcessBuilder uses it.  This closes the common symlink/
+                // junction swap between contract validation and launch while
+                // keeping unrestricted host operations available.
+                var cwd = resolveThroughExistingParents(Path.of(request.cwd()));
+                if (!Files.isDirectory(cwd, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IOException("desktop cwd is not a directory");
+                }
+                builder.directory(cwd.toFile());
+            }
+            builder.environment().keySet().removeIf(DesktopCompanionServer::sensitiveEnvironment);
             var process = builder.start();
             var handle = process.toHandle();
             launchedProcesses.put(handle.pid(), handle);
             handle.onExit().thenRun(() -> {
                 if (launchedProcesses.remove(handle.pid(), handle)) launchSlots.release();
+            });
+            // A GUI process that never exits must not consume a permit
+            // forever. This is a one-shot deadline tied to this launch, not a
+            // polling watchdog; normal exits remove the handle first.
+            java.util.concurrent.CompletableFuture.delayedExecutor(
+                    launchLifetime.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS).execute(() -> {
+                if (handle.isAlive()) {
+                    terminateProcessTree(handle);
+                }
             });
             return new DesktopCompanionProtocol.Response(true, "launched process " + process.pid(), null, null, null);
         } catch (Exception exception) {
@@ -613,6 +702,145 @@ public final class DesktopCompanionServer {
         if (GraphicsEnvironment.isHeadless()) throw new IllegalStateException("user session has no desktop display");
     }
 
+    private static byte[] nativeScreenshot(Integer screen) {
+        // grim exposes a compositor-wide capture but not a stable screen
+        // index. Never return a misleading full desktop image for an
+        // explicitly selected monitor.
+        if (screen != null) return null;
+        var wayland = System.getenv("WAYLAND_DISPLAY");
+        var candidates = new ArrayList<List<String>>();
+        if (wayland != null && !wayland.isBlank()) candidates.add(List.of("grim", "-"));
+        candidates.add(List.of("gnome-screenshot", "-f", "-"));
+        candidates.add(List.of("scrot", "-"));
+        for (var command : candidates) {
+            var bytes = nativePng(command);
+            if (bytes != null) return bytes;
+        }
+        return null;
+    }
+
+    /** Native Wayland region capture for hosts where AWT cannot access the display. */
+    private static byte[] nativeScreenshotRegion(int x, int y, int width, int height) {
+        var wayland = System.getenv("WAYLAND_DISPLAY");
+        if (wayland == null || wayland.isBlank() || width <= 0 || height <= 0) return null;
+        return nativePng(List.of("grim", "-g", x + "," + y + " " + width + "x" + height, "-"));
+    }
+
+    private static byte[] nativePng(List<String> command) {
+        Process process = null;
+        try {
+            // stdout is the PNG byte stream; merge stderr would corrupt the
+            // image when a helper emits a warning before its payload.
+            process = new ProcessBuilder(command)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+            var bytes = readProcessOutput(process, MAX_SCREENSHOT_BYTES + 1, 10);
+            if (bytes == null) {
+                process.destroyForcibly();
+                return null;
+            }
+            if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return null;
+            }
+            if (process.exitValue() != 0 || bytes.length < 8 || bytes.length > MAX_SCREENSHOT_BYTES
+                    || bytes[0] != (byte) 0x89 || bytes[1] != 0x50 || bytes[2] != 0x4e || bytes[3] != 0x47) {
+                return null;
+            }
+            return bytes;
+        } catch (Exception ignored) {
+            if (process != null) process.destroyForcibly();
+            return null;
+        }
+    }
+
+    /**
+     * Enumerate visible top-level windows with a small, fixed OS helper. AWT
+     * only knows about windows owned by the companion JVM, so using the
+     * platform tools here is necessary for focusing an application launched
+     * by another process. The commands are constants; no request value is
+     * interpolated into a shell command.
+     */
+    private DesktopCompanionProtocol.Response windows() throws IOException {
+        var commands = new ArrayList<List<String>>();
+        if (isWindows()) {
+            var script = ""
+                    + "$ErrorActionPreference='Stop'; "
+                    + "$items=@(Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle } "
+                    + "| Select-Object Id,ProcessName,MainWindowTitle,MainWindowHandle); "
+                    + "if ($null -eq $items) { '[]' } else { @($items) | ConvertTo-Json -Compress }";
+            commands.add(List.of("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass", "-Command", script));
+            commands.add(List.of("pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script));
+        } else {
+            commands.add(List.of("wmctrl", "-l", "-x", "-p", "-G"));
+            commands.add(List.of("xdotool", "search", "--onlyvisible", "--name", ".", "getwindowname"));
+        }
+        for (var command : commands) {
+            var output = runWindowEnumerator(command);
+            if (output != null) {
+                return new DesktopCompanionProtocol.Response(true, output,
+                        isWindows() ? "application/json" : "text/plain", null, null);
+            }
+        }
+        throw new IOException(isWindows()
+                ? "Windows window enumeration helper is unavailable"
+                : "window enumeration requires wmctrl or xdotool");
+    }
+
+    private static String runWindowEnumerator(List<String> command) {
+        Process process = null;
+        try {
+            process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            var bytes = readProcessOutput(process, MAX_WINDOW_METADATA_BYTES + 1, 5);
+            if (bytes == null) {
+                process.destroyForcibly();
+                return null;
+            }
+            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return null;
+            }
+            if (process.exitValue() != 0 || bytes.length > MAX_WINDOW_METADATA_BYTES) return null;
+            var output = new String(bytes, StandardCharsets.UTF_8).trim();
+            return output.isBlank() ? "[]" : output;
+        } catch (Exception ignored) {
+            if (process != null) process.destroyForcibly();
+            return null;
+        }
+    }
+
+    /**
+     * Read helper output without allowing a child that keeps stdout open to
+     * block the request thread forever.  The read itself runs on one virtual
+     * thread and is canceled by closing the pipe when the bounded wait expires;
+     * no recurring watchdog or polling loop is introduced.
+     */
+    private static byte[] readProcessOutput(Process process, int maxBytes, long timeoutSeconds) {
+        if (process == null || maxBytes < 1 || timeoutSeconds < 1) return null;
+        var result = new CompletableFuture<byte[]>();
+        var reader = Thread.startVirtualThread(() -> {
+            try {
+                result.complete(process.getInputStream().readNBytes(maxBytes));
+            } catch (IOException exception) {
+                result.completeExceptionally(exception);
+            }
+        });
+        try {
+            return result.get(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (ExecutionException | TimeoutException exception) {
+            return null;
+        } finally {
+            if (!result.isDone()) {
+                try { process.getInputStream().close(); } catch (IOException ignored) { }
+                reader.interrupt();
+            }
+        }
+    }
+
     private static Rectangle virtualBounds(Integer screen) {
         var devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
         if (screen != null) {
@@ -633,10 +861,15 @@ public final class DesktopCompanionServer {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
 
+    private static final class SessionGuard {
+        private final Semaphore semaphore = new Semaphore(1);
+        private final java.util.concurrent.atomic.AtomicInteger references = new java.util.concurrent.atomic.AtomicInteger();
+    }
+
     private static String loadOrCreateToken(Path stateDir) throws IOException {
         var file = stateDir.toAbsolutePath().normalize().resolve(COMPANION_DIR).resolve(TOKEN_FILE);
-        if (Files.isRegularFile(file)) {
-            var value = Files.readString(file).trim();
+        if (Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            var value = Files.readString(file, java.nio.file.LinkOption.NOFOLLOW_LINKS).trim();
             if (!value.isBlank()) {
                 var normalized = normalizeToken(value);
                 restrictOwner(file);
@@ -747,6 +980,39 @@ public final class DesktopCompanionServer {
             return bounded(Integer.parseInt(value.trim()), minimum, maximum, name);
         } catch (NumberFormatException exception) {
             throw new IllegalArgumentException(name + " must be an integer", exception);
+        }
+    }
+
+    private static void terminateProcessTree(ProcessHandle handle) {
+        if (handle == null) return;
+        try {
+            handle.descendants().forEach(child -> {
+                try { child.destroy(); } catch (RuntimeException ignored) { }
+                if (child.isAlive()) {
+                    try { child.destroyForcibly(); } catch (RuntimeException ignored) { }
+                }
+            });
+            handle.destroy();
+            if (handle.isAlive()) handle.destroyForcibly();
+        } catch (RuntimeException ignored) {
+            // Process exit races are harmless; the onExit callback releases
+            // the launch slot when the root eventually disappears.
+        }
+    }
+
+    private static java.time.Duration configuredDuration(String key, java.time.Duration fallback,
+                                                         java.time.Duration minimum, java.time.Duration maximum) {
+        var value = System.getenv(key);
+        if (value == null || value.isBlank()) return fallback;
+        try {
+            var seconds = Long.parseLong(value.trim());
+            var duration = java.time.Duration.ofSeconds(seconds);
+            if (duration.compareTo(minimum) < 0 || duration.compareTo(maximum) > 0) {
+                throw new IllegalArgumentException(key + " is outside the allowed range");
+            }
+            return duration;
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException(key + " must be an integer number of seconds", exception);
         }
     }
 

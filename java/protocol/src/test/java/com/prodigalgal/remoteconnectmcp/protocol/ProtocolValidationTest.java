@@ -88,6 +88,9 @@ class ProtocolValidationTest {
         assertDoesNotThrow(() -> ProtocolValidation.validateTask(drag));
         assertDoesNotThrow(() -> ProtocolValidation.validateTask(clipboard));
         assertDoesNotThrow(() -> ProtocolValidation.validateTask(focus));
+        var windows = new TaskCommand("task-windows", TaskKind.DESKTOP, "desktop", null, null, Map.of(), 30,
+                new TaskCommand.DesktopAction("windows", null, java.util.List.of(), null), Instant.now());
+        assertDoesNotThrow(() -> ProtocolValidation.validateTask(windows));
     }
 
     @Test
@@ -128,6 +131,16 @@ class ProtocolValidationTest {
                 "", "/srv/incoming", "payload.bin", "application/octet-stream", 0L, "", false);
         assertDoesNotThrow(() -> ProtocolValidation.validateTask(new TaskCommand(
                 "task-pending", TaskKind.FILE_TRANSFER, "file_transfer", null, "/srv", Map.of(), 0, null,
+                Instant.now(), null, action)));
+    }
+
+    @Test
+    void allowsTransferDisplayNameToDefaultToPathLeaf() {
+        var action = new FileTransferAction(FileTransferAction.AGENT_TO_WEB, "transfer-leaf", "artifact-leaf",
+                "/srv/results/report.pdf", "", "", "application/pdf", 0L, "", false);
+        assertEquals("report.pdf", action.displayName());
+        assertDoesNotThrow(() -> ProtocolValidation.validateTask(new TaskCommand(
+                "task-leaf", TaskKind.FILE_TRANSFER, "file_transfer", null, "/srv", Map.of(), 0, null,
                 Instant.now(), null, action)));
     }
 }

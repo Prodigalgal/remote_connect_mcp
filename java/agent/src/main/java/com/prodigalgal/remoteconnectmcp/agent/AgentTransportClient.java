@@ -18,6 +18,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -244,7 +245,7 @@ public final class AgentTransportClient implements AgentTransport {
         var parent = target.getParent();
         if (parent == null) throw new IOException("destination has no parent");
         Files.createDirectories(parent);
-        if (Files.exists(target) && !overwrite) {
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS) && !overwrite) {
             throw new IOException("destination already exists and overwrite is false");
         }
         // The partial name is stable across task retries.  A dropped HTTP
@@ -252,12 +253,20 @@ public final class AgentTransportClient implements AgentTransport {
         // fresh multi-GB temporary file on every retry.
         var safeTransferId = transferId.replaceAll("[^A-Za-z0-9._-]", "_");
         var temporary = parent.resolve(".rcm-part-" + target.getFileName() + "." + safeTransferId);
-        long offset = Files.exists(temporary) ? Files.size(temporary) : 0L;
+        // Never resume through a symlink planted next to the destination.  A
+        // partial file is an Agent-owned implementation detail and must stay a
+        // regular file even if the target directory is writable by another
+        // process.
+        if (Files.exists(temporary, LinkOption.NOFOLLOW_LINKS)
+                && !Files.isRegularFile(temporary, LinkOption.NOFOLLOW_LINKS)) {
+            Files.deleteIfExists(temporary);
+        }
+        long offset = Files.isRegularFile(temporary, LinkOption.NOFOLLOW_LINKS) ? Files.size(temporary) : 0L;
         if (offset > expectedBytes) {
             Files.deleteIfExists(temporary);
             offset = 0L;
         }
-        if (offset == expectedBytes && Files.exists(temporary)) {
+        if (offset == expectedBytes && Files.isRegularFile(temporary, LinkOption.NOFOLLOW_LINKS)) {
             var existingSha = digestFile(temporary);
             if (existingSha.equalsIgnoreCase(expectedSha256)) {
                 moveIntoPlace(temporary, target, overwrite);
@@ -290,7 +299,10 @@ public final class AgentTransportClient implements AgentTransport {
             var openOptions = offset > 0
                     ? new StandardOpenOption[] { StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND }
                     : new StandardOpenOption[] { StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING };
-            try (var output = Files.newOutputStream(temporary, openOptions)) {
+            var outputOptions = new java.nio.file.OpenOption[openOptions.length + 1];
+            outputOptions[0] = LinkOption.NOFOLLOW_LINKS;
+            System.arraycopy(openOptions, 0, outputOptions, 1, openOptions.length);
+            try (var output = Files.newOutputStream(temporary, outputOptions)) {
                 int read;
                 while ((read = readWithWatchdog(input, buffer, deadlineNanos)) >= 0) {
                     if (read == 0) continue;
@@ -356,7 +368,7 @@ public final class AgentTransportClient implements AgentTransport {
     }
 
     private static void digestFileInto(Path path, MessageDigest digest) throws IOException {
-        try (var input = Files.newInputStream(path, StandardOpenOption.READ)) {
+        try (var input = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS, StandardOpenOption.READ)) {
             var buffer = new byte[1024 * 1024];
             int read;
             while ((read = input.read(buffer)) >= 0) {
@@ -409,7 +421,8 @@ public final class AgentTransportClient implements AgentTransport {
             String machineId, String token, String transferId, Path source, String fileName,
             String mimeType, long expectedBytes, String expectedSha256, int attempt)
             throws IOException, InterruptedException {
-        if (transferId == null || transferId.isBlank() || source == null || !Files.isRegularFile(source)
+        if (transferId == null || transferId.isBlank() || source == null
+                || !Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)
                 || expectedBytes < 0 || expectedBytes > 4L * 1024 * 1024 * 1024) {
             throw new IllegalArgumentException("invalid file transfer upload metadata");
         }
@@ -543,7 +556,7 @@ public final class AgentTransportClient implements AgentTransport {
 
     private static byte[] readChunk(Path source, long offset, int size) throws IOException {
         var data = new byte[size];
-        try (var input = Files.newByteChannel(source, StandardOpenOption.READ)) {
+        try (var input = Files.newByteChannel(source, LinkOption.NOFOLLOW_LINKS, StandardOpenOption.READ)) {
             input.position(offset);
             var view = java.nio.ByteBuffer.wrap(data);
             while (view.hasRemaining()) {

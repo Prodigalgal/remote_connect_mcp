@@ -1,6 +1,8 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
+import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
+import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicyMode;
 import java.time.Instant;
 
 /** Compact, non-secret task projection used by the console and MCP. */
@@ -30,6 +32,8 @@ public record TaskView(
         String projectId,
         String worktreeId,
         String scopeRoot,
+        WorkspacePolicyMode workspacePolicy,
+        LaneMode laneMode,
         String risk,
         Instant contractExpiresAt,
         String executionSessionId,
@@ -45,6 +49,8 @@ public record TaskView(
                 task.command().contract() == null ? null : task.command().contract().projectId(),
                 task.command().contract() == null ? null : task.command().contract().worktreeId(),
                 task.command().contract() == null ? null : task.command().contract().scopeRoot(),
+                task.command().contract() == null ? null : task.command().contract().workspacePolicy(),
+                task.command().contract() == null ? null : task.command().contract().laneMode(),
                 task.command().contract() == null ? null : task.command().contract().risk(),
                 task.command().contract() == null ? null : task.command().contract().expiresAt(),
                 task.executionSessionId(), task.resultChannel());

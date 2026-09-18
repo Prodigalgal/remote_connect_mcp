@@ -4,10 +4,14 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.time.Instant;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.Map;
 import java.util.List;
 import java.util.Locale;
@@ -32,7 +36,7 @@ import java.util.logging.Logger;
 final class BrowserTaskRunner implements Runnable {
     private static final Logger LOG = Logger.getLogger(BrowserTaskRunner.class.getName());
     private static final int CHUNK_SIZE = 16 * 1024;
-    private static final ConcurrentHashMap<Path, Semaphore> PROFILE_LOCKS = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Path, ProfileGuard> PROFILE_LOCKS = new ConcurrentHashMap<>();
 
     private final AgentConfig config;
     private final AgentIdentity identity;
@@ -77,7 +81,10 @@ final class BrowserTaskRunner implements Runnable {
         var outputFailure = new AtomicReference<Throwable>();
         var outputCursor = new AtomicLong();
         Semaphore profileLock = null;
+        ProfileGuard profileGuard = null;
         boolean profileAcquired = false;
+        Path isolatedProfile = null;
+        boolean ephemeralProfile = false;
         try {
             if (!config.capabilities().contains("browser")) {
                 throw new IOException("browser capability is not enabled for this Agent");
@@ -88,13 +95,23 @@ final class BrowserTaskRunner implements Runnable {
             }
             var cwd = AgentPaths.resolveCwd(config, identity.machineId(), task, task.cwd());
             var configuredProfile = config.browserProfileDir();
-            if (!configuredProfile.isBlank()) {
-                profileLock = PROFILE_LOCKS.computeIfAbsent(Path.of(configuredProfile).toAbsolutePath().normalize(),
-                        ignored -> new Semaphore(1));
+            isolatedProfile = isolatedProfile(configuredProfile, task);
+            ephemeralProfile = configuredProfile.isBlank();
+            cleanupProfiles(profileRoot(configuredProfile), isolatedProfile,
+                    config.browserProfileRetentionDays(), config.browserMaxProfiles());
+            Files.createDirectories(isolatedProfile);
+            if (isolatedProfile != null) {
+                profileGuard = PROFILE_LOCKS.compute(isolatedProfile, (ignored, current) -> {
+                    var guard = current == null ? new ProfileGuard() : current;
+                    guard.references.incrementAndGet();
+                    return guard;
+                });
+                profileLock = profileGuard.semaphore;
                 profileAcquired = profileLock.tryAcquire(Math.min(TaskLimits.timeoutSeconds(task, 30), 30), TimeUnit.SECONDS);
                 if (!profileAcquired) throw new IOException("browser profile is busy; retry after the active session completes");
             }
             Files.createDirectories(config.stateDir());
+            cleanupRuntimeFiles(config.stateDir());
             requestFile = Files.createTempFile(config.stateDir(), "browser-request-", ".json");
             Files.write(requestFile, JsonCodec.write(task));
             resultFile = Files.createTempFile(config.stateDir(), "browser-result-", ".json");
@@ -120,8 +137,11 @@ final class BrowserTaskRunner implements Runnable {
             // persistent profile is configured, without ever persisting query
             // strings, fragments, cookies, or CDP credentials.
             builder.environment().put("RCM_BROWSER_SESSION_FILE",
-                    config.stateDir().toAbsolutePath().normalize().resolve("browser-session.json").toString());
-            if (!configuredProfile.isBlank()) builder.environment().put("RCM_BROWSER_PROFILE_DIR", configuredProfile);
+                    config.stateDir().toAbsolutePath().normalize().resolve("browser-session-" + sessionDigest(task) + ".json").toString());
+            // Every MCP execution session gets a separate browser context.
+            // A configured root remains persistent for login continuity, while
+            // an unconfigured root is ephemeral and removed after the task.
+            builder.environment().put("RCM_BROWSER_PROFILE_DIR", isolatedProfile.toString());
             builder.environment().put("RCM_BROWSER_ENGINE", config.browserEngine());
             builder.environment().put("RCM_BROWSER_BROWSER", config.browserName());
             builder.environment().put("RCM_BROWSER_HEADLESS", config.browserHeadless() ? "1" : "0");
@@ -214,7 +234,139 @@ final class BrowserTaskRunner implements Runnable {
             deleteTree(artifactDir);
             if (outputSpool != null) outputSpool.close();
             if (outputExecutor != null) outputExecutor.shutdownNow();
-            if (profileAcquired && profileLock != null) profileLock.release();
+            if (profileLock != null) {
+                if (profileAcquired) profileLock.release();
+                // Session IDs are user-controlled and can be unbounded over
+                // the lifetime of an Agent. Drop an idle guard only after its
+                // reference count reaches zero; a task that already obtained
+                // the old guard cannot race removal into a second semaphore.
+                if (profileGuard != null && profileGuard.references.decrementAndGet() == 0
+                        && profileLock.availablePermits() > 0) {
+                    // Serialize removal with a concurrent admission.  A
+                    // plain remove() could evict the guard after another task
+                    // increments its reference count, letting a later task
+                    // create a second semaphore for the same browser profile.
+                    PROFILE_LOCKS.computeIfPresent(isolatedProfile, (ignored, current) ->
+                            current == profileGuard && current.references.get() == 0
+                                    && current.semaphore.availablePermits() > 0 ? null : current);
+                }
+            }
+            if (ephemeralProfile) deleteTree(isolatedProfile);
+        }
+    }
+
+    private static Path isolatedProfile(String configuredRoot, TaskCommand task) throws IOException {
+        var root = profileRoot(configuredRoot);
+        var contract = task == null ? null : task.contract();
+        var session = contract == null ? task == null ? "unknown" : task.id() : contract.sessionId();
+        var digest = sha256(session == null ? "unknown" : session).substring(0, 32);
+        var profile = root.toAbsolutePath().normalize().resolve("rcm-session-" + digest).normalize();
+        if (!profile.startsWith(root.toAbsolutePath().normalize())) {
+            throw new IOException("browser profile path escapes configured root");
+        }
+        return profile;
+    }
+
+    private static Path profileRoot(String configuredRoot) {
+        return (configuredRoot == null || configuredRoot.isBlank()
+                ? Path.of(System.getProperty("java.io.tmpdir"), "remote-connect-mcp-browser")
+                : Path.of(configuredRoot)).toAbsolutePath().normalize();
+    }
+
+    /**
+     * Bound persistent profile growth without a timer.  A profile is eligible
+     * only when it is old enough and its per-profile semaphore is not held by
+     * another task.  The current profile is always retained.
+     */
+    private static void cleanupProfiles(Path root, Path current, long retentionDays, int maxProfiles) {
+        if (root == null || !Files.isDirectory(root)) return;
+        var cutoff = Instant.now().minusSeconds(Math.max(1L, retentionDays) * 24L * 60L * 60L);
+        try {
+            var profiles = listProfiles(root);
+            profiles.stream()
+                    .filter(path -> !path.equals(current))
+                    .filter(path -> lastModified(path).isBefore(cutoff))
+                    .filter(BrowserTaskRunner::profileIdle)
+                    .forEach(BrowserTaskRunner::deleteTree);
+            profiles = listProfiles(root);
+            if (profiles.size() <= maxProfiles) return;
+            profiles.stream()
+                    .filter(path -> !path.equals(current))
+                    .filter(BrowserTaskRunner::profileIdle)
+                    .sorted(java.util.Comparator.comparing(BrowserTaskRunner::lastModified))
+                    .limit(Math.max(0, profiles.size() - maxProfiles))
+                    .forEach(BrowserTaskRunner::deleteTree);
+        } catch (IOException ignored) {
+            // A busy or partially removed profile is harmless; the active
+            // task still has its own lock and the next admission can retry.
+        }
+    }
+
+    private static List<Path> listProfiles(Path root) throws IOException {
+        try (var entries = Files.list(root)) {
+            return entries.filter(path -> Files.isDirectory(path, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                    .filter(path -> path.getFileName().toString().startsWith("rcm-session-"))
+                    .map(path -> path.toAbsolutePath().normalize()).toList();
+        }
+    }
+
+    /**
+     * Remove only abandoned per-task request/result/artifact paths.  This is
+     * admission-triggered and bounded: a crashed browser process must not
+     * gradually consume the Agent state volume, but no background sweeper (or
+     * periodic polling) is needed.  Files newer than one hour are left alone
+     * so a concurrently running task cannot lose its side-channel files.
+     */
+    private static void cleanupRuntimeFiles(Path root) {
+        if (root == null || !Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return;
+        var cutoff = Instant.now().minusSeconds(60 * 60);
+        try (var entries = Files.list(root)) {
+            entries.filter(path -> {
+                        var name = path.getFileName().toString();
+                        return name.startsWith("browser-request-") || name.startsWith("browser-result-")
+                                || name.startsWith("browser-artifacts-");
+                    })
+                    .filter(path -> lastModified(path).isBefore(cutoff))
+                    .limit(128)
+                    .forEach(path -> {
+                        if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) deleteTree(path);
+                        else if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+                            try { Files.deleteIfExists(path); } catch (IOException ignored) { }
+                        }
+                    });
+        } catch (IOException ignored) {
+            // Stale cleanup is best-effort; the current task still has its
+            // own bounded output/artifact limits.
+        }
+    }
+
+    private static boolean profileIdle(Path path) {
+        var guard = PROFILE_LOCKS.get(path.toAbsolutePath().normalize());
+        return guard == null || guard.semaphore.availablePermits() > 0;
+    }
+
+    private static final class ProfileGuard {
+        private final Semaphore semaphore = new Semaphore(1);
+        private final java.util.concurrent.atomic.AtomicInteger references = new java.util.concurrent.atomic.AtomicInteger();
+    }
+
+    private static Instant lastModified(Path path) {
+        try { return Files.getLastModifiedTime(path, java.nio.file.LinkOption.NOFOLLOW_LINKS).toInstant(); }
+        catch (IOException ignored) { return Instant.EPOCH; }
+    }
+
+    private static String sessionDigest(TaskCommand task) throws IOException {
+        var contract = task == null ? null : task.contract();
+        var session = contract == null ? task == null ? "unknown" : task.id() : contract.sessionId();
+        return sha256(session == null ? "unknown" : session).substring(0, 32);
+    }
+
+    private static String sha256(String value) throws IOException {
+        try {
+            return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IOException("SHA-256 is unavailable", exception);
         }
     }
 
@@ -253,9 +405,8 @@ final class BrowserTaskRunner implements Runnable {
      */
     @SuppressWarnings("unchecked")
     private void publishResult(Path resultFile, Path artifactDir, long outputCursor) throws IOException, InterruptedException {
-        if (resultFile == null || !Files.isRegularFile(resultFile)) return;
-        var bytes = Files.readAllBytes(resultFile);
-        if (bytes.length > 64 * 1024) throw new IOException("browser result manifest exceeds 64 KiB");
+        if (resultFile == null || !Files.isRegularFile(resultFile, LinkOption.NOFOLLOW_LINKS)) return;
+        var bytes = readBoundedRegularFile(resultFile, 64 * 1024, "browser result manifest");
         var raw = JsonCodec.read(bytes, Map.class);
         var status = text(raw.get("status"));
         var failed = !status.isBlank() && !status.equalsIgnoreCase("completed") && !status.equalsIgnoreCase("success");
@@ -284,18 +435,27 @@ final class BrowserTaskRunner implements Runnable {
         if (mimeType.length() > 256 || mimeType.indexOf('\r') >= 0 || mimeType.indexOf('\n') >= 0) {
             throw new IOException("browser artifact mime_type is invalid");
         }
-        var root = artifactDir.toAbsolutePath().normalize().toRealPath();
+        var rootPath = artifactDir.toAbsolutePath().normalize();
+        if (!Files.isDirectory(rootPath, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("browser artifact directory is not a regular directory");
+        }
+        var root = rootPath.toRealPath(LinkOption.NOFOLLOW_LINKS);
         var candidate = Path.of(pathText);
         if (!candidate.isAbsolute()) candidate = root.resolve(candidate);
-        candidate = candidate.toAbsolutePath().normalize().toRealPath();
-        if (!candidate.startsWith(root) || !Files.isRegularFile(candidate)) {
+        candidate = candidate.toAbsolutePath().normalize();
+        // Reject a symlink at the artifact leaf before canonicalising it. This
+        // prevents a custom adapter from swapping a path to an unrelated host
+        // file between manifest creation and the Agent read.
+        if (!candidate.startsWith(root) || !Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("browser artifact is outside the adapter artifact directory");
         }
-        var data = Files.readAllBytes(candidate);
-        var maxArtifactBytes = TaskLimits.artifactBytes(task, 8L * 1024 * 1024);
-        if (data.length > maxArtifactBytes) {
-            throw new IOException("browser artifact exceeds " + maxArtifactBytes + " bytes");
+        candidate = candidate.toRealPath();
+        if (!candidate.startsWith(root) || !Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("browser artifact is outside the adapter artifact directory");
         }
+        var data = readBoundedRegularFile(candidate, TaskLimits.artifactBytes(task, 8L * 1024 * 1024), "browser artifact");
+        var maxArtifactBytes = TaskLimits.artifactBytes(task, 8L * 1024 * 1024);
+        if (data.length > maxArtifactBytes) throw new IOException("browser artifact exceeds " + maxArtifactBytes + " bytes");
         final String sha256;
         try {
             var digest = java.security.MessageDigest.getInstance("SHA-256");
@@ -340,7 +500,7 @@ final class BrowserTaskRunner implements Runnable {
         var configured = System.getenv("REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY");
         if (configured != null && !configured.isBlank()) {
             var path = Path.of(configured.trim()).toAbsolutePath().normalize();
-            if (!Files.isRegularFile(path) || (!isWindows() && !Files.isExecutable(path))) {
+            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || (!isWindows() && !Files.isExecutable(path))) {
                 throw new IOException("browser-agent binary is missing or not executable: " + path);
             }
             if (current != null && path.equals(current)) {
@@ -352,9 +512,30 @@ final class BrowserTaskRunner implements Runnable {
         var executable = current.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".exe")
                 ? "rcm-browser-agent.exe" : "rcm-browser-agent";
         var sibling = current.resolveSibling(executable);
-        if (Files.isRegularFile(sibling)) return sibling;
+        if (Files.isRegularFile(sibling, LinkOption.NOFOLLOW_LINKS)) return sibling;
         var isolated = current.resolveSibling("browser").resolve(executable).normalize();
-        return Files.isRegularFile(isolated) ? isolated : null;
+        return Files.isRegularFile(isolated, LinkOption.NOFOLLOW_LINKS) ? isolated : null;
+    }
+
+    private static byte[] readBoundedRegularFile(Path path, long maxBytes, String label) throws IOException {
+        if (maxBytes < 0 || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException(label + " is not a regular file");
+        }
+        var declared = Files.size(path);
+        if (declared > maxBytes) throw new IOException(label + " exceeds " + maxBytes + " bytes");
+        try (InputStream input = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS, java.nio.file.StandardOpenOption.READ);
+             var output = new ByteArrayOutputStream((int) Math.min(Integer.MAX_VALUE, Math.min(declared, maxBytes)))) {
+            var buffer = new byte[16 * 1024];
+            var total = 0L;
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read == 0) continue;
+                if (read > maxBytes - total) throw new IOException(label + " exceeds " + maxBytes + " bytes");
+                output.write(buffer, 0, read);
+                total += read;
+            }
+            return output.toByteArray();
+        }
     }
 
     private static void awaitOutputs(Future<?>... futures) throws IOException, InterruptedException {

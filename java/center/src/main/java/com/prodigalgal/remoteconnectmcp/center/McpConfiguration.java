@@ -27,6 +27,8 @@ import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
+import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicyMode;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeArtifact;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
@@ -72,11 +74,16 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         McpSchema.Content.class, McpSchema.TextContent.class,
         McpSchema.ImageContent.class, McpSchema.AudioContent.class,
         McpSchema.EmbeddedResource.class, McpSchema.ResourceLink.class,
+        McpSchema.Resource.class, McpSchema.ResourceContent.class,
+        McpSchema.ResourceContents.class, McpSchema.TextResourceContents.class,
+        McpSchema.BlobResourceContents.class, McpSchema.ReadResourceRequest.class,
+        McpSchema.ReadResourceResult.class,
         McpSchema.Icon.class, McpSchema.PaginatedRequest.class,
         McpSchema.PaginatedResult.class,
         ArtifactRequest.class, ArtifactResponse.class, AgentMetadata.class, AgentRuntimeDescriptor.class,
         com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract.class,
         com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract.Budget.class,
+        LaneMode.class, WorkspacePolicyMode.class,
         AgentConfigUpdate.class,
         OutputRequest.class, OutputResponse.class, PollRequest.class, PollResponse.class,
         RegisterRequest.class, RegisterResponse.class, TaskCommand.class,
@@ -99,12 +106,15 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         McpPrincipalService.IssueRequest.class, McpPrincipalService.IssuedToken.class,
         McpTokenView.class, McpAccessService.MachineGrantView.class,
         McpAccessService.ProjectMemberView.class, ExecutionSessionService.SessionView.class,
+        McpQuotaService.QuotaView.class,
         ArtifactTransferService.TransferCreated.class, ArtifactTransferService.TransferDescriptor.class,
         ArtifactTransferService.AgentDownload.class, ArtifactTransferService.PublicArtifact.class,
         McpConfiguration.ArtifactFile.class, McpConfiguration.ArtifactPutArgs.class,
         McpConfiguration.ArtifactGetArgs.class, McpConfiguration.ArtifactReadArgs.class,
         TaskService.ArtifactGcResult.class})
 public class McpConfiguration {
+    /** Stable Apps SDK resource URI; changing it would require reconnecting every client. */
+    static final String ARTIFACT_VIEWER_URI = "ui://remote-connect-mcp/artifact-viewer-v1.html";
     // MCP inventory responses are intentionally smaller than the Console
     // pages.  The model normally only needs an identifier and a few routing
     // hints; detailed runtime data is an explicit machine_info follow-up.
@@ -186,10 +196,54 @@ public class McpConfiguration {
                 .strictToolNameValidation(true)
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
+                .resources(artifactViewerResource())
                 .tools(toolSpecs(agents, tasks, projects, access, transfers, mcpVirtualThreadExecutor))
                 .build();
         return server;
     }
+
+    /**
+     * Minimal Apps SDK component for file objects.  It is a resource, not a
+     * tool response, so the normal MCP transcript only receives the compact
+     * artifact handle while a capable host can render/download the file on
+     * demand.  The component also degrades to a plain link in older hosts.
+     */
+    private static McpServerFeatures.AsyncResourceSpecification artifactViewerResource() {
+        var resource = McpSchema.Resource.builder(ARTIFACT_VIEWER_URI, "Remote Connect Artifact Viewer")
+                .description("Render an artifact file object returned by artifact_read")
+                .mimeType("text/html;profile=mcp-app")
+                .build();
+        return new McpServerFeatures.AsyncResourceSpecification(resource, (exchange, request) ->
+                Mono.fromSupplier(() -> McpSchema.ReadResourceResult.builder(List.of(
+                        McpSchema.TextResourceContents.builder(ARTIFACT_VIEWER_URI, ARTIFACT_VIEWER_HTML)
+                                .mimeType("text/html;profile=mcp-app").build())).build()));
+    }
+
+    private static final String ARTIFACT_VIEWER_HTML = """
+            <!doctype html>
+            <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+            <title>Remote Connect Artifact</title>
+            <style>body{font:14px system-ui,sans-serif;margin:16px;color:#172033;background:#fff}main{display:grid;gap:10px}header{font-weight:600;word-break:break-word}small{color:#65718a}img,video,iframe{max-width:100%;max-height:70vh;border:1px solid #d9dfeb;border-radius:6px}pre{white-space:pre-wrap;max-height:60vh;overflow:auto;background:#f5f7fb;padding:10px;border-radius:6px}a{color:#1769e0}button{padding:6px 10px;border:1px solid #b7c2d6;border-radius:5px;background:#f5f7fb;cursor:pointer}</style></head>
+            <body><main><header id="name">Artifact</header><small id="meta"></small><section id="preview"></section><a id="download" rel="noreferrer" download>Download</a><button id="refresh" hidden>Refresh</button></main>
+            <script>
+            (function(){
+              const output=()=>window.openai&&window.openai.toolOutput?window.openai.toolOutput:null;
+              const pick=()=>{const o=output()||{}; return o.file||o.artifact||o;};
+              const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+              const render=()=>{const f=pick(), url=f.preview_url||f.download_url||f.url||'', downloadUrl=f.download_url||f.url||url, name=f.file_name||f.name||'artifact', mime=(f.mime_type||f.mime||'application/octet-stream').toLowerCase();
+                document.querySelector('#name').textContent=name; document.querySelector('#meta').textContent=[mime,f.bytes?Number(f.bytes).toLocaleString()+' bytes':'',f.sha256?'sha256 '+f.sha256:''].filter(Boolean).join(' · ');
+                const p=document.querySelector('#preview'); p.replaceChildren(); const safe=esc(url);
+                if(!url){p.innerHTML='<small>Artifact is not ready yet. Call artifact_read again after task_wait reports delivered.</small>';return;}
+                if(mime.startsWith('image/')) p.innerHTML='<img alt="'+esc(name)+'" src="'+safe+'">';
+                else if(mime==='application/pdf') p.innerHTML='<iframe title="'+esc(name)+'" src="'+safe+'" style="width:100%;height:70vh"></iframe>';
+                else if(mime.startsWith('video/')) p.innerHTML='<video controls src="'+safe+'"></video>';
+                else if(mime.startsWith('audio/')) p.innerHTML='<audio controls src="'+safe+'"></audio>';
+                else if(mime.startsWith('text/')||mime.includes('json')||mime.includes('xml')){fetch(url,{credentials:'omit'}).then(r=>r.text()).then(t=>{p.innerHTML='<pre>'+esc(t.slice(0,262144))+'</pre>'}).catch(()=>{p.innerHTML='<small>Preview unavailable; use download.</small>'})}
+                else p.innerHTML='<small>This file type is download-only.</small>';
+                 const a=document.querySelector('#download');a.href=downloadUrl;a.download=name;a.textContent='Download '+name;
+              }; render(); if(window.openai&&window.openai.onToolOutput)window.openai.onToolOutput(render);
+            })();</script></body></html>
+            """;
 
     private static List<McpServerFeatures.AsyncToolSpecification> toolSpecs(AgentRegistry agents, TaskService tasks,
                                                                              ProjectService projects,
@@ -222,9 +276,9 @@ public class McpConfiguration {
                                 Map.entry("include_paths", Map.of("type", "boolean", "description", "project detail only: explicitly include local root/repository/worktree paths")),
                                 Map.entry("idempotency_key", string("stable retry key"))),
                         List.of("operation")), (exchange, request) -> { requireScope(exchange, "mcp:project"); return project(projects, access, origin(exchange), request); }, scheduler),
-                tool("desktop", "Queue a bounded screenshot, screen listing, launch, pointer, drag, key, text, clipboard, or window-focus action on an explicitly desktop-capable user-session Agent.", schema(
+                tool("desktop", "Queue a bounded screenshot, screen/window listing, launch, pointer, drag, key, text, clipboard, or window-focus action on an explicitly desktop-capable user-session Agent.", schema(
                         Map.ofEntries(
-                                Map.entry("operation", string("screenshot, screenshot_region, screens, launch, click, double_click, right_click, move, drag, key, type, clipboard_read, clipboard_write, focus, or result")),
+                                Map.entry("operation", string("screenshot, screenshot_region, screens, windows, launch, click, double_click, right_click, move, drag, key, type, clipboard_read, clipboard_write, focus, or result")),
                                 Map.entry("machine_id", string("command-agent machine ID with desktop capability")),
                                 Map.entry("task_id", string("existing desktop task for result")),
                                 Map.entry("executable", string("literal application for launch")),
@@ -245,8 +299,10 @@ public class McpConfiguration {
                                 Map.entry("project_id", string("registered project ID for project/worktree scope")),
                                 Map.entry("worktree_id", string("registered worktree ID for worktree scope")),
                                 Map.entry("scope_mode", string("project, worktree, path, workspace, or explicit unrestricted")),
-                                Map.entry("scope_root", string("absolute root for path/workspace scope")),
-                                Map.entry("session_id", string("optional stable user/session identifier")),
+                                 Map.entry("scope_root", string("absolute root for path/workspace scope")),
+                                 Map.entry("workspace_policy", string("isolated, shared_serial, or explicit host")),
+                                 Map.entry("lane_mode", string("read, write, or exclusive scheduling lane")),
+                                 Map.entry("session_id", string("optional stable user/session identifier")),
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
                         List.of("operation")), (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktop(agents, tasks, projects, access, origin(exchange), request); }, scheduler),
@@ -261,8 +317,10 @@ public class McpConfiguration {
                                 Map.entry("project_id", string("registered project ID for project/worktree scope")),
                                 Map.entry("worktree_id", string("registered worktree ID for worktree scope")),
                                 Map.entry("scope_mode", string("project, worktree, path, workspace, or explicit unrestricted")),
-                                Map.entry("scope_root", string("absolute root for path/workspace scope")),
-                                Map.entry("session_id", string("optional stable user/session identifier")),
+                                 Map.entry("scope_root", string("absolute root for path/workspace scope")),
+                                 Map.entry("workspace_policy", string("isolated, shared_serial, or explicit host")),
+                                 Map.entry("lane_mode", string("read, write, or exclusive scheduling lane")),
+                                 Map.entry("session_id", string("optional stable user/session identifier")),
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
                         List.of("machine_id", "command")), (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browser(agents, tasks, projects, access, origin(exchange), request); }, scheduler),
@@ -277,8 +335,10 @@ public class McpConfiguration {
                                 Map.entry("project_id", string("registered project ID for project/worktree scope")),
                                 Map.entry("worktree_id", string("registered worktree ID for worktree scope")),
                                 Map.entry("scope_mode", string("project, worktree, path, workspace, or explicit unrestricted")),
-                                Map.entry("scope_root", string("absolute root for path/workspace scope")),
-                                Map.entry("session_id", string("optional stable user/session identifier")),
+                                 Map.entry("scope_root", string("absolute root for path/workspace scope")),
+                                 Map.entry("workspace_policy", string("isolated, shared_serial, or explicit host")),
+                                 Map.entry("lane_mode", string("read, write, or exclusive scheduling lane")),
+                                 Map.entry("session_id", string("optional stable user/session identifier")),
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
                         List.of("machine_id", "command")),
@@ -291,13 +351,13 @@ public class McpConfiguration {
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskOutput(tasks, origin(exchange), request); }, scheduler),
                 tool("task_cancel", "Cancel a queued or running task.", schema(
                         Map.of("task_id", string("task ID")), List.of("task_id")),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancel(tasks, origin(exchange), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancel(tasks, transfers, origin(exchange), request); }, scheduler),
                 tool("artifact_put", "Transfer one ChatGPT file to a target Agent path. Returns only a task/transfer handle; bytes never enter MCP text.",
                         schema(Map.ofEntries(
                                 Map.entry("machine_id", string("target machine ID")),
                                 Map.entry("file", fileObjectSchema()),
-                                Map.entry("destination_path", string("target path on the Agent; relative paths use the explicit scope root")),
-                                Map.entry("file_name", string("safe destination file name")),
+                                Map.entry("destination_path", string("complete target file path on the Agent; relative paths use the explicit scope root")),
+                                Map.entry("file_name", string("optional display name; never appended to destination_path")),
                                 Map.entry("mime_type", string("optional MIME type")),
                                 Map.entry("expected_bytes", integer("optional file size")),
                                 Map.entry("expected_sha256", string("optional SHA-256")),
@@ -307,8 +367,10 @@ public class McpConfiguration {
                                 Map.entry("project_id", string("registered project ID")),
                                 Map.entry("worktree_id", string("registered worktree ID")),
                                 Map.entry("scope_mode", string("project, worktree, path, workspace, or explicit unrestricted")),
-                                Map.entry("scope_root", string("absolute root for path/workspace scope")),
-                                Map.entry("session_id", string("optional stable user/session identifier")),
+                                 Map.entry("scope_root", string("absolute root for path/workspace scope")),
+                                 Map.entry("workspace_policy", string("isolated, shared_serial, or explicit host")),
+                                 Map.entry("lane_mode", string("read, write, or exclusive scheduling lane")),
+                                 Map.entry("session_id", string("optional stable user/session identifier")),
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
                                 List.of("machine_id", "file", "destination_path")),
@@ -317,23 +379,27 @@ public class McpConfiguration {
                 tool("artifact_get", "Transfer one Agent file back to ChatGPT. Returns a compact file handle and a task ID; call artifact_read after task completion.",
                         schema(Map.ofEntries(
                                 Map.entry("machine_id", string("source machine ID")),
-                                Map.entry("source_path", string("file path on the Agent")),
-                                Map.entry("file_name", string("download file name")),
+                                Map.entry("source_path", string("complete source file path on the Agent")),
+                                Map.entry("file_name", string("optional download display name; defaults to the source path leaf")),
                                 Map.entry("mime_type", string("optional MIME type")),
                                 Map.entry("cwd", string("optional working directory")),
                                 Map.entry("idempotency_key", string("stable retry key")),
                                 Map.entry("project_id", string("registered project ID")),
                                 Map.entry("worktree_id", string("registered worktree ID")),
                                 Map.entry("scope_mode", string("project, worktree, path, workspace, or explicit unrestricted")),
-                                Map.entry("scope_root", string("absolute root for path/workspace scope")),
-                                Map.entry("session_id", string("optional stable user/session identifier")),
+                                 Map.entry("scope_root", string("absolute root for path/workspace scope")),
+                                 Map.entry("workspace_policy", string("isolated, shared_serial, or explicit host")),
+                                 Map.entry("lane_mode", string("read, write, or exclusive scheduling lane")),
+                                 Map.entry("session_id", string("optional stable user/session identifier")),
                                 Map.entry("risk", string("low, high, or critical")),
                                 Map.entry("elevation_required", Map.of("type", "boolean", "description", "explicitly request elevation"))),
-                                List.of("machine_id", "source_path", "file_name")),
+                                List.of("machine_id", "source_path")),
                         (exchange, request) -> { requireScope(exchange, "mcp:execute"); return artifactGet(agents, projects, access, transfers, origin(exchange), request); }, scheduler),
                 tool("artifact_read", "Read compact artifact metadata and a short-lived downloadable file object. It never inlines binary content.",
                         schema(Map.of("artifact_id", string("artifact ID returned by artifact_get or artifact_put"),
                                 "transfer_id", string("optional transfer ID")), List.of()),
+                        Map.of("openai/outputTemplate", ARTIFACT_VIEWER_URI,
+                                "ui/resourceUri", ARTIFACT_VIEWER_URI),
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return artifactRead(transfers, origin(exchange), request); }, scheduler));
     }
 
@@ -417,8 +483,10 @@ public class McpConfiguration {
                 Map.entry("mode", string("scope mode")),
                 Map.entry("project_id", nullable("string", "project identifier")),
                 Map.entry("worktree_id", nullable("string", "worktree identifier")),
-                Map.entry("root", nullable("string", "bounded scope root")),
-                Map.entry("risk", nullable("string", "risk level")),
+                 Map.entry("root", nullable("string", "bounded scope root")),
+                 Map.entry("workspace_policy", nullable("string", "workspace coordination policy")),
+                 Map.entry("lane_mode", nullable("string", "execution lane mode")),
+                 Map.entry("risk", nullable("string", "risk level")),
                 Map.entry("expires_at", nullable("string", "contract expiry"))));
         var task = objectSchema(Map.ofEntries(
                 Map.entry("id", string("task identifier")),
@@ -455,14 +523,17 @@ public class McpConfiguration {
                 Map.entry("sha256", nullable("string", "transfer SHA-256")),
                 Map.entry("file_name", string("file name")),
                 Map.entry("mime_type", nullable("string", "MIME type")),
-                Map.entry("download_url", nullable("string", "short-lived download URL")),
-                Map.entry("error", nullable("string", "bounded transfer error"))));
+                 Map.entry("download_url", nullable("string", "short-lived download URL")),
+                 Map.entry("error", nullable("string", "bounded transfer error"))));
         var file = Map.of("type", "object", "properties", Map.of(
-                        "download_url", string("short-lived artifact URL"),
-                        "file_id", string("artifact identifier"),
-                        "mime_type", string("MIME type"),
-                        "file_name", string("file name")),
-                "required", List.of("download_url", "file_id"), "additionalProperties", false);
+                         "download_url", string("short-lived artifact URL"),
+                         "preview_url", string("short-lived inline preview URL"),
+                         "file_id", string("artifact identifier"),
+                         "mime_type", string("MIME type"),
+                         "file_name", string("file name"),
+                         "bytes", integer("artifact size"),
+                         "sha256", string("artifact SHA-256")),
+                 "required", List.of("download_url", "file_id"), "additionalProperties", false);
         return Map.of("type", "object", "properties", Map.ofEntries(
                         Map.entry("task", task),
                         Map.entry("transfer", transfer),
@@ -497,7 +568,8 @@ public class McpConfiguration {
                     args.scopeMode(), args.scopeRoot(), args.cwd());
             var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, scope.cwd(), Map.of(), 0, null, Instant.now());
             var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(), args.projectId(), args.worktreeId(),
-                    scope.mode(), scope.root(), args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin);
+                    scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(), args.sessionId(), args.risk(),
+                    Boolean.TRUE.equals(args.elevationRequired()), origin);
             var file = args.file();
             var name = firstNonBlank(args.fileName(), file.fileName());
             var mime = firstNonBlank(args.mimeType(), file.mimeType());
@@ -521,7 +593,8 @@ public class McpConfiguration {
                     args.scopeMode(), args.scopeRoot(), args.cwd());
             var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, scope.cwd(), Map.of(), 0, null, Instant.now());
             var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(), args.projectId(), args.worktreeId(),
-                    scope.mode(), scope.root(), args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin);
+                    scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(), args.sessionId(), args.risk(),
+                    Boolean.TRUE.equals(args.elevationRequired()), origin);
             var result = transfers.createAgentToWeb(origin, create, args.sourcePath(), args.fileName(), args.mimeType());
             return structuredJson(Map.of("task", taskMap(result.task()), "transfer", transferMap(result.transfer()),
                     "next_action", "call task_wait until completed, then artifact_read with the returned artifact_id"));
@@ -546,8 +619,17 @@ public class McpConfiguration {
             payload.put("mime_type", descriptor.mimeType());
             payload.put("file_name", descriptor.fileName());
             if (descriptor.downloadUrl() != null && !descriptor.downloadUrl().isBlank()) {
-                payload.put("file", Map.of("file_id", descriptor.artifactId(), "download_url", descriptor.downloadUrl(),
-                        "mime_type", descriptor.mimeType(), "file_name", descriptor.fileName()));
+                var file = new LinkedHashMap<String, Object>();
+                file.put("file_id", descriptor.artifactId());
+                file.put("download_url", descriptor.downloadUrl());
+                file.put("preview_url", transfers.publicUrl(descriptor.artifactId(), origin,
+                        transfers.sessionForTask(descriptor.taskId()), "preview"));
+                file.put("mime_type", descriptor.mimeType() == null || descriptor.mimeType().isBlank()
+                        ? "application/octet-stream" : descriptor.mimeType());
+                file.put("file_name", descriptor.fileName());
+                file.put("bytes", descriptor.bytes());
+                file.put("sha256", descriptor.sha256());
+                payload.put("file", file);
             }
             return structuredJson(payload);
         } catch (Exception exception) {
@@ -563,7 +645,7 @@ public class McpConfiguration {
         payload.put("task_id", value.taskId());
         payload.put("status", value.status());
         payload.put("bytes", value.bytes());
-        payload.put("bytes_transferred", value.bytes());
+        payload.put("bytes_transferred", value.bytesTransferred());
         payload.put("sha256", value.sha256());
         payload.put("file_name", value.fileName());
         payload.put("mime_type", value.mimeType());
@@ -711,8 +793,8 @@ public class McpConfiguration {
             var command = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand("", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND,
                     null, args.command(), scope.cwd(), args.env(), timeout, null, Instant.now());
             var task = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
-                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
-                    args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
+                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(),
+                    args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
             return json(Map.of("task", taskMap(task), "next_action", "use task_wait or task_output with this task_id"));
         } catch (Exception exception) {
             return error(exception);
@@ -734,8 +816,8 @@ public class McpConfiguration {
             var command = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand("", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.BROWSER,
                     "browser", args.command(), scope.cwd(), Map.of(), timeout, null, Instant.now());
             var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
-                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
-                    args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
+                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(),
+                    args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
             var waitMs = args.waitMs() == null ? 0 : args.waitMs();
             if (waitMs < 0 || waitMs > 15000) throw new IllegalArgumentException("wait_ms must be between 0 and 15000");
             if (waitMs > 0) return taskResult(tasks, origin,
@@ -770,12 +852,12 @@ public class McpConfiguration {
                 }
                 return desktopResult(tasks, origin, task);
             }
-            if (!"screenshot".equals(operation) && !"screenshot_region".equals(operation) && !"screens".equals(operation) && !"launch".equals(operation)
+            if (!"screenshot".equals(operation) && !"screenshot_region".equals(operation) && !"screens".equals(operation) && !"windows".equals(operation) && !"launch".equals(operation)
                     && !"click".equals(operation) && !"double_click".equals(operation) && !"right_click".equals(operation)
                     && !"move".equals(operation) && !"drag".equals(operation) && !"key".equals(operation)
                     && !"type".equals(operation) && !"clipboard_read".equals(operation)
                     && !"clipboard_write".equals(operation) && !"focus".equals(operation)) {
-                throw new IllegalArgumentException("operation must be screenshot, screenshot_region, screens, launch, click, double_click, right_click, move, drag, key, type, clipboard_read, clipboard_write, focus, or result");
+                throw new IllegalArgumentException("operation must be screenshot, screenshot_region, screens, windows, launch, click, double_click, right_click, move, drag, key, type, clipboard_read, clipboard_write, focus, or result");
             }
             access.authorizeExecution(origin, args.machineId(), args.projectId());
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
@@ -789,8 +871,8 @@ public class McpConfiguration {
             var command = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand("", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.DESKTOP,
                     "desktop", null, scope.cwd(), Map.of(), timeout, action, Instant.now());
             var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
-                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.sessionId(),
-                    args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
+                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(),
+                    args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
             if (waitMs > 0) {
                 var completed = tasks.waitForTerminal(origin, created.id(), Duration.ofMillis(waitMs));
                 return desktopResult(tasks, origin, completed);
@@ -899,11 +981,15 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult taskCancel(TaskService tasks, TaskOrigin origin,
-                                                       McpSchema.CallToolRequest request) {
+    private static McpSchema.CallToolResult taskCancel(TaskService tasks, ArtifactTransferService transfers,
+                                                       TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, TaskCancelArgs.class);
-            return json(Map.of("task", taskMap(tasks.cancel(origin, args.taskId()))));
+            var canceled = tasks.cancel(origin, args.taskId());
+            if (transfers != null && TaskStatus.CANCELED.equals(canceled.status())) {
+                transfers.cancelForTask(canceled.id());
+            }
+            return json(Map.of("task", taskMap(canceled)));
         } catch (Exception exception) {
             return error(exception);
         }
@@ -1121,7 +1207,7 @@ public class McpConfiguration {
         // payloads with credentials.  The Agent already returned the bounded
         // result/manifest; do not echo the original browser command into the
         // model context or the MCP transcript.
-        value.put("command", TaskKind.BROWSER.equals(task.kind())
+        value.put("command", "browser".equals(task.kind())
                 ? "[browser adapter request kept on Agent]" : compact(task.command(), 1024));
         value.put("cwd", compact(task.cwd(), 1024));
         value.put("timeout_seconds", task.timeoutSeconds());
@@ -1149,6 +1235,8 @@ public class McpConfiguration {
             scope.put("project_id", task.projectId());
             scope.put("worktree_id", task.worktreeId());
             scope.put("root", compact(task.scopeRoot(), 1024));
+            scope.put("workspace_policy", task.workspacePolicy() == null ? "shared_serial" : task.workspacePolicy().wireValue());
+            scope.put("lane_mode", task.laneMode() == null ? "write" : task.laneMode().wireValue());
             scope.put("risk", task.risk());
             scope.put("expires_at", task.contractExpiresAt());
             value.put("execution_scope", scope);
@@ -1309,6 +1397,8 @@ public class McpConfiguration {
                                @JsonProperty("worktree_id") String worktreeId,
                                @JsonProperty("scope_mode") String scopeMode,
                                @JsonProperty("scope_root") String scopeRoot,
+                               @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
+                               @JsonProperty("lane_mode") LaneMode laneMode,
                                @JsonProperty("session_id") String sessionId,
                                String risk,
                                @JsonProperty("elevation_required") Boolean elevationRequired) {
@@ -1336,6 +1426,8 @@ public class McpConfiguration {
                                @JsonProperty("worktree_id") String worktreeId,
                                @JsonProperty("scope_mode") String scopeMode,
                                @JsonProperty("scope_root") String scopeRoot,
+                               @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
+                               @JsonProperty("lane_mode") LaneMode laneMode,
                                @JsonProperty("session_id") String sessionId,
                                String risk,
                                @JsonProperty("elevation_required") Boolean elevationRequired) {
@@ -1354,6 +1446,8 @@ public class McpConfiguration {
                                @JsonProperty("worktree_id") String worktreeId,
                                @JsonProperty("scope_mode") String scopeMode,
                                @JsonProperty("scope_root") String scopeRoot,
+                               @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
+                               @JsonProperty("lane_mode") LaneMode laneMode,
                                @JsonProperty("session_id") String sessionId,
                                String risk,
                                @JsonProperty("elevation_required") Boolean elevationRequired) {
@@ -1392,6 +1486,8 @@ public class McpConfiguration {
                            @JsonProperty("worktree_id") String worktreeId,
                            @JsonProperty("scope_mode") String scopeMode,
                            @JsonProperty("scope_root") String scopeRoot,
+                           @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
+                           @JsonProperty("lane_mode") LaneMode laneMode,
                            @JsonProperty("session_id") String sessionId,
                            String risk,
                            @JsonProperty("elevation_required") Boolean elevationRequired) {
@@ -1407,6 +1503,8 @@ public class McpConfiguration {
                            @JsonProperty("worktree_id") String worktreeId,
                            @JsonProperty("scope_mode") String scopeMode,
                            @JsonProperty("scope_root") String scopeRoot,
+                           @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
+                           @JsonProperty("lane_mode") LaneMode laneMode,
                            @JsonProperty("session_id") String sessionId,
                            String risk,
                            @JsonProperty("elevation_required") Boolean elevationRequired) {

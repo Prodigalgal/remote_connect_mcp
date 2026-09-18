@@ -101,6 +101,9 @@ final class AgentPaths {
             }
             var parent = candidate.getParent();
             if (parent == null || !Files.isDirectory(parent)) throw new IOException("destination parent is not a directory: " + parent);
+            if (Files.isSymbolicLink(candidate) || Files.isDirectory(candidate)) {
+                throw new IOException("destination must be a regular file path, not a symlink or directory");
+            }
             return candidate;
         }
         if (!Files.isDirectory(base)) throw new IOException("configured execution scope root is not a directory: " + base);
@@ -120,6 +123,9 @@ final class AgentPaths {
         var parentReal = resolveThroughExistingParents(parent);
         if (!parentReal.startsWith(rootReal) || !Files.isDirectory(parentReal)) {
             throw new IOException("destination parent is outside the execution contract scope");
+        }
+        if (Files.isSymbolicLink(candidate) || Files.isDirectory(candidate)) {
+            throw new IOException("destination must be a regular file path, not a symlink or directory");
         }
         return parentReal.resolve(candidate.getFileName()).normalize();
     }

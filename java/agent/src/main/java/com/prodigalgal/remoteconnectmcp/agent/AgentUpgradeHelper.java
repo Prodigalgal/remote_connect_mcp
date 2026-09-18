@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -28,7 +29,12 @@ final class AgentUpgradeHelper {
     static int run(String configPath) {
         Config config = null;
         try {
-            config = JsonCodec.read(Files.readAllBytes(Path.of(configPath)), Config.class);
+            var configFile = Path.of(configPath).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(configFile, LinkOption.NOFOLLOW_LINKS)
+                    || Files.size(configFile) > 64 * 1024) {
+                throw new IOException("upgrade helper config is not a regular bounded file");
+            }
+            config = JsonCodec.read(Files.readAllBytes(configFile), Config.class);
             validate(config);
             waitForParent(config.parentPid());
             stopService(config.serviceName());
@@ -59,11 +65,11 @@ final class AgentUpgradeHelper {
         }
         var staged = Path.of(config.staged()).toAbsolutePath().normalize();
         var target = Path.of(config.target()).toAbsolutePath().normalize();
-        if (!Files.isRegularFile(staged) || !Files.isRegularFile(target)) throw new IOException("upgrade staged or target file is missing");
+        if (!Files.isRegularFile(staged, LinkOption.NOFOLLOW_LINKS) || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) throw new IOException("upgrade staged or target file is missing");
         var next = target.resolveSibling("." + target.getFileName() + ".next");
         var backup = target.resolveSibling(target.getFileName() + ".previous");
         Files.deleteIfExists(next);
-        Files.copy(staged, next, StandardCopyOption.REPLACE_EXISTING);
+        Files.copy(staged, next, LinkOption.NOFOLLOW_LINKS, StandardCopyOption.REPLACE_EXISTING);
         move(target, backup);
         try {
             move(next, target);
@@ -92,13 +98,13 @@ final class AgentUpgradeHelper {
     private static void applyArchive(Config config) throws IOException {
         var staged = Path.of(config.staged()).toAbsolutePath().normalize();
         var target = Path.of(config.target()).toAbsolutePath().normalize();
-        if (!Files.isRegularFile(staged) || !Files.isRegularFile(target)) throw new IOException("upgrade archive or target file is missing");
+        if (!Files.isRegularFile(staged, LinkOption.NOFOLLOW_LINKS) || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) throw new IOException("upgrade archive or target file is missing");
         var stateDir = Path.of(config.stateDir()).toAbsolutePath().normalize();
         Files.createDirectories(stateDir.resolve("upgrades"));
         var extraction = Files.createTempDirectory(stateDir.resolve("upgrades"), "agent-archive-");
         var names = new java.util.ArrayList<String>();
         long total = 0;
-        try (var input = new java.util.zip.ZipInputStream(Files.newInputStream(staged))) {
+        try (var input = new java.util.zip.ZipInputStream(Files.newInputStream(staged, LinkOption.NOFOLLOW_LINKS))) {
             java.util.zip.ZipEntry entry;
             var buffer = new byte[64 * 1024];
             while ((entry = input.getNextEntry()) != null) {
@@ -157,7 +163,7 @@ final class AgentUpgradeHelper {
             // matters when a Java Native Image archive uses canonical
             // `rcm-agent` but the existing service still points at the legacy
             // `remote-connect-mcp-agent` basename.
-            manifestLines.add((Files.exists(current) ? "1" : "0") + "\t" + installedName);
+            manifestLines.add((Files.exists(current, LinkOption.NOFOLLOW_LINKS) ? "1" : "0") + "\t" + installedName);
         }
         try {
             Files.write(manifest, manifestLines, StandardCharsets.US_ASCII, StandardOpenOption.CREATE,
@@ -172,7 +178,7 @@ final class AgentUpgradeHelper {
                 var current = targetDir.resolve(installedName).normalize();
                 var backup = current.resolveSibling(current.getFileName() + ".previous");
                 Files.deleteIfExists(backup);
-                if (Files.exists(current)) {
+                if (Files.exists(current, LinkOption.NOFOLLOW_LINKS)) {
                     move(current, backup);
                 }
                 move(extraction.resolve(name), current);
@@ -199,7 +205,7 @@ final class AgentUpgradeHelper {
         Files.createDirectories(stateDir);
         var versionFile = stateDir.resolve("agent-version");
         var previousVersionFile = stateDir.resolve("agent-version.previous");
-        if (Files.isRegularFile(versionFile)) {
+        if (Files.isRegularFile(versionFile, LinkOption.NOFOLLOW_LINKS)) {
             Files.copy(versionFile, previousVersionFile, StandardCopyOption.REPLACE_EXISTING);
         } else {
             Files.deleteIfExists(previousVersionFile);
@@ -216,7 +222,7 @@ final class AgentUpgradeHelper {
             if (config.archive()) {
                 var manifest = Path.of(config.stateDir()).toAbsolutePath().normalize()
                         .resolve("upgrade-files-" + safeComponent(config.campaignId()) + ".txt");
-                if (Files.isRegularFile(manifest)) {
+                if (Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)) {
                     var targetDir = target.getParent();
                     for (var raw : Files.readAllLines(manifest, StandardCharsets.US_ASCII)) {
                         var fields = raw.split("\\t", 2);
@@ -247,7 +253,7 @@ final class AgentUpgradeHelper {
             }
             var target = Path.of(config.target()).toAbsolutePath().normalize();
             var backup = target.resolveSibling(target.getFileName() + ".previous");
-            if (Files.isRegularFile(backup)) move(backup, target);
+            if (Files.isRegularFile(backup, LinkOption.NOFOLLOW_LINKS)) move(backup, target);
             restorePreviousVersion(Path.of(config.stateDir()).toAbsolutePath().normalize());
         } catch (Exception ignored) {
         }
@@ -256,12 +262,12 @@ final class AgentUpgradeHelper {
     private static void restorePreviousVersion(Path stateDir) throws IOException {
         var versionFile = stateDir.resolve("agent-version");
         var previousVersionFile = stateDir.resolve("agent-version.previous");
-        if (Files.isRegularFile(previousVersionFile)) move(previousVersionFile, versionFile);
+        if (Files.isRegularFile(previousVersionFile, LinkOption.NOFOLLOW_LINKS)) move(previousVersionFile, versionFile);
         else Files.deleteIfExists(versionFile);
     }
 
     private static void rollbackArchive(Path target, Path manifest) throws IOException {
-        if (!Files.isRegularFile(manifest)) return;
+        if (!Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)) return;
         var targetDir = target.getParent();
         for (var raw : Files.readAllLines(manifest, StandardCharsets.US_ASCII)) {
             var fields = raw.split("\\t", 2);
@@ -272,7 +278,7 @@ final class AgentUpgradeHelper {
             var current = targetDir.resolve(name).normalize();
             if (!current.getParent().equals(targetDir)) continue;
             var backup = current.resolveSibling(current.getFileName() + ".previous");
-            if (Files.isRegularFile(backup)) {
+            if (Files.isRegularFile(backup, LinkOption.NOFOLLOW_LINKS)) {
                 Files.deleteIfExists(current);
                 move(backup, current);
             } else if (!existed) {

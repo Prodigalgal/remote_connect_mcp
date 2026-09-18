@@ -56,15 +56,22 @@ final class JdbcTaskStore {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final ArtifactStore artifactStore;
+    private final McpQuotaService quota;
 
     JdbcTaskStore(JdbcTemplate jdbc, TransactionTemplate transactions) {
-        this(jdbc, transactions, new InMemoryArtifactStore());
+        this(jdbc, transactions, new InMemoryArtifactStore(), null);
     }
 
     JdbcTaskStore(JdbcTemplate jdbc, TransactionTemplate transactions, ArtifactStore artifactStore) {
+        this(jdbc, transactions, artifactStore, null);
+    }
+
+    JdbcTaskStore(JdbcTemplate jdbc, TransactionTemplate transactions, ArtifactStore artifactStore,
+                  McpQuotaService quota) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.artifactStore = Objects.requireNonNull(artifactStore, "artifactStore");
+        this.quota = quota;
     }
 
     /** Compatibility entry point for Agent/admin callers without a user owner. */
@@ -243,6 +250,12 @@ final class JdbcTaskStore {
             // Capability values remain bind parameters; only the placeholder
             // count is assembled from the already bounded request list.
             var capabilityPlaceholders = String.join(", ", java.util.Collections.nCopies(capabilities.size(), "?"));
+            var quotaPredicate = quota == null ? "TRUE" : """
+                    (COALESCE(t.principal_id, '') = 'owner/shared-domain'
+                     OR (SELECT COUNT(*) FROM rcm_task principal_active
+                           WHERE principal_active.principal_id = t.principal_id
+                             AND principal_active.status IN ('dispatching', 'running', 'cancel_requested')) < ?)
+                    """;
             var queued = jdbc.query((SELECT_TASK_META + """
                      WHERE t.agent_id = ? AND t.status = ?
                        AND t.required_capability IN (%s)
@@ -253,21 +266,40 @@ final class JdbcTaskStore {
                                  WHERE inbound.task_id = t.task_id
                                    AND inbound.status IN ('ready', 'delivering', 'delivered')
                             ))
-                       AND NOT EXISTS (
-                           SELECT 1 FROM rcm_task active
-                            WHERE active.lane_key = t.lane_key
-                              AND active.status IN (?, ?, ?)
+                        AND NOT EXISTS (
+                            SELECT 1 FROM rcm_task active
+                             WHERE active.lane_key = t.lane_key
+                               AND (
+                                   active.agent_id = t.agent_id
+                                   OR (
+                                       COALESCE(t.execution_contract ->> 'host_id', '') <> ''
+                                       AND COALESCE(t.execution_contract ->> 'host_id', '') = COALESCE(active.execution_contract ->> 'host_id', '')
+                                       AND (
+                                           COALESCE(t.execution_contract ->> 'workspace_policy', '') = 'host'
+                                           OR (COALESCE(t.execution_contract ->> 'lane_mode', '') = 'exclusive'
+                                               AND t.required_capability = 'desktop')
+                                           OR t.required_capability = 'browser'
+                                       )
+                                   )
+                               )
+                               AND active.status IN (?, ?, ?)
+                              AND NOT (
+                                  COALESCE(t.execution_contract ->> 'lane_mode', 'write') = 'read'
+                                  AND COALESCE(active.execution_contract ->> 'lane_mode', 'write') = 'read'
+                              )
                        )
+                        AND (%s)
                      ORDER BY t.created_at, t.task_id
                      LIMIT 1 FOR UPDATE OF t SKIP LOCKED
-                    """).formatted(capabilityPlaceholders), ps -> {
+                    """).formatted(capabilityPlaceholders, quotaPredicate), ps -> {
                 var index = 1;
                 ps.setString(index++, machineId);
                 ps.setString(index++, TaskStatus.QUEUED);
                 for (var capability : capabilities) ps.setString(index++, capability);
                 ps.setString(index++, TaskStatus.DISPATCHING);
                 ps.setString(index++, TaskStatus.RUNNING);
-                ps.setString(index, TaskStatus.CANCEL_REQUESTED);
+                ps.setString(index++, TaskStatus.CANCEL_REQUESTED);
+                if (quota != null) ps.setInt(index, quota.maxActiveTasks());
             }, (rs, rowNum) -> readState(rs));
             var selected = queued.stream()
                     .filter(task -> capabilities.contains(task.command().requiredCapability()))
@@ -579,10 +611,21 @@ final class JdbcTaskStore {
         return Optional.of(new TaskService.ArtifactData(row.mimeType(), row.sha256(), data));
     }
 
+    /** Update only the task's bounded artifact projection after a streamed transfer. */
+    void recordTransferArtifact(String machineId, String taskId, String mimeType, long bytes, String sha256) {
+        var updated = jdbc.update("""
+                UPDATE rcm_task
+                   SET artifact_bytes = ?, artifact_mime = ?, artifact_sha256 = ?,
+                       artifact_data = NULL, updated_at = CURRENT_TIMESTAMP
+                 WHERE task_id = ? AND agent_id = ?
+                """, bytes, mimeType, sha256, taskId, machineId);
+        if (updated == 0) throw new IllegalArgumentException("task not found for transfer artifact");
+    }
+
     TaskService.ArtifactGcResult gcArtifacts(Instant cutoff, int limit) {
         var candidates = transactions.execute(status -> {
             var rows = jdbc.query("""
-                    SELECT a.task_id, a.object_key
+                    SELECT a.task_id, a.object_key, a.bytes
                       FROM rcm_task_artifact a
                       JOIN rcm_task t ON t.task_id = a.task_id
                      WHERE a.created_at <= ?
@@ -596,7 +639,7 @@ final class JdbcTaskStore {
                 ps.setString(3, TaskStatus.FAILED);
                 ps.setString(4, TaskStatus.CANCELED);
                 ps.setInt(5, limit);
-            }, (rs, rowNum) -> new ArtifactCandidate(rs.getString("task_id"), rs.getString("object_key")));
+            }, (rs, rowNum) -> new ArtifactCandidate(rs.getString("task_id"), rs.getString("object_key"), rs.getLong("bytes")));
             if (rows.isEmpty()) return List.<ArtifactCandidate>of();
             var deleted = new ArrayList<ArtifactCandidate>(rows.size());
             for (var row : rows) {
@@ -621,6 +664,7 @@ final class JdbcTaskStore {
         });
         var deletedObjects = 0;
         var deleteFailures = 0;
+        long reclaimedBytes = 0L;
         for (var candidate : candidates) {
             if (candidate.objectKey() == null || candidate.objectKey().isBlank()) {
                 // Legacy inline rows have no filesystem object.  Their
@@ -631,6 +675,7 @@ final class JdbcTaskStore {
             try {
                 artifactStore.delete(candidate.objectKey());
                 deletedObjects++;
+                reclaimedBytes = saturatingAdd(reclaimedBytes, candidate.bytes());
             } catch (RuntimeException failure) {
                 // Metadata is already gone, so keep the response successful and
                 // expose the count.  A later filesystem sweep can remove an
@@ -655,7 +700,15 @@ final class JdbcTaskStore {
         } catch (RuntimeException failure) {
             deleteFailures++;
         }
-        return new TaskService.ArtifactGcResult(candidates.size(), deletedObjects, deleteFailures);
+        // Legacy inline rows have no object key, but their metadata payload is
+        // still reclaimed by the transaction above.  Count those bytes here;
+        // object-store bytes are counted only after a successful delete.
+        for (var candidate : candidates) {
+            if (candidate.objectKey() == null || candidate.objectKey().isBlank()) {
+                reclaimedBytes = saturatingAdd(reclaimedBytes, candidate.bytes());
+            }
+        }
+        return new TaskService.ArtifactGcResult(candidates.size(), deletedObjects, deleteFailures, reclaimedBytes);
     }
 
     private void insert(TaskState state) {
@@ -871,6 +924,11 @@ final class JdbcTaskStore {
                                String mimeType, long bytes) {
     }
 
-    private record ArtifactCandidate(String taskId, String objectKey) {
+    private record ArtifactCandidate(String taskId, String objectKey, long bytes) {
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        if (right <= 0 || Long.MAX_VALUE - left < right) return Long.MAX_VALUE;
+        return left + right;
     }
 }

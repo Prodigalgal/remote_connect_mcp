@@ -2,6 +2,8 @@ package com.prodigalgal.remoteconnectmcp.center;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
+import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
+import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicyMode;
 import java.util.Map;
 
 /**
@@ -22,13 +24,24 @@ public record AdminCreateTaskRequest(
         @JsonProperty("scope_root") String scopeRoot,
         @JsonProperty("session_id") String sessionId,
         String risk,
-        @JsonProperty("elevation_required") Boolean elevationRequired) {
+        @JsonProperty("elevation_required") Boolean elevationRequired,
+        @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
+        @JsonProperty("lane_mode") LaneMode laneMode) {
 
     /** Compatibility constructor for the original flat console payload. */
     public AdminCreateTaskRequest(String machineId, String command, String cwd, Map<String, String> env,
                                   Integer timeoutSeconds, String idempotencyKey, String projectId, String worktreeId) {
         this(machineId, command, cwd, env, timeoutSeconds, idempotencyKey, projectId, worktreeId,
-                "", "", "", "low", false);
+                "", "", "", "low", false, null, null);
+    }
+
+    /** Compatibility constructor for the pre-lane flat payload. */
+    public AdminCreateTaskRequest(String machineId, String command, String cwd, Map<String, String> env,
+                                  Integer timeoutSeconds, String idempotencyKey, String projectId, String worktreeId,
+                                  String scopeMode, String scopeRoot, String sessionId, String risk,
+                                  Boolean elevationRequired) {
+        this(machineId, command, cwd, env, timeoutSeconds, idempotencyKey, projectId, worktreeId,
+                scopeMode, scopeRoot, sessionId, risk, elevationRequired, null, null);
     }
 
     public AdminCreateTaskRequest {
@@ -53,6 +66,7 @@ public record AdminCreateTaskRequest(
                 command, cwd.isBlank() ? null : cwd, env, timeoutSeconds, null, null);
         var parsedScope = scopeMode.isBlank() ? null : ScopeMode.fromWireValue(scopeMode);
         return new CreateTaskRequest(machineId, task, idempotencyKey, projectId, worktreeId,
-                parsedScope, scopeRoot, sessionId, risk, elevationRequired);
+                parsedScope, scopeRoot, workspacePolicy, laneMode, sessionId, risk,
+                elevationRequired, TaskOrigin.shared());
     }
 }

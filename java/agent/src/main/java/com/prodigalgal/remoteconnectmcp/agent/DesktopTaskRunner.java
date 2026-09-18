@@ -71,7 +71,14 @@ final class DesktopTaskRunner implements Runnable {
     }
 
     private void completeCompanion(DesktopCompanionProtocol.Response response) throws IOException, InterruptedException {
-        var data = response.data();
+        if (response == null || !response.ok()) {
+            throw new IOException(compactError(response == null ? "desktop companion returned no response" : response.error()));
+        }
+        // Non-visual desktop operations (screens/windows/clipboard/input)
+        // legitimately return only text or JSON.  Normalize a missing data
+        // field to an empty artifact instead of dereferencing null and
+        // reporting a successful operation as a generic task failure.
+        var data = response.data() == null ? new byte[0] : response.data();
         var maxArtifactBytes = TaskLimits.artifactBytes(task, MAX_SCREENSHOT_BYTES);
         if (data.length > maxArtifactBytes) throw new IOException("desktop companion artifact exceeds " + maxArtifactBytes + " bytes");
         if (data.length > 0) {
@@ -119,7 +126,7 @@ final class DesktopTaskRunner implements Runnable {
     private static void validate(TaskCommand.DesktopAction action) {
         if (action == null || action.operation() == null || action.operation().isBlank()) throw new IllegalArgumentException("desktop action is required");
         var operation = action.operation().trim().toLowerCase(Locale.ROOT);
-            if (!operation.equals("launch") && !operation.equals("screenshot") && !operation.equals("screens")
+            if (!operation.equals("launch") && !operation.equals("screenshot") && !operation.equals("screens") && !operation.equals("windows")
                 && !operation.equals("click") && !operation.equals("double_click")
                 && !operation.equals("right_click") && !operation.equals("move")
                 && !operation.equals("screenshot_region") && !operation.equals("drag") && !operation.equals("key")
@@ -133,7 +140,7 @@ final class DesktopTaskRunner implements Runnable {
             if (value == null || value.indexOf('\u0000') >= 0 || value.length() > MAX_ARG_CHARS) throw new IllegalArgumentException("desktop argument is invalid");
         });
         if (operation.equals("launch") && (action.executable() == null || action.executable().isBlank())) throw new IllegalArgumentException("launch executable is required");
-        if ((operation.equals("screenshot") || operation.equals("screenshot_region") || operation.equals("screens") || operation.equals("clipboard_read")
+        if ((operation.equals("screenshot") || operation.equals("screenshot_region") || operation.equals("screens") || operation.equals("windows") || operation.equals("clipboard_read")
                 || operation.equals("clipboard_write") || operation.equals("drag") || operation.equals("click")
                 || operation.equals("double_click") || operation.equals("right_click") || operation.equals("move")
                 || operation.equals("key") || operation.equals("type") || operation.equals("focus"))

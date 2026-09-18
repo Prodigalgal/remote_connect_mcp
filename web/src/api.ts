@@ -80,6 +80,8 @@ export type Task = {
   projectId?: string
   worktreeId?: string
   scopeRoot?: string
+  workspacePolicy?: string
+  laneMode?: string
   risk?: string
   contractExpiresAt?: string
 }
@@ -400,6 +402,8 @@ function mapTask(item: Record<string, unknown>): Task {
     projectId: item.project_id as string | undefined,
     worktreeId: item.worktree_id as string | undefined,
     scopeRoot: item.scope_root as string | undefined,
+    workspacePolicy: item.workspace_policy as string | undefined,
+    laneMode: item.lane_mode as string | undefined,
     risk: item.risk as string | undefined,
     contractExpiresAt: item.contract_expires_at as string | undefined,
   }
@@ -645,3 +649,86 @@ export async function issueEnrollment(token: string, requestedName: string, expi
     expiresAt: String(body.expires_at ?? ''),
   }
 }
+
+export type McpToken = {
+  tokenId: string
+  principalId: string
+  displayName: string
+  scopes: string[]
+  expiresAt?: string
+  revokedAt?: string
+  createdAt?: string
+}
+
+export type MachineGrant = {
+  principalId: string
+  machineId: string
+  scopes: string[]
+  expiresAt?: string
+}
+
+export type ProjectMember = {
+  principalId: string
+  projectId: string
+  role: string
+  scopes: string[]
+  expiresAt?: string
+}
+
+export type ExecutionSession = {
+  principalId: string
+  sessionId: string
+  conversationId: string
+  machineId: string
+  status: string
+  lastSeenAt?: string
+  expiresAt?: string
+  capability?: string
+  workspacePolicy?: string
+  laneMode?: string
+}
+
+export type Quota = {
+  principalId: string
+  activeTasks: number
+  maxActiveTasks: number
+  queuedTasks: number
+  maxQueuedTasks: number
+  activeSessions: number
+  maxSessions: number
+  transferBytes: number
+  maxTransferBytes: number
+}
+
+function mapToken(item: Record<string, unknown>): McpToken {
+  return { tokenId: String(item.token_id ?? ''), principalId: String(item.principal_id ?? ''), displayName: String(item.display_name ?? ''), scopes: Array.isArray(item.scopes) ? item.scopes.map(String) : [], expiresAt: item.expires_at as string | undefined, revokedAt: item.revoked_at as string | undefined, createdAt: item.created_at as string | undefined }
+}
+
+export async function listMcpTokens(token: string, offset = 0, limit = 200): Promise<PageResult<McpToken>> {
+  const boundedOffset = Math.max(0, Math.trunc(offset)); const boundedLimit = Math.min(200, Math.max(1, Math.trunc(limit)))
+  const body = await request<{ items?: Array<Record<string, unknown>>; offset?: number; limit?: number; total?: number; has_more?: boolean }>(`/api/v1/admin/mcp-tokens?offset=${boundedOffset}&limit=${boundedLimit}`, token)
+  return pageResult((body.items ?? []).map(mapToken), body, boundedOffset, boundedLimit)
+}
+
+export async function issueMcpToken(token: string, payload: { principal_id?: string; display_name?: string; expires_in_seconds?: number; scopes?: string[] }): Promise<McpToken & { token: string }> {
+  const body = await request<Record<string, unknown>>('/api/v1/admin/mcp-tokens', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  return { ...mapToken(body), token: String(body.token ?? '') }
+}
+
+export async function revokeMcpToken(token: string, tokenId: string): Promise<void> {
+  await request(`/api/v1/admin/mcp-tokens/${encodeURIComponent(tokenId)}/revoke`, token, { method: 'POST' })
+}
+
+function mapMachineGrant(item: Record<string, unknown>): MachineGrant { return { principalId: String(item.principal_id ?? ''), machineId: String(item.machine_id ?? item.agent_id ?? ''), scopes: Array.isArray(item.scopes) ? item.scopes.map(String) : [], expiresAt: item.expires_at as string | undefined } }
+function mapProjectMember(item: Record<string, unknown>): ProjectMember { return { principalId: String(item.principal_id ?? ''), projectId: String(item.project_id ?? ''), role: String(item.role ?? ''), scopes: Array.isArray(item.scopes) ? item.scopes.map(String) : [], expiresAt: item.expires_at as string | undefined } }
+function mapSession(item: Record<string, unknown>): ExecutionSession { return { principalId: String(item.principal_id ?? ''), sessionId: String(item.session_id ?? ''), conversationId: String(item.conversation_id ?? ''), machineId: String(item.machine_id ?? ''), status: String(item.status ?? ''), lastSeenAt: item.last_seen_at as string | undefined, expiresAt: item.expires_at as string | undefined, capability: item.capability as string | undefined, workspacePolicy: item.workspace_policy as string | undefined, laneMode: item.lane_mode as string | undefined } }
+
+export async function listMachineGrants(token: string, principalId = ''): Promise<MachineGrant[]> { const suffix = principalId.trim() ? `&principalId=${encodeURIComponent(principalId.trim())}` : ''; const body = await request<{ items?: Array<Record<string, unknown>> }>(`/api/v1/admin/access/machines?offset=0&limit=200${suffix}`, token); return (body.items ?? []).map(mapMachineGrant) }
+export async function listProjectMembers(token: string, principalId = ''): Promise<ProjectMember[]> { const suffix = principalId.trim() ? `&principalId=${encodeURIComponent(principalId.trim())}` : ''; const body = await request<{ items?: Array<Record<string, unknown>> }>(`/api/v1/admin/access/projects?offset=0&limit=200${suffix}`, token); return (body.items ?? []).map(mapProjectMember) }
+export async function grantMachine(token: string, payload: unknown): Promise<MachineGrant> { return mapMachineGrant(await request<Record<string, unknown>>('/api/v1/admin/access/machines', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })) }
+export async function grantProject(token: string, payload: unknown): Promise<ProjectMember> { return mapProjectMember(await request<Record<string, unknown>>('/api/v1/admin/access/projects', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })) }
+export async function revokeMachine(token: string, payload: unknown): Promise<void> { await request('/api/v1/admin/access/machines', token, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
+export async function revokeProject(token: string, payload: unknown): Promise<void> { await request('/api/v1/admin/access/projects', token, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
+export async function listExecutionSessions(token: string, principalId = ''): Promise<ExecutionSession[]> { const suffix = principalId.trim() ? `&principalId=${encodeURIComponent(principalId.trim())}` : ''; const body = await request<{ items?: Array<Record<string, unknown>> }>(`/api/v1/admin/execution-sessions?offset=0&limit=200${suffix}`, token); return (body.items ?? []).map(mapSession) }
+export async function closeExecutionSession(token: string, principalId: string, sessionId: string): Promise<void> { await request('/api/v1/admin/execution-sessions/close', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ principal_id: principalId, session_id: sessionId }) }) }
+export async function getQuota(token: string, principalId: string): Promise<Quota> { const body = await request<Record<string, unknown>>(`/api/v1/admin/quotas/${encodeURIComponent(principalId)}`, token); return { principalId: String(body.principal_id ?? principalId), activeTasks: Number(body.active_tasks ?? 0), maxActiveTasks: Number(body.max_active_tasks ?? 0), queuedTasks: Number(body.queued_tasks ?? 0), maxQueuedTasks: Number(body.max_queued_tasks ?? 0), activeSessions: Number(body.active_sessions ?? 0), maxSessions: Number(body.max_sessions ?? 0), transferBytes: Number(body.transfer_bytes ?? 0), maxTransferBytes: Number(body.max_transfer_bytes ?? 0) } }

@@ -71,7 +71,7 @@ final class FileTransferTaskRunner implements Runnable {
 
     private void receive(FileTransferAction action) throws IOException, InterruptedException {
         var destination = AgentPaths.resolveFilePath(config, identity.machineId(), task, action.destinationPath(), false);
-        if (Files.exists(destination) && !action.overwrite()) {
+        if (Files.exists(destination, LinkOption.NOFOLLOW_LINKS) && !action.overwrite()) {
             throw new IOException("destination already exists and overwrite is false");
         }
         AgentRetry.call(LOG, "file transfer download " + task.id(), () -> {
@@ -80,7 +80,7 @@ final class FileTransferTaskRunner implements Runnable {
             return null;
         });
         acknowledge(action, "delivered", action.expectedBytes(), action.expectedSha256(), null, true);
-        sendOutput("received " + action.fileName() + " (" + action.expectedBytes() + " bytes, sha256=" + action.expectedSha256() + ")");
+        sendOutput("received " + action.displayName() + " (" + action.expectedBytes() + " bytes, sha256=" + action.expectedSha256() + ")");
         sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
     }
 
@@ -113,14 +113,18 @@ final class FileTransferTaskRunner implements Runnable {
             // Hash and upload the same immutable snapshot.  Keep a stable
             // snapshot across task retries so the Center can resume from its
             // last acknowledged chunk without recopying a multi-GB source.
-            if (Files.exists(snapshot)) {
-                if (!Files.isRegularFile(snapshot) || Files.size(snapshot) > MAX_BYTES) {
+            if (Files.exists(snapshot, LinkOption.NOFOLLOW_LINKS)) {
+                if (!Files.isRegularFile(snapshot, LinkOption.NOFOLLOW_LINKS) || Files.size(snapshot) > MAX_BYTES) {
                     Files.deleteIfExists(snapshot);
                 }
             }
-            if (!Files.exists(snapshot)) {
+            if (!Files.exists(snapshot, LinkOption.NOFOLLOW_LINKS)) {
                 var snapshotTemp = parent.resolve(snapshot.getFileName() + ".new");
                 try {
+                    if (Files.exists(snapshotTemp, LinkOption.NOFOLLOW_LINKS)
+                            && !Files.isRegularFile(snapshotTemp, LinkOption.NOFOLLOW_LINKS)) {
+                        throw new IOException("snapshot temporary path is not a regular file");
+                    }
                     Files.copy(source, snapshotTemp, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
                     try {
                         Files.move(snapshotTemp, snapshot, StandardCopyOption.ATOMIC_MOVE);
@@ -130,6 +134,9 @@ final class FileTransferTaskRunner implements Runnable {
                 } finally {
                     Files.deleteIfExists(snapshotTemp);
                 }
+            }
+            if (!Files.isRegularFile(snapshot, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("snapshot is not a regular non-symlink file");
             }
             var bytes = Files.size(snapshot);
             if (bytes < 0 || bytes > MAX_BYTES) throw new IOException("source file size is outside the allowed range");
@@ -141,7 +148,7 @@ final class FileTransferTaskRunner implements Runnable {
                             action.fileName(), action.mimeType(), bytes, uploadDigest, task.attempt()));
             var sha = response == null || response.sha256() == null || response.sha256().isBlank() ? uploadDigest : response.sha256();
             acknowledge(action, "delivered", bytes, sha, null, true);
-            sendOutput("published " + action.fileName() + " (" + bytes + " bytes, sha256=" + sha + ")");
+            sendOutput("published " + action.displayName() + " (" + bytes + " bytes, sha256=" + sha + ")");
             sendState(new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
             uploaded = true;
         } finally {
@@ -156,7 +163,10 @@ final class FileTransferTaskRunner implements Runnable {
     }
 
     private String sha256(Path source) throws IOException {
-        try (InputStream input = Files.newInputStream(source)) {
+        if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("snapshot is not a regular non-symlink file");
+        }
+        try (InputStream input = Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS)) {
             var digest = MessageDigest.getInstance("SHA-256");
             var buffer = new byte[1024 * 1024];
             int read;

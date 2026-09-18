@@ -274,7 +274,7 @@ Windows amd64 使用 Native Image Agent，并由内置 Windows Task Scheduler �
   -BrowserBinaryPath ./remote-connect-mcp-browser-vX.Y.Z-windows-amd64.zip
 ```
 
-任务名为 `RemoteConnectMCPAgent`，默认开机启动，异常退出按 1 分钟间隔最多重试 3 次（Windows Task Scheduler 的最小重试间隔）。状态、进程和日志：
+任务名为 `RemoteConnectMCPAgent`，默认开机启动，异常退出按 1 分钟间隔最多重试 3 次（Windows Task Scheduler 的最小重试间隔）。启用桌面能力时，`RemoteConnectMCPDesktopCompanion` 由登录触发，但使用 `wscript.exe //B //NoLogo` 无控制台启动，不会在登录时弹出 PowerShell 黑框。状态、进程和日志：
 
 ```powershell
 Get-ScheduledTask -TaskName RemoteConnectMCPAgent
@@ -283,12 +283,17 @@ Get-Process rcm-agent -ErrorAction SilentlyContinue
 Get-Content "$env:ProgramData\RemoteConnectMCPAgent\agent.log" -Tail 100
 ```
 
-`-BinaryPath` 可以指向 Release 的平铺 command-agent ZIP（推荐，内含 `rcm-agent.exe` 及同一构建生成的全部 DLL），`-DesktopBinaryPath` / `-BrowserBinaryPath` 分别安装两个独立的 Native companion ZIP；它们被放在隔离子目录，避免同名运行库覆盖。安装器会先停止并移除旧 SCM 服务/启动任务和桌面计划任务，复制完整运行时并清理旧 DLL，再完成注册和启动；不会把校验文件或 README 放进运行目录。Center 配置写入受 ACL 保护的启动脚本（不含 Enrollment Token），状态目录 ACL 仅允许 SYSTEM 与本机管理员访问。卸载时默认保留机器身份；需要同时清除身份时增加 `-PurgeState`：
+`-BinaryPath` 可以指向 Release 的平铺 command-agent ZIP（推荐，内含 `rcm-agent.exe` 及同一构建生成的全部 DLL），`-DesktopBinaryPath` / `-BrowserBinaryPath` 分别安装两个独立的 Native companion ZIP；它们被放在隔离子目录，避免同名运行库覆盖。安装器会先停止并移除旧 SCM 服务/启动任务和桌面计划任务，复制完整运行时并清理旧 DLL，再完成注册和启动；桌面伴侣同时生成兼容手动诊断的 `run-desktop-companion.ps1`，但计划任务实际指向无控制台的 `run-desktop-companion.vbs`。不会把校验文件或 README 放进运行目录。Center 配置写入受 ACL 保护的启动脚本（不含 Enrollment Token），状态目录 ACL 仅允许 SYSTEM 与本机管理员访问。卸载时默认保留机器身份；需要同时清除身份时增加 `-PurgeState`：
 
 ```powershell
 ./scripts/install-java-agent.ps1 -Uninstall
 ./scripts/install-java-agent.ps1 -Uninstall -PurgeState
 ```
+
+如果旧版本已经安装过桌面伴侣而登录时仍短暂弹出 PowerShell 黑框，只需在管理员
+PowerShell 7 中运行一次 `scripts/repair-desktop-companion-task.ps1`。它不读取、不轮换
+Enrollment/Agent Token，只重写桌面计划任务和无控制台 VBS 启动器；后续登录由
+`wscript.exe //B //NoLogo` 直接启动 `rcm-desktop-companion.exe`。
 
 ## 连接 ChatGPT
 

@@ -84,7 +84,7 @@ public final class ProtocolValidation {
             }
             requireText(task.desktop().operation(), "desktop operation", 64);
             var operation = task.desktop().operation().trim().toLowerCase(java.util.Locale.ROOT);
-            if (!operation.equals("screenshot") && !operation.equals("screens") && !operation.equals("launch")
+            if (!operation.equals("screenshot") && !operation.equals("screens") && !operation.equals("windows") && !operation.equals("launch")
                     && !operation.equals("click") && !operation.equals("double_click")
                     && !operation.equals("right_click") && !operation.equals("move")
                     && !operation.equals("screenshot_region") && !operation.equals("drag") && !operation.equals("key")
@@ -217,6 +217,21 @@ public final class ProtocolValidation {
         }
         if (contract.scopeMode() == ScopeMode.PROJECT && contract.worktreeId() != null) {
             throw new IllegalArgumentException("project contract cannot carry worktreeId");
+        }
+        if (contract.workspacePolicy() == WorkspacePolicyMode.HOST
+                && contract.scopeMode() != ScopeMode.UNRESTRICTED) {
+            throw new IllegalArgumentException("host workspace policy requires unrestricted scope");
+        }
+        if (contract.workspacePolicy() == WorkspacePolicyMode.ISOLATED
+                && contract.scopeMode() == ScopeMode.UNRESTRICTED) {
+            throw new IllegalArgumentException("isolated workspace policy requires bounded scope");
+        }
+        if (contract.workspacePolicy() == WorkspacePolicyMode.ISOLATED
+                && contract.scopeMode() != ScopeMode.WORKTREE) {
+            throw new IllegalArgumentException("isolated workspace policy requires worktree scope");
+        }
+        if (contract.laneMode() == null) {
+            throw new IllegalArgumentException("lane mode is required");
         }
     }
 

@@ -37,7 +37,16 @@ public final class DesktopCompanionProtocol {
                           @JsonProperty("window_title") String windowTitle,
                           @JsonProperty("scope_mode") String scopeMode,
                           @JsonProperty("scope_root") String scopeRoot,
-                          @JsonProperty("contract_expires_at") Instant contractExpiresAt) {
+                          @JsonProperty("contract_expires_at") Instant contractExpiresAt,
+                          @JsonProperty("session_id") String sessionId) {
+        /** Compatibility constructor for older command-agent callers. */
+        public Request(String token, String operation, String executable, List<String> args, String cwd,
+                       String text, Integer x, Integer y, String key, Integer x2, Integer y2,
+                       Integer durationMs, Integer screen, String windowTitle, String scopeMode,
+                       String scopeRoot, Instant contractExpiresAt) {
+            this(token, operation, executable, args, cwd, text, x, y, key, x2, y2, durationMs,
+                    screen, windowTitle, scopeMode, scopeRoot, contractExpiresAt, null);
+        }
     }
 
     public record Response(boolean ok, String output, @JsonProperty("mime_type") String mimeType,

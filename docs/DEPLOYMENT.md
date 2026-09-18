@@ -40,7 +40,11 @@ GraalVM 运行时 DLL 会分别与 `rcm-center.exe`、`rcm-agent.exe` 放入各�
 
 `java/Dockerfile.*.native` 和 `web/Dockerfile` 同样要求构建参数 `RCM_CI_BUILD=true`；工作流会自动注入，本机直接 `docker build` 会在编译前拒绝执行。
 
-Windows 安装器 `scripts/install-java-agent.ps1` 的 `-BinaryPath` 可直接接收平铺 command-agent ZIP（推荐），也兼容与 DLL 同目录的原始 `rcm-agent.exe`；`-DesktopBinaryPath` 和 `-BrowserBinaryPath` 可分别接收两个独立 companion ZIP/EXE，安装到隔离子目录，避免 `java.dll`/`jvm.dll` 同名覆盖。它会在复制完整 bundle 前停止旧 SCM 服务/启动任务和桌面计划任务，避免只替换 exe 造成运行时 DLL 不匹配；command-agent 由内置 Task Scheduler 以 SYSTEM 启动，Native Image 不再被误注册为 SCM 服务。
+Windows 安装器 `scripts/install-java-agent.ps1` 的 `-BinaryPath` 可直接接收平铺 command-agent ZIP（推荐），也兼容与 DLL 同目录的原始 `rcm-agent.exe`；`-DesktopBinaryPath` 和 `-BrowserBinaryPath` 可分别接收两个独立 companion ZIP/EXE，安装到隔离子目录，避免 `java.dll`/`jvm.dll` 同名覆盖。它会在复制完整 bundle 前停止旧 SCM 服务/启动任务和桌面计划任务，避免只替换 exe 造成运行时 DLL 不匹配；command-agent 由内置 Task Scheduler 以 SYSTEM 启动，Native Image 不再被误注册为 SCM 服务。启用 Desktop 时，登录触发任务使用 `wscript.exe //B //NoLogo` 调用生成的 VBS 启动器，避免 Windows PowerShell 隐藏窗口在登录阶段短暂闪现；同时保留 `.ps1` 启动器供管理员手动诊断。
+
+已安装旧版本若仍有登录黑框，可在管理员 PowerShell 7 中单独执行
+`scripts/repair-desktop-companion-task.ps1`；该脚本只更新桌面计划任务和 VBS 启动器，
+不触碰 Agent 身份、Enrollment Token 或 Center 配置。
 
 需要一次性给 Windows 目标启用三套能力时，可使用 `scripts/deploy-java-desktop-browser.ps1`：必须显式传入
 `-CenterUrl`，脚本会下载并校验同版本的 command-agent、desktop 和 browser ZIP，并为 Playwright

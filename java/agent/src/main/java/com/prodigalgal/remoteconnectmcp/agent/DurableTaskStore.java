@@ -9,6 +9,7 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.ClosedWatchServiceException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -203,7 +204,7 @@ final class DurableTaskStore {
 
     private boolean checkOutputLimit(Path output, Record record, long maxOutputBytes, AgentResourceBudget budget) {
         try {
-            if (!Files.isRegularFile(output)) return false;
+            if (!Files.isRegularFile(output, LinkOption.NOFOLLOW_LINKS)) return false;
             var size = Files.size(output);
             if (size > maxOutputBytes) {
                 guardErrors.put(record.taskId(), "durable command output exceeded " + maxOutputBytes + " bytes");
@@ -260,11 +261,15 @@ final class DurableTaskStore {
         var result = new ArrayList<Record>();
         try (var files = Files.list(directory)) {
             files.filter(path -> path.getFileName().toString().endsWith(".json"))
+                    .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
                     .forEach(path -> {
                         try {
+                            if (Files.size(path) > 64 * 1024) return;
                             var record = JsonCodec.read(Files.readAllBytes(path), Record.class);
+                            var output = ownedPath(record.outputPath(), "durable output");
+                            var recordPath = ownedPath(record.recordPath(), "durable record");
                             if (record.taskId() != null && !record.taskId().isBlank() && record.pid() > 0
-                                    && record.outputPath() != null && !record.outputPath().isBlank()) {
+                                    && output != null && recordPath != null && path.equals(recordPath)) {
                                 result.add(record);
                             }
                         } catch (Exception ignored) {
@@ -285,7 +290,9 @@ final class DurableTaskStore {
     void markCompleted(Record record, int exitCode, String error) throws IOException {
         var completed = new Record(record.taskId(), record.pid(), record.command(), record.cwd(),
                 record.startedAt(), record.outputPath(), record.recordPath(), true, exitCode, error, record.contract(), record.attempt());
-        write(Path.of(record.recordPath()), completed);
+        var recordPath = ownedPath(record.recordPath(), "durable record");
+        if (recordPath == null) throw new IOException("durable record path is outside the Agent state directory");
+        write(recordPath, completed);
         completionSignals.computeIfAbsent(record.taskId(), ignored -> new CompletableFuture<>()).complete(completed);
     }
 
@@ -296,8 +303,16 @@ final class DurableTaskStore {
         var reservation = outputReservations.remove(record.taskId());
         if (reservation != null) reservation.release();
         guardErrors.remove(record.taskId());
-        deleteEventually(Path.of(record.outputPath()));
-        deleteEventually(Path.of(record.recordPath()));
+        try {
+            var outputPath = ownedPath(record.outputPath(), "durable output");
+            var recordPath = ownedPath(record.recordPath(), "durable record");
+            if (outputPath != null) deleteEventually(outputPath);
+            if (recordPath != null) deleteEventually(recordPath);
+        } catch (IOException ignored) {
+            // A corrupt record must never turn cleanup into an arbitrary-path
+            // delete.  The record itself is left for the next bounded startup
+            // scan to diagnose and ignore.
+        }
     }
 
     Record awaitCompleted(Record record, Duration timeout) throws InterruptedException {
@@ -329,6 +344,19 @@ final class DurableTaskStore {
 
     static Path outputPath(Record record) {
         return Path.of(record.outputPath()).toAbsolutePath().normalize();
+    }
+
+    /** Return a persisted path only when it remains inside this Agent store. */
+    private Path ownedPath(String value, String label) throws IOException {
+        if (value == null || value.isBlank()) return null;
+        final Path path;
+        try {
+            path = Path.of(value).toAbsolutePath().normalize();
+        } catch (RuntimeException exception) {
+            throw new IOException(label + " path is invalid", exception);
+        }
+        if (!path.startsWith(directory)) throw new IOException(label + " path escapes the Agent state directory");
+        return path;
     }
 
     private static void deleteEventually(Path path) {

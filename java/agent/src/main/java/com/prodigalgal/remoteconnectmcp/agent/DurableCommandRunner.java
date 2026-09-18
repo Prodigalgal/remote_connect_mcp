@@ -10,6 +10,7 @@ import java.nio.channels.FileChannel;
 import java.nio.file.ClosedWatchServiceException;
 import java.nio.file.FileSystems;
 import java.nio.file.Path;
+import java.nio.file.LinkOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchKey;
@@ -179,7 +180,7 @@ final class DurableCommandRunner implements Runnable {
     }
 
     private RelayResult relayOutput(Path outputPath, ProcessHandle process) throws IOException, InterruptedException {
-        if (!java.nio.file.Files.isRegularFile(outputPath)) {
+        if (!java.nio.file.Files.isRegularFile(outputPath, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("durable output file is missing");
         }
         var outputLimit = TaskLimits.outputBytes(config, task);
@@ -187,7 +188,7 @@ final class DurableCommandRunner implements Runnable {
         var limitExceeded = false;
         var centerTruncated = false;
         long offset = 0;
-        try (var channel = FileChannel.open(outputPath, StandardOpenOption.READ);
+        try (var channel = FileChannel.open(outputPath, LinkOption.NOFOLLOW_LINKS, StandardOpenOption.READ);
              var watcher = openWatcher(outputPath)) {
             // ProcessHandle.onExit is the authoritative completion event. Do
             // not repeatedly query isAlive() at the bottom of the output loop:

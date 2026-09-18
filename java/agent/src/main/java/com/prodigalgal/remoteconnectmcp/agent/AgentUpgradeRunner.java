@@ -14,6 +14,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -179,7 +180,7 @@ final class AgentUpgradeRunner implements Runnable {
             throw new IOException("REMOTE_CONNECT_MCP_AGENT_BINARY_PATH is required for self-upgrade");
         }
         var target = Path.of(configured.trim()).toAbsolutePath().normalize();
-        if (!Files.isRegularFile(target)) throw new IOException("Agent binary path is not a file: " + target);
+        if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Agent binary path is not a file: " + target);
         return target;
     }
 

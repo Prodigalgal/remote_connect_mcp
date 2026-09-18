@@ -1,12 +1,12 @@
 # RCM 迁移状态
 
-更新时间：2026-09-17（Asia/Shanghai）
+更新时间：2026-09-18（Asia/Shanghai）
 
 本文记录仓库代码与当前集群只读探针能够证明的状态。产品需求基线见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)，代码/生产分离的任务清单见 [`docs/TASKS.md`](TASKS.md)，M:M 用户/对话/MCP 设计见 [`docs/MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)，逐项生产证据见 [`docs/PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)；未通过生产门禁的内容不会标记为“已上线”。
 
 ## 结论
 
-Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布；当前代码新增 Artifact Transport v2：`artifact_put`/`artifact_get`、流式对象存储、Agent 原子收发、短期签名文件对象 URL，以及 Agent→Center `Content-Range`/偏移确认和 Web→Agent HTTP Range 断线续传。它仍需要最新 GitHub Actions 编译/集成测试、数据库迁移和目标环境回归后才能宣称生产可用。既有生产数据库、Agent 升级和旧 Go 回滚事实保持不变；ChatGPT Web 真实附件渲染、跨重启故障矩阵和特殊文件边界仍是后续门禁。
+Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布；当前开发批次已补齐 Artifact Transport v2：`artifact_put`/`artifact_get`、流式对象存储、Agent 原子收发、短期签名文件对象 URL、Content-Range/HTTP Range 断线续传、状态机/ACK、幂等预约、资源配额和安全边界，并完成会话/车道/桌面/浏览器隔离代码。接下来需要一次统一 GitHub Actions 编译/集成测试，然后进行数据库迁移、目标环境和 ChatGPT Web 真实附件回归；在这些门禁完成前不宣称本批次生产可用。
 
 ## 已完成实现与历史证据
 
@@ -17,24 +17,24 @@ Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布�
 | 任务可靠性 | 异步入队、幂等键、租约、取消、输出游标、断线重连、有界 spool、无超时任务恢复；过期租约区分可恢复持久任务与不可安全重放的定时任务，Go/Java 都按 Agent 范围在下一次 poll 修复，JDBC 修复后的任务 ID 在事务提交后精准唤醒 `task_wait`；Go/Java 两条兼容实现每次真正领取租约都会递增并暴露 `attempt`，Java Agent 在状态/输出/工件回传携带 attempt 栅栏，便于阻断断线后的旧进程重投；旧客户端只在首次派发允许省略 attempt，重新租约后缺少标头也会被拒绝；PostgreSQL 按任务摘要路由 `LISTEN/NOTIFY` 事件唤醒，高频输出只唤醒等待同一任务的请求（可跨 Center 副本），截止时间返回快照，不运行固定行读取循环 | Java Agent/Center 单元测试与 GitHub Actions 门禁 |
 | 注册与身份 | 一次性 Enrollment Token，注册后换取每 Agent 日常 Token；身份文件原子写入 | Agent/Center 测试通过 |
 | 配置热更新 | Center 下发 generation、长轮询等待时间、兼容退避间隔和并发槽位；Agent 原子落盘并只接受更新代次；每次心跳还携带版本化 runtime descriptor（单任务及 Agent 总进程预算、资源能力、scope_mode 与桌面/浏览器配置及会话状态），Center 以固定大小 JSONB 投影保存；管理员可将配置历史作为新 generation 回滚；旧 descriptor 缺失总预算字段时按有界默认值兼容 | `AgentRuntimeSettingsTest`、`AgentConfigurationServiceTest`、runtime descriptor protocol/registry tests |
-| Desktop | 独立 `desktop` Native 目标的用户会话 companion；截图/区域截图、屏幕枚举、启动、单击/双击/右击、移动指针、拖拽、组合按键、剪贴板、窗口聚焦和文本输入通过受保护 loopback IPC；伴侣退出时会终止其登记的 GUI 子进程；没有用户会话时 command-agent 只返回明确的 companion 不可用错误，不包含桌面直启回退；Linux AWT/Java2D/X11 JNI 元数据只进入 Desktop Native 包 | 协议校验、`DesktopCompanionClientTest`、`DesktopCompanionServerTest`、GitHub Actions preview 与 `local-cmcc-debian` GUI canary；Windows 多会话/UAC、Wayland 和跨桌面回归仍待补齐 |
-| Browser | 独立 `browser` Native 目标的单任务 supervisor；command-agent 负责 Center 生命周期、超时、日志和工件，browser-agent 再启动本机 Playwright/Patchright/Comoufox Worker；参考 Worker 增加 hover/check/select/wait-for-selector/历史导航/文本读取等常用动作，仍保持快照、引用和输出有界 | `BrowserTaskRunnerTest`、`BrowserTaskRunner`、Node 静态检查、Windows/Linux GUI canary `navigate`；snapshot/截图/下载、持久会话和跨引擎回归仍待补齐 |
+ | Desktop | 独立 `desktop` Native 目标的用户会话 companion；截图/区域截图、屏幕枚举/窗口枚举、启动、单击/双击/右击、移动指针、拖拽、组合按键、剪贴板、窗口聚焦和文本输入通过受保护 loopback IPC；伴侣退出时终止其登记的 GUI 子进程；Linux AWT/Java2D/X11 与 Wayland 原生 helper fallback 只进入 Desktop Native 包；Windows 登录任务使用 `wscript.exe //B //NoLogo` 直接启动 VBS，避免 PowerShell 黑框，保留一次性修复脚本兼容旧安装；连接、会话和启动进程均有界 | Desktop 协议/服务测试；Windows 多会话/UAC、Wayland/多显示器现场矩阵待统一 Actions/生产验收 |
+| Browser | 独立 `browser` Native 目标的单任务 supervisor；command-agent 负责 Center 生命周期、超时、日志和工件，browser-agent 启动本机 Playwright/Patchright/Comoufox Worker；支持 hover/check/select/wait-for-selector/历史导航/文本读取、结构化引用、有界快照、截图/下载、持久会话 marker、stale ref 恢复和 profile/进程回收 | `BrowserTaskRunner`、Node 静态检查和资源边界；目标浏览器安装、跨引擎/跨平台和真实 Web E2E 待统一验收 |
 | 升级 | Center canary/批次状态机，HTTPS + SHA-256，Agent Helper 原子替换和回滚；offer/status 与 detached helper result 支持可选升级 attempt，迟到报告不会覆盖更新尝试；PostgreSQL offer/control/status 路径现在按 campaign/target 行锁串行化，避免并发 Agent 重复领取同一尝试；升级编排使用有界分段机器快照（最多 10000 台），不会因 Admin 单页 200 台而漏掉离线目标；发布工作流资产名已与解析器对齐 | `UpgradeServiceTest`；`.github/workflows/java-release.yml` 静态校验 |
 | 控制台 | React/Vite 经典后台布局，机器、项目/worktree、任务、令牌、升级、审计和设置页面；任务编排支持 command/desktop/browser、项目/worktree/path/unrestricted 显式范围、风险/提权/会话与幂等键；项目卡片支持有确认的 status/diff/log/commit/merge/merge-abort；全局搜索、机器在线筛选、任务状态筛选和任务输出 16 KiB 游标分页查看；机器、项目、任务、升级、审计列表按 `has_more` 增量加载；实时刷新与“下一页”并发时使用请求代次栅栏，升级页支持只重排队单个失败目标；Admin Token 只在当前标签页内存 | v0.1.28 GitHub Actions React 构建与生产 Console 路由验收通过；稳定 Release `java-v0.1.28` 与生产 digest 已收敛 |
 | 数据库 | PostgreSQL 适配器与 Liquibase `001`–`019` changelog；内存模式仍用于协议回归；发布工作流带 PostgreSQL 16 服务容器集成、备份和恢复门禁；`012` 增加异步审计事件表，`013` 持久化 Agent 运行时自描述，`014` 保存有限配置历史，`015` 增加主体/Token 归属，`016` 增加执行车道，`017` 固化执行会话与任务专属结果通道，`018` 增加机器授权与项目成员 ACL，`019` 持久化主体/连接执行会话合同与生命周期状态；审计保留通过显式、有界 Admin GC 入口执行，不运行定时清理线程 | Liquibase 资源/迁移单元测试通过；CI `PostgresIntegrationTest` 会覆盖注册、心跳自描述、项目/worktree、主体幂等任务、车道租约、会话、输出续传和工件往返，随后执行 custom-format dump/restore |
-| Artifact Transport v2 | 新增 `file_transfer` 协议记录、`020` Liquibase 元数据表、filesystem/HTTP 流式 ObjectStore、Agent GET/PUT、真实路径/哈希校验、8 MiB `Content-Range` 分块、Center partial spool、Web→Agent HTTP Range 和精简 `artifact_put`/`artifact_get`/`artifact_read` MCP 工具；文件内容不进入任务 JSON 或 MCP 文本 | 本机仅完成静态检查；GitHub Actions 需验证 Java/Native/JDBC 迁移、重试、重复 chunk 和对象流；ChatGPT Web 附件渲染、跨重启故障矩阵与生产回归尚待实现 |
+| Artifact Transport v2 | `file_transfer` 协议、`020` Liquibase 元数据表、filesystem/HTTP 流式 ObjectStore、Agent GET/PUT、真实路径/哈希校验、8 MiB Content-Range/HTTP Range 续传、partial spool 持久 reservation、状态机/ACK、幂等预约、MCP `artifact_put`/`artifact_get`/`artifact_read`、稳定 Viewer 资源已完成；文件内容不进入任务 JSON 或 MCP 文本 | 本轮代码/测试完成；统一 GitHub Actions、跨重启故障矩阵和 ChatGPT Web 附件渲染属于后续门禁 |
 | 发布脚本 | Java JVM 构建、Native Image 门禁脚本、Windows/Linux Agent 安装器、Java Center/Agent JVM/Native 烟测脚本，以及 Windows/Linux WebSocket wake 烟测 | 当前只做静态校验；Native Image、完整原生烟测、Agent RSS 资源报告和仓库卫生扫描交给 GitHub Actions，Windows/Linux 安装器均支持 CI 平铺 ZIP + 旁路库 |
 
-## 部分实现或仍需补齐
+## 已实现代码与待验收边界
 
 1. Native Image：v0.1.28 正式 tag Release 已完成；Linux amd64/arm64、Windows amd64 原生构建、原生迁移烟测、SPDX SBOM、Sigstore keyless 签名、OIDC Artifact Attestation 和 Agent 资源门禁均由 GitHub Actions 完成。Windows/Linux 发布物为包含旁路运行库的平铺 ZIP，旧裸可执行文件保留回退；Windows ARM64 暂保留 JVM/Go 兼容路径。开发机不执行编译。
-2. PostgreSQL：生产库已使用独立 `remote_connect_mcp_prod` schema/database 完成 Liquibase 与旧 Go 状态导入，当前保留 9 台 Agent、1403 个任务/输出、0 个工件；v0.1.28 生产迁移 Job 成功。工件已经抽象为 `ArtifactStore`，新写入可走独立持久卷文件对象或有界 HTTPS 对象网关，数据库只保存 key、大小、MIME 和 SHA-256；旧 `artifact_data` 仍保留用于一次性懒迁移。仍需补齐对象保留/GC、卷备份恢复、高并发抢占、Center 重启场景、长输出压测和正式恢复演练。
-3. Browser Agent：Java Agent 已提供参考 `scripts/browser-worker.mjs`，可按环境加载 Playwright/Patchright/Comoufox，并支持 CSS/`rcm-ref-v1`/role/label/placeholder/text/test-id 结构化定位；快照最多返回 64 个有界引用，Agent 在独立浏览器 profile 启用时保存脱敏的最近 origin/path 并在下一任务尝试恢复；结果仍包含有界快照、动作结果、截图、下载工件以及脱敏的网络/控制台/页面错误摘要；即使自定义适配器写入结果清单，Agent 也会在发送前再次脱敏。引用失效时 Worker 会返回一次新的有界 snapshot 建议，避免盲目重放；目标平台仍需安装浏览器运行时并完成持久会话和跨浏览器回归。
-4. Desktop Agent：基础截图、屏幕枚举、输入、剪贴板和 Windows 窗口聚焦已具备；command-agent 会原子发布伴侣 scope 策略，伴侣在 IPC 前复核真实路径和合同过期时间；unrestricted Agent 收到更窄的 per-task path/workspace 合同时，伴侣不再因缺少机器级根目录而误拒绝，而是以合同根作为最小边界；伴侣在重启时回收其登记的 GUI 子进程；策略文件缺失或损坏时生产加载路径默认收窄到 Agent 状态目录，不再隐式放大为整机权限；Linux arm64 Plasma/X11 canary 已通过 screens/截图和 Center 路由，Windows 多会话/UAC、Wayland、多显示器输入和跨桌面回归仍需专门验收。
+2. PostgreSQL：生产库已使用独立 `remote_connect_mcp_prod` schema/database 完成 Liquibase 与旧 Go 状态导入，工件已经抽象为 `ArtifactStore`，新写入可走独立持久卷文件对象或有界 HTTPS 对象网关，数据库只保存 key、大小、MIME 和 SHA-256；旧 `artifact_data` 仍保留用于一次性懒迁移。Artifact Transport v2 的状态机、分块偏移、配额和 GC 字节指标代码已完成；卷备份恢复、高并发容量、Center 重启和正式恢复演练属于生产门禁。
+3. Browser Agent：Java Agent 已提供独立 Browser Native 目标和参考 `scripts/browser-worker.mjs`，可按环境加载 Playwright/Patchright/Comoufox，并支持 CSS/`rcm-ref-v1`/role/label/placeholder/text/test-id 结构化定位；快照最多返回 64 个有界引用，独立 profile 保存脱敏 origin/path，引用失效返回一次有界 snapshot 建议；结果包含有界动作摘要、截图/下载工件以及脱敏网络/控制台/页面错误，并有进程/profile 回收。目标平台浏览器安装和跨浏览器回归属于统一验收。
+4. Desktop Agent：截图/区域截图、屏幕/窗口枚举、输入、剪贴板和 Windows 窗口聚焦已具备；command-agent 原子发布伴侣 scope 策略，伴侣在 IPC 前复核真实路径和合同过期时间，并在重启时回收 GUI 子进程；Linux AWT/Java2D/X11 与 Wayland native helper fallback 均有代码路径。Windows 多会话/UAC、Wayland、多显示器输入和跨桌面回归属于统一验收。
 5. 构建拆分：`command-agent`、`desktop-companion`、`browser-agent` 已分别建立 Gradle Native 目标、Docker artifact 目标和 Release ZIP/校验流程；GitHub Actions 已通过 Linux amd64/arm64、Windows amd64 的四目标编译与烟测，9 台登记 Agent 的 v0.1.28 安装/升级回归已完成。
 6. 长连接：已实现可选 WebSocket wake-only 通道、带单调序列号的重复/乱序提示去重、客户端指数重连和 HTTPS 长轮询；PostgreSQL 模式新增跨 Center 副本的 Agent 唤醒与任务等待 `LISTEN/NOTIFY` 桥接（best-effort，丢失时由请求截止时间和下一次显式读取补偿）；Agent/Center 已加入有界传输能力协商和明确 HTTPS 选择标头，并提供一次性 HTTP/1.1/HTTP/2/可选 HTTP/3 探针和回退说明，真实 QUIC provider 仍未启用。
 7. Project Registry/Git worktree：已实现按 Agent 归属的项目注册、受保护项目删除、项目根/仓库路径边界、异步 `git worktree add/remove`、幂等键和项目/worktree 任务 cwd 解析；精简 MCP `project` 工具已接入摘要列表、分页 `detail`、status/diff/log/幂等 commit/显式 merge/`merge_abort` 冲突恢复排队；Center 不读取仓库内容，Agent 仍执行最终真实路径与权限校验。提交/差异审阅、冲突输出和实际目标机 Git/权限回归仍待补齐。
-8. 控制台：基础管理流程、项目/worktree、全局搜索/基础筛选和有界任务输出查看可用；机器、项目、任务、升级和审计列表已按服务端 `has_more` 增量加载，升级页可只重排队单个失败目标；审计页提供管理员确认后清理一年以前记录的有界入口，MCP 创建的任务与控制台创建的任务在审计来源中分别标记为 `mcp`/`console`，任务编排已覆盖 command/desktop/browser 与显式范围；MCP 机器/项目列表使用摘要投影，JSON 文本有 192 KiB 最后防线，图片只内联不超过 512 KiB，较大工件改用 SHA-256/Console 引用；实时推送、审计详情和无障碍/视觉回归门禁尚未达到生产级完整度。
+8. 控制台：机器、项目/worktree、任务、Token/ACL、会话/车道/配额、升级、审计和设置页面均已接入；任务编排覆盖 command/desktop/browser、项目/worktree/path/unrestricted、工作区策略和车道模式；Artifact Viewer 支持图片/PDF/媒体/文本预览及通用下载，大文件只保留引用；列表有界分页，MCP 摘要有 192 KiB 防线。实时推送、审计详情和无障碍/视觉回归属于统一 CI/现场门禁。
 9. 可观测性：Java Center/Go 基线均提供 Admin 鉴权的有界 `/metrics` 和脱敏日志约定；Java 已新增任务成功/失败率、队列深度/最老等待、过期租约、Agent 在线率、升级失败率、工件容量和审计背压指标，并提供 PrometheusRule 模板和可选 `rcm.audit` JSON 行导出（见 `docs/OBSERVABILITY.md`）。生产已通过私有 GitOps 接入 Prometheus ServiceMonitor 与 Center/数据库/Agent/升级告警；集中日志接收器、SLO 面板和升级失败通知仍需现场接入与演练。
 10. 执行合同：已在协议、MCP/Admin 请求、任务持久化和 Agent 本地路径校验中加入 `project/worktree/path/workspace/unrestricted` 范围、machine/host/capability、预算、过期和幂等意图字段；Agent 会把合同预算作为输出、工件和操作时长的更窄上限，桌面 companion 进入 IPC 前也复用同一 cwd 合同校验；P0-06 代码与 CI 已完成，目标机绕过测试归入独立生产验收。
 
@@ -69,7 +69,7 @@ Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布�
 
 ## 下一步生产顺序
 
-1. 先完成选定 P2：集中日志/对象生命周期接入、SLO/告警通知、Desktop/Browser 平台增强和 QUIC 基准/回退验证。
-2. 在维护窗口演练离线领取、安装失败、失败重排队和回滚；当前 v0.1.28 活动已完成，不再有 pending 目标。
-3. 在真实反向代理环境完成 WebSocket wake、LISTEN/NOTIFY、长任务和 Center 重启故障演练；不实施 P2-02 多副本和完整 SaaS 多租户，`P2-05-lite` 另按设计文档实施。
-4. 完成 PostgreSQL/工件恢复演练后按 `docs/GO_RETIREMENT.md` 关闭旧 Go 回滚资源。
+1. 统一触发一次 GitHub Actions：Java/Native/React、Liquibase/PostgreSQL、Node 静态和故障矩阵；本机不编译。
+2. 在维护窗口演练离线领取、安装失败、失败重排队和回滚，并验证 v2 文件分块/断线/重启/容量边界。
+3. 在真实反向代理环境验收 WebSocket wake、LISTEN/NOTIFY、长任务、Center 重启、ChatGPT Web 双向附件和 Viewer；不实施 P2-02 多副本和完整 SaaS 多租户。
+4. 完成 PostgreSQL/工件恢复和多主体双账号验收后，按 `docs/GO_RETIREMENT.md` 关闭旧 Go 回滚资源。

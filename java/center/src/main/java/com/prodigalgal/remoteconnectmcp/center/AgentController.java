@@ -279,8 +279,7 @@ public final class AgentController {
             }
         };
         var headers = new HttpHeaders();
-        headers.setContentType(MediaType.parseMediaType(download.mimeType() == null || download.mimeType().isBlank()
-                ? MediaType.APPLICATION_OCTET_STREAM_VALUE : download.mimeType()));
+        headers.setContentType(safeMediaType(download.mimeType()));
         headers.setContentLength(download.bytes());
         headers.setContentDisposition(ContentDisposition.attachment().filename(download.fileName()).build());
         headers.set("X-RCM-SHA256", download.sha256());
@@ -291,6 +290,16 @@ public final class AgentController {
             return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT).headers(headers).body(body);
         }
         return ResponseEntity.ok().headers(headers).body(body);
+    }
+
+    /** Metadata is user supplied; keep an invalid MIME from breaking a download. */
+    private static MediaType safeMediaType(String value) {
+        if (value == null || value.isBlank()) return MediaType.APPLICATION_OCTET_STREAM;
+        try {
+            return MediaType.parseMediaType(value.trim());
+        } catch (IllegalArgumentException ignored) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
     }
 
     @RequestMapping(value = "/transfers/{transferId}/content", method = RequestMethod.HEAD)

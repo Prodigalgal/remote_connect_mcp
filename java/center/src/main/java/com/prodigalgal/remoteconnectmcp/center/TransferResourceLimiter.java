@@ -37,6 +37,8 @@ final class TransferResourceLimiter {
     private final Map<String, Integer> principalCounts = new HashMap<>();
     private final Map<String, Integer> machineCounts = new HashMap<>();
     private final AtomicLong reservedBytes = new AtomicLong();
+    /** Bytes admitted for a persistent resumable append but not written yet. */
+    private long persistentReservedBytes;
     private int active;
 
     TransferResourceLimiter() {
@@ -88,7 +90,7 @@ final class TransferResourceLimiter {
      * disk by a previous request or Center restart.  It is deliberately an
      * admission check at chunk arrival, never a background polling sweep.
      */
-    void ensurePersistentSpoolCapacity(Path directory, long additionalBytes) {
+    PersistentLease ensurePersistentSpoolCapacity(Path directory, long additionalBytes) {
         if (directory == null || additionalBytes < 0 || additionalBytes > MAX_BYTES) {
             throw new IllegalArgumentException("invalid persistent spool reservation");
         }
@@ -97,18 +99,53 @@ final class TransferResourceLimiter {
                 Files.createDirectories(directory);
                 long existing = 0L;
                 try (var entries = Files.list(directory)) {
-                    for (var path : entries.filter(value -> Files.isRegularFile(value, java.nio.file.LinkOption.NOFOLLOW_LINKS)).toList()) {
+                    // Walk the directory lazily. A crashed/abandoned spool
+                    // can contain many partial files; materialising the whole
+                    // stream into a List would turn a disk quota check into a
+                    // second unbounded memory consumer.
+                    var iterator = entries.iterator();
+                    while (iterator.hasNext()) {
+                        var path = iterator.next();
+                        if (!Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
                         var size = Files.size(path);
                         if (size > MAX_BYTES - existing) throw new IllegalStateException("persistent transfer spool exceeds the allowed range");
                         existing += size;
                     }
                 }
-                if (existing > maxSpoolBytes || additionalBytes > maxSpoolBytes - existing) {
+                if (existing > maxSpoolBytes
+                        || persistentReservedBytes > maxSpoolBytes - existing
+                        || additionalBytes > maxSpoolBytes - existing - persistentReservedBytes) {
                     throw new IllegalStateException("file transfer persistent spool quota reached");
                 }
                 ensureFreeSpace(additionalBytes);
+                persistentReservedBytes += additionalBytes;
+                return new PersistentLease(additionalBytes);
             } catch (IOException exception) {
                 throw new IllegalStateException("cannot inspect persistent transfer spool", exception);
+            }
+        }
+    }
+
+    /**
+     * A short-lived reservation covering one append operation.  The append is
+     * intentionally outside the limiter monitor, but every concurrent append
+     * must first hold this lease so the persistent spool cannot oversubscribe
+     * between the scan and the actual write.
+     */
+    final class PersistentLease implements AutoCloseable {
+        private final long bytes;
+        private boolean closed;
+
+        private PersistentLease(long bytes) {
+            this.bytes = bytes;
+        }
+
+        @Override
+        public void close() {
+            synchronized (monitor) {
+                if (closed) return;
+                closed = true;
+                persistentReservedBytes = Math.max(0L, persistentReservedBytes - bytes);
             }
         }
     }
@@ -182,8 +219,12 @@ final class TransferResourceLimiter {
 
     private static Path spoolRoot() {
         var configured = System.getenv(SPOOL_ROOT_ENV);
+        // Keep the default under a Center-owned directory.  Scanning the OS
+        // temp root would count unrelated application files against the RCM
+        // quota and could make a healthy transfer fail for external churn.
         var value = configured == null || configured.isBlank()
-                ? System.getProperty("java.io.tmpdir", ".") : configured.trim();
+                ? Path.of(System.getProperty("java.io.tmpdir", "."), "remote-connect-mcp-transfer").toString()
+                : configured.trim();
         if (value.indexOf('\u0000') >= 0 || value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0) {
             throw new IllegalStateException(SPOOL_ROOT_ENV + " contains invalid path characters");
         }

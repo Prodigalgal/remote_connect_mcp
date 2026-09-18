@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Locale;
@@ -19,12 +20,22 @@ final class DesktopCompanionLauncher {
     }
 
     static void run(Path stateDir) throws IOException, InterruptedException {
+        var process = start(stateDir);
+        if (!process.waitFor(365, TimeUnit.DAYS)) {
+            process.destroyForcibly();
+            throw new IOException("desktop companion did not exit within the supported lifetime");
+        }
+        if (process.exitValue() != 0) throw new IOException("desktop companion exited with code " + process.exitValue());
+    }
+
+    /** Start a companion without blocking the command Agent heartbeat loop. */
+    static Process start(Path stateDir) throws IOException {
         var current = currentCommand().orElse(null);
         var configured = System.getenv("REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY");
         var target = configured == null || configured.isBlank()
                 ? siblingDesktopBinary(current)
                 : Optional.of(Path.of(configured.trim()).toAbsolutePath().normalize());
-        if (target.isEmpty() || !Files.isRegularFile(target.get())
+        if (target.isEmpty() || !Files.isRegularFile(target.get(), LinkOption.NOFOLLOW_LINKS)
                 || (!isWindows() && !Files.isExecutable(target.get()))) {
             throw new IOException("desktop companion binary was not found; install rcm-desktop-companion and set REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY");
         }
@@ -35,12 +46,7 @@ final class DesktopCompanionLauncher {
         command.add(target.get().toString());
         command.add("--desktop-companion");
         command.add(stateDir.toAbsolutePath().normalize().toString());
-        var process = new ProcessBuilder(command).inheritIO().start();
-        if (!process.waitFor(365, TimeUnit.DAYS)) {
-            process.destroyForcibly();
-            throw new IOException("desktop companion did not exit within the supported lifetime");
-        }
-        if (process.exitValue() != 0) throw new IOException("desktop companion exited with code " + process.exitValue());
+        return new ProcessBuilder(command).inheritIO().start();
     }
 
     private static Optional<Path> currentCommand() {
@@ -54,7 +60,7 @@ final class DesktopCompanionLauncher {
         var lower = name.toLowerCase(Locale.ROOT);
         var replacement = lower.endsWith(".exe") ? "rcm-desktop-companion.exe" : "rcm-desktop-companion";
         var direct = current.resolveSibling(replacement);
-        if (Files.isRegularFile(direct)) return Optional.of(direct);
+        if (Files.isRegularFile(direct, LinkOption.NOFOLLOW_LINKS)) return Optional.of(direct);
         return Optional.of(current.resolveSibling("desktop").resolve(replacement).normalize());
     }
 

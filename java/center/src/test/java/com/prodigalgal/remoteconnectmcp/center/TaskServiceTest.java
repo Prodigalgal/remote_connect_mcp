@@ -37,7 +37,9 @@ class TaskServiceTest {
                 "", "", "low", false, ownerB), "mcp", ownerB);
 
         assertTrue(!first.id().equals(second.id()));
-        assertEquals("connection-a", first.executionSessionId());
+        assertTrue(first.executionSessionId().startsWith("session_"));
+        assertTrue(tasks.find(second.id()).orElseThrow().executionSessionId().startsWith("session_"));
+        assertTrue(!first.executionSessionId().equals(second.executionSessionId()));
         assertEquals("rcm.task." + first.id(), first.resultChannel());
         assertEquals(first.id(), tasks.findFor(ownerA, first.id()).orElseThrow().id());
         assertThrows(SecurityException.class, () -> tasks.findFor(ownerB, first.id()));

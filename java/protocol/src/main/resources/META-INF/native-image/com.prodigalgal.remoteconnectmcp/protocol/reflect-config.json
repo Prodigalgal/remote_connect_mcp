@@ -17,6 +17,8 @@
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.ScopeMode","allDeclaredConstructors":true,"allDeclaredMethods":true},
+  {"name":"com.prodigalgal.remoteconnectmcp.protocol.LaneMode","allDeclaredConstructors":true,"allDeclaredMethods":true},
+  {"name":"com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicyMode","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.TaskKind","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.DesktopCompanionProtocol$Endpoint","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.DesktopCompanionProtocol$Request","allDeclaredConstructors":true,"allDeclaredMethods":true},

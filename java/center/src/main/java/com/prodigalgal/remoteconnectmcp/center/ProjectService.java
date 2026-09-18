@@ -2,6 +2,8 @@ package com.prodigalgal.remoteconnectmcp.center;
 
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
+import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
+import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicyMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicy;
@@ -517,9 +519,17 @@ public final class ProjectService {
         var timeout = WORKTREE_TIMEOUT_SECONDS;
         var task = new TaskCommand("", TaskKind.COMMAND, "command", command, target,
                 Map.of("GIT_TERMINAL_PROMPT", "0", "GIT_EDITOR", "true"), timeout, null, Instant.now());
-        var session = "project-git-" + normalizedOperation + "-" + UUID.randomUUID().toString().replace("-", "");
+        // Let TaskService derive a stable session from the authenticated
+        // connection (or the idempotency key for admin/legacy callers).  A
+        // random session here would make every MCP retry consume another
+        // active-session quota slot even when it reuses the same idempotent
+        // Git task.
+        var session = "";
         var result = tasks.create(new CreateTaskRequest(project.machineId, task, taskKey, project.id, worktreeId,
-                scopeMode, scopeRoot, session, mutating ? "high" : "low", false, origin), "mcp", origin);
+                scopeMode, scopeRoot,
+                worktreeId.isBlank() ? WorkspacePolicyMode.SHARED_SERIAL : WorkspacePolicyMode.ISOLATED,
+                mutating ? LaneMode.WRITE : LaneMode.READ,
+                session, mutating ? "high" : "low", false, origin), "mcp", origin);
         audit("git." + normalizedOperation, "admin", project.machineId, project.id, "accepted",
                 "worktree=" + (worktreeId.isBlank() ? "project" : worktreeId));
         return result;

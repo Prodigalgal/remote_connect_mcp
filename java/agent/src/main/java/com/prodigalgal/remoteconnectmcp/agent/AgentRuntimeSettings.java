@@ -5,6 +5,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
@@ -76,7 +77,7 @@ final class AgentRuntimeSettings {
 
     private void load(AgentConfig base) {
         var file = stateDir.resolve(FILE_NAME);
-        if (!Files.isRegularFile(file)) return;
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) return;
         try {
             var bytes = Files.readAllBytes(file);
             if (bytes.length > 16 * 1024) throw new IOException("runtime config is too large");

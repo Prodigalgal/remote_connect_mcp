@@ -9,6 +9,8 @@ import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import java.net.URI;
 import java.nio.file.Path;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.io.IOException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -120,8 +122,15 @@ public record AgentConfig(
     }
 
     private boolean browserSessionAvailable() {
-        return !browserAdapter.isBlank()
-                && Files.isRegularFile(stateDir.toAbsolutePath().normalize().resolve("browser-session.json"));
+        if (browserAdapter.isBlank()) return false;
+        var root = stateDir.toAbsolutePath().normalize();
+        try (var files = Files.list(root)) {
+            return files.anyMatch(path -> path.getFileName().toString().startsWith("browser-session-")
+                    && path.getFileName().toString().endsWith(".json")
+                    && Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS));
+        } catch (IOException ignored) {
+            return false;
+        }
     }
 
     /** Non-secret description of the host-level process containment strategy. */
@@ -145,6 +154,20 @@ public record AgentConfig(
         } catch (RuntimeException exception) {
             throw new IllegalArgumentException("REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR is invalid", exception);
         }
+    }
+
+    /**
+     * Retention window for inactive persistent browser session directories.
+     * Cleanup is performed at browser-task admission, never by a background
+     * polling thread, and only removes profiles that are not currently locked.
+     */
+    public long browserProfileRetentionDays() {
+        return parseLongEnv("REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_RETENTION_DAYS", 30, 1, 365);
+    }
+
+    /** Upper bound on persistent browser session directories per Agent. */
+    public int browserMaxProfiles() {
+        return Math.toIntExact(parseLongEnv("REMOTE_CONNECT_MCP_AGENT_BROWSER_MAX_PROFILES", 64, 1, 512));
     }
 
     /** Browser adapter engine selected locally; Center never chooses it. */
@@ -387,7 +410,7 @@ public record AgentConfig(
     private String currentVersion() {
         var marker = stateDir.toAbsolutePath().normalize().resolve("agent-version");
         try {
-            if (Files.isRegularFile(marker)) {
+            if (Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS)) {
                 var value = Files.readString(marker).trim();
                 if (value.matches("[A-Za-z0-9._+\\-]{1,128}")) return value;
             }

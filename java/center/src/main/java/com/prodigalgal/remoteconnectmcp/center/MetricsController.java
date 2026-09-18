@@ -94,6 +94,9 @@ public final class MetricsController {
             line(builder, "remote_connect_mcp_file_transfer_expected_bytes", "Bytes declared by file transfer metadata.", "gauge", transfer.expectedBytes());
             lineDouble(builder, "remote_connect_mcp_file_transfer_average_duration_seconds", "Average terminal file transfer duration.", transfer.averageDurationSeconds());
             lineDouble(builder, "remote_connect_mcp_file_transfer_max_duration_seconds", "Maximum terminal file transfer duration.", transfer.maxDurationSeconds());
+            line(builder, "remote_connect_mcp_file_transfer_resume_count", "Resumable transfer resumes observed by this Center process.", "counter", transfer.resumeCount());
+            line(builder, "remote_connect_mcp_file_transfer_partial_spool_bytes", "Bytes currently retained in resumable Center partial spools.", "gauge", transfer.partialSpoolBytes());
+            line(builder, "remote_connect_mcp_file_transfer_gc_bytes_total", "Artifact bytes reclaimed by explicit GC in this Center process.", "counter", tasks.artifactGcBytes());
         }
         builder.append("# HELP remote_connect_mcp_upgrades_total Upgrade campaigns by status.\n");
         builder.append("# TYPE remote_connect_mcp_upgrades_total gauge\n");

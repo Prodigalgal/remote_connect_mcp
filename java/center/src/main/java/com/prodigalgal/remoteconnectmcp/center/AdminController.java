@@ -4,15 +4,20 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
+import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
+import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicyMode;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.io.IOException;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,6 +30,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import org.springframework.beans.factory.ObjectProvider;
 
 /** Small, versioned admin API consumed by the React console. */
@@ -46,6 +52,8 @@ public final class AdminController {
     private final TaskChangeRegistry changes;
     private final ReleaseCatalogService releases;
     private final AuditService audit;
+    private final McpQuotaService quota;
+    private final ArtifactTransferService transfers;
 
     @org.springframework.beans.factory.annotation.Autowired
     public AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
@@ -57,7 +65,9 @@ public final class AdminController {
                            ProjectService projects,
                            ObjectProvider<TaskChangeRegistry> changeProvider,
                            ObjectProvider<ReleaseCatalogService> releaseProvider,
-                           ObjectProvider<AuditService> auditProvider) {
+                           ObjectProvider<AuditService> auditProvider,
+                           ObjectProvider<McpQuotaService> quotaProvider,
+                           ObjectProvider<ArtifactTransferService> transferProvider) {
         this.tokens = tokens;
         this.agents = agents;
         this.tasks = tasks;
@@ -73,13 +83,15 @@ public final class AdminController {
         this.changes = changeProvider == null ? null : changeProvider.getIfAvailable();
         this.releases = releaseProvider == null ? null : releaseProvider.getIfAvailable();
         this.audit = auditProvider == null ? null : auditProvider.getIfAvailable();
+        this.quota = quotaProvider == null ? null : quotaProvider.getIfAvailable();
+        this.transfers = transferProvider == null ? null : transferProvider.getIfAvailable();
     }
 
     /** Compatibility constructor for direct protocol/controller tests. */
     AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                     EnrollmentTokenService enrollments, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
-        this(tokens, agents, tasks, null, null, null, enrollments, upgrades, configurations, async, null, null, null, null, null);
+        this(tokens, agents, tasks, null, null, null, enrollments, upgrades, configurations, async, null, null, null, null, null, null, null);
     }
 
     /**
@@ -254,22 +266,53 @@ public final class AdminController {
         return execute(() -> {
             authenticate(authorization);
             var artifact = tasks.readArtifact(taskId);
-            if (artifact.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-            var value = artifact.get();
-            MediaType mediaType;
-            try {
-                mediaType = MediaType.parseMediaType(value.mimeType());
-            } catch (IllegalArgumentException invalidMime) {
-                mediaType = MediaType.APPLICATION_OCTET_STREAM;
+            if (artifact.isPresent()) {
+                var value = artifact.get();
+                MediaType mediaType;
+                try {
+                    mediaType = MediaType.parseMediaType(value.mimeType());
+                } catch (IllegalArgumentException invalidMime) {
+                    mediaType = MediaType.APPLICATION_OCTET_STREAM;
+                }
+                return ResponseEntity.ok()
+                        .contentType(mediaType)
+                        .contentLength(value.data().length)
+                        .header("X-Artifact-SHA256", value.sha256())
+                        .header("X-Content-Type-Options", "nosniff")
+                        .header("Referrer-Policy", "no-referrer")
+                        .header("Cache-Control", "private, no-store")
+                        .body(value.data());
             }
-            return ResponseEntity.ok()
-                    .contentType(mediaType)
-                    .contentLength(value.data().length)
-                    .header("X-Artifact-SHA256", value.sha256())
-                    .header("X-Content-Type-Options", "nosniff")
-                    .header("Cache-Control", "no-store")
-                    .body(value.data());
+            if (transfers == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+            var streamed = transfers.openForAdminTask(taskId);
+            if (streamed.isEmpty()) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+            var value = streamed.get();
+            var mediaType = safeMediaType(value.mimeType());
+            StreamingResponseBody body = output -> {
+                try (var input = value.body()) {
+                    if (input == null) throw new IOException("artifact object is unavailable");
+                    input.transferTo(output);
+                }
+            };
+            var headers = new HttpHeaders();
+            headers.setContentType(mediaType);
+            headers.setContentLength(value.bytes());
+            headers.setContentDisposition(ContentDisposition.attachment().filename(value.fileName()).build());
+            headers.set("X-Artifact-SHA256", value.sha256());
+            headers.set("X-Content-Type-Options", "nosniff");
+            headers.set("Referrer-Policy", "no-referrer");
+            headers.setCacheControl("private, no-store");
+            return ResponseEntity.ok().headers(headers).body(body);
         });
+    }
+
+    private static MediaType safeMediaType(String value) {
+        try {
+            return value == null || value.isBlank() ? MediaType.APPLICATION_OCTET_STREAM
+                    : MediaType.parseMediaType(value);
+        } catch (IllegalArgumentException invalidMime) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
     }
 
     @PostMapping("/tasks")
@@ -302,8 +345,9 @@ public final class AdminController {
                         ? (decoded.worktreeId().isBlank() ? ScopeMode.PROJECT : ScopeMode.WORKTREE)
                         : internal.scopeMode();
                 internal = new CreateTaskRequest(internal.machineId(), scoped, internal.idempotencyKey(),
-                        decoded.projectId(), decoded.worktreeId(), mode, scopeRoot, internal.sessionId(),
-                        internal.risk(), internal.elevationRequired());
+                        decoded.projectId(), decoded.worktreeId(), mode, scopeRoot,
+                        internal.workspacePolicy(), internal.laneMode(), internal.sessionId(),
+                        internal.risk(), internal.elevationRequired(), internal.origin());
             }
             return ResponseEntity.status(HttpStatus.CREATED).body(tasks.create(internal, "console"));
         });
@@ -321,9 +365,11 @@ public final class AdminController {
             var flat = new AdminCreateTaskRequest(
                     text(raw.get("machine_id")), text(raw.get("command")), text(raw.get("cwd")),
                     stringMap(raw.get("env")), integer(raw.get("timeout_seconds")), text(raw.get("idempotency_key")),
-                    text(raw.get("project_id")), text(raw.get("worktree_id")), text(raw.get("scope_mode")),
-                    text(raw.get("scope_root")), text(raw.get("session_id")), text(raw.get("risk")),
-                    bool(raw.get("elevation_required")));
+                     text(raw.get("project_id")), text(raw.get("worktree_id")), text(raw.get("scope_mode")),
+                     text(raw.get("scope_root")), text(raw.get("session_id")), text(raw.get("risk")),
+                     bool(raw.get("elevation_required")),
+                     text(raw.get("workspace_policy")).isBlank() ? null : WorkspacePolicyMode.fromWireValue(text(raw.get("workspace_policy"))),
+                     text(raw.get("lane_mode")).isBlank() ? null : LaneMode.fromWireValue(text(raw.get("lane_mode"))));
             return new DecodedTaskRequest(flat.toInternal(), flat.projectId(), flat.worktreeId(), flat.cwd(),
                     !flat.scopeMode().isBlank());
         }
@@ -337,9 +383,12 @@ public final class AdminController {
             var worktreeId = text(raw.get("worktree_id"));
             var internal = new CreateTaskRequest(text(raw.get("machine_id")), command,
                     text(raw.get("idempotency_key")), projectId, worktreeId,
-                    scopeMode.isBlank() ? null : ScopeMode.fromWireValue(scopeMode),
-                    text(raw.get("scope_root")), text(raw.get("session_id")), text(raw.get("risk")),
-                    bool(raw.get("elevation_required")));
+                     scopeMode.isBlank() ? null : ScopeMode.fromWireValue(scopeMode),
+                     text(raw.get("scope_root")),
+                     text(raw.get("workspace_policy")).isBlank() ? null : WorkspacePolicyMode.fromWireValue(text(raw.get("workspace_policy"))),
+                     text(raw.get("lane_mode")).isBlank() ? null : LaneMode.fromWireValue(text(raw.get("lane_mode"))),
+                     text(raw.get("session_id")), text(raw.get("risk")),
+                     bool(raw.get("elevation_required")), TaskOrigin.shared());
             return new DecodedTaskRequest(internal, projectId, worktreeId, command.cwd(), !scopeMode.isBlank());
         } catch (IllegalArgumentException exception) {
             throw new IllegalArgumentException("command must be a string or a valid task command object", exception);
@@ -551,6 +600,18 @@ public final class AdminController {
         });
     }
 
+    /** Read a bounded principal quota projection for the Console. */
+    @GetMapping("/quotas/{principalId}")
+    public CompletableFuture<ResponseEntity<?>> quota(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String principalId) {
+        return execute(() -> {
+            authenticate(authorization);
+            if (quota == null) throw new IllegalStateException("quota service is unavailable");
+            return ResponseEntity.ok(quota.snapshot(principalId));
+        });
+    }
+
     private static Boolean bool(Object value) {
         if (value == null) return Boolean.FALSE;
         if (value instanceof Boolean flag) return flag;
@@ -577,7 +638,11 @@ public final class AdminController {
                                                            @PathVariable String taskId) {
         return execute(() -> {
             authenticate(authorization);
-            return ResponseEntity.ok(tasks.cancel(taskId));
+            var canceled = tasks.cancel(taskId);
+            if (transfers != null && TaskStatus.CANCELED.equals(canceled.status())) {
+                transfers.cancelForTask(canceled.id());
+            }
+            return ResponseEntity.ok(canceled);
         });
     }
 

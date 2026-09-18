@@ -4,6 +4,7 @@ import java.io.IOException;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.InvalidMediaTypeException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -37,14 +38,25 @@ public final class ArtifactController {
             }
         };
         var headers = new HttpHeaders();
-        headers.setContentType(MediaType.parseMediaType(artifact.mimeType() == null || artifact.mimeType().isBlank()
-                ? MediaType.APPLICATION_OCTET_STREAM_VALUE : artifact.mimeType()));
+        headers.setContentType(safeMediaType(artifact.mimeType()));
         headers.setContentLength(artifact.bytes());
-        headers.setContentDisposition(ContentDisposition.attachment().filename(artifact.fileName()).build());
+        var disposition = "preview".equalsIgnoreCase(purpose)
+                ? ContentDisposition.inline().filename(artifact.fileName()).build()
+                : ContentDisposition.attachment().filename(artifact.fileName()).build();
+        headers.setContentDisposition(disposition);
         headers.set("X-RCM-Artifact-SHA256", artifact.sha256());
         headers.setCacheControl("private, no-store");
         headers.set("X-Content-Type-Options", "nosniff");
         headers.set("Referrer-Policy", "no-referrer");
         return ResponseEntity.ok().headers(headers).body(body);
+    }
+
+    private static MediaType safeMediaType(String value) {
+        if (value == null || value.isBlank()) return MediaType.APPLICATION_OCTET_STREAM;
+        try {
+            return MediaType.parseMediaType(value);
+        } catch (InvalidMediaTypeException ignored) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
     }
 }

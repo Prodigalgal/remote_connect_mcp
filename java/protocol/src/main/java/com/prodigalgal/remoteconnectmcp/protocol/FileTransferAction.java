@@ -43,4 +43,21 @@ public record FileTransferAction(
     public boolean agentToWeb() {
         return AGENT_TO_WEB.equals(direction);
     }
+
+    /**
+     * The destination path is the complete target file path.  {@code file_name}
+     * is metadata shown to a user and is never appended to this path; keeping
+     * that distinction avoids directory/file ambiguity during retries.
+     */
+    public String targetPath() {
+        return destinationPath;
+    }
+
+    /** A stable display name, falling back to the final path segment. */
+    public String displayName() {
+        if (!fileName.isBlank()) return fileName;
+        var value = agentToWeb() ? sourcePath : destinationPath;
+        var slash = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+        return slash >= 0 && slash + 1 < value.length() ? value.substring(slash + 1) : value;
+    }
 }

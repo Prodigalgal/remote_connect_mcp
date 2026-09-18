@@ -18,6 +18,8 @@ public record ExecutionContract(
         @JsonProperty("project_id") String projectId,
         @JsonProperty("worktree_id") String worktreeId,
         @JsonProperty("scope_root") String scopeRoot,
+        @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
+        @JsonProperty("lane_mode") LaneMode laneMode,
         @JsonProperty("session_id") String sessionId,
         String capability,
         Budget budget,
@@ -34,6 +36,8 @@ public record ExecutionContract(
         projectId = optional(projectId, "projectId", 256);
         worktreeId = optional(worktreeId, "worktreeId", 256);
         scopeRoot = optional(scopeRoot, "scopeRoot", ProtocolValidation.MAX_CWD_BYTES);
+        workspacePolicy = workspacePolicy == null ? defaultWorkspacePolicy(scopeMode) : workspacePolicy;
+        laneMode = laneMode == null ? LaneMode.WRITE : laneMode;
         sessionId = required(sessionId, "sessionId", 256);
         capability = required(capability, "capability", 128);
         budget = budget == null ? Budget.defaults() : budget;
@@ -64,6 +68,27 @@ public record ExecutionContract(
         if (scopeMode == ScopeMode.UNRESTRICTED && (projectId != null || worktreeId != null || scopeRoot != null)) {
             throw new IllegalArgumentException("unrestricted scope cannot carry project, worktree, or scopeRoot");
         }
+        if (workspacePolicy == WorkspacePolicyMode.HOST && scopeMode != ScopeMode.UNRESTRICTED) {
+            throw new IllegalArgumentException("host workspace policy requires explicit unrestricted scope");
+        }
+        if (workspacePolicy == WorkspacePolicyMode.ISOLATED
+                && scopeMode == ScopeMode.UNRESTRICTED) {
+            throw new IllegalArgumentException("isolated workspace policy requires a bounded scope");
+        }
+        if (workspacePolicy == WorkspacePolicyMode.ISOLATED && scopeMode != ScopeMode.WORKTREE) {
+            throw new IllegalArgumentException("isolated workspace policy requires worktree scope");
+        }
+    }
+
+    /** Compatibility constructor for the pre-workspace/lane contract shape. */
+    public ExecutionContract(String machineId, String hostId, ScopeMode scopeMode,
+                             String projectId, String worktreeId, String scopeRoot,
+                             String sessionId, String capability, Budget budget,
+                             Instant expiresAt, String idempotencyKey, String risk,
+                             boolean elevationRequired, String leaseId) {
+        this(machineId, hostId, scopeMode, projectId, worktreeId, scopeRoot,
+                defaultWorkspacePolicy(scopeMode), LaneMode.WRITE, sessionId, capability,
+                budget, expiresAt, idempotencyKey, risk, elevationRequired, leaseId);
     }
 
     public boolean expired(Instant now) {
@@ -79,6 +104,8 @@ public record ExecutionContract(
                 && Objects.equals(projectId, other.projectId)
                 && Objects.equals(worktreeId, other.worktreeId)
                 && Objects.equals(scopeRoot, other.scopeRoot)
+                && workspacePolicy == other.workspacePolicy
+                && laneMode == other.laneMode
                 && Objects.equals(capability, other.capability)
                 && Objects.equals(budget, other.budget)
                 && Objects.equals(idempotencyKey, other.idempotencyKey)
@@ -101,6 +128,12 @@ public record ExecutionContract(
             throw new IllegalArgumentException(field + " is invalid");
         }
         return normalized;
+    }
+
+    private static WorkspacePolicyMode defaultWorkspacePolicy(ScopeMode mode) {
+        if (mode == ScopeMode.UNRESTRICTED) return WorkspacePolicyMode.HOST;
+        if (mode == ScopeMode.WORKTREE) return WorkspacePolicyMode.ISOLATED;
+        return WorkspacePolicyMode.SHARED_SERIAL;
     }
 
     public record Budget(

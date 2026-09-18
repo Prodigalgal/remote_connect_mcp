@@ -52,7 +52,8 @@ final class DesktopCompanionClient {
                 action.durationMs(), action.screen(), action.windowTitle(),
                 contract == null ? null : contract.scopeMode().wireValue(),
                 contract == null ? null : contract.scopeRoot(),
-                contract == null ? null : contract.expiresAt());
+                contract == null ? null : contract.expiresAt(),
+                contract == null ? null : contract.sessionId());
         var payload = JsonCodec.write(request);
         if (payload.length > 128 * 1024) throw new IOException("desktop companion request is too large");
         var timeoutMillis = Math.max(1000, Math.min(300_000, timeout.toMillis()));

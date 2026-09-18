@@ -12,6 +12,8 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
 import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicy;
+import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicyMode;
+import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -55,11 +57,13 @@ public final class TaskService {
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition changed = lock.newCondition();
     private final AtomicLong localChangeSequence = new AtomicLong();
+    private final AtomicLong artifactGcBytes = new AtomicLong();
     private final JdbcTaskStore jdbcStore;
     private final AgentWakeRegistry wakes;
     private final TaskChangeRegistry taskChanges;
     private final AuditService audit;
     private final ExecutionSessionService sessions;
+    private final McpQuotaService quota;
 
     @Autowired
     public TaskService(AgentRegistry agents, ObjectProvider<JdbcTemplate> jdbcProvider,
@@ -68,12 +72,14 @@ public final class TaskService {
                        ObjectProvider<TaskChangeRegistry> taskChangeProvider,
                        ObjectProvider<ArtifactStore> artifactProvider,
                        ObjectProvider<AuditService> auditProvider,
-                       ObjectProvider<ExecutionSessionService> sessionProvider) {
+                       ObjectProvider<ExecutionSessionService> sessionProvider,
+                       ObjectProvider<McpQuotaService> quotaProvider) {
         this.agents = agents;
         var jdbc = jdbcProvider.getIfAvailable();
         var artifactStore = artifactProvider.getIfAvailable();
+        this.quota = quotaProvider == null ? null : quotaProvider.getIfAvailable();
         this.jdbcStore = jdbc == null ? null : new JdbcTaskStore(jdbc, transactionProvider.getIfAvailable(),
-                artifactStore == null ? new InMemoryArtifactStore() : artifactStore);
+                artifactStore == null ? new InMemoryArtifactStore() : artifactStore, this.quota);
         this.wakes = wakeProvider.getIfAvailable();
         this.taskChanges = taskChangeProvider.getIfAvailable();
         this.audit = auditProvider == null ? null : auditProvider.getIfAvailable();
@@ -87,6 +93,7 @@ public final class TaskService {
         this.taskChanges = null;
         this.audit = null;
         this.sessions = null;
+        this.quota = null;
     }
 
     /** Package-private constructor used by the PostgreSQL contract tests. */
@@ -97,6 +104,7 @@ public final class TaskService {
         this.taskChanges = null;
         this.audit = null;
         this.sessions = null;
+        this.quota = null;
     }
 
     /** Package-private constructor for PostgreSQL session contract tests. */
@@ -108,6 +116,7 @@ public final class TaskService {
         this.taskChanges = null;
         this.audit = null;
         this.sessions = sessions;
+        this.quota = null;
     }
 
     /**
@@ -132,69 +141,77 @@ public final class TaskService {
             throw new IllegalArgumentException("machineId is required");
         }
         var origin = requestedOrigin == null ? TaskOrigin.shared() : requestedOrigin;
-        var machine = agents.findMachine(request.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
-        var original = request.command();
-        var kind = original.kind() == null ? TaskKind.COMMAND : original.kind();
-        var capability = requiredCapability(original, kind);
-        if (!machine.capabilities().contains(capability)) {
-            throw new IllegalArgumentException("machine does not advertise capability: " + capability);
-        }
-        if (kind == TaskKind.COMMAND && (original.command() == null || original.command().isBlank())) {
-            throw new IllegalArgumentException("command is required for command tasks");
-        }
-        if (request.idempotencyKey().length() > 256) {
-            throw new IllegalArgumentException("idempotencyKey is too long");
-        }
-        // Environment values are persisted in the task command so a durable
-        // Agent can receive them after a Center restart.  Never let a caller
-        // put a credential-shaped value into that durable record: the Agent
-        // also strips these names before spawning a child, so dropping them at
-        // the Center boundary preserves execution semantics while preventing
-        // accidental token/password persistence or MCP echoing.
-        var safeEnvironment = sanitizeEnvironment(original.env());
-        original = new TaskCommand(original.id(), original.kind(), original.requiredCapability(), original.command(),
-                original.cwd(), safeEnvironment, original.timeoutSeconds(), original.desktop(), original.createdAt(),
-                original.contract(), original.attempt(), original.fileTransfer());
         var id = "task_" + UUID.randomUUID().toString().replace("-", "");
-        var createdAt = Instant.now();
-        var contract = buildContract(request, machine, original, capability, id, createdAt, origin);
-        var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), createdAt, contract, original.fileTransfer());
-        ProtocolValidation.validateTask(command);
-        if (sessions != null) sessions.ensure(origin, contract);
-
-        if (jdbcStore != null) {
-            var created = jdbcStore.create(id, request.machineId(), command, request.idempotencyKey(), command.createdAt(), origin);
-            signalChanged(id);
-            signalWake(request.machineId());
-            audit("task.created", actor, request.machineId(), created.id(), command, "accepted",
-                    "attempt=0,elevation=" + command.contract().elevationRequired());
-            return created;
-        }
-
-        lock.lock();
+        if (quota != null) quota.assertTaskAdmission(origin, id, request.machineId(), request.idempotencyKey());
         try {
-            if (!request.idempotencyKey().isBlank()) {
-                var key = idempotencyKey(request.machineId(), origin.principalId(), request.idempotencyKey());
-                var existingId = idempotency.get(key);
-                if (existingId != null) {
-                    var existing = tasks.get(existingId);
-                    if (existing != null && sameCommand(existing.command(), command)) {
-                        return new TaskView(existing);
-                    }
-                    throw new IllegalArgumentException("idempotency key is already used with different task parameters");
-                }
-                idempotency.put(key, id);
+            var machine = agents.findMachine(request.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
+            var original = request.command();
+            var kind = original.kind() == null ? TaskKind.COMMAND : original.kind();
+            var capability = requiredCapability(original, kind);
+            if (!machine.capabilities().contains(capability)) {
+                throw new IllegalArgumentException("machine does not advertise capability: " + capability);
             }
-            var state = new TaskState(id, request.machineId(), command, request.idempotencyKey(), command.createdAt(), origin);
-            tasks.put(id, state);
-            signalChanged();
-            var created = new TaskView(state);
-            signalWake(request.machineId());
-            audit("task.created", actor, request.machineId(), created.id(), command, "accepted",
-                    "attempt=0,elevation=" + command.contract().elevationRequired());
-            return created;
-        } finally {
-            lock.unlock();
+            if (kind == TaskKind.COMMAND && (original.command() == null || original.command().isBlank())) {
+                throw new IllegalArgumentException("command is required for command tasks");
+            }
+            if (request.idempotencyKey().length() > 256) {
+                throw new IllegalArgumentException("idempotencyKey is too long");
+            }
+            // Environment values are persisted in the task command so a durable
+            // Agent can receive them after a Center restart.  Never let a caller
+            // put a credential-shaped value into that durable record: the Agent
+            // also strips these names before spawning a child, so dropping them at
+            // the Center boundary preserves execution semantics while preventing
+            // accidental token/password persistence or MCP echoing.
+            var safeEnvironment = sanitizeEnvironment(original.env());
+            original = new TaskCommand(original.id(), original.kind(), original.requiredCapability(), original.command(),
+                    original.cwd(), safeEnvironment, original.timeoutSeconds(), original.desktop(), original.createdAt(),
+                    original.contract(), original.attempt(), original.fileTransfer());
+            var createdAt = Instant.now();
+            var contract = buildContract(request, machine, original, capability, id, createdAt, origin);
+            var command = new TaskCommand(id, kind, capability, original.command(), original.cwd(), original.env(), original.timeoutSeconds(), original.desktop(), createdAt, contract, original.fileTransfer());
+            ProtocolValidation.validateTask(command);
+            if (sessions != null) sessions.ensure(origin, contract);
+
+            if (jdbcStore != null) {
+                var created = jdbcStore.create(id, request.machineId(), command, request.idempotencyKey(), command.createdAt(), origin);
+                signalChanged(id);
+                signalWake(request.machineId());
+                audit("task.created", actor, request.machineId(), created.id(), command, "accepted",
+                        "attempt=0,elevation=" + command.contract().elevationRequired());
+                if (quota != null && !id.equals(created.id())) quota.releaseTask(origin, id);
+                return created;
+            }
+
+            lock.lock();
+            try {
+                if (!request.idempotencyKey().isBlank()) {
+                    var key = idempotencyKey(request.machineId(), origin.principalId(), request.idempotencyKey());
+                    var existingId = idempotency.get(key);
+                    if (existingId != null) {
+                        var existing = tasks.get(existingId);
+                        if (existing != null && sameCommand(existing.command(), command)) {
+                            if (quota != null) quota.releaseTask(origin, id);
+                            return new TaskView(existing);
+                        }
+                        throw new IllegalArgumentException("idempotency key is already used with different task parameters");
+                    }
+                    idempotency.put(key, id);
+                }
+                var state = new TaskState(id, request.machineId(), command, request.idempotencyKey(), command.createdAt(), origin);
+                tasks.put(id, state);
+                signalChanged();
+                var created = new TaskView(state);
+                signalWake(request.machineId());
+                audit("task.created", actor, request.machineId(), created.id(), command, "accepted",
+                        "attempt=0,elevation=" + command.contract().elevationRequired());
+                return created;
+            } finally {
+                lock.unlock();
+            }
+        } catch (RuntimeException | Error failure) {
+            if (quota != null) quota.releaseTask(origin, id);
+            throw failure;
         }
     }
 
@@ -213,6 +230,9 @@ public final class TaskService {
     Optional<TaskState> findFor(TaskOrigin origin, String taskId) {
         var task = find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
         assertOwner(task, origin);
+        if (sessions != null && task.command() != null && task.command().contract() != null) {
+            sessions.authorize(origin, task.executionSessionId(), task.command().requiredCapability());
+        }
         return Optional.of(task);
     }
 
@@ -414,6 +434,7 @@ public final class TaskService {
             if (TaskStatus.CANCELED.equals(task.status())) {
                 task.finishedAt(Instant.now());
                 task.leaseUntil(null);
+                releaseQuota(task);
             }
             signalChanged();
             var view = new TaskView(task);
@@ -461,6 +482,7 @@ public final class TaskService {
                         .filter(value -> value.machineId().equals(machineId) && TaskStatus.QUEUED.equals(value.status()))
                         .filter(value -> capabilities.contains(value.command().requiredCapability()))
                         .filter(TaskService::fileTransferReady)
+                        .filter(value -> quota == null || quota.permitsActivation(value.origin(), value.id()))
                         .filter(value -> !laneBusy(value))
                         .sorted(Comparator.comparing(TaskState::createdAt))
                         .findFirst();
@@ -470,6 +492,7 @@ public final class TaskService {
                     selected.attempt(selected.attempt() + 1);
                     selected.dispatchedAt(now);
                     selected.leaseUntil(now.plus(LEASE_DURATION));
+                    if (quota != null) quota.markTaskActive(selected.origin(), selected.id());
                     // Carry the monotonically increasing lease attempt on the
                     // wire. Agent state/output delivery can then be fenced if
                     // a stale process wakes after its lease was reclaimed.
@@ -539,6 +562,7 @@ public final class TaskService {
                 task.error(compactError(error == null || error.isBlank() ? "file transfer preparation failed" : error));
                 task.finishedAt(Instant.now());
                 task.leaseUntil(null);
+                releaseQuota(task);
                 signalChanged(taskId);
                 signalWake(machineId);
             }
@@ -607,6 +631,9 @@ public final class TaskService {
                 throw new IllegalArgumentException("invalid task transition: " + task.status() + " -> " + status);
             }
             task.status(status);
+            if ((TaskStatus.DISPATCHING.equals(status) || TaskStatus.RUNNING.equals(status)) && quota != null) {
+                quota.markTaskActive(task.origin(), task.id());
+            }
             if (update.exitCode() != null) {
                 task.exitCode(update.exitCode());
             }
@@ -626,6 +653,7 @@ public final class TaskService {
             task.outputTruncated(task.outputTruncated() || update.outputTruncated());
             if (TaskStatus.terminal(status)) {
                 task.leaseUntil(null);
+                releaseQuota(task);
             }
             signalChanged();
             audit("task.state", "agent", machineId, taskId, task.command(), task.status(),
@@ -914,20 +942,88 @@ public final class TaskService {
         }
     }
 
+    /**
+     * Publish metadata for a streamed Agent-to-Web transfer on the compact
+     * task projection as well.  The payload itself remains in ArtifactStore;
+     * this method only makes the task list/detail views aware of the file.
+     * JDBC updates run in the caller's transaction, while memory mode keeps
+     * the same lock discipline as the rest of the in-memory task state.
+     */
+    void recordTransferArtifact(String machineId, String taskId, String mimeType, long bytes, String sha256) {
+        if (taskId == null || taskId.isBlank() || machineId == null || machineId.isBlank()) {
+            throw new IllegalArgumentException("transfer artifact task and machine are required");
+        }
+        if (bytes < 0 || bytes > ArtifactStore.MAX_STREAM_BYTES) {
+            throw new IllegalArgumentException("transfer artifact size is outside the allowed range");
+        }
+        var safeMime = mimeType == null || mimeType.isBlank()
+                ? "application/octet-stream" : mimeType.trim().toLowerCase(java.util.Locale.ROOT);
+        if (safeMime.length() > 128 || safeMime.indexOf('\r') >= 0 || safeMime.indexOf('\n') >= 0) {
+            throw new IllegalArgumentException("transfer artifact mime type is invalid");
+        }
+        if (sha256 == null || !sha256.matches("(?i)[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("transfer artifact sha256 is invalid");
+        }
+        if (jdbcStore != null) {
+            jdbcStore.recordTransferArtifact(machineId.trim(), taskId.trim(), safeMime, bytes, sha256.toLowerCase(java.util.Locale.ROOT));
+            return;
+        }
+        lock.lock();
+        try {
+            var task = required(taskId.trim());
+            assertMachine(task, machineId.trim());
+            task.artifactBytes(bytes);
+            task.artifactMime(safeMime);
+            task.artifactSha256(sha256.toLowerCase(java.util.Locale.ROOT));
+            task.artifactData(new byte[0]);
+            signalChanged(task.id());
+            signalOutputChanged(task.id());
+        } finally {
+            lock.unlock();
+        }
+    }
+
     private static void assertOwner(TaskState task, TaskOrigin origin) {
         if (task == null || origin == null || !java.util.Objects.equals(task.origin().principalId(), origin.principalId())) {
             throw new SecurityException("task is not visible to this MCP principal");
         }
     }
 
+    private void releaseQuota(TaskState task) {
+        if (quota != null && task != null && TaskStatus.terminal(task.status())) {
+            quota.releaseTask(task.origin(), task.id());
+        }
+    }
+
     private boolean laneBusy(TaskState candidate) {
         return tasks.values().stream()
                 .filter(value -> !value.id().equals(candidate.id()))
-                .filter(value -> value.machineId().equals(candidate.machineId()))
                 .filter(value -> value.laneKey().equals(candidate.laneKey()))
-                .anyMatch(value -> TaskStatus.DISPATCHING.equals(value.status())
+                .filter(value -> sameLaneHost(candidate, value))
+                .anyMatch(value -> (TaskStatus.DISPATCHING.equals(value.status())
                         || TaskStatus.RUNNING.equals(value.status())
-                        || TaskStatus.CANCEL_REQUESTED.equals(value.status()));
+                        || TaskStatus.CANCEL_REQUESTED.equals(value.status()))
+                        && laneConflicts(candidate.command().contract(), valueContract(value)));
+    }
+
+    private static boolean sameLaneHost(TaskState candidate, TaskState active) {
+        var contract = valueContract(candidate);
+        if (!ExecutionLaneKey.crossesMachineBoundary(contract)) {
+            return active.machineId().equals(candidate.machineId());
+        }
+        var activeContract = valueContract(active);
+        return activeContract != null
+                && java.util.Objects.equals(contract == null ? null : contract.hostId(), activeContract.hostId());
+    }
+
+    private static ExecutionContract valueContract(TaskState task) {
+        return task == null || task.command() == null ? null : task.command().contract();
+    }
+
+    private static boolean laneConflicts(ExecutionContract candidate, ExecutionContract active) {
+        var candidateMode = candidate == null || candidate.laneMode() == null ? LaneMode.WRITE : candidate.laneMode();
+        var activeMode = active == null || active.laneMode() == null ? LaneMode.WRITE : active.laneMode();
+        return !(candidateMode == LaneMode.READ && activeMode == LaneMode.READ);
     }
 
     private static ExecutionContract buildContract(CreateTaskRequest request, MachineView machine,
@@ -949,8 +1045,20 @@ public final class TaskService {
         // The MCP transport session is the safest default correlation value.
         // A caller-supplied session_id remains useful for admin/legacy clients,
         // but it never overrides the authenticated connection owner.
-        var sessionId = firstNonBlank(origin == null ? null : origin.connectionId(),
-                firstNonBlank(request.sessionId(), supplied == null ? null : supplied.sessionId()));
+        var explicitSessionId = firstNonBlank(request.sessionId(), supplied == null ? null : supplied.sessionId());
+        var connectionId = origin == null ? null : origin.connectionId();
+        var sessionId = explicitSessionId;
+        if (sessionId == null && connectionId != null && !connectionId.isBlank()) {
+            // One MCP connection can legitimately target several machines and
+            // worktrees.  Keep the convenient connection correlation, but do
+            // not make those unrelated contracts overwrite one another in the
+            // session table.  An explicitly supplied session_id is an opt-in
+            // shared context and is checked for contract drift by the session
+            // service.
+            var sessionFingerprint = connectionId + "\u0000" + machine.id() + "\u0000"
+                    + modeFingerprint(request, supplied, mode, projectId, worktreeId, scopeRoot, capability);
+            sessionId = "session_" + sha256(sessionFingerprint).substring(0, 32);
+        }
         if (sessionId == null) {
             sessionId = request.idempotencyKey().isBlank()
                     ? "session_" + taskId.substring(Math.max(0, taskId.length() - 24))
@@ -994,11 +1102,76 @@ public final class TaskService {
         var requestedExpiry = supplied != null && supplied.expiresAt() != null
                 ? supplied.expiresAt() : maximumExpiry;
         var expiresAt = requestedExpiry.isAfter(maximumExpiry) ? maximumExpiry : requestedExpiry;
+        var workspacePolicy = request.workspacePolicy() != null ? request.workspacePolicy()
+                : supplied != null && supplied.workspacePolicy() != null ? supplied.workspacePolicy()
+                : defaultWorkspacePolicy(mode);
+        var inferredLaneMode = defaultLaneMode(original);
+        var requestedLaneMode = request.laneMode() != null ? request.laneMode()
+                : supplied != null && supplied.laneMode() != null ? supplied.laneMode() : inferredLaneMode;
+        // A caller may make a task more exclusive, but must not label an
+        // arbitrary shell or a mutating transfer as READ merely to bypass the
+        // scheduler's write fence.
+        if (inferredLaneMode == LaneMode.EXCLUSIVE) {
+            requestedLaneMode = LaneMode.EXCLUSIVE;
+        } else if (inferredLaneMode == LaneMode.WRITE && requestedLaneMode == LaneMode.READ) {
+            throw new SecurityException("task cannot be relaxed to a read-only execution lane");
+        }
+        var laneMode = requestedLaneMode;
+        if (workspacePolicy == WorkspacePolicyMode.HOST && mode != ScopeMode.UNRESTRICTED) {
+            throw new IllegalArgumentException("workspace_policy=host requires explicit scope_mode=unrestricted");
+        }
+        if (workspacePolicy == WorkspacePolicyMode.ISOLATED && mode == ScopeMode.UNRESTRICTED) {
+            throw new IllegalArgumentException("workspace_policy=isolated requires a bounded scope");
+        }
+        if (workspacePolicy == WorkspacePolicyMode.ISOLATED
+                && mode != ScopeMode.WORKTREE) {
+            throw new IllegalArgumentException("workspace_policy=isolated requires an explicit worktree scope");
+        }
         var contract = new ExecutionContract(machine.id(), machine.hostId(), mode, projectId, worktreeId,
-                scopeRoot, sessionId, capability, budget, expiresAt, request.idempotencyKey(), risk,
-                request.elevationRequired(), null);
+                scopeRoot, workspacePolicy, laneMode, sessionId, capability, budget, expiresAt,
+                request.idempotencyKey(), risk, request.elevationRequired(), null);
         if (contract.expired(createdAt)) throw new IllegalArgumentException("execution contract expires before task creation");
         return contract;
+    }
+
+    private static WorkspacePolicyMode defaultWorkspacePolicy(ScopeMode mode) {
+        if (mode == ScopeMode.UNRESTRICTED) return WorkspacePolicyMode.HOST;
+        if (mode == ScopeMode.WORKTREE) return WorkspacePolicyMode.ISOLATED;
+        return WorkspacePolicyMode.SHARED_SERIAL;
+    }
+
+    private static String modeFingerprint(CreateTaskRequest request, ExecutionContract supplied,
+                                          ScopeMode mode, String projectId, String worktreeId,
+                                          String scopeRoot, String capability) {
+        var policy = request.workspacePolicy() != null ? request.workspacePolicy()
+                : supplied != null && supplied.workspacePolicy() != null ? supplied.workspacePolicy()
+                : defaultWorkspacePolicy(mode);
+        var lane = request.laneMode() != null ? request.laneMode()
+                : supplied != null && supplied.laneMode() != null ? supplied.laneMode()
+                : defaultLaneMode(request.command());
+        return mode.wireValue() + "\u0000" + valueOrEmpty(projectId) + "\u0000"
+                + valueOrEmpty(worktreeId) + "\u0000" + valueOrEmpty(scopeRoot)
+                + "\u0000" + policy.wireValue() + "\u0000" + lane.wireValue()
+                + "\u0000" + valueOrEmpty(capability);
+    }
+
+    private static String valueOrEmpty(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private static LaneMode defaultLaneMode(TaskCommand command) {
+        if (command == null) return LaneMode.WRITE;
+        return switch (command.kind()) {
+            case DESKTOP, BROWSER -> LaneMode.EXCLUSIVE;
+            case FILE_TRANSFER -> command.fileTransfer() != null && command.fileTransfer().agentToWeb()
+                    ? LaneMode.READ : LaneMode.WRITE;
+            case COMMAND -> {
+                // Arbitrary shell commands are treated as writes. Project
+                // service Git read operations opt into READ explicitly after
+                // their operation has been parsed and authorized.
+                yield LaneMode.WRITE;
+            }
+        };
     }
 
     /**
@@ -1100,6 +1273,7 @@ public final class TaskService {
                 .forEach(task -> {
                     task.status(TaskStatus.QUEUED);
                     task.leaseUntil(null);
+                    if (quota != null) quota.markTaskQueued(task.origin(), task.id());
                     changed.add(task.id());
                 });
         tasks.values().stream()
@@ -1110,12 +1284,14 @@ public final class TaskService {
                         // A durable task can be reclaimed by the same Agent
                         // when its next poll carries the recovered task ID.
                         task.status(TaskStatus.QUEUED);
+                        if (quota != null) quota.markTaskQueued(task.origin(), task.id());
                     } else {
                         // Timed processes are attached to the old Agent and
                         // cannot be safely replayed after its lease expires.
                         task.status(TaskStatus.FAILED);
                         task.error("agent lease expired before timed command completed");
                         task.finishedAt(now);
+                        releaseQuota(task);
                     }
                     changed.add(task.id());
                 });
@@ -1130,6 +1306,7 @@ public final class TaskService {
             if (TaskStatus.DISPATCHING.equals(task.status())
                     || (TaskStatus.QUEUED.equals(task.status()) && task.command().timeoutSeconds() <= 0)) {
                 task.status(TaskStatus.RUNNING);
+                if (quota != null) quota.markTaskActive(task.origin(), task.id());
                 if (task.startedAt() == null) task.startedAt(now);
             }
             if (TaskStatus.RUNNING.equals(task.status())) task.leaseUntil(now.plus(LEASE_DURATION));
@@ -1271,12 +1448,24 @@ public final class TaskService {
             throw new IllegalArgumentException("limit must be between 1 and 500");
         }
         var cutoff = Instant.now().minus(Duration.ofDays(retentionDays));
-        if (jdbcStore != null) return jdbcStore.gcArtifacts(cutoff, limit);
-        return new ArtifactGcResult(0, 0, 0);
+        var result = jdbcStore != null ? jdbcStore.gcArtifacts(cutoff, limit)
+                : new ArtifactGcResult(0, 0, 0, 0L);
+        artifactGcBytes.accumulateAndGet(Math.max(0L, result.objectBytes()), TaskService::saturatingAdd);
+        return result;
+    }
+
+    /** Bytes reclaimed by explicit artifact retention calls in this process. */
+    public long artifactGcBytes() {
+        return artifactGcBytes.get();
     }
 
     private static String sha256(String value) {
         return sha256(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        if (right <= 0 || Long.MAX_VALUE - left < right) return Long.MAX_VALUE;
+        return left + right;
     }
 
     public record ArtifactData(String mimeType, String sha256, byte[] data) {
@@ -1285,6 +1474,10 @@ public final class TaskService {
         }
     }
 
-    public record ArtifactGcResult(int metadataRows, int objectFiles, int deleteFailures) {
+    public record ArtifactGcResult(int metadataRows, int objectFiles, int deleteFailures, long objectBytes) {
+        /** Compatibility constructor for callers compiled against v1. */
+        public ArtifactGcResult(int metadataRows, int objectFiles, int deleteFailures) {
+            this(metadataRows, objectFiles, deleteFailures, 0L);
+        }
     }
 }

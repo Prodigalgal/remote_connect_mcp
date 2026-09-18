@@ -67,6 +67,14 @@ function ConvertTo-PowerShellLiteral {
     return "'" + ([string]$Value).Replace("'", "''") + "'"
 }
 
+function ConvertTo-VBScriptLiteral {
+    param([AllowEmptyString()][string]$Value)
+    # WScript.Shell.Run receives one command-line string.  Escape embedded
+    # double quotes for a VBScript string literal so paths with spaces remain
+    # arguments and never become executable VBScript source.
+    return '"' + ([string]$Value).Replace('"', '""') + '"'
+}
+
 function Remove-AgentScmService {
     param([Parameter(Mandatory = $true)][string]$Name)
     $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
@@ -516,14 +524,14 @@ if ($DesktopEnabled) {
         & icacls.exe $desktopDir /grant:r "$($env:COMPUTERNAME)\$($env:USERNAME):(OI)(CI)M" | Out-Null
     }
     # Scheduled tasks do not inherit the SCM service's registry Environment
-    # block. Pass the resolved state directory explicitly so a custom
+    # block. Embed the resolved state directory in the launcher so a custom
     # ProgramData path still points at the same protected IPC endpoint.
-    $escapedStateDir = $StateDir.Replace('"', '\\"')
     if (-not $desktopDestination) { throw 'Desktop companion binary is not installed.' }
     # A console-subsystem Native Image started directly by an interactive
     # scheduled task opens a visible black window.  Keep the companion in the
-    # user's desktop session but launch it through a hidden, no-shell process
-    # wrapper so screenshots and normal desktop use are not interrupted.
+    # user's desktop session but launch it through wscript.exe //B instead of
+    # a PowerShell wrapper.  This avoids the short-lived console flash that can
+    # still occur with -WindowStyle Hidden on some Windows builds.
     $desktopLauncherPath = Join-Path $InstallRoot 'run-desktop-companion.ps1'
     $desktopLauncherLines = [System.Collections.Generic.List[string]]::new()
     $desktopLauncherLines.Add('$ErrorActionPreference = "Stop"')
@@ -546,16 +554,37 @@ if ($DesktopEnabled) {
     } else {
         & icacls.exe $desktopLauncherPath /grant:r "$($env:COMPUTERNAME)\$($env:USERNAME):RX" | Out-Null
     }
-    $hiddenPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $launcherArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $desktopLauncherPath
-    $action = New-ScheduledTaskAction -Execute $hiddenPowerShell -Argument $launcherArguments
+    $desktopVbsPath = Join-Path $InstallRoot 'run-desktop-companion.vbs'
+    $desktopVbsCommand = '"{0}" --desktop-companion "{1}"' -f $desktopDestination, $StateDir
+    $desktopVbsLines = [System.Collections.Generic.List[string]]::new()
+    $desktopVbsLines.Add('Option Explicit')
+    $desktopVbsLines.Add('Dim shell')
+    $desktopVbsLines.Add('Set shell = CreateObject("WScript.Shell")')
+    $desktopVbsLines.Add(('shell.Run {0}, 0, True' -f (ConvertTo-VBScriptLiteral $desktopVbsCommand)))
+    $desktopVbsLines.Add('WScript.Quit 0')
+    # ANSI is sufficient for the generated wrapper because the command string
+    # is escaped as a VBScript literal; UTF-16LE is accepted by wscript.exe and
+    # preserves non-ASCII install/state paths.
+    Set-Content -LiteralPath $desktopVbsPath -Value $desktopVbsLines -Encoding Unicode -Force
+    & icacls.exe $desktopVbsPath /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
+    if ($desktopSid) {
+        & icacls.exe $desktopVbsPath /grant:r "*${desktopSid}:RX" | Out-Null
+    } else {
+        & icacls.exe $desktopVbsPath /grant:r "$($env:COMPUTERNAME)\$($env:USERNAME):RX" | Out-Null
+    }
+    $hiddenWScript = Join-Path $env:SystemRoot 'System32\wscript.exe'
+    $launcherArguments = '//B //NoLogo "{0}"' -f $desktopVbsPath
+    $action = New-ScheduledTaskAction -Execute $hiddenWScript -Argument $launcherArguments
     $desktopUserId = if ($env:USERNAME -like '*\*') { $env:USERNAME } else { "$($env:COMPUTERNAME)\$($env:USERNAME)" }
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $desktopUserId
     # Windows PowerShell 5.1 exposes the interactive logon type as `Interactive`;
     # `InteractiveToken` is not a valid enum value there and prevents the
     # desktop companion task from being registered on GUI hosts.
     $principal = New-ScheduledTaskPrincipal -UserId $desktopUserId -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName $companionTaskName -Action $action -Trigger $trigger -Principal $principal -Description "Interactive desktop companion for Remote Connect MCP" -Force | Out-Null
+    $desktopSettings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+    Register-ScheduledTask -TaskName $companionTaskName -Action $action -Trigger $trigger -Principal $principal `
+        -Settings $desktopSettings -Description "Interactive desktop companion for Remote Connect MCP" -Force | Out-Null
 } else {
     Unregister-ScheduledTask -TaskName $companionTaskName -Confirm:$false -ErrorAction SilentlyContinue
 }

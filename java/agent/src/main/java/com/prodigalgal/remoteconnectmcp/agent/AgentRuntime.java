@@ -5,6 +5,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.DesktopCompanionProtocol;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Map;
@@ -63,6 +64,15 @@ public final class AgentRuntime {
                 DesktopCompanionProtocol.writePolicy(config.stateDir(), config.scopeMode(), config.workspaceRoot());
             } catch (IOException failure) {
                 LOG.log(Level.WARNING, "could not publish desktop companion scope policy", failure);
+            }
+            // The command Agent may run as SYSTEM/root in a non-interactive
+            // service session.  Starting AWT from here would create a Session 0
+            // companion that cannot see the user's desktop.  Installers start
+            // the same desktop binary from the logged-in user session (Task
+            // Scheduler/systemd --user); the command Agent only publishes the
+            // policy and discovers that endpoint when a task needs it.
+            if (DesktopCompanionClient.discover(config.stateDir()) == null) {
+                LOG.info("desktop companion endpoint is not available in this session; command tasks remain enabled");
             }
         }
         // Runtime metadata is rebuilt at each poll so hot configuration
@@ -343,7 +353,7 @@ public final class AgentRuntime {
     /** Report the helper's terminal result before the first heartbeat. */
     private void reportPendingUpgradeResult(AgentIdentity identity) {
         var resultFile = config.stateDir().toAbsolutePath().normalize().resolve("upgrade-result.json");
-        if (!Files.isRegularFile(resultFile)) return;
+        if (!Files.isRegularFile(resultFile, LinkOption.NOFOLLOW_LINKS)) return;
         try {
             var result = JsonCodec.read(Files.readAllBytes(resultFile), AgentUpgradeHelper.Result.class);
             AgentRetry.call(LOG, "upgrade result " + result.campaignId(), () -> {

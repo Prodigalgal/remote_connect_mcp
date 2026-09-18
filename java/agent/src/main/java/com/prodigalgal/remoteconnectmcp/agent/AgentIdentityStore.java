@@ -4,6 +4,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -23,7 +24,7 @@ public final class AgentIdentityStore {
 
     public Optional<AgentIdentity> load() throws IOException {
         var file = identityFile();
-        if (!Files.isRegularFile(file)) {
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
             return Optional.empty();
         }
         try {
