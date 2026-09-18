@@ -1,0 +1,36 @@
+databaseChangeLog:
+  - changeSet:
+      id: 025-task-artifact-projection
+      author: remote-connect-mcp
+      labels: artifact,transport
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: artifact_bytes
+                  type: bigint
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: artifact_mime
+                  type: varchar(128)
+              - column:
+                  name: artifact_sha256
+                  type: char(64)
+      rollback:
+        - dropColumn:
+            tableName: rcm_task
+            columnName: artifact_sha256
+        - dropColumn:
+            tableName: rcm_task
+            columnName: artifact_mime
+        - dropColumn:
+            tableName: rcm_task
+            columnName: artifact_bytes

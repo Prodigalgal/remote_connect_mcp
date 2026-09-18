@@ -2,7 +2,6 @@ package com.prodigalgal.remoteconnectmcp.center;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -56,19 +55,11 @@ class ArtifactTransferServiceTest {
         assertEquals(sha, descriptor.sha256());
         var signed = URI.create(descriptor.downloadUrl());
         var query = signed.getRawQuery();
-        var expires = queryValue(query, "expires");
-        var principal = queryValue(query, "principal");
-        var connection = queryValue(query, "connection");
-        var session = queryValue(query, "session");
-        var purpose = queryValue(query, "purpose");
-        var signature = queryValue(query, "signature");
-        assertFalse(session.isBlank());
-        try (var publicArtifact = service.openPublic(descriptor.artifactId(), Long.parseLong(expires), principal, connection, session, purpose, signature).body()) {
+        var token = queryValue(query, "token");
+        try (var publicArtifact = service.openPublic(token).body()) {
             assertArrayEquals(data, publicArtifact.readAllBytes());
         }
-        assertThrows(SecurityException.class,
-                () -> service.openPublic(descriptor.artifactId(), Long.parseLong(expires), principal, connection,
-                        session + "-other", purpose, signature));
+        assertThrows(SecurityException.class, () -> service.openPublic(token.substring(0, token.length() - 1) + "x"));
 
         var failedRequest = new CreateTaskRequest(registration.machineId(), command, "transfer-failure", "", "",
                 ScopeMode.UNRESTRICTED, "", "", "low", false, origin);

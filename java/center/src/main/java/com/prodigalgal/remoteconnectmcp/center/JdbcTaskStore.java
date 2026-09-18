@@ -47,8 +47,9 @@ final class JdbcTaskStore {
                    t.output_bytes, t.output_truncated, t.error_text, t.exit_code, t.created_at,
                    t.dispatched_at, t.started_at, t.finished_at, t.updated_at, t.execution_contract,
                    t.file_transfer_action,
-                   NULL::bytea AS output_data, a.bytes AS artifact_bytes, a.mime_type AS artifact_mime,
-                   a.sha256 AS artifact_sha256, NULL::bytea AS artifact_data
+                   NULL::bytea AS output_data, COALESCE(a.bytes, t.artifact_bytes, 0) AS artifact_bytes,
+                   COALESCE(a.mime_type, t.artifact_mime) AS artifact_mime,
+                   COALESCE(a.sha256, t.artifact_sha256) AS artifact_sha256, NULL::bytea AS artifact_data
               FROM rcm_task t
               LEFT JOIN rcm_task_artifact a ON a.task_id = t.task_id
             """;
@@ -619,7 +620,7 @@ final class JdbcTaskStore {
         var updated = jdbc.update("""
                 UPDATE rcm_task
                    SET artifact_bytes = ?, artifact_mime = ?, artifact_sha256 = ?,
-                       artifact_data = NULL, updated_at = CURRENT_TIMESTAMP
+                       updated_at = CURRENT_TIMESTAMP
                  WHERE task_id = ? AND agent_id = ?
                 """, bytes, mimeType, sha256, taskId, machineId);
         if (updated == 0) throw new IllegalArgumentException("task not found for transfer artifact");
