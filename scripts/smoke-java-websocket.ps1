@@ -123,6 +123,25 @@ try {
         default_cwd = $root
         scope_mode = 'unrestricted'
         capabilities = @('command')
+        runtime = @{
+            schema_version = 1
+            config_generation = 0
+            max_concurrency = 1
+            max_browser_workers = 0
+            max_output_bytes = 67108864
+            max_aggregate_output_bytes = 67108864
+            max_child_processes = 32
+            max_total_child_processes = 32
+            max_task_duration_seconds = 0
+            max_rss_bytes = 0
+            max_cpu_seconds = 0
+            desktop_enabled = $false
+            browser_adapter_configured = $false
+            scope_mode = 'unrestricted'
+            desktop_session_available = $false
+            browser_session_available = $false
+            resource_enforcement = 'process-tree'
+        }
     }
     if ([string]::IsNullOrWhiteSpace([string]$registration.machine_id) -or [string]::IsNullOrWhiteSpace([string]$registration.token)) {
         throw 'Center registration response is incomplete'
