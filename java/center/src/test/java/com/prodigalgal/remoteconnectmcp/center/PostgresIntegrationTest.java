@@ -234,11 +234,13 @@ class PostgresIntegrationTest {
                 "transfer-v2-key", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, transferOrigin);
         var transfer = transfers.createAgentToWeb(transferOrigin, transferRequest, "/tmp/transfer-report.txt",
                 "transfer-report.txt", "text/plain");
+        var transferLease = projectTasks.poll(agentId, new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        assertNotNull(transferLease);
         var transferData = "postgres transfer".getBytes(StandardCharsets.UTF_8);
         var transferHash = sha256(transferData);
         var delivered = transfers.receiveFromAgent(agentId, transfer.transfer().transferId(),
                 new ByteArrayInputStream(transferData), transferData.length, transferHash,
-                "transfer-report.txt", "text/plain");
+                "transfer-report.txt", "text/plain", transferLease.attempt());
         assertEquals("delivered", delivered.status());
         assertEquals("delivered", jdbc.queryForObject("SELECT status FROM rcm_file_transfer WHERE transfer_id = ?", String.class,
                 transfer.transfer().transferId()));
@@ -246,7 +248,7 @@ class PostgresIntegrationTest {
                 transfer.transfer().transferId()));
         var transferReplay = transfers.receiveFromAgent(agentId, transfer.transfer().transferId(),
                 new ByteArrayInputStream(transferData), transferData.length, transferHash,
-                "transfer-report.txt", "text/plain");
+                "transfer-report.txt", "text/plain", transferLease.attempt());
         assertEquals(delivered.status(), transferReplay.status());
         var restartedTransfers = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
         assertEquals("delivered", restartedTransfers.findByTransfer(transfer.transfer().transferId(), transferOrigin).orElseThrow().status());
@@ -258,17 +260,19 @@ class PostgresIntegrationTest {
                 "/tmp/transfer-resumable.txt", "transfer-resumable.txt", "text/plain");
         var resumableData = "postgres resumable transfer".getBytes(StandardCharsets.UTF_8);
         var resumableHash = sha256(resumableData);
+        var resumableLease = projectTasks.poll(agentId, new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        assertNotNull(resumableLease);
         var split = 9;
         var partial = transfers.receiveFromAgentChunk(agentId, resumable.transfer().transferId(),
                 new ByteArrayInputStream(java.util.Arrays.copyOfRange(resumableData, 0, split)), split, 0,
-                resumableData.length, resumableHash, "transfer-resumable.txt", "text/plain", null);
+                resumableData.length, resumableHash, "transfer-resumable.txt", "text/plain", resumableLease.attempt());
         assertEquals("delivering", partial.status());
         var restartedResumable = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
-        assertEquals(split, restartedResumable.resumeFromAgent(agentId, resumable.transfer().transferId(), null).offset());
+        assertEquals(split, restartedResumable.resumeFromAgent(agentId, resumable.transfer().transferId(), resumableLease.attempt()).offset());
         var resumed = restartedResumable.receiveFromAgentChunk(agentId, resumable.transfer().transferId(),
                 new ByteArrayInputStream(java.util.Arrays.copyOfRange(resumableData, split, resumableData.length)),
                 resumableData.length - split, split, resumableData.length, resumableHash,
-                "transfer-resumable.txt", "text/plain", null);
+                "transfer-resumable.txt", "text/plain", resumableLease.attempt());
         assertEquals("delivered", resumed.status());
         assertEquals(resumableData.length, jdbc.queryForObject("SELECT bytes_transferred FROM rcm_file_transfer WHERE transfer_id = ?", Long.class,
                 resumable.transfer().transferId()));

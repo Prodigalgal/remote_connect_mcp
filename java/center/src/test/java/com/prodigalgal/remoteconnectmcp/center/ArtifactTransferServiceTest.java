@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
@@ -44,10 +45,13 @@ class ArtifactTransferServiceTest {
         var created = service.createAgentToWeb(origin, request, root.resolve("report.txt").toString(), "report.txt", "text/plain");
         var retried = service.createAgentToWeb(origin, request, root.resolve("report.txt").toString(), "report.txt", "text/plain");
         assertEquals(created.transfer().transferId(), retried.transfer().transferId());
+        var leased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        assertNotNull(leased);
+        var attempt = leased.attempt();
         var data = "artifact payload".getBytes(StandardCharsets.UTF_8);
         var sha = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
         var uploaded = service.receiveFromAgent(registration.machineId(), created.transfer().transferId(),
-                new ByteArrayInputStream(data), data.length, sha, "report.txt", "text/plain");
+                new ByteArrayInputStream(data), data.length, sha, "report.txt", "text/plain", attempt);
 
         assertEquals("delivered", uploaded.status());
         var descriptor = service.findByArtifact(created.transfer().artifactId(), origin).orElseThrow();
@@ -64,9 +68,11 @@ class ArtifactTransferServiceTest {
         var failedRequest = new CreateTaskRequest(registration.machineId(), command, "transfer-failure", "", "",
                 ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
         var failed = service.createAgentToWeb(origin, failedRequest, root.resolve("failed.txt").toString(), "failed.txt", "text/plain");
+        var failedLease = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        assertNotNull(failedLease);
         assertThrows(IllegalArgumentException.class, () -> service.receiveFromAgent(registration.machineId(),
                 failed.transfer().transferId(), new ByteArrayInputStream(data), data.length, "0".repeat(64),
-                "failed.txt", "text/plain"));
+                "failed.txt", "text/plain", failedLease.attempt()));
         var failedDescriptor = service.findByTransfer(failed.transfer().transferId(), origin).orElseThrow();
         assertEquals("failed", failedDescriptor.status());
         assertNotNull(failedDescriptor.error());
@@ -95,21 +101,24 @@ class ArtifactTransferServiceTest {
         var data = "resumable payload".getBytes(StandardCharsets.UTF_8);
         var sha = sha256(data);
         var transfer = service.createAgentToWeb(origin, request, root.resolve("resume.txt").toString(), "resume.txt", "text/plain");
+        var leased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        assertNotNull(leased);
+        var attempt = leased.attempt();
 
         var first = service.receiveFromAgentChunk(registration.machineId(), transfer.transfer().transferId(),
                 new ByteArrayInputStream(java.util.Arrays.copyOfRange(data, 0, 8)), 8, 0, data.length, sha,
-                "resume.txt", "text/plain", null);
+                "resume.txt", "text/plain", attempt);
         assertEquals("delivering", first.status());
         assertEquals(8, first.bytes());
-        assertEquals(8, service.resumeFromAgent(registration.machineId(), transfer.transfer().transferId(), null).offset());
+        assertEquals(8, service.resumeFromAgent(registration.machineId(), transfer.transfer().transferId(), attempt).offset());
         var replay = service.receiveFromAgentChunk(registration.machineId(), transfer.transfer().transferId(),
                 new ByteArrayInputStream(java.util.Arrays.copyOfRange(data, 0, 8)), 8, 0, data.length, sha,
-                "resume.txt", "text/plain", null);
+                "resume.txt", "text/plain", attempt);
         assertEquals(first.bytes(), replay.bytes());
 
         var completed = service.receiveFromAgentChunk(registration.machineId(), transfer.transfer().transferId(),
                 new ByteArrayInputStream(java.util.Arrays.copyOfRange(data, 8, data.length)), data.length - 8, 8,
-                data.length, sha, "resume.txt", "text/plain", null);
+                data.length, sha, "resume.txt", "text/plain", attempt);
         assertEquals("delivered", completed.status());
         assertEquals(data.length, completed.bytes());
         var descriptor = service.findByArtifact(transfer.transfer().artifactId(), origin).orElseThrow();
@@ -137,11 +146,13 @@ class ArtifactTransferServiceTest {
                 new TaskCommand("", TaskKind.COMMAND, "command", "ignored", root.toString(), Map.of(), 0, null, Instant.now()),
                 "stall-transfer", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
         var transfer = service.createAgentToWeb(origin, request, root.resolve("stall.txt").toString(), "stall.txt", "text/plain");
+        var leased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        assertNotNull(leased);
         assertThrows(ArtifactTransferService.TransferTemporaryException.class,
                 () -> service.receiveFromAgentChunk(registration.machineId(), transfer.transfer().transferId(),
                         new ByteArrayInputStream(java.util.Arrays.copyOfRange(data, 0, 3)), 6, 0, data.length,
-                        sha256(data), "stall.txt", "text/plain", null));
-        assertEquals(3, service.resumeFromAgent(registration.machineId(), transfer.transfer().transferId(), null).offset());
+                        sha256(data), "stall.txt", "text/plain", leased.attempt()));
+        assertEquals(3, service.resumeFromAgent(registration.machineId(), transfer.transfer().transferId(), leased.attempt()).offset());
     }
 
     private static String queryValue(String query, String key) {

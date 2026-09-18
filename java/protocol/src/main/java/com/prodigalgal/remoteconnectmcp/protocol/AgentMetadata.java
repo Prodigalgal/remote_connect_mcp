@@ -29,7 +29,8 @@ public record AgentMetadata(
     }
 
     static AgentMetadata empty() {
-        return new AgentMetadata("local", "local", "local", "local", "local", "local", ".",
-                ScopeMode.WORKSPACE, ".", List.of(), AgentRuntimeDescriptor.defaults());
+        var localRoot = java.nio.file.Path.of(".").toAbsolutePath().normalize().toString();
+        return new AgentMetadata("local", "local", "local", "local", "local", "local", localRoot,
+                ScopeMode.WORKSPACE, localRoot, List.of(), AgentRuntimeDescriptor.defaults());
     }
 }

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import java.util.List;
@@ -20,7 +21,9 @@ class MetricsControllerTest {
         var task = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", null, null, "secret-command", "/private/path", Map.of("SECRET", "hidden"),
                         30, null, null), "metrics"));
-        tasks.appendOutput(registration.machineId(), task.id(), 0, "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var leased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        tasks.appendOutput(registration.machineId(), task.id(), 0,
+                "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8), leased.attempt());
         var upgrades = new UpgradeService(registry, tasks, new UpgradeConfig(true, ""));
         var async = new CenterAsyncExecutor();
         try (var audit = new AuditService(null)) {
