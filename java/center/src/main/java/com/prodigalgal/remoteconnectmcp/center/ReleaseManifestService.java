@@ -2,7 +2,6 @@ package com.prodigalgal.remoteconnectmcp.center;
 
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeComponentPlan;
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -106,7 +105,7 @@ public final class ReleaseManifestService {
                     || response.body() == null || response.body().length > MAX_MANIFEST_BYTES) return null;
             var raw = JsonCodec.read(response.body(), ManifestWire.class);
             return normalize(raw, version);
-        } catch (IOException | RuntimeException ignored) {
+        } catch (RuntimeException ignored) {
             return null;
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
