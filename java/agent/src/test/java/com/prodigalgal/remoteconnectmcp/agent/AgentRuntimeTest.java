@@ -8,6 +8,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.ArtifactResponse;
+import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
@@ -154,7 +155,8 @@ class AgentRuntimeTest {
         var store = new DurableTaskStore(tempDir);
         var task = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand(
                 "task_durable", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND,
-                "command", "echo durable-ok", tempDir.toString(), java.util.Map.of(), 0, null, java.time.Instant.now());
+                "command", "echo durable-ok", tempDir.toString(), java.util.Map.of(), 0, null, java.time.Instant.now(),
+                testContract("machine_new", "host", "command"));
 
         new DurableCommandRunner(config, new AgentIdentity("machine_new", "daily-new"), task, transport, store).run();
 
@@ -170,7 +172,8 @@ class AgentRuntimeTest {
         var store = new DurableTaskStore(tempDir);
         var task = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand(
                 "task_recover", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND,
-                "command", durableSleepCommand(), tempDir.toString(), java.util.Map.of(), 0, null, java.time.Instant.now());
+                "command", durableSleepCommand(), tempDir.toString(), java.util.Map.of(), 0, null, java.time.Instant.now(),
+                testContract("machine_new", "host", "command"));
         var first = new DurableCommandRunner(config, new AgentIdentity("machine_new", "daily-new"), task, transport, store);
         var thread = Thread.startVirtualThread(first);
         for (var i = 0; i < 40 && store.load().isEmpty(); i++) {
@@ -194,7 +197,8 @@ class AgentRuntimeTest {
         var store = new DurableTaskStore(tempDir);
         var task = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand(
                 "task_durable_limit", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND,
-                "command", noisyCommand(), tempDir.toString(), java.util.Map.of(), 0, null, java.time.Instant.now());
+                "command", noisyCommand(), tempDir.toString(), java.util.Map.of(), 0, null, java.time.Instant.now(),
+                testContract("machine_new", "host", "command"));
 
         new DurableCommandRunner(config, new AgentIdentity("machine_new", "daily-new"), task, transport, store).run();
 
@@ -231,6 +235,12 @@ class AgentRuntimeTest {
 
     private static AgentConfig config(Path stateDir) {
         return config(stateDir, 64L * 1024 * 1024);
+    }
+
+    private static ExecutionContract testContract(String machineId, String hostId, String capability) {
+        return new ExecutionContract(machineId, hostId, ScopeMode.UNRESTRICTED,
+                null, null, null, "session-test", capability, ExecutionContract.Budget.defaults(),
+                java.time.Instant.now().plusSeconds(3600), "test-" + capability, "low", false, "lease-test");
     }
 
     private static AgentConfig config(Path stateDir, long maxOutputBytes) {

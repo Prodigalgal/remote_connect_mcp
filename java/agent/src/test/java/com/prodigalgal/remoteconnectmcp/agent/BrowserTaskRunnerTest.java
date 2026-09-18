@@ -3,6 +3,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.ArtifactResponse;
+import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
@@ -33,7 +34,10 @@ class BrowserTaskRunnerTest {
                 stateDir.toString(), ScopeMode.UNRESTRICTED, null, List.of("browser"), false, stateDir,
                 Duration.ofMillis(250), 1, 4L * 1024 * 1024, 8L * 1024 * 1024, adapter);
         var task = new TaskCommand("browser-task", TaskKind.BROWSER, "browser", "{\"operation\":\"snapshot\"}",
-                stateDir.toString(), Map.of(), 30, null, Instant.now());
+                stateDir.toString(), Map.of(), 30, null, Instant.now(),
+                new ExecutionContract("machine-browser", "browser-host", ScopeMode.UNRESTRICTED,
+                        null, null, null, "session-test", "browser", ExecutionContract.Budget.defaults(),
+                        Instant.now().plusSeconds(3600), "test-browser", "low", false, "lease-test"));
         var transport = new RecordingTransport();
 
         new BrowserTaskRunner(config, new AgentIdentity("machine-browser", "daily-browser"), task, transport).run();
