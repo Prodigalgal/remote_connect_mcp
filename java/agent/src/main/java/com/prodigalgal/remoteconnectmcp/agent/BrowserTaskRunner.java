@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import java.io.ByteArrayOutputStream;
@@ -196,6 +197,8 @@ final class BrowserTaskRunner implements Runnable {
                 }
             });
             sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
+            TaskProgressReporter.send(LOG, transport, identity, task,
+                    new TaskProgressUpdate("browser", 0, "browser worker started", null, null, null));
             if (!process.waitFor(timeout, TimeUnit.SECONDS)) {
                 terminate(process);
                 spool.complete();

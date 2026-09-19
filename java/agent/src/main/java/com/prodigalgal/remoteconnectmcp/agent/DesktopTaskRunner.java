@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate;
 import com.prodigalgal.remoteconnectmcp.protocol.DesktopCompanionProtocol;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
@@ -43,6 +44,8 @@ final class DesktopTaskRunner implements Runnable {
             var action = task.desktop();
             validate(action);
             sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
+            TaskProgressReporter.send(LOG, transport, identity, task,
+                    new TaskProgressUpdate("desktop", 0, "desktop action started", null, null, null));
             // Validate the contract before entering the user-session IPC.
             // The companion is intentionally a small loopback process and
             // must not become a second scope authority.  In particular,

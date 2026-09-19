@@ -5,6 +5,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -42,6 +43,8 @@ final class FileTransferTaskRunner implements Runnable {
             action = task.fileTransfer();
             if (action == null) throw new IOException("file transfer action is missing");
             sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
+            TaskProgressReporter.send(LOG, transport, identity, task,
+                    new TaskProgressUpdate("transfer", 0, "file transfer started", 0L, null, "bytes"));
             if (action.webToAgent()) {
                 receive(action);
             } else if (action.agentToWeb()) {
