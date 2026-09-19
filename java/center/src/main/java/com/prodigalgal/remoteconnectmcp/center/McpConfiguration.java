@@ -380,6 +380,11 @@ public class McpConfiguration {
         return Map.of("type", "string", "description", description, "minLength", min, "maxLength", max);
     }
 
+    private static Map<String, Object> modelNullableString(String description, int min, int max) {
+        return Map.of("description", description, "anyOf", List.of(
+                modelString(description, min, max), Map.of("type", "null")));
+    }
+
     private static Map<String, Object> modelEnum(String description, List<String> values) {
         return Map.of("type", "string", "description", description, "enum", values);
     }
@@ -542,8 +547,8 @@ public class McpConfiguration {
         taskProperties.put("output_bytes", modelInteger("output bytes", 0, Integer.MAX_VALUE));
         taskProperties.put("output_truncated", modelBoolean("output was truncated"));
         taskProperties.put("artifact_bytes", modelInteger("artifact bytes", 0L, 4L * 1024 * 1024 * 1024));
-        taskProperties.put("artifact_mime", modelString("artifact MIME", 0, 256));
-        taskProperties.put("artifact_sha256", modelString("artifact SHA-256", 0, 128));
+        taskProperties.put("artifact_mime", modelNullableString("artifact MIME", 0, 256));
+        taskProperties.put("artifact_sha256", modelNullableString("artifact SHA-256", 0, 128));
         taskProperties.put("next_action", modelString("next action", 0, 512));
         var task = modelSchema(taskProperties, List.of("id", "machine_id", "kind", "status"));
         // Task projections intentionally grow as capabilities are added (for
