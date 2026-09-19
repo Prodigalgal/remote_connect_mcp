@@ -1,0 +1,19 @@
+databaseChangeLog:
+  - changeSet:
+      id: 029-artifact-gc-index
+      author: remote-connect-mcp
+      labels: artifact,lifecycle,gc
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - sql:
+            sql: >-
+              CREATE INDEX IF NOT EXISTS idx_rcm_artifact_gc_expiry
+              ON rcm_artifact (expires_at, artifact_id)
+              WHERE pinned = FALSE AND status IN ('ready', 'delivered')
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_rcm_artifact_gc_expiry
