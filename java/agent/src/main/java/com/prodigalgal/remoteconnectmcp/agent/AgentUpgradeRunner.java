@@ -329,6 +329,10 @@ final class AgentUpgradeRunner implements Runnable {
         return System.getenv().getOrDefault(env, "").trim();
     }
 
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
     private static String safeComponent(String value) {
         var result = value == null ? "upgrade" : value.replaceAll("[^A-Za-z0-9._-]", "");
         return result.isBlank() ? "upgrade" : result.substring(0, Math.min(80, result.length()));
