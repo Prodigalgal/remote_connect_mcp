@@ -39,7 +39,7 @@ public final class McpConversationService {
     }
 
     McpConversationService() {
-        this(null, null);
+        this((JdbcTemplate) null, (TransactionTemplate) null);
     }
 
     McpConversationService(JdbcTemplate jdbc, TransactionTemplate transactions) {
