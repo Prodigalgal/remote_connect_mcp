@@ -198,7 +198,7 @@ Center 不运行定时清理线程，也不靠高频轮询。Kubernetes 模板�
 低频有界 `CronJob`（默认每 6 小时执行一次），使用同一份 Admin Secret 调用：
 
 ```text
-POST /api/v1/admin/artifacts/gc?retentionDays=30&limit=100
+POST /api/v1/admin/artifacts/gc?retentionDays=30&outputRetentionDays=7&limit=100
 Authorization: Bearer <Admin Token>
 ```
 

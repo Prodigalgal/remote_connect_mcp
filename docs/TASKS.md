@@ -151,7 +151,7 @@
 | --- | --- | --- | --- | --- |
 | [~] | P0-LR-01 | Durable task change sequence | `rcm_task.change_seq`、PostgreSQL 事务触发器和 MCP `task_read.change_seq` 已加入；数据库序列是事实来源，LISTEN/NOTIFY 只负责唤醒 | Liquibase `030`、TaskService/JDBC；Actions/PostgreSQL 集成待验证 |
 | [~] | P0-LR-02 | Progress snapshot 与 Agent ACK | Task 持久化 phase/percent/message/current/total/unit，新增 Agent `/tasks/{id}/progress`，复用 Attempt 栅栏；command/durable runner 首次上报为 best-effort，不因进度通道阻塞任务 | `TaskProgressUpdate`、AgentController、TaskService；Actions/限频和平台矩阵待验证 |
-| [ ] | P0-LR-03 | Task metadata/output retention 与统一 GC | Artifact TTL 已完成；继续增加 Task 元数据与输出独立 TTL、pinned/archived 语义和有界外部 GC；不在 Center 内启动固定清理线程 | 需要新增 Liquibase/GC 代码与 CronJob 收口 |
+| [~] | P0-LR-03 | Task metadata/output retention 与统一 GC | 已加入 metadata/output 独立过期字段、pinned/archived 投影和 Admin GC 入口；继续补充 CronJob 参数、删除失败/恢复指标和 Actions 门禁；不在 Center 内启动固定清理线程 | Liquibase `031`、Jdbc/Task GC；Actions/生产容量门禁待验证 |
 | [ ] | P1-LR-04 | 结构化 next_action 与重试语义 | 将当前字符串 `next_action` 收敛为有限枚举/参数对象，明确“拿到 task_id 后不重新提交，传输重试复用原幂等键” | MCP Schema/黄金样例/ChatGPT Web 验收 |
 | [ ] | P1-LR-05 | Conversation/Connection 恢复模型 | 当前 ExecutionSession 已绑定 connection_id；仅当需要跨 MCP 连接恢复/审计时，才增加正式 Conversation/MCP Connection 表，不把 Conversation 当授权边界 | 先补需求证据，再决定是否迁移 |
 | [ ] | P2-LR-06 | 可选进度适配器与时间线 | `RCM_PROGRESS_FILE + WatchService` 仅作为受限 workspace/IPC 适配器，不进入首版硬路径；后续补 Console 时间线和低基数指标 | 依赖 P0-LR-02 和生产使用反馈 |

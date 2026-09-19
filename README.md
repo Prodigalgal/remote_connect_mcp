@@ -164,7 +164,7 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 
 Java Center 生产使用 PostgreSQL 事务存储和单副本 `Recreate` Deployment；任务元数据使用数据库，工件字节使用独立的持久字节后端，不再把大块内容写入 PostgreSQL `BYTEA`。默认后端是 Center 自己的持久卷 `filesystem`，只有规模化部署时才通过 `RCM_CENTER_ARTIFACT_STORE=http` 接入内部对象网关；对象存储是可选后端，不改变任务或 Agent 协议。任务创建、状态变化和升级变化会立即持久化；内存只保存可丢失的唤醒/等待状态和必要的短期快照，任何缓存失效都从 PostgreSQL 重建。`RCM_CENTER_REQUIRE_DURABLE_STORAGE=true` 会让误用 memory 模式或缺少持久字节后端的实例保持未就绪，避免无意接收生产流量。
 
-文件保留期限与签名 URL TTL 分离：文件对象按 MIME、方向、大小和生命周期策略写入 `expires_at`，`pinned=true` 的对象不参加自动清理；签名 URL 仍只短期有效。生产清理由 Kubernetes `CronJob` 每 6 小时调用一次有界 `POST /api/v1/admin/artifacts/gc?retentionDays=30&limit=100`，不会在 Center 内启动定时轮询线程。GC 先删除对象，成功后删除 PostgreSQL 元数据；对象后端失败时保留元数据并在下一轮重试，同时清理超过一小时宽限期的孤儿文件。若使用 HTTP 对象网关，网关自身负责对象枚举和生命周期，Center 只删除已确认的对象 key。
+文件保留期限与签名 URL TTL 分离：文件对象按 MIME、方向、大小和生命周期策略写入 `expires_at`，`pinned=true` 的对象不参加自动清理；任务元数据和任务输出另有独立 TTL，任务 `pinned=true` 时两者都不参加自动清理。签名 URL 仍只短期有效。生产清理由 Kubernetes `CronJob` 每 6 小时调用一次有界 `POST /api/v1/admin/artifacts/gc?retentionDays=30&outputRetentionDays=7&limit=100`，不会在 Center 内启动定时轮询线程。GC 先删除对象，成功后删除 PostgreSQL 元数据；对象后端失败时保留元数据并在下一轮重试，同时清理超过一小时宽限期的孤儿文件。若使用 HTTP 对象网关，网关自身负责对象枚举和生命周期，Center 只删除已确认的对象 key。
 
 Java Center 只接受当前 PostgreSQL + Liquibase 数据模型；发布前先完成数据库备份和 Liquibase migration Job，不提供旧状态导入入口；升级活动由当前 Center 统一创建。
 

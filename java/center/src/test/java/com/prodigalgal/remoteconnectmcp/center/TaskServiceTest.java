@@ -98,6 +98,28 @@ class TaskServiceTest {
     }
 
     @Test
+    void retentionGcPurgesExpiredOutputBeforeTaskMetadata() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var created = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "printf retained", "/srv", Map.of(), 30, null, null), "retention-key"));
+        var leased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        tasks.updateState(registration.machineId(), created.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), leased.attempt());
+        tasks.appendOutput(registration.machineId(), created.id(), 0, "retained".getBytes(StandardCharsets.UTF_8), leased.attempt());
+        tasks.updateState(registration.machineId(), created.id(), new TaskUpdateRequest(TaskStatus.COMPLETED, 0, null, null, null, false), leased.attempt());
+        var state = tasks.find(created.id()).orElseThrow();
+        state.outputExpiresAt(java.time.Instant.now().minusSeconds(1));
+        state.metadataExpiresAt(java.time.Instant.now().minusSeconds(1));
+
+        var result = tasks.gcExpiredTasks(30, 7, 10);
+
+        assertEquals(1, result.outputRows());
+        assertEquals(1, result.metadataRows());
+        assertTrue(tasks.find(created.id()).isEmpty());
+    }
+
+    @Test
     void staleDispatchAttemptCannotPublishAfterLeaseIsReclaimed() {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");

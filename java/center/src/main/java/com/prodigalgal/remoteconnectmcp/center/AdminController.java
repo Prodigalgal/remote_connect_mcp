@@ -360,6 +360,7 @@ public final class AdminController {
     public CompletableFuture<ResponseEntity<?>> garbageCollectArtifacts(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestParam(defaultValue = "30") int retentionDays,
+            @RequestParam(defaultValue = "7") int outputRetentionDays,
             @RequestParam(defaultValue = "100") int limit) {
         return execute(() -> {
             authenticate(authorization);
@@ -367,13 +368,16 @@ public final class AdminController {
                 throw new IllegalArgumentException("limit must be between 1 and 500");
             }
             var taskArtifacts = tasks.gcArtifacts(retentionDays, limit);
+            var taskRetention = tasks.gcExpiredTasks(retentionDays, outputRetentionDays, limit);
             var fileArtifacts = transfers == null
                     ? new ArtifactTransferService.ArtifactGcResult(0, 0, 0, 0L, 0)
                     : transfers.gcExpiredArtifacts(limit);
             return ResponseEntity.ok(Map.of(
                     "task_artifacts", taskArtifacts,
+                    "task_retention", taskRetention,
                     "file_artifacts", fileArtifacts,
                     "retention_days", retentionDays,
+                    "output_retention_days", outputRetentionDays,
                     "limit", limit));
         });
     }

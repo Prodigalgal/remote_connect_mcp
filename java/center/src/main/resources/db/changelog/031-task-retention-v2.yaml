@@ -1,0 +1,80 @@
+databaseChangeLog:
+  - changeSet:
+      id: 031-task-retention-v2
+      author: remote-connect-mcp
+      labels: task,retention,long-running
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: metadata_expires_at
+                  type: timestamptz
+              - column:
+                  name: output_expires_at
+                  type: timestamptz
+              - column:
+                  name: pinned
+                  type: boolean
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: archived_at
+                  type: timestamptz
+        - sql:
+            sql: >-
+              UPDATE rcm_task
+                 SET metadata_expires_at = COALESCE(finished_at, created_at) + INTERVAL '30 days',
+                     output_expires_at = COALESCE(finished_at, created_at) + INTERVAL '7 days'
+               WHERE metadata_expires_at IS NULL OR output_expires_at IS NULL
+        - addNotNullConstraint:
+            tableName: rcm_task
+            columnName: metadata_expires_at
+            columnDataType: timestamptz
+        - addNotNullConstraint:
+            tableName: rcm_task
+            columnName: output_expires_at
+            columnDataType: timestamptz
+        - createIndex:
+            indexName: idx_rcm_task_output_retention
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: output_expires_at
+              - column:
+                  name: task_id
+            where: "pinned = FALSE AND status IN ('completed', 'failed', 'canceled')"
+        - createIndex:
+            indexName: idx_rcm_task_metadata_retention
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: metadata_expires_at
+              - column:
+                  name: task_id
+            where: "pinned = FALSE AND status IN ('completed', 'failed', 'canceled')"
+      rollback:
+        - dropIndex:
+            indexName: idx_rcm_task_metadata_retention
+            tableName: rcm_task
+        - dropIndex:
+            indexName: idx_rcm_task_output_retention
+            tableName: rcm_task
+        - dropColumn:
+            tableName: rcm_task
+            columnName: archived_at
+        - dropColumn:
+            tableName: rcm_task
+            columnName: pinned
+        - dropColumn:
+            tableName: rcm_task
+            columnName: output_expires_at
+        - dropColumn:
+            tableName: rcm_task
+            columnName: metadata_expires_at

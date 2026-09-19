@@ -52,6 +52,8 @@ public final class TaskService {
     public static final int MAX_OUTPUT_PAGE = 64 * 1024;
     static final Duration LEASE_DURATION = Duration.ofMinutes(2);
     static final Duration DEFAULT_CONTRACT_LIFETIME = Duration.ofDays(30);
+    static final Duration DEFAULT_TASK_METADATA_RETENTION = Duration.ofDays(30);
+    static final Duration DEFAULT_TASK_OUTPUT_RETENTION = Duration.ofDays(7);
     private final AgentRegistry agents;
     private final Map<String, TaskState> tasks = new ConcurrentHashMap<>();
     private final Map<String, String> idempotency = new ConcurrentHashMap<>();
@@ -1520,6 +1522,54 @@ public final class TaskService {
         return result;
     }
 
+    /** Explicit, bounded task metadata/output retention operation. */
+    public TaskRetentionGcResult gcExpiredTasks(int metadataRetentionDays, int outputRetentionDays, int limit) {
+        if (metadataRetentionDays < 1 || metadataRetentionDays > 3650
+                || outputRetentionDays < 1 || outputRetentionDays > 3650) {
+            throw new IllegalArgumentException("task retention days must be between 1 and 3650");
+        }
+        if (limit < 1 || limit > 500) {
+            throw new IllegalArgumentException("limit must be between 1 and 500");
+        }
+        var now = Instant.now();
+        if (jdbcStore != null) {
+            // The absolute expiry columns are the retention source of truth;
+            // do not subtract the policy a second time and accidentally keep
+            // every task for twice its configured lifetime.
+            return jdbcStore.gcExpiredTasks(now, now, limit);
+        }
+        lock.lock();
+        try {
+            var outputRows = 0;
+            var metadataRows = 0;
+            var outputCutoff = now;
+            var metadataCutoff = now;
+            for (var task : new ArrayList<>(tasks.values())) {
+                if (outputRows < limit && TaskStatus.terminal(task.status()) && !task.pinned()
+                        && task.outputExpiresAt() != null && !task.outputExpiresAt().isAfter(outputCutoff)
+                        && task.outputBytes() > 0) {
+                    task.output().reset();
+                    task.outputBytes(0);
+                    task.outputTruncated(true);
+                    task.bumpChangeSequence();
+                    outputRows++;
+                }
+                if (metadataRows < limit && TaskStatus.terminal(task.status()) && !task.pinned()
+                        && task.metadataExpiresAt() != null && !task.metadataExpiresAt().isAfter(metadataCutoff)) {
+                    tasks.remove(task.id());
+                    if (task.idempotencyKey() != null && !task.idempotencyKey().isBlank()) {
+                        idempotency.remove(idempotencyKey(task.machineId(), task.origin().principalId(), task.idempotencyKey()));
+                    }
+                    metadataRows++;
+                }
+            }
+            if (outputRows > 0 || metadataRows > 0) signalChanged();
+            return new TaskRetentionGcResult(metadataRows, outputRows);
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /** Bytes reclaimed by explicit artifact retention calls in this process. */
     public long artifactGcBytes() {
         return artifactGcBytes.get();
@@ -1545,5 +1595,8 @@ public final class TaskService {
         public ArtifactGcResult(int metadataRows, int objectFiles, int deleteFailures) {
             this(metadataRows, objectFiles, deleteFailures, 0L);
         }
+    }
+
+    public record TaskRetentionGcResult(int metadataRows, int outputRows) {
     }
 }

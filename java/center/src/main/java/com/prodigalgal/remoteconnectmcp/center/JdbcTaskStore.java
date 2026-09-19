@@ -48,6 +48,7 @@ final class JdbcTaskStore {
                    t.dispatched_at, t.started_at, t.finished_at, t.updated_at, t.execution_contract,
                    t.change_seq, t.progress_phase, t.progress_percent, t.progress_message,
                    t.progress_current, t.progress_total, t.progress_unit, t.progress_updated_at,
+                   t.metadata_expires_at, t.output_expires_at, t.pinned, t.archived_at,
                    t.file_transfer_action,
                    NULL::bytea AS output_data, COALESCE(a.bytes, t.artifact_bytes, 0) AS artifact_bytes,
                    COALESCE(a.mime_type, t.artifact_mime) AS artifact_mime,
@@ -712,6 +713,54 @@ final class JdbcTaskStore {
         return new TaskService.ArtifactGcResult(candidates.size(), deletedObjects, deleteFailures, reclaimedBytes);
     }
 
+    TaskService.TaskRetentionGcResult gcExpiredTasks(Instant metadataCutoff, Instant outputCutoff, int limit) {
+        var outputRows = transactions.execute(status -> {
+            var ids = jdbc.query("""
+                    SELECT task_id
+                      FROM rcm_task
+                     WHERE status IN (?, ?, ?) AND pinned = FALSE
+                       AND output_expires_at IS NOT NULL AND output_expires_at <= ?
+                       AND output_bytes > 0
+                     ORDER BY output_expires_at, task_id
+                     LIMIT ? FOR UPDATE SKIP LOCKED
+                    """, ps -> {
+                ps.setString(1, TaskStatus.COMPLETED);
+                ps.setString(2, TaskStatus.FAILED);
+                ps.setString(3, TaskStatus.CANCELED);
+                ps.setTimestamp(4, timestamp(outputCutoff));
+                ps.setInt(5, limit);
+            }, (rs, rowNum) -> rs.getString("task_id"));
+            for (var taskId : ids) {
+                jdbc.update("UPDATE rcm_task_output SET output_data = CAST(? AS bytea), updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+                        new byte[0], taskId);
+                jdbc.update("UPDATE rcm_task SET output_bytes = 0, output_truncated = TRUE, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+                        taskId);
+            }
+            return ids.size();
+        });
+        var metadataRows = transactions.execute(status -> {
+            var ids = jdbc.query("""
+                    SELECT task_id
+                      FROM rcm_task
+                     WHERE status IN (?, ?, ?) AND pinned = FALSE
+                       AND metadata_expires_at IS NOT NULL AND metadata_expires_at <= ?
+                     ORDER BY metadata_expires_at, task_id
+                     LIMIT ? FOR UPDATE SKIP LOCKED
+                    """, ps -> {
+                ps.setString(1, TaskStatus.COMPLETED);
+                ps.setString(2, TaskStatus.FAILED);
+                ps.setString(3, TaskStatus.CANCELED);
+                ps.setTimestamp(4, timestamp(metadataCutoff));
+                ps.setInt(5, limit);
+            }, (rs, rowNum) -> rs.getString("task_id"));
+            for (var taskId : ids) {
+                jdbc.update("DELETE FROM rcm_task WHERE task_id = ?", taskId);
+            }
+            return ids.size();
+        });
+        return new TaskService.TaskRetentionGcResult(metadataRows, outputRows);
+    }
+
     private void insert(TaskState state) {
         var command = state.command();
         var env = new String(JsonCodec.write(command.env()), StandardCharsets.UTF_8);
@@ -725,13 +774,14 @@ final class JdbcTaskStore {
                     principal_id, connection_id, lane_key, execution_session_id, result_channel,
                     status, lease_until, attempt, output_bytes, output_truncated,
                     error_text, created_at, dispatched_at, started_at, finished_at, updated_at, execution_contract,
-                    file_transfer_action
-                ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, false, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb))
+                    metadata_expires_at, output_expires_at, pinned, archived_at, file_transfer_action
+                ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, false, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, false, ?, CAST(? AS jsonb))
                 """, state.id(), state.machineId(), command.kind().wireValue(), command.requiredCapability(), command.command(),
                 command.cwd(), env, desktop, command.timeoutSeconds(), state.idempotencyKey(), state.origin().principalId(),
                 state.origin().connectionId(), state.laneKey(), state.executionSessionId(), state.resultChannel(),
                 state.status(), null,
-                null, timestamp(state.createdAt()), null, null, null, timestamp(state.createdAt()), contract, fileTransfer);
+                null, timestamp(state.createdAt()), null, null, null, timestamp(state.createdAt()), contract,
+                timestamp(state.metadataExpiresAt()), timestamp(state.outputExpiresAt()), timestamp(state.archivedAt()), fileTransfer);
         jdbc.update("INSERT INTO rcm_task_output(task_id, output_data, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", state.id(), new byte[0]);
     }
 
@@ -847,6 +897,10 @@ final class JdbcTaskStore {
         state.progressTotal(total instanceof Number number ? number.longValue() : null);
         state.progressUnit(rs.getString("progress_unit"));
         state.progressUpdatedAt(instant(rs, "progress_updated_at"));
+        state.metadataExpiresAt(instant(rs, "metadata_expires_at"));
+        state.outputExpiresAt(instant(rs, "output_expires_at"));
+        state.pinned(rs.getBoolean("pinned"));
+        state.archivedAt(instant(rs, "archived_at"));
         return state;
     }
 

@@ -89,6 +89,7 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         RegisterRequest.class, RegisterResponse.class, TaskCommand.class,
         TaskCommand.DesktopAction.class, com.prodigalgal.remoteconnectmcp.protocol.FileTransferAction.class,
         com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse.class, TaskUpdateRequest.class,
+        com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate.class,
         UpgradeArtifact.class, UpgradePlan.class, UpgradeStatusRequest.class,
         com.prodigalgal.remoteconnectmcp.protocol.UpgradeComponentPlan.class,
         // Admin API projections/requests are also Java records.  They are
@@ -113,7 +114,7 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         ArtifactTransferService.ArtifactAdminView.class,
         McpConfiguration.ArtifactFileCore.class, McpConfiguration.ArtifactPutCoreArgs.class,
         McpConfiguration.ArtifactGetCoreArgs.class, McpConfiguration.ArtifactReadCoreArgs.class,
-        TaskService.ArtifactGcResult.class})
+        TaskService.ArtifactGcResult.class, TaskService.TaskRetentionGcResult.class})
 public class McpConfiguration {
     /** Stable Apps SDK resource URI; changing it would require reconnecting every client. */
     static final String ARTIFACT_VIEWER_URI = "ui://remote-connect-mcp/artifact-viewer-v1.html";
@@ -570,6 +571,10 @@ public class McpConfiguration {
         taskProperties.put("progress_total", modelNullableInteger("progress total value", 0L, Long.MAX_VALUE));
         taskProperties.put("progress_unit", modelNullableString("progress unit", 0, 32));
         taskProperties.put("progress_updated_at", modelNullableString("progress update timestamp", 0, 64));
+        taskProperties.put("metadata_expires_at", modelNullableString("task metadata expiry", 0, 64));
+        taskProperties.put("output_expires_at", modelNullableString("task output expiry", 0, 64));
+        taskProperties.put("pinned", modelBoolean("task retention is pinned"));
+        taskProperties.put("archived_at", modelNullableString("task archive timestamp", 0, 64));
         taskProperties.put("next_action", modelString("next action", 0, 512));
         var task = modelSchema(taskProperties, List.of("id", "machine_id", "kind", "status"));
         // Task projections intentionally grow as capabilities are added (for
@@ -1534,6 +1539,10 @@ public class McpConfiguration {
         value.put("progress_total", task.progressTotal());
         value.put("progress_unit", task.progressUnit());
         value.put("progress_updated_at", task.progressUpdatedAt());
+        value.put("metadata_expires_at", task.metadataExpiresAt());
+        value.put("output_expires_at", task.outputExpiresAt());
+        value.put("pinned", task.pinned());
+        value.put("archived_at", task.archivedAt());
         // Correlation identifiers are fixed-size and opaque.  Returning them
         // lets a caller correlate a task across a reconnect without exposing
         // the original Bearer token or broadcasting output to a whole session.

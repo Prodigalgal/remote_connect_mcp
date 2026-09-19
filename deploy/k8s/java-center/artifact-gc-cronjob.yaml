@@ -48,7 +48,7 @@ spec:
                   --connect-timeout 10 --max-time 540
                   -X POST
                   -H "Authorization: Bearer ${RCM_CENTER_ADMIN_TOKEN}"
-                  "http://remote-connect-mcp-java-center:8080/api/v1/admin/artifacts/gc?retentionDays=30&limit=100"
+                  "http://remote-connect-mcp-java-center:8080/api/v1/admin/artifacts/gc?retentionDays=30&outputRetentionDays=7&limit=100"
               resources:
                 requests:
                   cpu: 5m

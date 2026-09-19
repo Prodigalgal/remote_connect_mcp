@@ -45,7 +45,11 @@ public record TaskView(
         Long progressCurrent,
         Long progressTotal,
         String progressUnit,
-        Instant progressUpdatedAt) {
+        Instant progressUpdatedAt,
+        Instant metadataExpiresAt,
+        Instant outputExpiresAt,
+        boolean pinned,
+        Instant archivedAt) {
 
     public TaskView(TaskState task) {
         this(task.id(), task.machineId(), task.command().kind().wireValue(), task.command().requiredCapability(),
@@ -63,6 +67,7 @@ public record TaskView(
                 task.command().contract() == null ? null : task.command().contract().expiresAt(),
                 task.executionSessionId(), task.resultChannel(), task.changeSequence(), task.progressPhase(),
                 task.progressPercent(), task.progressMessage(), task.progressCurrent(), task.progressTotal(),
-                task.progressUnit(), task.progressUpdatedAt());
+                task.progressUnit(), task.progressUpdatedAt(), task.metadataExpiresAt(), task.outputExpiresAt(),
+                task.pinned(), task.archivedAt());
     }
 }

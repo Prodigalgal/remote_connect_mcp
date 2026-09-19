@@ -43,6 +43,10 @@ final class TaskState {
     private Long progressTotal;
     private String progressUnit;
     private Instant progressUpdatedAt;
+    private Instant metadataExpiresAt;
+    private Instant outputExpiresAt;
+    private boolean pinned;
+    private Instant archivedAt;
 
     TaskState(String id, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt) {
         this(id, machineId, command, idempotencyKey, createdAt, TaskOrigin.configured());
@@ -73,6 +77,9 @@ final class TaskState {
         this.executionSessionId = normalizeCorrelation(executionSessionId,
                 deriveExecutionSessionId(command, this.origin));
         this.resultChannel = normalizeCorrelation(resultChannel, deriveResultChannel(id));
+        var retentionBase = createdAt == null ? Instant.now() : createdAt;
+        this.metadataExpiresAt = retentionBase.plus(TaskService.DEFAULT_TASK_METADATA_RETENTION);
+        this.outputExpiresAt = retentionBase.plus(TaskService.DEFAULT_TASK_OUTPUT_RETENTION);
     }
 
     static TaskState restore(String id, String machineId, TaskCommand command, String idempotencyKey,
@@ -201,6 +208,14 @@ final class TaskState {
     void progressUnit(String value) { progressUnit = value; }
     Instant progressUpdatedAt() { return progressUpdatedAt; }
     void progressUpdatedAt(Instant value) { progressUpdatedAt = value; }
+    Instant metadataExpiresAt() { return metadataExpiresAt; }
+    void metadataExpiresAt(Instant value) { metadataExpiresAt = value; }
+    Instant outputExpiresAt() { return outputExpiresAt; }
+    void outputExpiresAt(Instant value) { outputExpiresAt = value; }
+    boolean pinned() { return pinned; }
+    void pinned(boolean value) { pinned = value; }
+    Instant archivedAt() { return archivedAt; }
+    void archivedAt(Instant value) { archivedAt = value; }
 
     private static String deriveExecutionSessionId(TaskCommand command, TaskOrigin origin) {
         var contract = command == null ? null : command.contract();
