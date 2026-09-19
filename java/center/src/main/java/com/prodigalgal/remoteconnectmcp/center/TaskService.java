@@ -992,6 +992,10 @@ public final class TaskService {
         return changeSequence >= 0 && task.changeSequence() > changeSequence;
     }
 
+    private static boolean changedAfter(TaskState task, long changeSequence) {
+        return changeSequence >= 0 && task.changeSequence() > changeSequence;
+    }
+
     /**
      * Publish metadata for a streamed Agent-to-Web transfer on the compact
      * task projection as well.  The payload itself remains in ArtifactStore;
