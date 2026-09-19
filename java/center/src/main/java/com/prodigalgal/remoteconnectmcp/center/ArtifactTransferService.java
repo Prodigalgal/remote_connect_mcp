@@ -23,6 +23,7 @@ import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
@@ -888,6 +889,158 @@ public final class ArtifactTransferService {
                 """;
         var count = jdbc.queryForObject(sql, Long.class, principal, principal, machine, machine, session, session);
         return count == null ? 0 : Math.toIntExact(count);
+    }
+
+    /**
+     * Remove expired first-class file artifacts in a bounded, retryable pass.
+     *
+     * <p>The database row is locked while the object is deleted.  This keeps a
+     * concurrent retention extension or pin operation from deleting a payload
+     * whose metadata has just been changed.  If the object backend reports an
+     * error, the row is deliberately kept so the next maintenance run can
+     * retry it.  There is no timer in the Center; an external CronJob or
+     * operator invokes the bounded admin endpoint.</p>
+     */
+    public ArtifactGcResult gcExpiredArtifacts(int limit) {
+        if (limit < 1 || limit > 500) {
+            throw new IllegalArgumentException("limit must be between 1 and 500");
+        }
+        if (jdbc == null) {
+            var candidates = new ArrayList<MemoryTransfer>();
+            var now = Instant.now();
+            for (var value : memory.values()) {
+                var descriptor = value.descriptor();
+                if (candidates.size() >= limit || value.pinned()
+                        || value.expiresAt() == null || now.isBefore(value.expiresAt())
+                        || !Set.of("ready", "delivered").contains(descriptor.status())) continue;
+                candidates.add(value);
+            }
+            var objectFiles = 0;
+            var failures = 0;
+            long bytes = 0L;
+            for (var value : candidates) {
+                try {
+                    if (value.objectKey() != null && !value.objectKey().isBlank()) {
+                        store.delete(value.objectKey());
+                        objectFiles++;
+                        bytes = saturatingAdd(bytes, Math.max(0L, value.descriptor().bytes()));
+                    }
+                    memory.remove(value.descriptor().transferId(), value);
+                } catch (RuntimeException failure) {
+                    failures++;
+                }
+            }
+            return new ArtifactGcResult(candidates.size() - failures, objectFiles, failures, bytes, 0);
+        }
+
+        var result = transactions == null
+                ? gcExpiredArtifactsWithoutTransaction(limit)
+                : transactions.execute(status -> gcExpiredArtifactsInTransaction(limit));
+        if (result == null) return new ArtifactGcResult(0, 0, 0, 0L, 0);
+
+        // Filesystem stores can enumerate only their own opaque namespace.  A
+        // one-hour grace period protects put-before-metadata-commit races;
+        // remote gateways intentionally return zero because they own listing
+        // and lifecycle policy themselves.
+        var referenced = jdbc.query("""
+                SELECT object_key FROM rcm_artifact
+                 WHERE storage_backend = ? AND object_key IS NOT NULL
+                UNION
+                SELECT object_key FROM rcm_task_artifact
+                 WHERE storage_backend = ? AND object_key IS NOT NULL
+                """, ps -> {
+            ps.setString(1, store.backend());
+            ps.setString(2, store.backend());
+        }, (rs, rowNum) -> rs.getString("object_key"));
+        var orphanFiles = 0;
+        var orphanFailures = 0;
+        try {
+            orphanFiles = store.sweepOrphans(Set.copyOf(referenced), Instant.now().minus(Duration.ofHours(1)), limit);
+        } catch (RuntimeException failure) {
+            orphanFailures = 1;
+        }
+        return new ArtifactGcResult(result.metadataRows(), result.objectFiles() + orphanFiles,
+                result.deleteFailures() + orphanFailures, result.objectBytes(), orphanFiles);
+    }
+
+    private ArtifactGcResult gcExpiredArtifactsWithoutTransaction(int limit) {
+        // Production PostgreSQL always wires a TransactionTemplate.  This
+        // fallback keeps focused adapter tests deterministic without silently
+        // deleting metadata before the object backend confirms deletion.
+        var candidates = jdbc.query("""
+                SELECT artifact_id, task_id, object_key, bytes
+                  FROM rcm_artifact
+                 WHERE pinned = FALSE
+                   AND expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP
+                   AND status IN ('ready', 'delivered')
+                 ORDER BY expires_at, artifact_id
+                 LIMIT ?
+                """, ps -> ps.setInt(1, limit), this::artifactGcCandidate);
+        return deleteExpiredArtifactCandidates(candidates);
+    }
+
+    private ArtifactGcResult gcExpiredArtifactsInTransaction(int limit) {
+        var candidates = jdbc.query("""
+                SELECT artifact_id, task_id, object_key, bytes
+                  FROM rcm_artifact
+                 WHERE pinned = FALSE
+                   AND expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP
+                   AND status IN ('ready', 'delivered')
+                 ORDER BY expires_at, artifact_id
+                 LIMIT ?
+                 FOR UPDATE SKIP LOCKED
+                """, ps -> ps.setInt(1, limit), this::artifactGcCandidate);
+        return deleteExpiredArtifactCandidates(candidates);
+    }
+
+    private ArtifactGcResult deleteExpiredArtifactCandidates(List<ArtifactGcCandidate> candidates) {
+        var metadataRows = 0;
+        var objectFiles = 0;
+        var failures = 0;
+        long bytes = 0L;
+        for (var candidate : candidates) {
+            try {
+                if (candidate.objectKey() != null && !candidate.objectKey().isBlank()) {
+                    store.delete(candidate.objectKey());
+                    objectFiles++;
+                    bytes = saturatingAdd(bytes, Math.max(0L, candidate.bytes()));
+                }
+                var removed = jdbc.update("""
+                        DELETE FROM rcm_artifact
+                         WHERE artifact_id = ? AND pinned = FALSE
+                           AND expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP
+                        """, candidate.artifactId());
+                if (removed > 0) {
+                    metadataRows++;
+                    if (candidate.taskId() != null && !candidate.taskId().isBlank()) {
+                        // Do not leave the compact task projection advertising
+                        // a file after its last first-class artifact vanished.
+                        // An older task projection is preserved when another
+                        // artifact still exists for the same task.
+                        jdbc.update("""
+                                UPDATE rcm_task
+                                   SET artifact_bytes = 0, artifact_mime = NULL,
+                                       artifact_sha256 = NULL, updated_at = CURRENT_TIMESTAMP
+                                 WHERE task_id = ?
+                                   AND NOT EXISTS (SELECT 1 FROM rcm_artifact WHERE task_id = ?)
+                                   AND NOT EXISTS (SELECT 1 FROM rcm_task_artifact WHERE task_id = ?)
+                                """, candidate.taskId(), candidate.taskId(), candidate.taskId());
+                    }
+                }
+            } catch (RuntimeException failure) {
+                // Keep the metadata row when the object backend failed.  The
+                // next bounded run can retry it and the admin result exposes
+                // the failure count without placing the Center on a retry loop.
+                failures++;
+            }
+        }
+        return new ArtifactGcResult(metadataRows, objectFiles, failures, bytes, 0);
+    }
+
+    private ArtifactGcCandidate artifactGcCandidate(java.sql.ResultSet rs, int rowNum)
+            throws java.sql.SQLException {
+        return new ArtifactGcCandidate(rs.getString("artifact_id"), rs.getString("task_id"),
+                rs.getString("object_key"), rs.getLong("bytes"));
     }
 
     /** Delete metadata and the owned object; repeated deletion is idempotent. */
@@ -2013,6 +2166,8 @@ public final class ArtifactTransferService {
                     averageDurationSeconds, maxDurationSeconds, 0L, 0L, 0L);
         }
     }
+    public record ArtifactGcResult(int metadataRows, int objectFiles, int deleteFailures,
+                                   long objectBytes, int orphanFiles) { }
     private record Downloaded(Path path, long bytes, String sha256) { }
     private record Ids(String transferId, String artifactId) { }
     private record StoredArtifact(String objectKey, String principalId) { }
@@ -2037,6 +2192,7 @@ public final class ArtifactTransferService {
     private record AdminArtifactRow(String artifactId, String fileName, String mimeType, long bytes,
                                     String sha256, String status, String objectKey) { }
     private record StoredObject(String objectKey, String status) { }
+    private record ArtifactGcCandidate(String artifactId, String taskId, String objectKey, long bytes) { }
     private record AccessToken(String artifactId, long expires, String principal, String connection,
                                String session, String purpose, String kid, String signature) { }
 

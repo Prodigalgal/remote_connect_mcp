@@ -6,6 +6,7 @@ resources:
   - service.yaml
   - migration-job.yaml
   - deployment.yaml
+  - artifact-gc-cronjob.yaml
   - console.yaml
   - routes.yaml
 images:

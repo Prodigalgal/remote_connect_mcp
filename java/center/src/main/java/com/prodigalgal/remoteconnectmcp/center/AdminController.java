@@ -363,7 +363,18 @@ public final class AdminController {
             @RequestParam(defaultValue = "100") int limit) {
         return execute(() -> {
             authenticate(authorization);
-            return ResponseEntity.ok(tasks.gcArtifacts(retentionDays, limit));
+            if (limit < 1 || limit > 500) {
+                throw new IllegalArgumentException("limit must be between 1 and 500");
+            }
+            var taskArtifacts = tasks.gcArtifacts(retentionDays, limit);
+            var fileArtifacts = transfers == null
+                    ? new ArtifactTransferService.ArtifactGcResult(0, 0, 0, 0L, 0)
+                    : transfers.gcExpiredArtifacts(limit);
+            return ResponseEntity.ok(Map.of(
+                    "task_artifacts", taskArtifacts,
+                    "file_artifacts", fileArtifacts,
+                    "retention_days", retentionDays,
+                    "limit", limit));
         });
     }
 

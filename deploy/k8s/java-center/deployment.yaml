@@ -50,6 +50,12 @@ spec:
             # wait for days without keeping a browser URL valid for days.
             - name: RCM_CENTER_ARTIFACT_RETENTION_SECONDS
               value: "604800"
+            - name: RCM_CENTER_ARTIFACT_WEB_RETENTION_SECONDS
+              value: "604800"
+            - name: RCM_CENTER_ARTIFACT_LARGE_RETENTION_SECONDS
+              value: "259200"
+            - name: RCM_CENTER_ARTIFACT_TEXT_RETENTION_SECONDS
+              value: "1209600"
             - name: RCM_CENTER_ARTIFACT_URL_TTL_SECONDS
               value: "900"
             # Public origin used in signed artifact URLs and MCP Apps CSP

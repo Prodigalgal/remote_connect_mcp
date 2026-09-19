@@ -26,9 +26,11 @@ DELETE {base_url}/v1/objects/{url-encoded-object-key}
 - 配置了 `RCM_CENTER_ARTIFACT_HTTP_TOKEN` 时，三个请求都带
   `Authorization: Bearer <token>`。网关日志必须脱敏该标头。
 
-网关应在自身侧完成 ACL、加密、保留期、版本化、容量配额和访问审计。Center
-不会调用列举接口，也不会对远端执行无界 GC；`ArtifactStore.sweepOrphans`
-在 HTTP 后端返回零，孤儿对象由网关生命周期策略或单独维护任务处理。
+网关应在自身侧完成 ACL、加密、保留期、版本化、容量配额和访问审计。HTTP 网关是可选
+后端，默认部署不需要它；Center 不调用列举接口，也不会对远端执行无界 GC。
+`ArtifactStore.sweepOrphans` 在 HTTP 后端返回零，孤儿对象由网关生命周期策略或单独维护
+任务处理。Center 的 TTL GC 仍会按已知 key 做有界 DELETE，并在删除失败时保留数据库元数据
+等待下一轮重试。
 
 ## Center 配置
 

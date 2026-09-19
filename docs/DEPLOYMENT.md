@@ -152,9 +152,11 @@ Remove-Item Env:PGPASSWORD
 表；确认应用读写和 Agent 心跳后才允许切换生产路由。生产 Center 可挂载独立持久卷并设置
 `RCM_CENTER_ARTIFACT_STORE=filesystem`、`RCM_CENTER_ARTIFACT_ROOT`，或设置
 `RCM_CENTER_ARTIFACT_STORE=http`、`RCM_CENTER_ARTIFACT_HTTP_BASE_URL`（必要时再注入
-`RCM_CENTER_ARTIFACT_HTTP_TOKEN`）接入内部 HTTPS 对象网关；`/api/v1/readyz` 会拒绝
-缺少持久工件存储的 PostgreSQL 实例。备份目录已加入 `.gitignore`，对象文件还应由卷/对象
-存储策略设置加密、保留期和访问审计。
+`RCM_CENTER_ARTIFACT_HTTP_TOKEN`）接入内部 HTTPS 对象网关。外部对象存储是可选后端，
+默认的 filesystem 已经满足单 Center 生产运行；两种后端都实现同一个 `ArtifactStore`
+接口，Agent/MCP 协议不感知后端差异。`/api/v1/readyz` 只要求 PostgreSQL 和一个可用的
+持久字节后端，不要求必须存在 S3/MinIO/R2。备份目录已加入 `.gitignore`，对象文件还应由
+卷/对象存储策略设置加密、保留期和访问审计。
 
 Linux/Windows 原生二进制还会由 GitHub OIDC 生成 Artifact Attestation（工作流同时声明
 `id-token: write`、`attestations: write` 和 `artifact-metadata: write`）；下载 Release 资产后，
@@ -168,7 +170,7 @@ Linux/Windows 原生二进制还会由 GitHub OIDC 生成 Artifact Attestation�
 rcm-center --migrate
 ```
 
-该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core`、`002-task-output`、`003-task-state-fields`、`004-artifact-data`、`005-upgrades`、`006-agent-config`、`007-projects-worktrees`、`008-agent-name-unique`、`009-task-lease-index`、`010-execution-contract`、`011-artifact-storage`、`012-audit-events`、`013-agent-runtime-descriptor`、`014-agent-config-history`、`015-mcp-principals`、`016-execution-lanes`、`017-task-session-channel`、`018-principal-access`、`019-execution-sessions`、`020-artifact-transport`、`021-artifact-transfer-state`、`022-empty-artifacts`、`023-artifact-transfer-direction`、`024-transfer-progress`、`025-task-artifact-projection`；仓库不使用 Flyway。
+该入口只启动 Liquibase、完成 `validate/update` 后退出。变更集位于 `java/center/src/main/resources/db/changelog`，当前为 `001-core` 至 `029-artifact-gc-index`（包含 `027` 生命周期策略、`028` 主体归一化和 `029` TTL GC 索引）；仓库不使用 Flyway。
 
 Java Center 的 memory 模式只用于协议回归/开发。生产必须同时设置
 `RCM_CENTER_PERSISTENCE_MODE=postgres` 和
@@ -183,6 +185,28 @@ Java Center 的 memory 模式只用于协议回归/开发。生产必须同时�
 不会被 512 MiB 的容器 `/tmp` 配额意外截断，实际仍受可用磁盘 reservation 保护。
 同时可用 `RCM_CENTER_TRANSFER_STALL_TIMEOUT_SECONDS`（默认 120 秒）限制已建立连接后
 连续无进展的读取；该值与 30 分钟绝对传输生命周期及进度节流独立。
+
+### 工件 TTL 与定时清理
+
+每个已发布工件都带有独立的 `expires_at`。默认 TTL 为 7 天；Web→Agent、文本/日志和
+大文件可以分别通过 `RCM_CENTER_ARTIFACT_WEB_RETENTION_SECONDS`、
+`RCM_CENTER_ARTIFACT_TEXT_RETENTION_SECONDS`、`RCM_CENTER_ARTIFACT_LARGE_RETENTION_SECONDS`
+收紧或延长。`pinned` 工件不会被自动 GC，但仍可以由管理员显式删除。签名下载 URL 默认
+只有 15 分钟有效，不能反向延长文件 TTL。
+
+Center 不运行定时清理线程，也不靠高频轮询。Kubernetes 模板随 Center 部署一个可选的、
+低频有界 `CronJob`（默认每 6 小时执行一次），使用同一份 Admin Secret 调用：
+
+```text
+POST /api/v1/admin/artifacts/gc?retentionDays=30&limit=100
+Authorization: Bearer <Admin Token>
+```
+
+其中 `retentionDays` 只用于旧任务投影工件；新的双向文件工件始终以数据库中的
+`expires_at` 为准。每次最多处理 100 条，且 `concurrencyPolicy=Forbid`。GC 先删除字节对象，
+对象删除成功后才删除元数据；对象网关暂时不可用时保留元数据并在下一轮重试。filesystem
+后端额外清理一小时宽限期以前、且没有数据库引用的 `fs-v1` 孤儿对象。若不需要自动清理，
+可以在部署 overlay 中移除 `artifact-gc-cronjob.yaml`，然后由外部运维平台按同一接口触发。
 
 Agent 端可用 `REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS`（默认 120 秒，
 5 秒至 1 小时）收紧已建立文件流的无进展等待；它与 30 分钟绝对传输上限独立。

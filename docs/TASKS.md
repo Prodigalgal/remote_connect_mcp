@@ -24,7 +24,7 @@
 | --- | --- | --- |
 | P0 | 核心可靠性、安全、Artifact Transport v2、Session 原子 admission 与组件升级协议代码已完成 | 统一 Actions 集成、Center/Agent 重启/断线组合矩阵、工件卷备份恢复和离线升级目标环境门禁 |
 | P1 | 主流程、桌面/浏览器、控制台、Viewer、组件选择器和独立运行时合同代码已完成 | Windows/Linux Desktop 与 Browser、ChatGPT Web 文件对象、Git/Console/升级/长连接真实矩阵，以及无障碍/视觉验收 |
-| P2 | P2-01/03/04/06/07、P2-05-lite、Viewer 解耦/handler、去重和生命周期代码已完成 | QUIC/HTTP3 真实 Provider、集中日志/对象生命周期、SLO/告警演练和多主体双账号现场验收 |
+| P2 | P2-01/03/04/06/07、P2-05-lite、Viewer 解耦/handler、去重和生命周期代码已完成 | QUIC/HTTP3 真实 Provider、集中日志/对象网关自身生命周期、SLO/告警演练和多主体双账号现场验收 |
 | MCP Tool/Schema | 8 个聚合 Tool、严格 Schema、结构化输出和仓库门禁已完成 | P1-TM-17/18：ChatGPT Web 真实发现/调用和生产收口 |
 
 当前证据基线：Java Native Release `35043403122`（tag `java-v0.1.28`）成功；稳定 `java-v0.1.29` Release `35064539692` 的三平台 Native、镜像、SBOM、签名和 release jobs 成功，Linux GUI canary 已使用其 arm64 Desktop 资产完成真实 screens/截图；GitOps revision `eee62d2` 已由 Argo 报告 `Synced/Healthy/Succeeded`；事件驱动检查、仓库敏感信息扫描和浏览器脚本静态检查均通过。本机没有执行 Java、Gradle、Native Image 或 React 构建。
@@ -37,7 +37,7 @@
 | [x] | P0-02 | 机器注册与凭据分层 | 一次性 Enrollment Token、独立 Agent Token、稳定 MCP Token、独立 Admin Token 已实现；Enrollment 不写入长期配置 | 注册与身份测试、生产 Secret |
 | [x] | P0-03 | 异步任务全链路恢复 | 已有幂等、租约、Attempt、旧 attempt 回传栅栏、取消、输出游标和 LISTEN/NOTIFY；Agent 对重复 poll 回传增加原子 `putIfAbsent` dispatch fence，避免覆盖正在运行的 Future；Center 重启、Agent 断线、重复重试、长任务和高并发属于独立生产验收 | `AgentRuntimeTest.duplicateTaskRegistrationKeepsTheFirstRunner`、GitHub Actions |
 | [x] | P0-04 | PostgreSQL + Liquibase 唯一事实来源 | PostgreSQL、Liquibase 当前 changelog 和迁移 Job 的代码与 CI 实现完成；生产迁移/版本收敛属于独立生产验收 | PostgreSQL/Liquibase CI、`PostgresIntegrationTest` |
-| [x] | P0-05 | 任务与工件的持久化边界 | `ArtifactStore`、持久卷文件对象、原子写入/读取校验和显式 GC API 已实现；生产卷备份/恢复、保留策略和规模压测属于独立生产验收 | 对象存储适配、迁移/恢复、生命周期测试、GitHub Actions |
+| [x] | P0-05 | 任务与工件的持久化边界 | `ArtifactStore`、默认 filesystem 持久卷、可选 HTTP 对象网关、原子写入/读取校验、TTL 元数据和显式 GC API 已实现；生产卷备份/恢复、CronJob 和规模压测属于独立生产验收 | 对象存储适配、迁移/恢复、生命周期测试、GitHub Actions |
 | [x] | P0-06 | 执行范围与权限合同 | project/worktree/path/workspace/unrestricted 合同、Center/Agent/桌面双端校验、预算收窄和凭据过滤已实现；目标机绕过与回归属于独立生产验收 | `DesktopCompanionServerTest`、GitHub Actions |
 | [x] | P0-07 | Agent 资源硬限制 | 任务级进程树/墙钟/CPU/RSS 监督、输出/磁盘/并发上限、Linux cgroup 可选边界、Windows 有界进程树/Task Scheduler 路径和 Agent 总进程预算已实现；目标机压测属于独立生产验收 | GitHub Actions Native smoke、RSS gate、资源监督测试 |
 | [x] | P0-08 | 隐私、密钥和仓库卫生 | 公开仓库使用模板值；真实域名、Token、Secret 和私有 GitOps 留在受保护环境；日志/指标有脱敏约定 | 仓库扫描、CI hygiene、私有部署检查 |
@@ -120,11 +120,20 @@
 | [x] | P1-AT-18 | Viewer tool-result 事件标准化 | 支持标准 `ui/notifications/tool-result` 事件；宿主通知顺序属于验收 |
 | [x] | P1-AT-19 | ChatGPT 当前对话/Library 文件保存 | Viewer 支持普通 `uploadFile(file)` 与 `uploadFile(file, {library:true})`，并显示返回 file id；权限属于验收 |
 | [x] | P1-AT-20 | Artifact readiness 自检 | durable PostgreSQL readiness 主动校验 HTTPS public origin、占位域名、独立签名密钥和长度；K8s 缺配项属于验收 |
+
 | [x] | P1-AT-21 | Artifact signing secret 无中断轮换 | 支持 current/previous secret 与 `kid`；新 URL 使用 current，旧 URL 在 TTL 内由 previous 验证；轮换演练属于验收 |
 | [x] | P1-AT-22 | Viewer 大文件按 Range 预览 | 文本/JSON/日志请求有限 Range，并用流式读取上限；非 Range Host 和多字节编码属于验收 |
 | [x] | P1-AT-23 | Viewer 文件类型 handler 扩展 | MIME → handler 注册表已覆盖图片/PDF/音视频/Markdown/CSV/代码、diff、Office 和压缩包安全降级；未知类型仍下载 |
 | [x] | P1-AT-24 | 文件传输状态与进度 UI | Center Artifact/Transfer 投影 API、React 进度/生命周期面板和事件唤醒刷新已接入 |
 | [x] | P1-AT-25 | Artifact/Transfer 管理 API | 已提供分页、principal/machine/session 过滤、删除、延长、固定和生命周期字段；自动化门禁属于验收 |
+
+### 本轮存储可选化与 TTL 清理
+
+| 状态 | 编号 | 任务 | 当前实现/剩余门禁 |
+| --- | --- | --- | --- |
+| [x] | P1-AT-26 | 外部对象存储可选开关 | `RCM_CENTER_ARTIFACT_STORE=filesystem` 为默认生产路径；只有显式选择 `http` 才接入内部对象网关；readiness 只要求 PostgreSQL + 一个持久字节后端，不要求 S3/MinIO/R2；不改变 Agent/MCP 协议。CI 配置矩阵和生产切换演练仍需验收 |
+| [x] | P1-AT-27 | 文件 Artifact TTL 与外部有界 GC | `expires_at`/`pinned` 作为文件生命周期事实来源；`POST /api/v1/admin/artifacts/gc` 同时清理旧任务投影和已过期 `rcm_artifact`，先删对象再删元数据，失败保留待重试；Kubernetes `CronJob` 默认每 6 小时、单次最多 100 条且禁止并发运行。CI/生产定时任务和删除失败恢复仍需验收 |
+| [x] | P1-AT-28 | TTL GC 索引与孤儿对象边界 | Liquibase `029` 增加 `expires_at + artifact_id` 部分索引；filesystem 只在一小时并发写入宽限期后清理无引用 `fs-v1` 对象，HTTP 网关不做无界枚举，由网关生命周期负责孤儿对象；卷容量/对象网关配额压测仍需验收 |
 | [x] | P2-AT-07 | Artifact opaque token 密钥版本化 | 访问票据已加密携带 `kid`，支持 AES/HMAC current/previous key rotation；轮换测试属于验收 |
 | [x] | P2-AT-08 | Viewer 从 Java 内嵌 HTML 解耦为前端资源 | `web/src/artifact-viewer/artifact-viewer-v1.html` 为源文件，Actions 在 Java/Native/React 构建前同步到 classpath，并保留稳定 URI |
 | [x] | P2-AT-09 | Preview Handler 插件化 | Viewer 与 `web/src/artifact-viewer/previewHandlers.ts` 均采用 MIME → handler 注册表，未知类型安全降级下载 |

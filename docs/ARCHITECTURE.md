@@ -131,13 +131,16 @@ Java Center 在一个进程内只选择一个持久化适配器。生产配置�
 ### 3.2 Artifact Transport v2
 
 文件传输是独立于命令输出的二进制数据面。`artifact_put` 接收 ChatGPT Apps
-SDK 的短期 `download_url`/`file_id` 引用，Center 只在当前请求中下载并写入对象存储，随后
+SDK 的短期 `download_url`/`file_id` 引用，Center 只在当前请求中下载并写入已配置的字节后端，随后
 以 `file_transfer` 任务将对象流送到 Agent；`artifact_get` 反向读取 Agent 文件，Center
 校验大小与 SHA-256 后生成短期签名文件对象 URL。任务 JSON 只携带 transfer/artifact
 引用和路径，不携带 Base64 或文件内容。文件名、范围合同、来源 Agent、用户主体和会话
 均在 Center 与 Agent 两端校验。v2 使用 HTTP 流式传输和原子临时文件；大文件通过
 `HEAD` 偏移确认、8 MiB `Content-Range` 分块和 Web→Agent `Range` 续传，partial
-spool 只在最终哈希提交后删除。React Artifact Viewer 和真实连接器渲染仍需独立验收，
+spool 只在最终哈希提交后删除。默认字节后端是 Center 持久卷上的 filesystem；
+`RCM_CENTER_ARTIFACT_STORE=http` 才启用内部 HTTPS 对象网关，外部对象存储不是运行前置条件。
+每个工件写入独立 `expires_at`，签名 URL TTL 与文件 TTL 解耦；外部 CronJob 以有界批次执行
+TTL GC，Center 内不运行定时轮询。React Artifact Viewer 和真实连接器渲染仍需独立验收，
 详见 [`ARTIFACT_TRANSPORT_V2.md`](ARTIFACT_TRANSPORT_V2.md)。
 
 ## 4. 范围与项目策略
@@ -230,6 +233,6 @@ Agent 心跳自描述版本、平台、HostID、角色、能力、范围策略�
 4. **可靠性阶段**：完善 Task Attempt、死信/过期任务和 WebSocket；配置代次/热更新与心跳自描述已落地。
 5. **开发工作流阶段**：Project Registry 与 Git worktree 已落地基础闭环；继续补结构化文件/Git/检查、提交审阅和显式合并工具。
 6. **专用自动化阶段**：Browser Agent 的 Playwright/Patchright/Comoufox 完整 Worker 协议、会话生命周期和工件策略；桌面输入基础能力已落地，继续补窗口/焦点适配。
-7. **规模化阶段**：在 PostgreSQL + Liquibase 持久化已经成为默认生产路径后，继续扩展轻量多主体/执行车道、集中日志、S3 对象存储适配、SLO/告警和可选 QUIC provider，保持 MCP URL 与工具契约不变；Center 多副本、完整 SaaS 多租户和跨组织计费不属于当前路线，文件对象实现继续依赖独立持久卷。
+7. **规模化阶段**：在 PostgreSQL + Liquibase 持久化已经成为默认生产路径后，继续扩展轻量多主体/执行车道、集中日志、可选 S3 兼容对象存储适配、SLO/告警和可选 QUIC provider，保持 MCP URL 与工具契约不变；Center 多副本、完整 SaaS 多租户和跨组织计费不属于当前路线。单 Center 默认继续使用独立持久卷，外部对象存储只有在 `RCM_CENTER_ARTIFACT_STORE` 显式切换后才启用。
 
 明确不在当前范围：OAuth 2.1 强制化、代理其他 MCP、把任意范围模式冒充 OS 沙箱、把 ChatGPT 的动作审批策略写入 Center、或一次性暴露海量浏览器/桌面底层工具。

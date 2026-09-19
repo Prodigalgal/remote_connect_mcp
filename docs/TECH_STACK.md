@@ -37,7 +37,7 @@
 | Center 数据访问 | Spring JDBC `JdbcClient` + 明确 SQL | 队列、租约、幂等、CAS 更新都需要可见 SQL 和事务边界；避免 ORM 隐式行为 | JPA/Hibernate 作为核心队列存储 |
 | Center 数据库 | PostgreSQL（版本锁定在部署清单） | 事务、行锁、JSONB、LISTEN/NOTIFY 和运维工具成熟 | 生产继续依赖单个 JSON/PVC 文件 |
 | 数据迁移 | Liquibase | 版本化 changelog、上下文/前置条件、SQL 预览和回滚审计完整 | 启动时无条件自动改表 |
-| 工件存储 | `ArtifactStore` 抽象；当前生产实现为独立持久卷上的原子文件对象，S3 对象存储适配器保留扩展位 | 图片、日志、升级包与 PostgreSQL 元数据分离，按 key、大小和 SHA-256 校验 | 将大工件塞进任务 JSON 或 PostgreSQL `BYTEA` |
+| 工件存储 | `ArtifactStore` 抽象；默认是独立持久卷上的原子文件对象，内部 HTTPS 对象网关为可选后端，S3 兼容适配器保留扩展位 | 图片、日志、升级包与 PostgreSQL 元数据分离，按 key、大小和 SHA-256 校验；文件 TTL 由外部有界 GC 执行 | 将大工件塞进任务 JSON 或 PostgreSQL `BYTEA`，或把外部对象存储做成硬依赖 |
 | Agent 语言 | Java 25 模块化 JDK 应用 | 不带 Spring，原生镜像小、启动快、跨平台边界清晰 | Agent 引入完整 Spring 容器 |
 | Agent 通道 | JDK `HttpClient` 25 秒长轮询 + 原始 WebSocket 唤醒；断线指数退避 | 无额外网络栈依赖，HTTPS/TLS 和断线重试可控，健康路径不刷固定请求 | 首版直接绑定 QUIC |
 
@@ -80,12 +80,13 @@ MCP 层使用官方 Java SDK 的 Streamable HTTP 传输，固定挂载 `/mcp`。
 - 任务创建、幂等键、租约领取、Attempt、状态机和输出游标全部由 PostgreSQL 事务保证；
 - 使用 `SELECT ... FOR UPDATE SKIP LOCKED` 或等价 CAS 语句实现多 Agent 领取，Center 副本增加前不引入额外消息队列；
 - `LISTEN/NOTIFY` 只作为唤醒提示，不能替代数据库状态，断线后仍能靠版本/游标补偿；
-- 输出、截图、升级包使用对象存储 key + SHA-256 + 大小 + MIME 元数据；当前 Center 通过独立持久卷文件对象落盘，数据库不再写入新的大块 `BYTEA`；
-- `RCM_CENTER_ARTIFACT_STORE=filesystem` 时使用同一 PVC/专用数据卷，写入采用临时文件加原子替换，读取再次校验大小与 SHA-256；`RCM_CENTER_ARTIFACT_STORE=http` 时通过 HTTPS 内部对象网关读写同一套 opaque key，网关 Token 只经 Secret/env 注入；任一后端接入 `ArtifactStore` 后都不改变任务或 Agent 协议；
+- 输出、截图、升级包使用对象 key + SHA-256 + 大小 + MIME 元数据；当前 Center 通过独立持久卷文件对象落盘，数据库不再写入新的大块 `BYTEA`；
+- `RCM_CENTER_ARTIFACT_STORE=filesystem` 时使用同一 PVC/专用数据卷，写入采用临时文件加原子替换，读取再次校验大小与 SHA-256；`RCM_CENTER_ARTIFACT_STORE=http` 时通过 HTTPS 内部对象网关读写同一套 opaque key，网关 Token 只经 Secret/env 注入。默认不要求外部对象存储；任一后端接入 `ArtifactStore` 后都不改变任务或 Agent 协议；
+- 每个文件工件保存独立 `expires_at`/`pinned` 生命周期元数据，签名 URL TTL 只控制访问票据有效期。Kubernetes CronJob 或外部维护平台按固定低频触发有界 GC；Center 不运行定时轮询线程，后端删除失败时保留元数据等待下一次重试；
 - Liquibase changelog 使用 Git 管理的 master YAML + 版本化 YAML/SQL 变更集，必须可回放、可 `update-sql` dry-run，并为 PostgreSQL 集成测试提供 Testcontainers 夹具；
 - 生产由独立 Kubernetes migration Job 执行 `validate/update`，应用只校验已安装的 schema 版本；禁止多个 Center Pod 同时在启动阶段抢迁移锁；
 - 每个变更集设置唯一 `id/author`、`labels/contexts` 和必要的 preconditions，危险 DDL 先在影子数据库执行 rollback 演练；
-- 协议回归可使用内存适配器，但生产配置必须显式选择 PostgreSQL 和对象存储/受控工件存储。
+- 协议回归可使用内存适配器，但生产配置必须显式选择 PostgreSQL 和持久字节后端；外部对象存储只是可选的 `http`/未来 S3 适配，不是生产硬性依赖。
 
 Java Center 生产版本只使用当前 PostgreSQL + Liquibase 数据模型；发布前完成备份和 migration Job，不内置旧状态导入或旧 Token 迁移入口。
 

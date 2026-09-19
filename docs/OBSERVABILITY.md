@@ -32,7 +32,7 @@ RCM 的业务请求、Agent 通道和工件路径仍然是异步的。Center 不
 
 Center/Agent 继续把日志写到 stdout/stderr 或 systemd journal，由宿主机或 K8s 日志采集器转发到 Loki、OpenTelemetry Collector 等集中日志系统。Center 设置 `RCM_CENTER_STRUCTURED_AUDIT_LOG=true` 后，会额外输出单行 `rcm.audit {JSON}` 审计投影；JSON 只包含已脱敏、低基数的事件字段，不包含完整命令、环境变量、Cookie 或工件内容。采集器配置、远端凭据和保留周期不放入公开仓库。
 
-任务工件由 `ArtifactStore` 抽象承载，PostgreSQL 只保留 key、大小、MIME 和 SHA-256 元数据；默认后端是受持久卷保护的 filesystem，也可通过 `RCM_CENTER_ARTIFACT_STORE=http` 接入内部 HTTPS 对象网关。filesystem 的 GC 通过显式维护入口执行并有并发写入宽限期；远程网关由网关侧负责枚举和生命周期，Center 不做无界扫描。
+任务工件由 `ArtifactStore` 抽象承载，PostgreSQL 只保留 key、大小、MIME、SHA-256 和 TTL 元数据；默认后端是受持久卷保护的 filesystem，也可通过 `RCM_CENTER_ARTIFACT_STORE=http` 接入内部 HTTPS 对象网关。每 6 小时由外部 CronJob 触发一次有界 Artifact GC，按 `expires_at` 删除未 pinned 的已完成文件，filesystem 额外处理并发写入宽限期后的孤儿对象；远程网关由网关侧负责枚举和生命周期，Center 不做无界扫描或定时轮询。
 
 ## 验收顺序
 

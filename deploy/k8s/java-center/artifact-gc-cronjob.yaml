@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: remote-connect-mcp-artifact-gc
+  namespace: remote-connect-mcp
+  labels:
+    app.kubernetes.io/name: remote-connect-mcp-artifact-gc
+    app.kubernetes.io/part-of: remote-connect-mcp
+spec:
+  # External, low-frequency trigger.  The Center does not run a timer or
+  # polling thread; each invocation is bounded and exits after one pass.
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: remote-connect-mcp-artifact-gc
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: gc
+              image: curlimages/curl:8.11.1
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: RCM_CENTER_ADMIN_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: remote-connect-mcp-java-secrets
+                      key: admin-token
+              command: ["/bin/sh", "-ec"]
+              args:
+                - >-
+                  curl --fail-with-body --silent --show-error
+                  --connect-timeout 10 --max-time 540
+                  -X POST
+                  -H "Authorization: Bearer ${RCM_CENTER_ADMIN_TOKEN}"
+                  "http://remote-connect-mcp-java-center:8080/api/v1/admin/artifacts/gc?retentionDays=30&limit=100"
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 16Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi

@@ -43,6 +43,9 @@ public final class DatabaseRuntimeInitializer
         var password = setting(environment, "RCM_CENTER_DATABASE_PASSWORD", null, "");
         var liquibaseEnabled = Boolean.parseBoolean(setting(environment,
                 "RCM_CENTER_LIQUIBASE_ENABLED", null, "true"));
+        // The durable filesystem backend is the default and is sufficient for
+        // a single Center.  An external object gateway is an explicit opt-in;
+        // no S3/MinIO/R2 service is required to start the production Center.
         var artifactBackend = setting(environment, "RCM_CENTER_ARTIFACT_STORE", "rcm.artifact.store", "filesystem").trim();
         ArtifactStore configuredStore;
         if ("filesystem".equalsIgnoreCase(artifactBackend)) {
@@ -56,7 +59,7 @@ public final class DatabaseRuntimeInitializer
                     "rcm.artifact.http.timeout-seconds", "30"));
             configuredStore = new HttpArtifactStore(URI.create(baseUrl), token, timeout);
         } else {
-            throw new IllegalStateException("RCM_CENTER_ARTIFACT_STORE must be filesystem or http");
+            throw new IllegalStateException("RCM_CENTER_ARTIFACT_STORE must be filesystem (default) or http (opt-in)");
         }
         if (Boolean.parseBoolean(setting(environment, "RCM_CENTER_ARTIFACT_DEDUP_ENABLED", null, "false"))) {
             configuredStore = new ContentAddressedArtifactStore(configuredStore);
