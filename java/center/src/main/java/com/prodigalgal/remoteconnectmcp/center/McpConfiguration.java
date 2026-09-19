@@ -1205,10 +1205,12 @@ public class McpConfiguration {
             return json(resultPayload);
         }
         var result = McpSchema.CallToolResult.builder()
+                .structuredContent(resultPayload)
                 .addTextContent(jsonText(resultPayload))
                 .build();
         if (inlineImage) {
             result = McpSchema.CallToolResult.builder()
+                    .structuredContent(resultPayload)
                     .addTextContent(jsonText(resultPayload))
                     .addContent(McpSchema.ImageContent.builder(java.util.Base64.getEncoder().encodeToString(value.data()), value.mimeType()).build())
                     .build();
@@ -1316,6 +1318,7 @@ public class McpConfiguration {
         }
         var text = jsonText(payload);
         return McpSchema.CallToolResult.builder()
+                .structuredContent(payload)
                 .addTextContent(text)
                 .addContent(McpSchema.ImageContent.builder(
                         java.util.Base64.getEncoder().encodeToString(value.data()), value.mimeType()).build())

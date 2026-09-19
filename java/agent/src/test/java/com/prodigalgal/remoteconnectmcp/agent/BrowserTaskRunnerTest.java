@@ -34,7 +34,7 @@ class BrowserTaskRunnerTest {
         var config = new AgentConfig(URI.create("http://127.0.0.1:18183"), "", "browser-agent", "browser-host",
                 stateDir.toString(), ScopeMode.UNRESTRICTED, null, List.of("browser"), false, stateDir,
                 Duration.ofMillis(250), 1, 4L * 1024 * 1024, 8L * 1024 * 1024, adapter);
-        var task = new TaskCommand("browser-task", TaskKind.BROWSER, "browser", "{\"operation\":\"snapshot\"}",
+        var task = new TaskCommand("browser-task", TaskKind.BROWSER, "browser", "{\"action\":\"observe\"}",
                 stateDir.toString(), Map.of(), 30, null, Instant.now(),
                 new ExecutionContract("machine-browser", "browser-host", ScopeMode.UNRESTRICTED,
                         null, null, null, "session-test", "browser", ExecutionContract.Budget.defaults(),

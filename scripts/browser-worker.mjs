@@ -30,7 +30,7 @@ let browser;
 
 try {
   const task = JSON.parse(await readFile(requestFile, "utf8"));
-  const command = parseCommand(task.command);
+  const command = normalizeCommand(parseCommand(task.command));
   const result = await run(command);
   await writeResult({ status: "completed", output: result.output, ...(result.artifact ? { artifact: result.artifact } : {}) });
 } catch (error) {
@@ -85,7 +85,11 @@ async function staleReferenceObservation(message) {
 }
 
 async function run(command) {
-  const operation = text(command.operation || "snapshot").toLowerCase();
+  // The MCP-facing browser envelope uses `action`; the worker receives that
+  // normalized envelope directly. A missing action must fail closed instead
+  // of silently executing an unrelated snapshot.
+  const operation = text(command.operation).toLowerCase();
+  if (!operation) throw new Error("browser action is required");
   const module = await loadEngine(engineName);
   const browserType = module[browserName];
   if (!browserType || typeof browserType.launch !== "function") {
@@ -560,6 +564,66 @@ async function writeResult(value) {
 async function assertRegularFile(file) {
   const info = await lstat(file);
   if (!info.isFile()) throw new Error("browser artifact is not a regular file");
+}
+
+/**
+ * Convert the compact MCP browser envelope into the worker's small internal
+ * operation vocabulary. The public contract intentionally uses model-friendly
+ * action names; this is the only translation point between the two layers.
+ */
+function normalizeCommand(command) {
+  const action = text(command.action).toLowerCase();
+  const operation = {
+    navigate: "navigate",
+    observe: "snapshot",
+    click: "click",
+    fill: "fill",
+    select: "select",
+    press: "press",
+    wait: "wait",
+    extract: "text",
+    download: "download",
+    screenshot: "screenshot",
+  }[action];
+  if (!operation) throw new Error("unsupported browser action");
+  const normalized = { ...command, operation };
+  if (command.ref !== undefined && command.selector === undefined) {
+    normalized.selector = { ref: command.ref };
+  }
+  if (action === "fill" && normalized.value === undefined && command.text !== undefined) {
+    normalized.value = command.text;
+  }
+  if (action === "press" && normalized.key === undefined && Array.isArray(command.keys)) {
+    normalized.key = command.keys.map(normalizeKeyName).join("+");
+  }
+  if (action === "select" && normalized.values === undefined && command.value !== undefined) {
+    normalized.values = command.value;
+  }
+  if (action === "wait" && normalized.wait_ms === undefined && command.timeout_ms !== undefined) {
+    normalized.wait_ms = command.timeout_ms;
+  }
+  return normalized;
+}
+
+function normalizeKeyName(value) {
+  const key = text(value);
+  const names = {
+    CTRL: "Control",
+    CONTROL: "Control",
+    ALT: "Alt",
+    SHIFT: "Shift",
+    WIN: "Meta",
+    META: "Meta",
+    CMD: "Meta",
+    ESC: "Escape",
+    ENTER: "Enter",
+    RETURN: "Enter",
+    TAB: "Tab",
+    SPACE: "Space",
+    BACKSPACE: "Backspace",
+    DELETE: "Delete",
+  };
+  return names[key.toUpperCase()] || key;
 }
 
 function parseCommand(command) {
