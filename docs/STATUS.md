@@ -1,12 +1,12 @@
 # RCM 当前状态
 
-更新时间：2026-09-18（Asia/Shanghai）
+更新时间：2026-09-20（Asia/Shanghai）
 
 本文记录仓库代码与当前集群只读探针能够证明的状态。产品需求基线见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)，代码/生产分离的任务清单见 [`docs/TASKS.md`](TASKS.md)，M:M 用户/对话/MCP 设计见 [`docs/MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)，逐项生产证据见 [`docs/PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)；未通过生产门禁的内容不会标记为“已上线”。
 
 ## 结论
 
-Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布；当前开发批次已补齐 Artifact Transport v2：`artifact_put`/`artifact_get`、流式对象存储、Agent 原子收发、短期签名文件对象 URL、Content-Range/HTTP Range 断线续传、状态机/ACK、幂等预约、资源配额和安全边界，并完成会话/车道/桌面/浏览器隔离代码。本轮又补齐了 Session 配额事务锁、MCP Apps 标准 `ui.*` 元数据与标准 tool-result 事件、Viewer Range/Office/archive/diff handler、Artifact 管理 API、签名密钥 current/previous + kid 轮换、独立 Viewer 前端源和 Release Manifest 驱动的 command/desktop/browser 组件升级；全仓旧运行时/旧入口硬切换也已完成。Long Running Tasks v2 的持久化 change sequence、有限 progress snapshot、结构化 `next_action`、Conversation/Connection 恢复元数据、受限 `RCM_PROGRESS_FILE + WatchService` 适配器、进度指标和 Console 当前进度时间线代码均已完成；统一 GitHub Actions 与目标环境验收仍单独记录。
+Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布；当前开发批次已补齐 Artifact Transport v2：`artifact_put`/`artifact_get`、流式对象存储、Agent 原子收发、短期签名文件对象 URL、Content-Range/HTTP Range 断线续传、状态机/ACK、幂等预约、资源配额和安全边界，并完成会话/车道/桌面/浏览器隔离代码。本轮又补齐了 Session 配额事务锁、MCP Apps 标准 `ui.*` 元数据与标准 tool-result 事件、Viewer Range/Office/archive/diff handler、Artifact 管理 API、签名密钥 current/previous + kid 轮换、独立 Viewer 前端源和 Release Manifest 驱动的 command/desktop/browser 组件升级；全仓旧运行时/旧入口硬切换也已完成。Long Running Tasks v2 的持久化 change sequence、有限 progress snapshot、结构化 `next_action`、Conversation/Connection 恢复元数据、受限 `RCM_PROGRESS_FILE + WatchService` 适配器、进度指标和 Console 当前进度时间线代码均已完成，并通过最新 Java/React、PostgreSQL/Liquibase、Linux amd64/arm64 Native、Windows Native、镜像发布和仓库卫生 Actions（`35454046864`、`35454046846`）；真实 ChatGPT Web 与目标环境生产验收仍单独记录。
 
 ## 已完成实现与历史证据
 
@@ -23,7 +23,7 @@ Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布�
 | 控制台 | React/Vite 经典后台布局，机器、项目/worktree、任务、令牌、升级、审计和设置页面；任务编排支持 command/desktop/browser、项目/worktree/path/unrestricted 显式范围、风险/提权/会话与幂等键；项目卡片支持有确认的 status/diff/log/commit/merge/merge-abort；全局搜索、机器在线筛选、任务状态筛选和任务输出 16 KiB 游标分页查看；机器、项目、任务、升级、审计列表按 `has_more` 增量加载；实时刷新与“下一页”并发时使用请求代次栅栏，升级页支持只重排队单个失败目标；Admin Token 只在当前标签页内存 | v0.1.28 GitHub Actions React 构建与生产 Console 路由验收通过；稳定 Release `java-v0.1.28` 与生产 digest 已收敛 |
 | 数据库 | PostgreSQL 适配器与 Liquibase `001`–`032` changelog；内存模式仍用于协议回归；发布工作流带 PostgreSQL 16 服务容器集成、备份和恢复门禁；`012`–`025` 覆盖审计、运行时自描述、配置历史、主体/Token、执行车道、会话/通道、ACL、Artifact Transport v2，`026` 增加组件升级计划/状态，`027` 增加 Artifact lifecycle policy/pinned，`029` 增加 TTL GC 索引，`030` 增加 Task change sequence/progress snapshot，`031` 增加 Task retention，`032` 增加 Conversation/MCP Connection 恢复元数据；文件保留由外部 CronJob 触发有界 GC，不运行 Center 定时清理线程 | Liquibase 资源/迁移单元测试通过；CI `PostgresIntegrationTest` 会覆盖注册、心跳自描述、项目/worktree、主体幂等任务、车道租约、会话、输出续传和工件往返，随后执行 custom-format dump/restore；`032` 集成门禁随本轮 Actions |
 | Artifact Transport v2 | `file_transfer` 协议、`020` Liquibase 元数据表、filesystem/HTTP 流式字节后端、Agent GET/PUT、真实路径/哈希校验、8 MiB Content-Range/HTTP Range 续传、partial spool 持久 reservation、状态机/ACK、幂等预约、MCP `artifact_put`/`artifact_get`/`artifact_read`、稳定 Viewer 资源和 `expires_at` 生命周期已完成；文件内容不进入任务 JSON 或 MCP 文本；外部对象存储不是硬性依赖 | 本轮代码/测试完成；统一 GitHub Actions、跨重启故障矩阵、CronJob 实例和 ChatGPT Web 附件渲染属于后续门禁 |
-| Long Running Tasks v2 | `rcm_task.change_seq` 由 PostgreSQL 触发器维护；`task_read` 可携带 change sequence 进行事件唤醒后的增量判断；Task progress snapshot 通过 Agent `/tasks/{taskId}/progress` 进入 Center，并复用 Attempt fencing；command/desktop/browser/file-transfer/durable runner 初次上报为 best-effort；Task metadata/output 独立 TTL、pinned/archived 和 Admin GC；`next_action` 为有限结构化对象；Conversation/Connection 触碰元数据；可选进度文件由任务级 WatchService 驱动；Console 展示当前进度和 change sequence | Liquibase `030`–`032`、Java 协议/Controller/TaskService/JDBC、Agent watcher、React timeline 已加入；统一 Actions/PostgreSQL、限频、GC 容量和生产长任务演练仍待完成 |
+| Long Running Tasks v2 | `rcm_task.change_seq` 由 PostgreSQL 触发器维护；`task_read` 可携带 change sequence 进行事件唤醒后的增量判断；Task progress snapshot 通过 Agent `/tasks/{taskId}/progress` 进入 Center，并复用 Attempt fencing；command/desktop/browser/file-transfer/durable runner 初次上报为 best-effort 且非阻塞；Task metadata/output 独立 TTL、pinned/archived 和 Admin GC；`next_action` 为有限结构化对象；Conversation/Connection 触碰元数据；可选进度文件由任务级 WatchService 驱动；Console 展示当前进度和 change sequence | Liquibase `030`–`032`、Java 协议/Controller/TaskService/JDBC、Agent watcher、React timeline；Actions `35454046864`/`35454046846` 全部通过，生产长任务演练仍在独立验收表 |
 | 发布脚本 | Java JVM 构建、Native Image 门禁脚本、Windows/Linux Agent 安装器、Java Center/Agent JVM/Native 烟测脚本，以及 Windows/Linux WebSocket wake 烟测 | 当前只做静态校验；Native Image、完整原生烟测、Agent RSS 资源报告和仓库卫生扫描交给 GitHub Actions，Windows/Linux 安装器均支持 CI 平铺 ZIP + 旁路库 |
 
 ## 已实现代码与待验收边界
