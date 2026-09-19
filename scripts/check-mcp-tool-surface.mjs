@@ -117,6 +117,10 @@ for (const forbidden of [
 if (!source.includes('.tools(modelToolSpecs(')) errors.push('Center is not wired to the single model tool surface');
 if (count('additionalProperties') < 6) errors.push('strict schema guard count is unexpectedly low');
 if (!source.includes('toolBuilder.outputSchema(modelOutputSchema())')) errors.push('all model tools must publish outputSchema');
+if (!source.includes('openai/fileParams')) errors.push('artifact tool must declare ChatGPT file input parameters');
+if (!source.includes('artifactUi.put("resourceUri"')) errors.push('artifact tool must publish standard MCP Apps ui.resourceUri metadata');
+if (source.includes('ui/resourceUri')) errors.push('legacy flat MCP Apps resource metadata remains in Center source');
+if (source.includes('openai/outputTemplate')) errors.push('ChatGPT-only output template alias remains in Center source');
 
 if (errors.length) {
   console.error(errors.join('\n'));

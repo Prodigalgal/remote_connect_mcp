@@ -63,6 +63,7 @@ public final class ArtifactTransferService {
     private static final Duration DEFAULT_ARTIFACT_RETENTION = Duration.ofDays(7);
     private static final Duration DEFAULT_SIGNED_URL_TTL = Duration.ofMinutes(15);
     private static final long MAX_RESUMABLE_CHUNK_BYTES = 8L * 1024 * 1024;
+    private static final int MAX_DOWNLOAD_REDIRECTS = 5;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final ArtifactStore store;
@@ -1451,33 +1452,68 @@ public final class ArtifactTransferService {
 
     private Downloaded download(URI uri, Long expectedBytes, String expectedSha256, String transferId) throws IOException {
         try {
-            // Resolve immediately before opening the socket and compare the
-            // host's answers again after the response starts. Redirects are
-            // disabled; a changed answer is treated as a DNS-rebinding
-            // attempt instead of allowing a public URL to pivot to a private
-            // service between validation and download.
-            var resolvedBefore = validateDownloadUrl(uri);
-            var request = HttpRequest.newBuilder(uri).timeout(DOWNLOAD_TIMEOUT).header("Accept", "application/octet-stream").GET().build();
-            var response = downloader.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            var resolvedAfter = validateDownloadUrl(response.uri());
-            if (!resolvedBefore.equals(resolvedAfter)) {
-                close(response.body());
-                throw new IOException("download URL DNS resolution changed during request");
+            // ChatGPT file references and object-storage download URLs may
+            // legitimately return 301/302/303/307/308 before the bytes are
+            // available.  The JDK client keeps redirects disabled so every
+            // hop can be revalidated as HTTPS and public-address-only.  This
+            // prevents a redirect from turning the ChatGPT file bridge into
+            // an SSRF/DNS-rebinding primitive while still accepting bounded
+            // signed-URL redirects.
+            var current = uri;
+            var visited = new java.util.HashSet<URI>();
+            visited.add(current);
+            for (var redirect = 0; ; redirect++) {
+                var resolvedBefore = validateDownloadUrl(current);
+                var request = HttpRequest.newBuilder(current).timeout(DOWNLOAD_TIMEOUT)
+                        .header("Accept", "application/octet-stream").GET().build();
+                var response = downloader.send(request, HttpResponse.BodyHandlers.ofInputStream());
+                try {
+                    var responseUri = response.uri() == null ? current : response.uri();
+                    var resolvedAfter = validateDownloadUrl(responseUri);
+                    if (!resolvedBefore.equals(resolvedAfter)) {
+                        throw new IOException("download URL DNS resolution changed during request");
+                    }
+                    if (isRedirect(response.statusCode())) {
+                        if (redirect >= MAX_DOWNLOAD_REDIRECTS) {
+                            throw new IOException("download URL exceeded the redirect limit");
+                        }
+                        var location = response.headers().firstValue("Location")
+                                .orElseThrow(() -> new IOException("download URL redirect has no Location"));
+                        final URI next;
+                        try {
+                            next = current.resolve(location);
+                        } catch (IllegalArgumentException exception) {
+                            throw new IOException("download URL redirect is invalid", exception);
+                        }
+                        validateDownloadUrl(next);
+                        if (!visited.add(next)) throw new IOException("download URL redirect loop detected");
+                        close(response.body());
+                        current = next;
+                        continue;
+                    }
+                    if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                        throw new IOException("download URL returned HTTP " + response.statusCode());
+                    }
+                    var length = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
+                    if (length > MAX_BYTES || (expectedBytes != null && length >= 0 && length != expectedBytes)) {
+                        throw new IOException("download size is outside the declared limit");
+                    }
+                    var body = response.body();
+                    // spool() owns and closes the final response stream.
+                    return spool(body, expectedBytes == null ? length : expectedBytes, expectedSha256, transferId);
+                } catch (IOException | RuntimeException failure) {
+                    close(response.body());
+                    throw failure;
+                }
             }
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                close(response.body());
-                throw new IOException("download URL returned HTTP " + response.statusCode());
-            }
-            var length = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
-            if (length > MAX_BYTES || (expectedBytes != null && length >= 0 && length != expectedBytes)) {
-                close(response.body());
-                throw new IOException("download size is outside the declared limit");
-            }
-            return spool(response.body(), expectedBytes == null ? length : expectedBytes, expectedSha256, transferId);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IOException("download interrupted", exception);
         }
+    }
+
+    private static boolean isRedirect(int status) {
+        return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
     }
 
     private Downloaded spool(InputStream input, long expectedBytes, String expectedSha256, String transferId) throws IOException {

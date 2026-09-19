@@ -218,8 +218,6 @@ public class McpConfiguration {
         standardCsp.put("resourceDomains", domains);
         standardCsp.put("frameDomains", domains);
         var resourceMeta = new LinkedHashMap<String, Object>();
-        resourceMeta.put("ui.csp", standardCsp);
-        if (!domains.isEmpty()) resourceMeta.put("ui.domain", domains.getFirst());
         var resourceUi = new LinkedHashMap<String, Object>();
         resourceUi.put("csp", standardCsp);
         if (!domains.isEmpty()) resourceUi.put("domain", domains.getFirst());
@@ -278,8 +276,17 @@ public class McpConfiguration {
                                                                                     ArtifactTransferService transfers,
                                                                                     ExecutorService mcpVirtualThreadExecutor) {
         var scheduler = Schedulers.fromExecutor(mcpVirtualThreadExecutor);
-        var artifactMeta = Map.<String, Object>of("openai/outputTemplate", ARTIFACT_VIEWER_URI,
-                "ui/resourceUri", ARTIFACT_VIEWER_URI);
+        // MCP Apps is the canonical UI contract.  ChatGPT consumes the same
+        // nested metadata as other MCP Apps hosts; do not publish the old
+        // flat resource metadata or ChatGPT-only output-template alias.  The
+        // file parameter declaration is equally important: it tells
+        // ChatGPT to inject its host file object (download_url + file_id)
+        // instead of exposing an inaccessible /mnt/data path to the model.
+        var artifactUi = new LinkedHashMap<String, Object>();
+        artifactUi.put("resourceUri", ARTIFACT_VIEWER_URI);
+        var artifactMeta = new LinkedHashMap<String, Object>();
+        artifactMeta.put("ui", artifactUi);
+        artifactMeta.put("openai/fileParams", List.of("file"));
         return List.of(
                 tool("machines", "Discover registered machines or fetch one bounded machine detail. Returns stable IDs and compact capability summaries.",
                         machinesModelSchema(),

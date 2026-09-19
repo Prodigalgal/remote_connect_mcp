@@ -125,19 +125,35 @@ ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation
 
 ## ChatGPT Web 集成策略
 
-首次接入文件能力时，工具声明需要增加：
+首次接入文件能力时，`artifact` 聚合 Tool 必须同时声明标准 MCP Apps UI 资源和
+ChatGPT 文件输入参数：
 
 ```json
 {
   "_meta": {
-    "openai/fileParams": ["file"],
     "ui": { "resourceUri": "ui://remote-connect-mcp/artifact-viewer-v1.html" },
-    "openai/outputTemplate": "ui://remote-connect-mcp/artifact-viewer-v1.html"
+    "openai/fileParams": ["file"]
   }
 }
 ```
 
-连接器需要刷新一次以获取新的工具声明。之后保持 `/mcp` 地址、工具 schema 和 UI URI 稳定，Center/Agent 普通版本升级不需要重复配置。
+`file` 的输入对象遵循 OpenAI 文件生态的四字段形状：`download_url` 与 `file_id`
+必须存在，`mime_type` 和 `file_name` 可选但必须在 schema 中声明。Center 在本次
+MCP 请求中消费 `download_url`，只把摘要、哈希和自己的 Artifact 句柄持久化；不能
+读取 ChatGPT 的 `/mnt/data`、浏览器沙箱路径或任何不可公开访问的内部路径，也不能把
+ChatGPT 临时 URL 写入 durable Task/Transfer。
+
+终端回传时，`structuredContent.file` 使用 Center 自己的短期 HTTPS
+`download_url` 和 Artifact `file_id`。Viewer 优先使用该 URL，过期或缺失时使用
+`window.openai.getFileDownloadUrl({ fileId })` 重新取得临时 URL；用户需要把文件保存
+回当前会话或文件库时，Viewer 使用 `window.openai.uploadFile(file)` 或
+`window.openai.uploadFile(file, { library: true })`。文件库能力是可选的，不能作为
+终端回传成功的前置条件。
+
+连接器只需在首次加入文件能力或工具声明发生变化后刷新一次。之后保持 `/mcp` 地址、
+工具 schema 和 UI URI 稳定，Center/Agent 普通版本升级不需要重复配置。OpenAI/MCP
+Apps 的标准 `ui.*` 元数据和 `ui/notifications/tool-result` 事件是唯一运行时契约，
+不把 ChatGPT 私有文件系统路径当成 Center 的数据源。
 
 ## 安全与资源边界
 

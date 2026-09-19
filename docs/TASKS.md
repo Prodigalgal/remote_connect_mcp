@@ -102,7 +102,7 @@
 | [x] | P1-AT-08 | Public Artifact HTTP Range | Artifact URL 支持单段 `Range`、`206`、`Content-Range`、`Accept-Ranges` 和 `416`；代理/大文件现场验证仍待进行 |
 | [x] | P1-AT-09 | 明确 `RCM_CENTER_PUBLIC_BASE_URL` | K8s 模板、部署文档和 Viewer CSP 已加入；生产 overlay 必须填稳定 Center HTTPS Origin |
 | [x] | P1-AT-10 | 独立 Artifact signing secret | 新增 `REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET`，不再默认复用 MCP/Admin Token；密钥轮换需单独验收 |
-| [x] | P1-AT-11 | 加强 `download_url` DNS rebinding 防护 | 请求前后重复解析公共地址集合、禁止重定向并拒绝解析变化；无法在 JDK HttpClient 中绝对 pin socket，需安全回归 |
+| [x] | P1-AT-11 | 加强 `download_url` DNS rebinding 防护 | 每一跳请求前后重复解析公共地址集合，允许最多 5 跳 HTTPS 301/302/303/307/308 并逐跳拒绝私网、循环和解析变化；无法在 JDK HttpClient 中绝对 pin socket，需安全回归 |
 | [x] | P1-AT-12 | 调整 `artifact_get` annotations | `artifact_get` 不再错误标为 destructive/open-world；仍保留异步任务语义，不伪称完全无副作用 |
 | [x] | P1-AT-13 | 区分 quota reserved/transferred bytes | Console/API 增加 `reserved_transfer_bytes` 与 `transferred_transfer_bytes`，不再输出模糊的总量别名 |
 | [x] | P1-AT-14 | Viewer 使用标准 tool-result 通知 | Viewer 使用标准 MCP Apps tool-result 通知，不保留宿主私有事件回退 |
@@ -130,6 +130,7 @@
 | [x] | P2-AT-09 | Preview Handler 插件化 | Viewer 与 `web/src/artifact-viewer/previewHandlers.ts` 均采用 MIME → handler 注册表，未知类型安全降级下载 |
 | [x] | P2-AT-10 | 文件传输压缩与内容去重 | 可选 SHA-256 content-addressed wrapper 和磁盘 gzip wrapper 已加入，默认关闭 |
 | [x] | P2-AT-11 | Artifact 生命周期策略升级 | 已支持按方向/MIME/大小的有界保留期，以及 `ephemeral`/`task-bound`/`pinned` 管理字段和 Console 固定操作 |
+| [x] | P0-AT-26 | OpenAI 文件生态桥接契约 | `artifact` 发布标准 MCP Apps `ui.resourceUri` 与 `openai/fileParams`；只消费 ChatGPT 提供的 `download_url`，不读取 `/mnt/data` 或持久化临时 URL；Viewer 支持 `getFileDownloadUrl` 续取和 `uploadFile`/Library 回写；真实 Web 双向附件仍属于 P1-TM-17 验收 |
 
 ### command/desktop/browser 组件级升级
 
