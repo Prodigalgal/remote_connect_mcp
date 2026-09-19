@@ -448,8 +448,14 @@ $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_BINARY_PATH=$destination",
     "REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME=$serviceName"
 )
-if ($desktopDestination) { $environment += "REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY=$desktopDestination" }
-if ($browserDestination) { $environment += "REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=$browserDestination" }
+if ($desktopDestination) {
+    $environment += "REMOTE_CONNECT_MCP_DESKTOP_BINARY_PATH=$desktopDestination"
+    $environment += "REMOTE_CONNECT_MCP_DESKTOP_SERVICE_NAME=$companionTaskName"
+}
+if ($browserDestination) {
+    $environment += "REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=$browserDestination"
+    $environment += "REMOTE_CONNECT_MCP_BROWSER_BINARY_PATH=$browserDestination"
+}
 if (-not [string]::IsNullOrWhiteSpace($PlaywrightBrowsersPath)) {
     $environment += "PLAYWRIGHT_BROWSERS_PATH=$PlaywrightBrowsersPath"
 }

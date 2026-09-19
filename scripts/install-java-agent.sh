@@ -405,11 +405,12 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   printf 'REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH=%s\n' "$cgroup_path"
   printf 'REMOTE_CONNECT_MCP_AGENT_BINARY_PATH=%s\n' "$install_root/rcm-agent"
   printf 'REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME=remote-connect-mcp-agent\n'
-  if [[ -n "$desktop_source" ]]; then
-    printf 'REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY=%s\n' "$install_root/desktop/rcm-desktop-companion"
+  if [[ -x "$install_root/desktop/rcm-desktop-companion" ]]; then
+    printf 'REMOTE_CONNECT_MCP_DESKTOP_BINARY_PATH=%s\n' "$install_root/desktop/rcm-desktop-companion"
   fi
-  if [[ -n "$browser_source" ]]; then
+  if [[ -x "$install_root/browser/rcm-browser-agent" ]]; then
     printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=%s\n' "$install_root/browser/rcm-browser-agent"
+    printf 'REMOTE_CONNECT_MCP_BROWSER_BINARY_PATH=%s\n' "$install_root/browser/rcm-browser-agent"
   fi
   if [[ -n "$browser_browsers_path" ]]; then
     printf 'PLAYWRIGHT_BROWSERS_PATH=%s\n' "$browser_browsers_path"

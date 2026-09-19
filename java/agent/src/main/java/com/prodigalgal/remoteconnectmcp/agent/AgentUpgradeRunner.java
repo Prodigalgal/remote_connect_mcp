@@ -293,9 +293,30 @@ final class AgentUpgradeRunner implements Runnable {
             default -> "REMOTE_CONNECT_MCP_" + key.replace('-', '_').toUpperCase(Locale.ROOT) + "_BINARY_PATH";
         };
         var configured = System.getenv(env);
-        if (configured == null || configured.isBlank()) throw new IOException(env + " is required for component upgrade");
-        var target = Path.of(configured.trim()).toAbsolutePath().normalize();
-        return target;
+        if (configured != null && !configured.isBlank()) {
+            return Path.of(configured.trim()).toAbsolutePath().normalize();
+        }
+
+        // The installer keeps all component bundles beside the command-agent.
+        // Resolve that immutable layout when an older installation did not
+        // persist the optional component path variable.  This is the canonical
+        // layout, not a second download or a legacy component name.
+        var commandPath = System.getenv("REMOTE_CONNECT_MCP_AGENT_BINARY_PATH");
+        if (commandPath != null && !commandPath.isBlank()) {
+            var root = Path.of(commandPath.trim()).toAbsolutePath().normalize().getParent();
+            if (root != null) {
+                var executable = isWindows()
+                        ? ("desktop-companion".equals(key) || "desktop".equals(key)
+                        ? "rcm-desktop-companion.exe" : "browser-agent".equals(key) || "browser".equals(key)
+                        ? "rcm-browser-agent.exe" : null)
+                        : ("desktop-companion".equals(key) || "desktop".equals(key)
+                        ? "rcm-desktop-companion" : "browser-agent".equals(key) || "browser".equals(key)
+                        ? "rcm-browser-agent" : null);
+                if (executable != null) return root.resolve("desktop".equals(key) || "desktop-companion".equals(key)
+                        ? "desktop" : "browser").resolve(executable).normalize();
+            }
+        }
+        throw new IOException(env + " is required for component upgrade");
     }
 
     private static String componentServiceName(String component) {
