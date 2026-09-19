@@ -1,28 +1,99 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Remote Connect Artifact</title>
-  <style>body{font:14px system-ui,sans-serif;margin:16px;color:#172033;background:#fff}main{display:grid;gap:10px}header{font-weight:600;word-break:break-word}small{color:#65718a}img,video,iframe{max-width:100%;max-height:70vh;border:1px solid #d9dfeb;border-radius:6px}pre{white-space:pre-wrap;max-height:60vh;overflow:auto;background:#f5f7fb;padding:10px;border-radius:6px}.artifact-diff{background:#101827;color:#e7edf7}a{color:#1769e0}button{padding:6px 10px;border:1px solid #b7c2d6;border-radius:5px;background:#f5f7fb;cursor:pointer}</style>
+  <style>
+    body{font:14px system-ui,sans-serif;margin:16px;color:#172033;background:#fff}
+    main{display:grid;gap:10px}header{font-weight:600;word-break:break-word}
+    small{color:#65718a}img,video,iframe{max-width:100%;max-height:70vh;border:1px solid #d9dfeb;border-radius:6px}
+    pre{white-space:pre-wrap;max-height:60vh;overflow:auto;background:#f5f7fb;padding:10px;border-radius:6px}
+    a{color:#1769e0}button{padding:6px 10px;border:1px solid #b7c2d6;border-radius:5px;background:#f5f7fb;cursor:pointer}
+  </style>
 </head>
-<body><main><header id="name">Artifact</header><small id="meta"></small><section id="preview"></section><a id="download" rel="noreferrer" download>Download</a><button id="save" hidden>Save to ChatGPT</button><button id="library" hidden>Save to Library</button></main>
-<script>
-(function(){
-  let latestResult=null;
-  const pick=()=>{const result=latestResult||{};const value=result.structuredContent||result.structured_content||result||{};return value.file||value.artifact||value;};
-  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const readPreview=async(url,limit)=>{const response=await fetch(url,{credentials:'omit',headers:{Range:'bytes=0-'+(limit-1)}});if(!response.ok&&response.status!==206)throw new Error('preview request failed');if(!response.body)return (await response.text()).slice(0,limit);const reader=response.body.getReader(),parts=[],decoder=new TextDecoder();let total=0;try{while(total<limit){const next=await reader.read();if(next.done)break;const remaining=limit-total,chunk=next.value.slice(0,remaining);parts.push(decoder.decode(chunk,{stream:total+chunk.length<limit}));total+=chunk.length;if(chunk.length<next.value.length||total>=limit){try{await reader.cancel()}catch(error){}break;}}}finally{try{reader.releaseLock()}catch(error){}}return parts.join('');};
-  const handlers=[];const register=(id,matches,render)=>handlers.push({id,matches,render});
-  register('image',(mime)=>mime.startsWith('image/'),(p,url,name)=>p.innerHTML='<img alt="'+esc(name)+'" src="'+esc(url)+'">');
-  register('pdf',(mime)=>mime==='application/pdf',(p,url,name)=>p.innerHTML='<iframe title="'+esc(name)+'" src="'+esc(url)+'" style="width:100%;height:70vh"></iframe>');
-  register('video',(mime)=>mime.startsWith('video/'),(p,url)=>p.innerHTML='<video controls src="'+esc(url)+'"></video>');
-  register('audio',(mime)=>mime.startsWith('audio/'),(p,url)=>p.innerHTML='<audio controls src="'+esc(url)+'"></audio>');
-  const text=(mime,name)=>mime.startsWith('text/')||mime.includes('json')||mime.includes('xml')||mime.includes('csv')||mime.includes('yaml')||mime.includes('markdown')||/\.(md|markdown|csv|json|ya?ml|toml|ini|log|txt|xml|html?|css|js|ts|java|go|py|sh|ps1|sql)$/i.test(name);
-  register('diff',(mime,name)=>mime.includes('diff')||/\.(diff|patch)$/i.test(name),(p,url)=>readPreview(url,262144).then(t=>p.innerHTML='<pre class="artifact-diff">'+esc(t)+'</pre>').catch(()=>p.textContent='Diff preview unavailable; use download.'));
-  register('text',text,(p,url)=>readPreview(url,262144).then(t=>p.innerHTML='<pre>'+esc(t)+'</pre>').catch(()=>p.textContent='Preview unavailable; use download.'));
-  register('office',(mime,name)=>mime.includes('officedocument')||mime.includes('msword')||mime.includes('vnd.ms-')||/\.(docx?|xlsx?|pptx?|odt|ods|odp|rtf)$/i.test(name),(p,url,name)=>p.innerHTML='<small>Office 文档请下载后使用本机应用打开：'+esc(name)+'</small>');
-  register('archive',(mime,name)=>mime.includes('zip')||mime.includes('gzip')||mime.includes('x-7z')||mime.includes('x-rar')||mime.includes('x-tar')||/\.(zip|7z|rar|tar|gz|tgz)$/i.test(name),(p,url,name)=>p.innerHTML='<small>压缩包不会在 MCP App 中自动解压，请下载后打开：'+esc(name)+'</small>');
-  const render=()=>{const f=pick(),url=f.preview_url||f.download_url||f.url||'',download=f.download_url||f.url||url,name=f.file_name||f.name||'artifact',mime=(f.mime_type||f.mime||'application/octet-stream').toLowerCase();document.querySelector('#name').textContent=name;document.querySelector('#meta').textContent=[mime,f.bytes?Number(f.bytes).toLocaleString()+' bytes':'',f.sha256?'sha256 '+f.sha256:''].filter(Boolean).join(' · ');const p=document.querySelector('#preview');p.replaceChildren();if(!url){p.innerHTML='<small>Artifact is not ready yet. Call task_read again after delivery.</small>';return;}const handler=handlers.find(value=>value.matches(mime,name));if(handler)handler.render(p,url,name,mime);else p.innerHTML='<small>This file type is download-only.</small>';const a=document.querySelector('#download');a.href=download;a.download=name;a.textContent='Download '+name;const save=document.querySelector('#save'),library=document.querySelector('#library'),canUpload=!!(window.openai&&typeof window.openai.uploadFile==='function');const upload=async(target,libraryMode)=>{target.disabled=true;try{const response=await fetch(download,{credentials:'omit'});if(!response.ok)throw new Error('download failed');const file=new File([await response.blob()],name,{type:mime});const result=libraryMode?await window.openai.uploadFile(file,{library:true}):await window.openai.uploadFile(file);target.textContent=libraryMode?'Saved to Library':'Saved to ChatGPT';const id=result&&(result.id||result.file_id||result.fileId);if(id)document.querySelector('#meta').textContent+=' · file '+id;}catch(error){target.textContent=libraryMode?'Library save failed':'Save failed';}finally{target.disabled=false;}};save.hidden=!download||!canUpload;save.onclick=()=>upload(save,false);library.hidden=!download||!canUpload;library.onclick=()=>upload(library,true);};
-  const resultHandler=result=>{latestResult=result&&result.params?result.params:result;render();};render();window.addEventListener('message',event=>{if(event&&event.data&&event.data.method==='ui/notifications/tool-result')resultHandler(event.data.params||{});});
-})();
-</script></body></html>
+<body>
+  <main>
+    <header id="name">Artifact</header>
+    <small id="meta"></small>
+    <section id="preview"></section>
+    <a id="download" rel="noreferrer" download>Download</a>
+    <button id="save" hidden>Save to ChatGPT</button>
+    <button id="library" hidden>Save to Library</button>
+  </main>
+  <script>
+  (function(){
+    let latestResult=null;
+    const host=()=>window.openai||{};
+    const output=()=>host().toolOutput||null;
+    const pick=()=>{const result=latestResult||{};const o=result.structuredContent||result.structured_content||output()||result||{};return o.file||o.artifact||o;};
+    const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const hostFileUrl=async(file)=>{
+      const fileId=file&&file.file_id;
+      if(!fileId||typeof host().getFileDownloadUrl!=='function')return '';
+      try{
+        const result=await host().getFileDownloadUrl({fileId});
+        return result&&result.downloadUrl?String(result.downloadUrl):'';
+      }catch(error){return '';}
+    };
+    const fetchArtifact=async(file,url,options={})=>{
+      let current=String(url||'');
+      let response=null;
+      try{if(current)response=await fetch(current,{credentials:'omit',...options});}catch(error){}
+      if(response&&response.ok)return {response,url:current};
+      const refreshed=await hostFileUrl(file);
+      if(!refreshed||refreshed===current){if(response)return {response,url:current};throw new Error('artifact download URL unavailable');}
+      response=await fetch(refreshed,{credentials:'omit',...options});
+      return {response,url:refreshed};
+    };
+    const readPreview=async(file,url,limit)=>{
+      const fetched=await fetchArtifact(file,url,{headers:{Range:'bytes=0-'+(limit-1)}});
+      const response=fetched.response;
+      if(!response.ok&&response.status!==206)throw new Error('preview request failed');
+      if(!response.body)return (await response.text()).slice(0,limit);
+      const reader=response.body.getReader(),parts=[],decoder=new TextDecoder();let total=0;
+      try{while(total<limit){const next=await reader.read();if(next.done)break;const remaining=limit-total;const chunk=next.value.slice(0,remaining);parts.push(decoder.decode(chunk,{stream:total+chunk.length<limit}));total+=chunk.length;if(chunk.length<next.value.length||total>=limit){try{await reader.cancel()}catch(error){}break;}}}
+      finally{try{reader.releaseLock()}catch(error){}}
+      return parts.join('');
+    };
+    const previewHandlers=[];
+    const registerPreviewHandler=(name,matches,render)=>previewHandlers.push({name,matches,render});
+    registerPreviewHandler('image',mime=>mime.startsWith('image/'),(p,url,name)=>{p.innerHTML='<img alt="'+esc(name)+'" src="'+esc(url)+'">';});
+    registerPreviewHandler('pdf',mime=>mime==='application/pdf',(p,url,name)=>{p.innerHTML='<iframe title="'+esc(name)+'" src="'+esc(url)+'" style="width:100%;height:70vh"></iframe>';});
+    registerPreviewHandler('video',mime=>mime.startsWith('video/'),(p,url)=>{p.innerHTML='<video controls src="'+esc(url)+'"></video>';});
+    registerPreviewHandler('audio',mime=>mime.startsWith('audio/'),(p,url)=>{p.innerHTML='<audio controls src="'+esc(url)+'"></audio>';});
+    registerPreviewHandler('diff', (mime,name)=>mime.includes('diff')||/\.(diff|patch)$/i.test(name), (p,url,name,mime,file)=>{readPreview(file,url,262144).then(t=>{p.innerHTML='<pre class="artifact-diff">'+esc(t)+'</pre>';}).catch(()=>{p.innerHTML='<small>Diff preview unavailable; use download.</small>';});});
+    registerPreviewHandler('text', (mime,name)=>mime.startsWith('text/')||mime.includes('json')||mime.includes('xml')||mime.includes('csv')||mime.includes('javascript')||mime.includes('yaml')||mime.includes('markdown')||/\.(md|markdown|csv|json|ya?ml|toml|ini|log|txt|xml|html?|css|js|ts|java|go|py|sh|ps1|sql)$/i.test(name), (p,url,name,mime,file)=>{readPreview(file,url,262144).then(t=>{p.innerHTML='<pre>'+esc(t)+'</pre>';}).catch(()=>{p.innerHTML='<small>Preview unavailable; use download.</small>';});});
+    registerPreviewHandler('office', (mime,name)=>mime.includes('officedocument')||mime.includes('msword')||mime.includes('vnd.ms-')||/\.(docx?|xlsx?|pptx?|odt|ods|odp|rtf)$/i.test(name), (p,url,name)=>{p.innerHTML='<small>Office 文档为下载后本地打开，避免在 MCP App 中执行或解压不可信内容：'+esc(name)+'</small>';});
+    registerPreviewHandler('archive', (mime,name)=>mime.includes('zip')||mime.includes('gzip')||mime.includes('x-7z')||mime.includes('x-rar')||mime.includes('x-tar')||/\.(zip|7z|rar|tar|gz|tgz)$/i.test(name), (p,url,name)=>{p.innerHTML='<small>压缩包为下载后本地打开，MCP App 不会自动解压：'+esc(name)+'</small>';});
+    window.rcmArtifactViewer={registerPreviewHandler,previewHandlers};
+    const resultHandler=result=>{latestResult=result&&result.params?result.params:result;render();};
+    let renderGeneration=0;
+    const render=async()=>{
+      const generation=++renderGeneration;
+      const f=pick(),directPreview=f.preview_url||f.download_url||f.url||'',directDownload=f.download_url||f.url||directPreview;
+      const url=directPreview||await hostFileUrl(f),downloadUrl=directDownload||url;
+      const name=f.file_name||f.name||'artifact',mime=(f.mime_type||f.mime||'application/octet-stream').toLowerCase();
+      if(generation!==renderGeneration)return;
+      document.querySelector('#name').textContent=name;
+      document.querySelector('#meta').textContent=[mime,f.bytes?Number(f.bytes).toLocaleString()+' bytes':'',f.sha256?'sha256 '+f.sha256:'',f.artifact_id?'artifact '+f.artifact_id:''].filter(Boolean).join(' · ');
+      const p=document.querySelector('#preview');p.replaceChildren();const safe=esc(url);
+      if(!url){p.innerHTML='<small>Artifact is not ready yet. Call artifact_read again after task_wait reports delivered.</small>';return;}
+      const handler=previewHandlers.find(value=>value.matches(mime,name));
+      if(handler)handler.render(p,url,name,mime,f);else p.innerHTML='<small>This file type is download-only. The original file remains available for download.</small>';
+      const a=document.querySelector('#download');a.href=downloadUrl;a.download=name;a.textContent='Download '+name;
+      const save=document.querySelector('#save'),library=document.querySelector('#library'),canUpload=!!(window.openai&&typeof window.openai.uploadFile==='function');
+      const upload=async(target,libraryMode)=>{target.disabled=true;try{const fetched=await fetchArtifact(f,downloadUrl);if(!fetched.response.ok)throw new Error('download failed');const blob=await fetched.response.blob();const file=new File([blob],name,{type:mime});const uploaded=libraryMode?await host().uploadFile(file,{library:true}):await host().uploadFile(file);const id=uploaded&&(uploaded.id||uploaded.file_id||uploaded.fileId);target.textContent=libraryMode?'Saved to Library':'Saved to ChatGPT';if(id)document.querySelector('#meta').textContent+=' · file '+id;}catch(error){target.textContent=libraryMode?'Library save failed':'Save failed';}finally{target.disabled=false;}};
+      save.hidden=!downloadUrl||!canUpload;save.onclick=()=>upload(save,false);
+      library.hidden=!downloadUrl||!canUpload;library.onclick=()=>upload(library,true);
+    };
+    render();
+    // MCP Apps delivers tool results through the standard UI notification
+    // channel.  Do not subscribe to historical host-specific callbacks: a
+    // single result path keeps the viewer deterministic and avoids silently
+    // accepting an obsolete host contract.
+    window.addEventListener('message',event=>{const data=event&&event.data;if(data&&data.method==='ui/notifications/tool-result')resultHandler(data.params||{});});
+  })();
+  </script>
+</body>
+</html>
