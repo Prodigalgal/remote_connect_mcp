@@ -546,6 +546,11 @@ public class McpConfiguration {
         taskProperties.put("artifact_sha256", modelString("artifact SHA-256", 0, 128));
         taskProperties.put("next_action", modelString("next action", 0, 512));
         var task = modelSchema(taskProperties, List.of("id", "machine_id", "kind", "status"));
+        // Task projections intentionally grow as capabilities are added (for
+        // example execution_scope, result_channel and contract timestamps).
+        // Keep the core fields discoverable without making a new harmless
+        // projection field invalidate the whole MCP result.
+        task.put("additionalProperties", true);
         var output = modelSchema(Map.ofEntries(
                 Map.entry("text", modelString("bounded output page", 0, MAX_OUTPUT_PAGE)),
                 Map.entry("cursor", modelInteger("current cursor", 0, Integer.MAX_VALUE)),
@@ -555,7 +560,12 @@ public class McpConfiguration {
                 Map.entry("code", modelString("stable error code", 1, 128)),
                 Map.entry("message", modelString("safe error message", 1, 2048)),
                 Map.entry("retryable", modelBoolean("whether retry is safe"))), List.of("code", "message", "retryable"));
-        return modelSchema(Map.ofEntries(
+        // Different compact tools use different top-level projections
+        // (machines, projects, task, artifact and transfer).  The declared
+        // fields above document the common envelope; unknown projection
+        // fields remain valid so clients do not reject a correct response
+        // merely because a capability added a bounded metadata field.
+        var result = modelSchema(Map.ofEntries(
                 Map.entry("kind", modelEnum("result kind", List.of("task", "machines", "machine", "project", "artifact", "output", "error"))),
                 Map.entry("task", task),
                 Map.entry("output", output),
@@ -566,10 +576,17 @@ public class McpConfiguration {
                         Map.entry("capabilities", Map.of("type", "array", "items", modelString("capability", 1, 64))),
                         Map.entry("capabilities_truncated", modelBoolean("capability list truncated")), Map.entry("online", modelBoolean("online state"))),
                         List.of("id", "online")), "maxItems", MAX_MACHINE_PAGE)),
-                Map.entry("artifact", Map.of("type", "object", "additionalProperties", false)),
-                Map.entry("file", Map.of("type", "object", "additionalProperties", false)),
+                Map.entry("artifact", Map.of("type", "object", "additionalProperties", true)),
+                Map.entry("file", Map.of("type", "object", "additionalProperties", true)),
+                Map.entry("offset", modelInteger("zero-based page offset", 0, Integer.MAX_VALUE)),
+                Map.entry("limit", modelInteger("page size", 1, MAX_OUTPUT_PAGE)),
+                Map.entry("total", modelInteger("total visible records", 0, Integer.MAX_VALUE)),
+                Map.entry("total_worktrees", modelInteger("total worktrees", 0, Integer.MAX_VALUE)),
+                Map.entry("has_more", modelBoolean("more records are available")),
                 Map.entry("next_action", modelString("next action", 0, 512)),
                 Map.entry("error", error)), List.of());
+        result.put("additionalProperties", true);
+        return result;
     }
 
     private static McpSchema.CallToolResult machinesModel(AgentRegistry agents, McpAccessService access,
