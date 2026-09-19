@@ -29,7 +29,9 @@ schema 1；runtime descriptor 缺失或字段不完整时直接拒绝，不猜�
 - 项目/worktree 注册与 `git worktree add/remove` 同样只创建异步任务；创建完成前不能把 worktree 当作任务 cwd，重复请求应使用同一个 `idempotency_key`。
 - `task_read` 的 `wait_ms` 仅允许显式的 0–20 秒短等待，用于减少一次往返；超时返回当前快照，不表示任务失败。
 - `task_read` 可以携带上次返回的 `change_seq`；Center 只在任务的持久化版本、输出游标或终态发生变化时返回，模型拿到 `task_id` 后不得重新提交同一操作。
+- 每个可继续的结果最多返回一个结构化 `next_action` 对象（`tool`、`operation`、任务/工件句柄、cursor/change_seq、短等待和 machine-readable reason）；它是可复制的导航提示，不是授权字段。没有后续动作时省略或返回仅含 reason 的对象。
 - Agent 进度是受 Attempt 栅栏保护的有限快照（phase、percent、message、current、total、unit），属于提示性元数据；进度上报失败不能阻塞命令执行，任务状态和输出仍是恢复事实来源。
+- 命令可选择在任务环境设置 `RCM_PROGRESS_FILE`。Agent 只在已解析的任务 cwd 下注册 `WatchService`，读取不超过 64 KiB 的 JSON `TaskProgressUpdate`，按 250 ms 最小间隔节流并在任务结束时关闭；路径越界、符号链接、解析失败和进度上传失败都只记录为受限诊断，不影响命令本身。
 - PostgreSQL 模式下，Center 会在读取任务行前捕获该任务的变更序号，并挂起等待
   `LISTEN rcm_task_change`/`NOTIFY`；不同任务不会互相唤醒并查询，不会按固定间隔持续查询。通知丢失或监听器故障时，
   等待在调用方的截止时间返回当前快照；下一次显式 `task_read` 再读取权威任务行。内存模式

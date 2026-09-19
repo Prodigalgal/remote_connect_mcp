@@ -60,6 +60,7 @@ final class CommandRunner implements Runnable {
         Future<?> outputUploadFuture = null;
         TaskOutputSpool outputSpool = null;
         ProcessResourceSupervisor resourceSupervisor = null;
+        TaskProgressFileWatcher progressWatcher = null;
         var outputFailure = new AtomicReference<Throwable>();
         try {
             var cwd = resolveCwd(task.cwd());
@@ -78,6 +79,7 @@ final class CommandRunner implements Runnable {
             var processForSupervisor = process;
             resourceSupervisor = ProcessResourceSupervisor.start(processForSupervisor, config, task,
                     () -> terminate(processForSupervisor), processBudget);
+            progressWatcher = TaskProgressFileWatcher.startIfConfigured(LOG, config, identity, task, transport);
 
             // Reading the child and uploading to Center are separate workers.
             // A transient network outage therefore cannot fill the child pipe
@@ -171,6 +173,7 @@ final class CommandRunner implements Runnable {
             }
         } finally {
             if (resourceSupervisor != null) resourceSupervisor.close();
+            if (progressWatcher != null) progressWatcher.close();
             if (outputSpool != null) outputSpool.close();
             if (outputExecutor != null) {
                 outputExecutor.shutdownNow();

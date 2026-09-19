@@ -12,6 +12,10 @@
 会话访问时过期回收、Desktop lease 和 Browser Context/Profile 隔离已经实现。配置 MCP Token
 只代表当前部署信任域；多用户场景使用 Console 签发的独立 Token。
 
+当前 Java Center 已通过 Liquibase `032-conversations-connections` 将 `Conversation` 和
+`MCPConnection` 作为恢复/审计元数据持久化。每次已认证工具调用只触碰当前主体的连接和会话
+行；该记录不改变 Principal、Token、ACL 或 ExecutionSession 的授权语义，也没有后台轮询清理线程。
+
 ## 1. 设计结论
 
 1. **MCP 地址保持唯一且稳定。** 所有 Web 账号继续连接同一个 `/mcp`，Center、Console
@@ -160,8 +164,8 @@ erDiagram
 | --- | --- | --- |
 | `rcm_principal` | `principal_id`, `kind`, `display_name`, `status` | `principal_id`；状态和名称索引 |
 | `rcm_mcp_token` | `token_id`, `principal_id`, `token_hash`, `expires_at`, `revoked_at`, `scope_json`, `quota_json` | `token_hash` 唯一；主体和有效状态索引 |
-| `rcm_conversation` | `conversation_id`, `created_by`, `status`, `last_seen_at` | 主体和最近活动索引 |
-| `rcm_mcp_connection` | `connection_id`, `conversation_id`, `endpoint_id`, `token_id`, `protocol_version` | 对话、Endpoint 和最后活动索引 |
+| `rcm_conversation` | `(principal_id, conversation_id)`, `status`, `metadata_json`, `last_seen_at`, `expires_at` | 主体复合主键和最近活动索引 |
+| `rcm_mcp_connection` | `(principal_id, connection_id)`, `conversation_id`, `transport`, `status`, `metadata_json`, `last_seen_at`, `closed_at` | 主体/连接复合主键和活动索引；连接回收不改变任务归属 |
 | `rcm_machine_grant` | `machine_id`, `principal_id`, `scope_json`, `expires_at` | `(machine_id, principal_id)` 唯一；有效状态索引 |
 | `rcm_project_member` | `project_id`, `principal_id`, `role`, `expires_at` | `(project_id, principal_id)` 唯一 |
 | `rcm_execution_session` | `session_id`, `principal_id`, `conversation_id`, `machine_id`, `contract_json` | 主体/机器/状态索引 |
@@ -187,7 +191,7 @@ Token、Cookie、完整命令、环境变量和页面内容不作为普通字段
 - 使用固定的 `machines`、`command`、`desktop`、`browser`、`project`、`artifact`、
   `task_read`、`task_cancel` 聚合 Tool；
 - Center 从 Bearer Token 派生主体，不要求模型填写 `principal_id`；
-- 对话和连接 ID 由 Center 生成并在任务摘要中返回，只有需要恢复时才由模型携带 `task_id`；
+- 对话和连接 ID 由 Center/Streamable HTTP 会话产生并持久化为关联元数据，只有需要恢复时才由模型携带 `task_id`；
 - 用户、Token、项目成员、配额和撤销放在 React Console/Admin API，不扩张 MCP 工具元数据；
 - 任务结果只返回最小摘要、游标和工件引用，主体无权访问的内容在 Center 侧过滤。
 

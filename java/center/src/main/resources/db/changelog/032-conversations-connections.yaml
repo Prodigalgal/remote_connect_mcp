@@ -1,0 +1,160 @@
+databaseChangeLog:
+  - changeSet:
+      id: 032-conversations-connections
+      author: remote-connect-mcp
+      labels: conversations,connections,recovery
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - createTable:
+            tableName: rcm_conversation
+            columns:
+              - column:
+                  name: conversation_id
+                  type: varchar(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: metadata_json
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_seen_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addPrimaryKey:
+            tableName: rcm_conversation
+            columnNames: principal_id, conversation_id
+            constraintName: pk_rcm_conversation
+        - addForeignKeyConstraint:
+            baseTableName: rcm_conversation
+            baseColumnNames: principal_id
+            constraintName: fk_rcm_conversation_principal
+            referencedTableName: rcm_principal
+            referencedColumnNames: principal_id
+            onDelete: CASCADE
+        - createIndex:
+            indexName: idx_rcm_conversation_activity
+            tableName: rcm_conversation
+            columns:
+              - column:
+                  name: principal_id
+              - column:
+                  name: status
+              - column:
+                  name: last_seen_at
+        - createTable:
+            tableName: rcm_mcp_connection
+            columns:
+              - column:
+                  name: connection_id
+                  type: varchar(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: conversation_id
+                  type: varchar(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: transport
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: metadata_json
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_seen_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: closed_at
+                  type: timestamptz
+        - addPrimaryKey:
+            tableName: rcm_mcp_connection
+            columnNames: principal_id, connection_id
+            constraintName: pk_rcm_mcp_connection
+        - addForeignKeyConstraint:
+            baseTableName: rcm_mcp_connection
+            baseColumnNames: principal_id, conversation_id
+            constraintName: fk_rcm_connection_conversation
+            referencedTableName: rcm_conversation
+            referencedColumnNames: principal_id, conversation_id
+            onDelete: CASCADE
+        - createIndex:
+            indexName: idx_rcm_connection_activity
+            tableName: rcm_mcp_connection
+            columns:
+              - column:
+                  name: principal_id
+              - column:
+                  name: last_seen_at
+              - column:
+                  name: status
+      rollback:
+        - dropIndex:
+            indexName: idx_rcm_connection_activity
+            tableName: rcm_mcp_connection
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_mcp_connection
+            constraintName: fk_rcm_connection_conversation
+        - dropPrimaryKey:
+            tableName: rcm_mcp_connection
+            constraintName: pk_rcm_mcp_connection
+        - dropTable:
+            tableName: rcm_mcp_connection
+        - dropIndex:
+            indexName: idx_rcm_conversation_activity
+            tableName: rcm_conversation
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_conversation
+            constraintName: fk_rcm_conversation_principal
+        - dropPrimaryKey:
+            tableName: rcm_conversation
+            constraintName: pk_rcm_conversation
+        - dropTable:
+            tableName: rcm_conversation

@@ -191,6 +191,7 @@ public class McpConfiguration {
                                     ProjectService projects,
                                     McpAccessService access,
                                     ArtifactTransferService transfers,
+                                    McpConversationService conversations,
                                     ExecutorService mcpVirtualThreadExecutor,
                                     @Value("${rcm.version:dev}") String version) {
         var server = McpServer.async(transport)
@@ -200,7 +201,7 @@ public class McpConfiguration {
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
                 .resources(artifactViewerResource(transfers))
-                .tools(modelToolSpecs(agents, tasks, projects, access, transfers, mcpVirtualThreadExecutor))
+                .tools(modelToolSpecs(agents, tasks, projects, access, transfers, conversations, mcpVirtualThreadExecutor))
                 .build();
         return server;
     }
@@ -275,6 +276,7 @@ public class McpConfiguration {
                                                                                     ProjectService projects,
                                                                                     McpAccessService access,
                                                                                     ArtifactTransferService transfers,
+                                                                                    McpConversationService conversations,
                                                                                     ExecutorService mcpVirtualThreadExecutor) {
         var scheduler = Schedulers.fromExecutor(mcpVirtualThreadExecutor);
         // MCP Apps is the canonical UI contract.  ChatGPT consumes the same
@@ -291,30 +293,30 @@ public class McpConfiguration {
         return List.of(
                 tool("machines", "Discover registered machines or fetch one bounded machine detail. Returns stable IDs and compact capability summaries.",
                         machinesModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesModel(agents, access, origin(exchange), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesModel(agents, access, origin(exchange, conversations), request); }, scheduler),
                 tool("command", "Queue one shell command on a selected machine and return a durable task handle immediately.",
                         commandModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandModel(agents, tasks, projects, access, origin(exchange), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler),
                 tool("desktop", "Control an explicitly desktop-capable user session with semantic screenshot, window, input and launch operations.",
                         desktopModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktopModel(agents, tasks, projects, access, origin(exchange), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktopModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler),
                 tool("browser", "Run one structured browser navigation, observation or interaction request on a browser-capable machine.",
                         browserModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browserModel(agents, tasks, projects, access, origin(exchange), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browserModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler),
                 tool("project", "Inspect or mutate a registered project/worktree through one explicit operation. Paths are opt-in and responses are paged.",
                         projectModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:project"); return projectModel(projects, access, origin(exchange), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:project"); return projectModel(projects, access, origin(exchange, conversations), request); }, scheduler),
                 tool("artifact", "Transfer a ChatGPT file to a machine, retrieve a machine file, or read a compact artifact handle.",
                         artifactModelSchema(), artifactMeta,
                         (exchange, request) -> { requireScope(exchange,
                                 "read".equalsIgnoreCase(asString(modelArguments(request).get("operation"))) ? "mcp:read" : "mcp:execute");
-                            return artifactModel(agents, projects, access, transfers, origin(exchange), request); }, scheduler),
+                            return artifactModel(agents, projects, access, transfers, origin(exchange, conversations), request); }, scheduler),
                 tool("task_read", "Read one durable task state and one bounded output page; optionally wait briefly for a change.",
                         taskReadModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, origin(exchange), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, origin(exchange, conversations), request); }, scheduler),
                 tool("task_cancel", "Cancel one queued or running task owned by the current principal and session.",
                         taskCancelModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancelModel(tasks, transfers, origin(exchange), request); }, scheduler));
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancelModel(tasks, transfers, origin(exchange, conversations), request); }, scheduler));
     }
 
     private static McpServerFeatures.AsyncToolSpecification tool(String name, String description, Map<String, Object> schema,
@@ -396,6 +398,34 @@ public class McpConfiguration {
     private static Map<String, Object> modelNullableInteger(String description, long min, long max) {
         return Map.of("description", description, "anyOf", List.of(
                 modelInteger(description, min, max), Map.of("type", "null")));
+    }
+
+    private static Map<String, Object> modelNullableObject(String description, Map<String, Object> properties) {
+        var object = modelSchema(properties, List.of());
+        object.put("description", description);
+        return Map.of("description", description, "anyOf", List.of(object, Map.of("type", "null")));
+    }
+
+    /**
+     * A compact, executable hint for the next bounded action.  It is an
+     * object instead of prose so a model can copy the stable identifiers and
+     * cursors without trying to parse English text.  All fields are optional
+     * because pagination and validation errors do not always have a task.
+     */
+    private static Map<String, Object> modelNextActionSchema() {
+        return modelNullableObject("bounded next operation; omit when no follow-up is needed", Map.ofEntries(
+                Map.entry("tool", modelEnum("one of the public MCP tools", List.of(
+                        "machines", "command", "desktop", "browser", "project", "artifact", "task_read", "task_cancel"))),
+                Map.entry("operation", modelString("tool operation", 0, 64)),
+                Map.entry("task_id", modelString("existing task identifier", 1, 180)),
+                Map.entry("artifact_id", modelString("artifact identifier", 1, 180)),
+                Map.entry("transfer_id", modelString("transfer identifier", 1, 180)),
+                Map.entry("cursor", modelInteger("output byte cursor", 0, Integer.MAX_VALUE)),
+                Map.entry("change_seq", modelInteger("task change sequence", 0, Long.MAX_VALUE)),
+                Map.entry("offset", modelInteger("next page offset", 0, Integer.MAX_VALUE)),
+                Map.entry("limit", modelInteger("next page size", 1, MAX_OUTPUT_PAGE)),
+                Map.entry("wait_ms", modelInteger("bounded wait in milliseconds", 0, 20000)),
+                Map.entry("reason", modelString("short machine-readable reason", 0, 128))));
     }
 
     private static Map<String, Object> modelEnum(String description, List<String> values) {
@@ -540,6 +570,7 @@ public class McpConfiguration {
 
     private static Map<String, Object> taskReadModelSchema() {
         return modelSchema(Map.ofEntries(
+                Map.entry("operation", modelEnum("task read mode", List.of("wait", "output", "read_output"))),
                 Map.entry("task_id", modelString("task identifier", 1, 180)),
                 Map.entry("cursor", modelInteger("output byte cursor", 0, Integer.MAX_VALUE)),
                 Map.entry("wait_ms", modelInteger("bounded wait", 0, 20000)),
@@ -575,7 +606,7 @@ public class McpConfiguration {
         taskProperties.put("output_expires_at", modelNullableString("task output expiry", 0, 64));
         taskProperties.put("pinned", modelBoolean("task retention is pinned"));
         taskProperties.put("archived_at", modelNullableString("task archive timestamp", 0, 64));
-        taskProperties.put("next_action", modelString("next action", 0, 512));
+        taskProperties.put("next_action", modelNextActionSchema());
         var task = modelSchema(taskProperties, List.of("id", "machine_id", "kind", "status"));
         // Task projections intentionally grow as capabilities are added (for
         // example execution_scope, result_channel and contract timestamps).
@@ -614,7 +645,7 @@ public class McpConfiguration {
                 Map.entry("total", modelInteger("total visible records", 0, Integer.MAX_VALUE)),
                 Map.entry("total_worktrees", modelInteger("total worktrees", 0, Integer.MAX_VALUE)),
                 Map.entry("has_more", modelBoolean("more records are available")),
-                Map.entry("next_action", modelString("next action", 0, 512)),
+                Map.entry("next_action", modelNextActionSchema()),
                 Map.entry("error", error)), List.of());
         result.put("additionalProperties", true);
         return result;
@@ -764,10 +795,11 @@ public class McpConfiguration {
             var taskId = requiredModelString(arguments, "task_id");
             var cursor = optionalModelInt(arguments, "cursor", 0, Integer.MAX_VALUE, 0);
             var waitMs = optionalModelInt(arguments, "wait_ms", 0, 20000, 0);
+            var changeSequence = optionalModelLong(arguments, "change_seq", 0L, Long.MAX_VALUE, -1L);
             var limit = optionalModelInt(arguments, "limit", 1, MAX_OUTPUT_PAGE, 16 * 1024);
             var current = tasks.findFor(origin, taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
             var view = waitMs == 0 ? new TaskView(current)
-                    : tasks.waitForChange(origin, taskId, cursor, Duration.ofMillis(waitMs));
+                    : tasks.waitForChange(origin, taskId, cursor, changeSequence, Duration.ofMillis(waitMs));
             return taskResult(tasks, origin, view, cursor, limit);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -816,6 +848,15 @@ public class McpConfiguration {
         if (value == null) return fallback;
         if (!(value instanceof Number number)) throw new IllegalArgumentException(key + " must be an integer");
         var result = number.intValue();
+        if (result < min || result > max) throw new IllegalArgumentException(key + " is outside the allowed range");
+        return result;
+    }
+
+    private static long optionalModelLong(Map<String, Object> values, String key, long min, long max, long fallback) {
+        var value = values.get(key);
+        if (value == null) return fallback;
+        if (!(value instanceof Number number)) throw new IllegalArgumentException(key + " must be an integer");
+        var result = number.longValue();
         if (result < min || result > max) throw new IllegalArgumentException(key + " is outside the allowed range");
         return result;
     }
@@ -881,8 +922,12 @@ public class McpConfiguration {
             var result = transfers.createWebToAgent(origin, create, file.fileId(), args.destinationPath(), name, mime,
                     URI.create(file.downloadUrl()), args.expectedBytes() == null ? file.bytes() : args.expectedBytes(),
                     firstNonBlank(args.expectedSha256(), file.sha256()), Boolean.TRUE.equals(args.overwrite()));
-            return structuredJson(Map.of("task", taskMap(result.task()), "transfer", transferMap(result.transfer()),
-                    "next_action", "call task_read, then artifact with operation=read and the returned artifact_id"));
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("task", taskMap(result.task()));
+            payload.put("transfer", transferMap(result.transfer()));
+            payload.put("next_action", nextAction("task_read", "wait", result.task().id(), 0L,
+                    result.task().changeSequence(), 20000, "wait_for_transfer"));
+            return structuredJson(payload);
         } catch (Exception exception) {
             return error(exception);
         }
@@ -901,8 +946,12 @@ public class McpConfiguration {
                     scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(), args.sessionId(), args.risk(),
                     Boolean.TRUE.equals(args.elevationRequired()), origin);
             var result = transfers.createAgentToWeb(origin, create, args.sourcePath(), args.fileName(), args.mimeType());
-            return structuredJson(Map.of("task", taskMap(result.task()), "transfer", transferMap(result.transfer()),
-                    "next_action", "call task_read until completed, then artifact with operation=read and the returned artifact_id"));
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("task", taskMap(result.task()));
+            payload.put("transfer", transferMap(result.transfer()));
+            payload.put("next_action", nextAction("task_read", "wait", result.task().id(), 0L,
+                    result.task().changeSequence(), 20000, "wait_for_transfer"));
+            return structuredJson(payload);
         } catch (Exception exception) {
             return error(exception);
         }
@@ -974,10 +1023,16 @@ public class McpConfiguration {
                     : visible.subList(offset, Math.min(visible.size(), offset + limit));
             var values = machines.stream().map(McpConfiguration::machineSummary).toList();
             var total = visible.size();
-            return json(Map.of("machines", values, "offset", offset, "limit", limit,
-                    "total", total, "has_more", offset + values.size() < total,
-                    "next_action", offset + values.size() < total
-                            ? "call machines with operation=list and offset + limit" : "no more machines"));
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("machines", values);
+            payload.put("offset", offset);
+            payload.put("limit", limit);
+            payload.put("total", total);
+            var hasMore = offset + values.size() < total;
+            payload.put("has_more", hasMore);
+            payload.put("next_action", nextAction("machines", "list", null, null, null,
+                    null, hasMore ? "read_next_page" : "no_more_pages", hasMore ? offset + values.size() : null, limit));
+            return json(payload);
         } catch (Exception exception) {
             return error(exception);
         }
@@ -1014,10 +1069,16 @@ public class McpConfiguration {
                     var total = values.size();
                     values = offset >= total ? List.of() : values.subList(offset, Math.min(total, offset + limit));
                     var summaries = values.stream().map(McpConfiguration::projectSummary).toList();
-                    yield json(Map.of("projects", summaries, "offset", offset, "limit", limit,
-                            "total", total, "has_more", offset + values.size() < total,
-                            "next_action", offset + values.size() < total
-                                    ? "call project list with offset + limit" : "no more projects"));
+                    var payload = new LinkedHashMap<String, Object>();
+                    payload.put("projects", summaries);
+                    payload.put("offset", offset);
+                    payload.put("limit", limit);
+                    payload.put("total", total);
+                    var hasMore = offset + values.size() < total;
+                    payload.put("has_more", hasMore);
+                    payload.put("next_action", nextAction("project", "list", null, null, null,
+                            null, hasMore ? "read_next_page" : "no_more_pages", hasMore ? offset + values.size() : null, limit));
+                    yield json(payload);
                 }
                 case "detail" -> {
                     var project = projects.find(args.projectId());
@@ -1041,8 +1102,11 @@ public class McpConfiguration {
                         // create durable ACL rows.
                         access.grantProject(origin.principalId(), created.id(), Set.of("admin"), null);
                     }
-                    yield json(Map.of("project", projectSummary(created),
-                            "next_action", "use project list or an explicit project operation for details"));
+                    var payload = new LinkedHashMap<String, Object>();
+                    payload.put("project", projectSummary(created));
+                    payload.put("next_action", nextAction("project", "detail", null, null, null,
+                            null, "read_project_detail"));
+                    yield json(payload);
                 }
                 case "remove" -> {
                     var project = projects.find(args.projectId());
@@ -1055,14 +1119,22 @@ public class McpConfiguration {
                     access.authorizeMachine(origin, project.machineId(), "execute");
                     access.authorizeProject(origin, project.id(), "write");
                     var value = projects.createWorktree(args.projectId(), new ProjectWorktreeRequest(args.ref(), args.idempotencyKey()), origin);
-                    yield json(Map.of("worktree", worktreeSummary(value), "next_action", "use task_read with the returned task_id, then submit project-scoped tasks"));
+                    var payload = new LinkedHashMap<String, Object>();
+                    payload.put("worktree", worktreeSummary(value));
+                    payload.put("next_action", nextAction("task_read", "wait", value.taskId(), 0L, null,
+                            20000, "wait_for_worktree"));
+                    yield json(payload);
                 }
                 case "worktree_remove" -> {
                     var project = projects.find(args.projectId());
                     access.authorizeMachine(origin, project.machineId(), "execute");
                     access.authorizeProject(origin, project.id(), "write");
                     var value = projects.removeWorktree(args.projectId(), args.worktreeId(), args.idempotencyKey(), origin);
-                    yield json(Map.of("worktree", worktreeSummary(value), "next_action", "use task_read with the returned task_id"));
+                    var payload = new LinkedHashMap<String, Object>();
+                    payload.put("worktree", worktreeSummary(value));
+                    payload.put("next_action", nextAction("task_read", "wait", value.taskId(), 0L, null,
+                            20000, "wait_for_worktree"));
+                    yield json(payload);
                 }
                 case "git_status", "git_diff", "git_log", "git_commit", "git_merge", "git_merge_abort" -> {
                     var project = projects.find(args.projectId());
@@ -1075,8 +1147,11 @@ public class McpConfiguration {
                     var gitOperation = operation.substring("git_".length());
                     var value = projects.gitOperation(args.projectId(), gitOperation,
                             new ProjectGitOperationRequest(args.worktreeId(), args.ref(), args.message(), args.mode(), args.idempotencyKey()), origin);
-                    yield json(Map.of("task", taskMap(value),
-                            "next_action", "use task_read with the returned task_id"));
+                    var payload = new LinkedHashMap<String, Object>();
+                    payload.put("task", taskMap(value));
+                    payload.put("next_action", nextAction("task_read", "wait", value.id(), 0L,
+                            value.changeSequence(), 20000, "wait_for_git_operation"));
+                    yield json(payload);
                 }
                 default -> throw new IllegalArgumentException("operation must be list, detail, register, remove, worktree_create, worktree_remove, or git_* operation");
             };
@@ -1100,7 +1175,11 @@ public class McpConfiguration {
             var task = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(),
                     args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
-            return json(Map.of("task", taskMap(task), "next_action", "use task_read with this task_id"));
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("task", taskMap(task));
+            payload.put("next_action", nextAction("task_read", "wait", task.id(), 0L,
+                    task.changeSequence(), 20000, "wait_for_change"));
+            return json(payload);
         } catch (Exception exception) {
             return error(exception);
         }
@@ -1127,7 +1206,11 @@ public class McpConfiguration {
             if (waitMs < 0 || waitMs > 15000) throw new IllegalArgumentException("wait_ms must be between 0 and 15000");
             if (waitMs > 0) return taskResult(tasks, origin,
                     tasks.waitForTerminal(origin, created.id(), Duration.ofMillis(waitMs)), 0, 16 * 1024);
-            return json(Map.of("task", taskMap(created), "next_action", "use task_read with this task_id"));
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("task", taskMap(created));
+            payload.put("next_action", nextAction("task_read", "wait", created.id(), 0L,
+                    created.changeSequence(), 20000, "wait_for_change"));
+            return json(payload);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return error(exception);
@@ -1182,7 +1265,11 @@ public class McpConfiguration {
                 var completed = tasks.waitForTerminal(origin, created.id(), Duration.ofMillis(waitMs));
                 return desktopResult(tasks, origin, completed);
             }
-            return json(Map.of("task", taskMap(created), "next_action", "call desktop with operation=result and this task_id"));
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("task", taskMap(created));
+            payload.put("next_action", nextAction("desktop", "result", created.id(), 0L,
+                    created.changeSequence(), 15000, "wait_for_desktop_result"));
+            return json(payload);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return error(exception);
@@ -1193,7 +1280,11 @@ public class McpConfiguration {
 
     private static McpSchema.CallToolResult desktopResult(TaskService tasks, TaskOrigin origin, TaskView task) {
         if (!TaskStatus.terminal(task.status())) {
-            return json(Map.of("task", taskMap(task), "next_action", "retry operation=result later"));
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("task", taskMap(task));
+            payload.put("next_action", nextAction("desktop", "result", task.id(), 0L,
+                    task.changeSequence(), 15000, "wait_for_desktop_result"));
+            return json(payload);
         }
         var page = tasks.readOutput(origin, task.id(), 0, 16 * 1024);
         var output = new LinkedHashMap<String, Object>();
@@ -1202,10 +1293,21 @@ public class McpConfiguration {
         output.put("next_cursor", page.nextCursor());
         output.put("more", page.more());
         if (!TaskStatus.COMPLETED.equals(task.status())) {
-            return json(Map.of("task", taskMap(task), "output", output,
-                    "next_action", "inspect task.error; do not retry automatically"));
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("task", taskMap(task));
+            payload.put("output", output);
+            payload.put("next_action", nextAction(null, null, null, null, null, null,
+                    "inspect_task_error"));
+            return json(payload);
         }
-        if (task.artifactBytes() <= 0) return json(Map.of("task", taskMap(task), "output", output));
+        if (task.artifactBytes() <= 0) {
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("task", taskMap(task));
+            payload.put("output", output);
+            var action = taskOutputNextAction(task, page);
+            if (action != null) payload.put("next_action", action);
+            return json(payload);
+        }
         var artifactMetadata = new LinkedHashMap<String, Object>();
         artifactMetadata.put("sha256", task.artifactSha256());
         artifactMetadata.put("bytes", task.artifactBytes());
@@ -1216,6 +1318,8 @@ public class McpConfiguration {
         resultPayload.put("task", taskMap(task));
         resultPayload.put("output", output);
         resultPayload.put("artifact", artifactMetadata);
+        var next = taskOutputNextAction(task, page);
+        if (next != null) resultPayload.put("next_action", next);
         if (!inlineImage) return json(resultPayload);
         // Only load bytes when the bounded MCP response can actually inline
         // them. Large downloads and non-image artifacts remain metadata-only;
@@ -1321,7 +1425,12 @@ public class McpConfiguration {
         // available through the authenticated console artifact endpoint
         // without inflating MCP context with binary/base64 data.
         if (view.artifactBytes() <= 0) {
-            return json(Map.of("task", taskMap(view), "output", output));
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("task", taskMap(view));
+            payload.put("output", output);
+            var next = taskOutputNextAction(view, page);
+            if (next != null) payload.put("next_action", next);
+            return json(payload);
         }
         var metadata = new LinkedHashMap<String, Object>();
         metadata.put("sha256", view.artifactSha256());
@@ -1333,6 +1442,8 @@ public class McpConfiguration {
         payload.put("task", taskMap(view));
         payload.put("output", output);
         payload.put("artifact", metadata);
+        var action = taskOutputNextAction(view, page);
+        if (action != null) payload.put("next_action", action);
         if (!inlineImage) return json(payload);
         var artifact = tasks.readArtifact(origin, view.id());
         if (artifact.isEmpty()) return json(payload);
@@ -1351,6 +1462,18 @@ public class McpConfiguration {
                 .addContent(McpSchema.ImageContent.builder(
                         java.util.Base64.getEncoder().encodeToString(value.data()), value.mimeType()).build())
                 .build();
+    }
+
+    private static Map<String, Object> taskOutputNextAction(TaskView task, OutputPage page) {
+        if (!TaskStatus.terminal(task.status())) {
+            return nextAction("task_read", "wait", task.id(), page.nextCursor(), task.changeSequence(),
+                    20000, "wait_for_change");
+        }
+        if (page.more()) {
+            return nextAction("task_read", "read_output", task.id(), page.nextCursor(), task.changeSequence(),
+                    0, "read_more_output");
+        }
+        return null;
     }
 
     private static boolean isInlineImage(String mimeType, long bytes) {
@@ -1430,9 +1553,10 @@ public class McpConfiguration {
         value.put("limit", limit);
         value.put("total_worktrees", worktrees.size());
         value.put("has_more", offset + page.size() < worktrees.size());
-        value.put("next_action", offset + page.size() < worktrees.size()
-                ? "call project detail with offset + limit"
-                : "no more worktrees");
+        var hasMore = offset + page.size() < worktrees.size();
+        value.put("next_action", nextAction("project", "detail", null, null, null, null,
+                hasMore ? "read_next_worktree_page" : "no_more_worktrees",
+                hasMore ? offset + page.size() : null, limit));
         return value;
     }
 
@@ -1570,6 +1694,38 @@ public class McpConfiguration {
         return SensitiveValueRedactor.redact(value.substring(0, max));
     }
 
+    private static Map<String, Object> nextAction(String tool, String operation, String taskId,
+                                                   Long cursor, Long changeSequence, Integer waitMs,
+                                                   String reason) {
+        return nextAction(tool, operation, taskId, cursor, changeSequence, waitMs, reason, null, null);
+    }
+
+    private static Map<String, Object> nextAction(String tool, String operation, String taskId,
+                                                   Long cursor, Long changeSequence, Integer waitMs,
+                                                   String reason, Integer offset, Integer limit) {
+        var value = new LinkedHashMap<String, Object>();
+        putNonBlank(value, "tool", tool);
+        putNonBlank(value, "operation", operation);
+        putNonBlank(value, "task_id", taskId);
+        if (cursor != null) value.put("cursor", cursor);
+        if (changeSequence != null && changeSequence >= 0) value.put("change_seq", changeSequence);
+        if (waitMs != null) value.put("wait_ms", waitMs);
+        if (offset != null) value.put("offset", offset);
+        if (limit != null) value.put("limit", limit);
+        putNonBlank(value, "reason", reason);
+        return value;
+    }
+
+    private static void putNonBlank(Map<String, Object> target, String key, String value) {
+        if (value == null || value.isBlank()) return;
+        var max = switch (key) {
+            case "task_id", "artifact_id", "transfer_id" -> 180;
+            case "operation" -> 64;
+            default -> 128;
+        };
+        target.put(key, compact(value, max));
+    }
+
     private static ResolvedScope resolveScope(AgentRegistry agents, ProjectService projects, String machineId,
                                               String projectId, String worktreeId, String rawMode,
                                               String requestedRoot, String requestedCwd) {
@@ -1611,7 +1767,7 @@ public class McpConfiguration {
         return new ResolvedScope(requestedCwd == null || requestedCwd.isBlank() ? null : requestedCwd.trim(), root, mode);
     }
 
-    private static TaskOrigin origin(McpAsyncServerExchange exchange) {
+    private static TaskOrigin origin(McpAsyncServerExchange exchange, McpConversationService conversations) {
         if (exchange == null || exchange.transportContext() == null) {
             throw new SecurityException("MCP transport principal is missing");
         }
@@ -1619,7 +1775,9 @@ public class McpConfiguration {
         if (!(value instanceof McpPrincipal principal)) {
             throw new SecurityException("MCP transport principal is missing");
         }
-        return principal.taskOrigin(exchange.sessionId());
+        var origin = principal.taskOrigin(exchange.sessionId());
+        if (conversations != null) conversations.touch(origin, "streamable-http");
+        return origin;
     }
 
     private static void requireScope(McpAsyncServerExchange exchange, String scope) {
@@ -1675,7 +1833,8 @@ public class McpConfiguration {
         payload.put("kind", "error");
         payload.put("error", Map.of("code", errorCode(exception), "message", compact(message, 2048),
                 "retryable", isRetryable(exception)));
-        payload.put("next_action", isRetryable(exception) ? "retry with the same task or idempotency key" : "fix the request and retry");
+        payload.put("next_action", nextAction(null, null, null, null, null, null,
+                isRetryable(exception) ? "retry_same_idempotency_key" : "fix_request"));
         return McpSchema.CallToolResult.builder().isError(true)
                 .structuredContent(payload).addTextContent(jsonText(payload)).build();
     }

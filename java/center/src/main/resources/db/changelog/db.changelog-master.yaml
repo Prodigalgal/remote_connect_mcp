@@ -61,3 +61,5 @@ databaseChangeLog:
       file: db/changelog/030-long-running-task-v2.yaml
   - include:
       file: db/changelog/031-task-retention-v2.yaml
+  - include:
+      file: db/changelog/032-conversations-connections.yaml

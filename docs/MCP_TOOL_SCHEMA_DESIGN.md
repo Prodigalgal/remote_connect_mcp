@@ -121,7 +121,7 @@ Next: 长任务下一步调用哪个 Tool。
 
 数据库层仍然必须为所有会改变状态的请求建立幂等键，但模型面不应强迫每次随机生成一个键。推荐规则是：调用方可以显式提供格式为 `^[A-Za-z0-9._:-]{8,128}$` 的 `idempotency_key`；省略时，Center 使用主体、MCP 连接、工具名、规范化参数指纹和短期去重窗口生成服务端键，并在结果中返回该键。跨较长时间重试或用户明确要求“继续同一个操作”时，模型复用返回的键或 `task_id`。这样既保留可靠重试，又减少模型因为忘记复制随机键而重复执行的概率。
 
-所有启动类 Tool 立即返回 `task_id`，不在 MCP 请求中等待长任务。`wait_ms` 只允许短等待，默认 `0`；长任务使用 `task_read(operation="wait")`。结果只保留一个 `next_action`，例如 `task_read`、`artifact_read` 或 `machines`，不输出长篇操作说明。
+所有启动类 Tool 立即返回 `task_id`，不在 MCP 请求中等待长任务。`wait_ms` 只允许短等待，默认 `0`；长任务使用 `task_read` 搭配 `change_seq`。结果只保留一个结构化 `next_action`，不输出长篇操作说明。
 
 ### 4. 结果使用统一的紧凑结构
 
@@ -136,7 +136,15 @@ Next: 长任务下一步调用哪个 Tool。
     "machine_id": "machine-…",
     "attempt": 1
   },
-  "next_action": "task_read"
+  "next_action": {
+    "tool": "task_read",
+    "operation": "wait",
+    "task_id": "task-…",
+    "cursor": 0,
+    "change_seq": 1,
+    "wait_ms": 20000,
+    "reason": "wait_for_change"
+  }
 }
 ```
 
@@ -150,7 +158,9 @@ Next: 长任务下一步调用哪个 Tool。
     "message": "target machine does not advertise browser",
     "retryable": false
   },
-  "next_action": "machines"
+  "next_action": {
+    "reason": "fix_request"
+  }
 }
 ```
 
@@ -240,7 +250,8 @@ artifact   screenshot / download
 
 - `wait`：`task_id`、可选 `cursor`、`wait_ms`（0–20000）；
 - `output`：`task_id`、`cursor`、`limit`（0–65536）；
-- 统一返回 `task`、`output{cursor,next_cursor,more,text}` 和 `next_action`；
+- 统一返回 `task`、`output{cursor,next_cursor,more,text}` 和有限字段的 `next_action{tool,operation,task_id,artifact_id,transfer_id,cursor,change_seq,offset,limit,wait_ms,reason}`；
+- `next_action` 只是模型可复制的提示，不是新的权限来源；Center 仍按当前 Bearer、主体、会话和任务句柄重新授权；
 - 默认只返回一页，不把完整日志放进模型上下文。
 
 ### task_cancel
@@ -262,7 +273,7 @@ artifact   screenshot / download
 ```text
 machines(list)                  # 只找目标能力，不拉完整详情
   -> command / desktop / browser / artifact
-  -> 返回短句柄和 next_action
+  -> 返回短句柄和结构化 next_action
   -> task_read(wait 或 output)   # 只在需要时观察
   -> artifact(read)              # 需要文件、截图或下载时才取
 ```

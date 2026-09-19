@@ -607,6 +607,7 @@ function TaskRow({ task, token, onRefresh }: { task: Task; token: string; onRefr
   const [artifactError, setArtifactError] = useState('')
   const [loadingArtifact, setLoadingArtifact] = useState(false)
   const terminal = ['completed', 'failed', 'canceled'].includes(task.status)
+  const progressPercent = task.progressPercent == null ? null : Math.max(0, Math.min(100, task.progressPercent))
   useEffect(() => () => {
     if (artifactUrl) URL.revokeObjectURL(artifactUrl)
   }, [artifactUrl])
@@ -661,7 +662,7 @@ function TaskRow({ task, token, onRefresh }: { task: Task; token: string; onRefr
   }
   return <>
     <div className="task-row">
-      <div><strong>{task.id}</strong><span>{task.command || task.kind} · {task.machineId} · {task.scopeMode || 'workspace'} · {task.workspacePolicy || 'shared_serial'} · {task.laneMode || 'write'}{task.projectId ? ` · ${task.projectId}` : ''}{task.worktreeId ? ` / ${task.worktreeId}` : ''}</span></div>
+      <div><strong>{task.id}</strong><span>{task.command || task.kind} · {task.machineId} · {task.scopeMode || 'workspace'} · {task.workspacePolicy || 'shared_serial'} · {task.laneMode || 'write'}{task.projectId ? ` · ${task.projectId}` : ''}{task.worktreeId ? ` / ${task.worktreeId}` : ''} · change_seq {task.changeSeq ?? 0}</span>{task.progressPhase && <div className="task-progress-inline"><span>{task.progressPhase}{task.progressMessage ? ` · ${task.progressMessage}` : ''}{task.progressCurrent != null && task.progressTotal != null ? ` · ${task.progressCurrent}/${task.progressTotal}${task.progressUnit ? ` ${task.progressUnit}` : ''}` : ''}</span>{progressPercent != null && <><b>{progressPercent}%</b><div className="progress-track"><i style={{ width: `${progressPercent}%` }} /></div></>}</div>}</div>
       <span className={`state ${terminal ? 'muted' : 'accent'}`}><i />{task.status}</span>
       <span className="mono">第 {task.attempt} 次投递</span>
       <span className="mono">{task.outputBytes} B</span>

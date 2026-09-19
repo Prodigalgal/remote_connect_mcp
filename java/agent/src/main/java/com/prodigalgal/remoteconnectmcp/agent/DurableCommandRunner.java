@@ -94,6 +94,7 @@ final class DurableCommandRunner implements Runnable {
         DurableTaskStore.Record record = recovered;
         Process process = null;
         ProcessResourceSupervisor resourceSupervisor = null;
+        TaskProgressFileWatcher progressWatcher = null;
         try {
             if (record == null) {
                 var cwd = AgentPaths.resolveCwd(config, identity.machineId(), task, task.cwd());
@@ -111,6 +112,7 @@ final class DurableCommandRunner implements Runnable {
             var handleForSupervisor = handle;
             resourceSupervisor = ProcessResourceSupervisor.start(handleForSupervisor, config, task,
                     () -> terminate(handleForSupervisor), processBudget);
+            progressWatcher = TaskProgressFileWatcher.startIfConfigured(LOG, config, identity, task, transport);
             store.guard(record, TaskLimits.outputBytes(config, task), resourceBudget);
 
             if (!record.completed()) {
@@ -179,6 +181,7 @@ final class DurableCommandRunner implements Runnable {
             }
         } finally {
             if (resourceSupervisor != null) resourceSupervisor.close();
+            if (progressWatcher != null) progressWatcher.close();
         }
     }
 

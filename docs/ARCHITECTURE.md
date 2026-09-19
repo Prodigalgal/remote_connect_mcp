@@ -60,7 +60,9 @@ RCM 采用三层身份/上下文分离：
 
 1. `Principal` 是 RCM 内部用户或服务主体，由不透明 Bearer Token 识别；
 2. `Conversation` 和 `MCPConnection` 是 Web 对话与 Streamable HTTP 连接的生命周期记录，
-   一个主体可以拥有多个，多个对话也可以在授权后共同参与一个项目；
+   一个主体可以拥有多个，多个对话也可以在授权后共同参与一个项目；Java Center 通过
+   Liquibase `032-conversations-connections` 按主体复合键持久化它们，触碰发生在已认证工具
+   调用中，不运行固定轮询，也不把它们当作权限边界；
 3. `ExecutionSession` 和 `Task` 是真正的执行边界，绑定 machine、project/worktree/path、
    capability、预算、幂等键和执行车道。
 

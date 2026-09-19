@@ -1,6 +1,6 @@
 # RCM 生产任务清单
 
-更新时间：2026-09-18（Asia/Shanghai）
+更新时间：2026-09-19（Asia/Shanghai）
 
 本文是 Remote Connect MCP 的可持续任务清单。第一列只表示代码交付状态：实现和自动化检查完成即可勾选；生产验收单独记录在 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)，不再阻止代码任务勾选。这样可以明确区分“代码没做完”和“代码已完成但尚未在目标环境验收”。
 
@@ -16,9 +16,9 @@
 - 每项代码完成后，在“验收证据”列补充 CI run/测试证据，再将代码状态改为 `[x]`；生产目标机证据随后补到独立验收表。
 - 不在本机编译 Java、Native Image、React 或正式安装包；构建证据必须来自 GitHub Actions。
 
-## 当前阶段：核心开发项已闭环，Long Running Tasks v2 正在按实际缺口增量实现
+## 当前阶段：核心开发项已闭环，Long Running Tasks v2 的开发项已实现，等待统一 Actions/生产验收
 
-截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程、Artifact Transport v2、会话/配额、READ/WRITE/EXCLUSIVE 车道、桌面/浏览器资源回收、MCP Apps Viewer 和 command/desktop/browser 组件级升级代码已经完成。当前剩余项主要是 GitHub Actions、真实 ChatGPT Web/平台矩阵和生产故障演练；现有 Task Artifact 继续承担小型截图和诊断结果，通用文件改走独立的流式 File Transfer 数据面。原 P2-02 和完整 SaaS 多租户仍明确不做，P2-05-lite 保持轻量主体隔离路线。MCP Tool/Schema 的 8 工具模型面也已完成代码硬切换，详见下方 `P1-TM` 清单。
+截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程、Artifact Transport v2、会话/配额、READ/WRITE/EXCLUSIVE 车道、桌面/浏览器资源回收、MCP Apps Viewer 和 command/desktop/browser 组件级升级代码已经完成。Long Running Tasks v2 的 change sequence、进度快照、保留/GC、结构化 next_action、Conversation/Connection 恢复元数据、可选 WatchService 进度适配器、低基数指标和 Console 当前进度时间线也已实现。当前剩余项主要是 GitHub Actions、真实 ChatGPT Web/平台矩阵和生产故障演练；现有 Task Artifact 继续承担小型截图和诊断结果，通用文件改走独立的流式 File Transfer 数据面。原 P2-02 和完整 SaaS 多租户仍明确不做，P2-05-lite 保持轻量主体隔离路线。MCP Tool/Schema 的 8 工具模型面也已完成代码硬切换，详见下方 `P1-TM` 清单。
 
 | 层级 | 当前判断 | 剩余工作 |
 | --- | --- | --- |
@@ -149,12 +149,12 @@
 
 | 状态 | 编号 | 任务 | 实际取舍与完成条件 | 证据/下一步 |
 | --- | --- | --- | --- | --- |
-| [~] | P0-LR-01 | Durable task change sequence | `rcm_task.change_seq`、PostgreSQL 事务触发器和 MCP `task_read.change_seq` 已加入；数据库序列是事实来源，LISTEN/NOTIFY 只负责唤醒 | Liquibase `030`、TaskService/JDBC；Actions/PostgreSQL 集成待验证 |
-| [~] | P0-LR-02 | Progress snapshot 与 Agent ACK | Task 持久化 phase/percent/message/current/total/unit，新增 Agent `/tasks/{id}/progress`，复用 Attempt 栅栏；command/durable runner 首次上报为 best-effort，不因进度通道阻塞任务 | `TaskProgressUpdate`、AgentController、TaskService；Actions/限频和平台矩阵待验证 |
-| [~] | P0-LR-03 | Task metadata/output retention 与统一 GC | 已加入 metadata/output 独立过期字段、pinned/archived 投影和 Admin GC 入口；继续补充 CronJob 参数、删除失败/恢复指标和 Actions 门禁；不在 Center 内启动固定清理线程 | Liquibase `031`、Jdbc/Task GC；Actions/生产容量门禁待验证 |
-| [ ] | P1-LR-04 | 结构化 next_action 与重试语义 | 将当前字符串 `next_action` 收敛为有限枚举/参数对象，明确“拿到 task_id 后不重新提交，传输重试复用原幂等键” | MCP Schema/黄金样例/ChatGPT Web 验收 |
-| [ ] | P1-LR-05 | Conversation/Connection 恢复模型 | 当前 ExecutionSession 已绑定 connection_id；仅当需要跨 MCP 连接恢复/审计时，才增加正式 Conversation/MCP Connection 表，不把 Conversation 当授权边界 | 先补需求证据，再决定是否迁移 |
-| [ ] | P2-LR-06 | 可选进度适配器与时间线 | `RCM_PROGRESS_FILE + WatchService` 仅作为受限 workspace/IPC 适配器，不进入首版硬路径；后续补 Console 时间线和低基数指标 | 依赖 P0-LR-02 和生产使用反馈 |
+| [~] | P0-LR-01 | Durable task change sequence | `rcm_task.change_seq`、PostgreSQL 事务触发器和 MCP `task_read.change_seq` 已加入；数据库序列是事实来源，LISTEN/NOTIFY 只负责唤醒 | Liquibase `030`、TaskService/JDBC；本轮 Actions/PostgreSQL 待验证 |
+| [~] | P0-LR-02 | Progress snapshot 与 Agent ACK | Task 持久化 phase/percent/message/current/total/unit，新增 Agent `/tasks/{id}/progress`，复用 Attempt 栅栏；command/durable runner 首次上报为 best-effort；新增可选文件 WatchService 适配器 | `TaskProgressUpdate`、AgentController、TaskService、`TaskProgressFileWatcher`；本轮 Actions/限频待验证 |
+| [~] | P0-LR-03 | Task metadata/output retention 与统一 GC | metadata/output 独立过期字段、pinned/archived 投影、Admin GC、CronJob 参数和低基数 GC/进度指标已完成；不在 Center 内启动固定清理线程 | Liquibase `031`、Jdbc/Task GC；本轮 Actions/容量门禁待验证 |
+| [~] | P1-LR-04 | 结构化 next_action 与重试语义 | 所有公共结果使用有限 `next_action` 对象；模型拿到 task_id 后只读同一任务，传输重试复用原幂等键；输入/输出 Schema 和文档已同步 | `McpConfiguration`/Schema/黄金样例；本轮 Actions/ChatGPT Web 验收待验证 |
+| [~] | P1-LR-05 | Conversation/Connection 恢复模型 | 新增 Liquibase `032` 和 `McpConversationService`，按 principal 复合键持久化 conversation/connection 触碰、transport、状态和 TTL；不把 Conversation 当授权边界，无清理轮询 | `032-conversations-connections.yaml`、工具调用 touch；本轮 PostgreSQL Actions/双账号验收待验证 |
+| [~] | P2-LR-06 | 可选进度适配器与时间线 | `RCM_PROGRESS_FILE + WatchService` 受限于任务 cwd、64 KiB、250 ms 节流并随任务关闭；Agent 指标与 React 任务时间线展示当前快照/change_seq，不增加公共 Tool | `TaskProgressFileWatcher`、`MetricsController`、React `TaskRow`；本轮 Actions/平台验收待验证 |
 
 ### command/desktop/browser 组件级升级
 

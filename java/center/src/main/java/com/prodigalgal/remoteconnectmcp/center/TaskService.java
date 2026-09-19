@@ -61,6 +61,8 @@ public final class TaskService {
     private final Condition changed = lock.newCondition();
     private final AtomicLong localChangeSequence = new AtomicLong();
     private final AtomicLong artifactGcBytes = new AtomicLong();
+    private final AtomicLong progressUpdates = new AtomicLong();
+    private final AtomicLong progressRejected = new AtomicLong();
     private final JdbcTaskStore jdbcStore;
     private final AgentWakeRegistry wakes;
     private final TaskChangeRegistry taskChanges;
@@ -677,28 +679,43 @@ public final class TaskService {
     /** Apply an advisory progress snapshot with the dispatch-attempt fence. */
     public TaskView updateProgress(String machineId, String taskId, TaskProgressUpdate progress, Integer attempt) {
         if (progress == null) throw new IllegalArgumentException("progress is required");
-        if (jdbcStore != null) {
-            var view = jdbcStore.updateProgress(machineId, taskId, progress, attempt);
-            signalChanged(taskId);
-            return view;
-        }
-        lock.lock();
         try {
-            var task = required(taskId);
-            assertMachine(task, machineId);
-            assertAttempt(task, attempt);
-            task.progressPhase(progress.phase());
-            task.progressPercent(progress.percent());
-            task.progressMessage(progress.message());
-            task.progressCurrent(progress.current());
-            task.progressTotal(progress.total());
-            task.progressUnit(progress.unit());
-            task.progressUpdatedAt(Instant.now());
-            signalChanged(taskId);
-            return new TaskView(task);
-        } finally {
-            lock.unlock();
+            if (jdbcStore != null) {
+                var view = jdbcStore.updateProgress(machineId, taskId, progress, attempt);
+                progressUpdates.incrementAndGet();
+                signalChanged(taskId);
+                return view;
+            }
+            lock.lock();
+            try {
+                var task = required(taskId);
+                assertMachine(task, machineId);
+                assertAttempt(task, attempt);
+                task.progressPhase(progress.phase());
+                task.progressPercent(progress.percent());
+                task.progressMessage(progress.message());
+                task.progressCurrent(progress.current());
+                task.progressTotal(progress.total());
+                task.progressUnit(progress.unit());
+                task.progressUpdatedAt(Instant.now());
+                progressUpdates.incrementAndGet();
+                signalChanged(taskId);
+                return new TaskView(task);
+            } finally {
+                lock.unlock();
+            }
+        } catch (RuntimeException failure) {
+            progressRejected.incrementAndGet();
+            throw failure;
         }
+    }
+
+    public long progressUpdates() {
+        return progressUpdates.get();
+    }
+
+    public long progressRejected() {
+        return progressRejected.get();
     }
 
     public TaskView updateProgress(String machineId, String taskId, TaskProgressUpdate progress) {

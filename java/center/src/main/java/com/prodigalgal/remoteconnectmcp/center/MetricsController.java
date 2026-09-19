@@ -82,6 +82,8 @@ public final class MetricsController {
         lineDouble(builder, "remote_connect_mcp_tasks_success_ratio", "Completed tasks divided by terminal tasks.", ratio(taskSlo.completed(), taskSlo.terminal()));
         lineDouble(builder, "remote_connect_mcp_tasks_failure_ratio", "Failed tasks divided by terminal tasks.", ratio(taskSlo.failed(), taskSlo.terminal()));
         lineDouble(builder, "remote_connect_mcp_tasks_canceled_ratio", "Canceled tasks divided by terminal tasks.", ratio(taskSlo.canceled(), taskSlo.terminal()));
+        line(builder, "remote_connect_mcp_task_progress_updates_total", "Accepted bounded task progress snapshots.", "counter", tasks.progressUpdates());
+        line(builder, "remote_connect_mcp_task_progress_rejected_total", "Rejected task progress snapshots (attempt or validation fence).", "counter", tasks.progressRejected());
         line(builder, "remote_connect_mcp_artifacts_total", "Persisted task artifact objects.", "gauge", taskSlo.artifactObjects());
         line(builder, "remote_connect_mcp_artifact_bytes", "Bytes represented by persisted task artifact metadata.", "gauge", taskSlo.artifactBytes());
         if (transfers != null) {

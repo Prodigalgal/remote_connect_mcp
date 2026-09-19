@@ -76,6 +76,14 @@ export type Task = {
   artifactBytes: number
   artifactMime?: string
   artifactSha256?: string
+  changeSeq?: number
+  progressPhase?: string
+  progressPercent?: number
+  progressMessage?: string
+  progressCurrent?: number
+  progressTotal?: number
+  progressUnit?: string
+  progressUpdatedAt?: string
   scopeMode?: string
   projectId?: string
   worktreeId?: string
@@ -415,6 +423,14 @@ function mapTask(item: Record<string, unknown>): Task {
     artifactBytes: Number(item.artifact_bytes ?? 0),
     artifactMime: item.artifact_mime as string | undefined,
     artifactSha256: item.artifact_sha256 as string | undefined,
+    changeSeq: Number(item.change_seq ?? 0),
+    progressPhase: item.progress_phase as string | undefined,
+    progressPercent: item.progress_percent == null ? undefined : Number(item.progress_percent),
+    progressMessage: item.progress_message as string | undefined,
+    progressCurrent: item.progress_current == null ? undefined : Number(item.progress_current),
+    progressTotal: item.progress_total == null ? undefined : Number(item.progress_total),
+    progressUnit: item.progress_unit as string | undefined,
+    progressUpdatedAt: item.progress_updated_at as string | undefined,
     scopeMode: item.scope_mode as string | undefined,
     projectId: item.project_id as string | undefined,
     worktreeId: item.worktree_id as string | undefined,
