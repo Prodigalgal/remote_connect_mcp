@@ -1257,7 +1257,7 @@ public class McpConfiguration {
         try {
             var args = args(request, TaskWaitCoreArgs.class);
             var cursor = args.cursor() == null ? 0 : args.cursor();
-            var changeSequence = args.changeSeq() == null ? 0L : args.changeSeq();
+            var changeSequence = args.changeSeq() == null ? -1L : args.changeSeq();
             var waitMs = args.waitMs() == null ? 0 : args.waitMs();
             if (waitMs < 0 || waitMs > 20000) {
                 throw new IllegalArgumentException("wait_ms must be between 0 and 20000");

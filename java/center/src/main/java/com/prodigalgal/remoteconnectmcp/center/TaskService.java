@@ -257,7 +257,7 @@ public final class TaskService {
 
     TaskView waitForChange(TaskOrigin origin, String taskId, long cursor, Duration timeout)
             throws InterruptedException {
-        return waitForChange(origin, taskId, cursor, 0L, timeout);
+        return waitForChange(origin, taskId, cursor, -1L, timeout);
     }
 
     TaskView waitForChange(TaskOrigin origin, String taskId, long cursor, long changeSequence, Duration timeout)
@@ -867,7 +867,7 @@ public final class TaskService {
     }
 
     public TaskView waitForChange(String taskId, long cursor, Duration timeout) throws InterruptedException {
-        return waitForChange(taskId, cursor, 0L, timeout);
+        return waitForChange(taskId, cursor, -1L, timeout);
     }
 
     public TaskView waitForChange(String taskId, long cursor, long changeSequence, Duration timeout) throws InterruptedException {
@@ -875,7 +875,7 @@ public final class TaskService {
             var deadline = System.nanoTime() + timeout.toNanos();
             while (true) {
                 var task = jdbcStore.find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
-                if (task.changeSequence() > changeSequence || task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
+                if (changedAfter(task, changeSequence) || task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
                     return new TaskView(task);
                 }
                 var remaining = deadline - System.nanoTime();
@@ -897,7 +897,7 @@ public final class TaskService {
                     var observed = taskChanges.version(taskId);
                     try {
                         task = jdbcStore.find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
-                        if (task.changeSequence() > changeSequence || task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
+                        if (changedAfter(task, changeSequence) || task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
                             return new TaskView(task);
                         }
                         remaining = deadline - System.nanoTime();
@@ -917,7 +917,7 @@ public final class TaskService {
         try {
             while (true) {
                 var task = required(taskId);
-                if (task.changeSequence() > changeSequence || task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
+                if (changedAfter(task, changeSequence) || task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
                     return new TaskView(task);
                 }
                 var remaining = deadline - System.nanoTime();
@@ -986,6 +986,10 @@ public final class TaskService {
         if (machineId == null || !task.machineId().equals(machineId.trim())) {
             throw new SecurityException("task does not belong to this machine");
         }
+    }
+
+    private static boolean changedAfter(TaskView task, long changeSequence) {
+        return changeSequence >= 0 && task.changeSequence() > changeSequence;
     }
 
     /**
