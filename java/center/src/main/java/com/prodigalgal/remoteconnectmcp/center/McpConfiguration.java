@@ -384,7 +384,7 @@ public class McpConfiguration {
         return Map.of("type", "string", "description", description, "enum", values);
     }
 
-    private static Map<String, Object> modelInteger(String description, int min, int max) {
+    private static Map<String, Object> modelInteger(String description, long min, long max) {
         return Map.of("type", "integer", "description", description, "minimum", min, "maximum", max);
     }
 
@@ -422,7 +422,7 @@ public class McpConfiguration {
                 Map.entry("file_id", modelString("host file identifier", 1, 512)),
                 Map.entry("file_name", modelString("original file name", 1, 512)),
                 Map.entry("mime_type", modelString("MIME type", 1, 256)),
-                Map.entry("bytes", modelInteger("optional byte size", 0, 4 * 1024 * 1024 * 1024)),
+                Map.entry("bytes", modelInteger("optional byte size", 0L, 4L * 1024 * 1024 * 1024)),
                 Map.entry("sha256", Map.of("type", "string", "description", "optional SHA-256", "pattern", "^[A-Fa-f0-9]{64}$"))),
                 List.of("download_url", "file_id"));
     }
@@ -512,7 +512,7 @@ public class McpConfiguration {
                 Map.entry("source_path", modelString("complete source path inside scope", 1, 4096)),
                 Map.entry("file_name", modelString("display file name", 1, 512)),
                 Map.entry("mime_type", modelString("MIME type", 1, 256)),
-                Map.entry("expected_bytes", modelInteger("expected byte size", 0, 4 * 1024 * 1024 * 1024)),
+                Map.entry("expected_bytes", modelInteger("expected byte size", 0L, 4L * 1024 * 1024 * 1024)),
                 Map.entry("expected_sha256", Map.of("type", "string", "description", "expected SHA-256", "pattern", "^[A-Fa-f0-9]{64}$")),
                 Map.entry("overwrite", modelBoolean("replace an existing target")),
                 Map.entry("scope", modelScopeSchema()),
@@ -541,7 +541,7 @@ public class McpConfiguration {
         taskProperties.put("attempt", modelInteger("dispatch attempt", 0, Integer.MAX_VALUE));
         taskProperties.put("output_bytes", modelInteger("output bytes", 0, Integer.MAX_VALUE));
         taskProperties.put("output_truncated", modelBoolean("output was truncated"));
-        taskProperties.put("artifact_bytes", modelInteger("artifact bytes", 0, 4 * 1024 * 1024 * 1024));
+        taskProperties.put("artifact_bytes", modelInteger("artifact bytes", 0L, 4L * 1024 * 1024 * 1024));
         taskProperties.put("artifact_mime", modelString("artifact MIME", 0, 256));
         taskProperties.put("artifact_sha256", modelString("artifact SHA-256", 0, 128));
         taskProperties.put("next_action", modelString("next action", 0, 512));
