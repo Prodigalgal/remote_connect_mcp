@@ -8,6 +8,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.TransportNegotiation;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate;
 import com.prodigalgal.remoteconnectmcp.protocol.ArtifactRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse;
@@ -231,6 +232,20 @@ public final class AgentController {
             var data = Base64.getDecoder().decode(request.data());
             return ResponseEntity.ok(tasks.appendArtifact(machineId, taskId, request.mimeType(), request.sha256(), data,
                     parseAttempt(attemptHeader)));
+        });
+    }
+
+    @PostMapping("/tasks/{taskId}/progress")
+    public CompletableFuture<ResponseEntity<?>> taskProgress(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestHeader(value = "X-Machine-ID", required = false) String machineId,
+            @RequestHeader(value = "X-Task-Attempt") String attemptHeader,
+            @PathVariable String taskId,
+            @RequestBody(required = false) TaskProgressUpdate request) {
+        return execute(() -> {
+            authenticate(machineId, authorization);
+            if (request == null) throw new IllegalArgumentException("progress body is required");
+            return ResponseEntity.ok(tasks.updateProgress(machineId, taskId, request, parseAttempt(attemptHeader)));
         });
     }
 

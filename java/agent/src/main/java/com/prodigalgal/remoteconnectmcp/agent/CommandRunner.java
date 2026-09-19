@@ -2,6 +2,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -107,6 +108,8 @@ final class CommandRunner implements Runnable {
             // unavailable, the process cannot fill its stdout pipe while the
             // state update is retried on this virtual thread.
             sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
+            TaskProgressReporter.send(LOG, transport, identity, task,
+                    new TaskProgressUpdate("running", 0, "command started", null, null, null));
 
             int exitCode;
             var timeoutSeconds = TaskLimits.timeoutSeconds(task, 0);

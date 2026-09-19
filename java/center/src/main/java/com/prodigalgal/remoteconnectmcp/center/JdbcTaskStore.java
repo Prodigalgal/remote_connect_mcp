@@ -46,6 +46,8 @@ final class JdbcTaskStore {
                    t.execution_session_id, t.result_channel, t.status, t.lease_until, t.attempt,
                    t.output_bytes, t.output_truncated, t.error_text, t.exit_code, t.created_at,
                    t.dispatched_at, t.started_at, t.finished_at, t.updated_at, t.execution_contract,
+                   t.change_seq, t.progress_phase, t.progress_percent, t.progress_message,
+                   t.progress_current, t.progress_total, t.progress_unit, t.progress_updated_at,
                    t.file_transfer_action,
                    NULL::bytea AS output_data, COALESCE(a.bytes, t.artifact_bytes, 0) AS artifact_bytes,
                    COALESCE(a.mime_type, t.artifact_mime) AS artifact_mime,
@@ -388,6 +390,36 @@ final class JdbcTaskStore {
             task.finishedAt(finished);
             task.outputTruncated(truncated);
             if (TaskStatus.terminal(next)) task.leaseUntil(null);
+            return new TaskView(task);
+        });
+    }
+
+    TaskView updateProgress(String machineId, String taskId,
+                            com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate progress,
+                            Integer attempt) {
+        return transactions.execute(status -> {
+            var task = findForUpdateMeta(taskId);
+            if (task == null) throw new IllegalArgumentException("task not found");
+            if (!task.machineId().equals(machineId)) {
+                throw new SecurityException("task does not belong to this machine");
+            }
+            assertAttempt(task, attempt);
+            jdbc.update("""
+                    UPDATE rcm_task
+                       SET progress_phase = ?, progress_percent = ?, progress_message = ?,
+                           progress_current = ?, progress_total = ?, progress_unit = ?,
+                           progress_updated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                     WHERE task_id = ? AND agent_id = ?
+                    """, progress.phase(), progress.percent(), progress.message(), progress.current(),
+                    progress.total(), progress.unit(), taskId, machineId);
+            task.progressPhase(progress.phase());
+            task.progressPercent(progress.percent());
+            task.progressMessage(progress.message());
+            task.progressCurrent(progress.current());
+            task.progressTotal(progress.total());
+            task.progressUnit(progress.unit());
+            task.progressUpdatedAt(Instant.now());
+            task.bumpChangeSequence();
             return new TaskView(task);
         });
     }
@@ -804,6 +836,17 @@ final class JdbcTaskStore {
                 new TaskOrigin(rs.getString("principal_id"), TaskOrigin.CONFIGURED_TOKEN, rs.getString("connection_id")),
                 rs.getString("lane_key"), rs.getString("execution_session_id"), rs.getString("result_channel"));
         state.outputBytes(rs.getLong("output_bytes"));
+        state.changeSequence(rs.getLong("change_seq"));
+        state.progressPhase(rs.getString("progress_phase"));
+        var percent = rs.getObject("progress_percent");
+        state.progressPercent(percent instanceof Number number ? number.intValue() : null);
+        state.progressMessage(rs.getString("progress_message"));
+        var current = rs.getObject("progress_current");
+        state.progressCurrent(current instanceof Number number ? number.longValue() : null);
+        var total = rs.getObject("progress_total");
+        state.progressTotal(total instanceof Number number ? number.longValue() : null);
+        state.progressUnit(rs.getString("progress_unit"));
+        state.progressUpdatedAt(instant(rs, "progress_updated_at"));
         return state;
     }
 

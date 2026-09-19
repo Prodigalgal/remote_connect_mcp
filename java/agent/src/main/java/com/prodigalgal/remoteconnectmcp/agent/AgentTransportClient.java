@@ -283,6 +283,24 @@ public final class AgentTransportClient implements AgentTransport {
         }
     }
 
+    @Override
+    public void updateProgress(String machineId, String token, String taskId, int attempt,
+                               com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate progress)
+            throws IOException, InterruptedException {
+        var builder = newRequest(centerUrl.resolve("/agent/v1/tasks/" + encodePath(taskId) + "/progress"))
+                .timeout(requestTimeout)
+                .header("Authorization", "Bearer " + token)
+                .header("X-Machine-ID", machineId)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json");
+        addAttemptHeader(builder, attempt);
+        var request = builder.POST(HttpRequest.BodyPublishers.ofByteArray(JsonCodec.write(progress))).build();
+        var response = send(request);
+        if (response.statusCode() != 200) {
+            throw new CenterTransportException("center task progress update failed", response.statusCode());
+        }
+    }
+
     private HttpResponse<InputStream> requestDownload(String machineId, String token, String transferId,
                                                        long expectedBytes, String expectedSha256, int attempt,
                                                        long offset) throws IOException, InterruptedException {

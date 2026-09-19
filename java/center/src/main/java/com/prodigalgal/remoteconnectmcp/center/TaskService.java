@@ -9,6 +9,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.ProtocolValidation;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate;
 import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
 import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicy;
@@ -254,8 +255,13 @@ public final class TaskService {
 
     TaskView waitForChange(TaskOrigin origin, String taskId, long cursor, Duration timeout)
             throws InterruptedException {
+        return waitForChange(origin, taskId, cursor, 0L, timeout);
+    }
+
+    TaskView waitForChange(TaskOrigin origin, String taskId, long cursor, long changeSequence, Duration timeout)
+            throws InterruptedException {
         findFor(origin, taskId);
-        var result = waitForChange(taskId, cursor, timeout);
+        var result = waitForChange(taskId, cursor, changeSequence, timeout);
         assertOwner(find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found")), origin);
         return result;
     }
@@ -437,7 +443,7 @@ public final class TaskService {
                 task.leaseUntil(null);
                 releaseQuota(task);
             }
-            signalChanged();
+            signalChanged(task.id());
             var view = new TaskView(task);
             signalWake(view.machineId());
             audit("task.cancel", "admin", view.machineId(), view.id(), task.command(), view.status(), null);
@@ -498,7 +504,7 @@ public final class TaskService {
                     // wire. Agent state/output delivery can then be fenced if
                     // a stale process wakes after its lease was reclaimed.
                     task = selected.command().withAttempt(selected.attempt());
-                    signalChanged();
+                    signalChanged(selected.id());
                 }
             }
             return new PollResponse(task, cancelIds, null, null);
@@ -652,7 +658,7 @@ public final class TaskService {
                 task.leaseUntil(null);
                 releaseQuota(task);
             }
-            signalChanged();
+            signalChanged(taskId);
             audit("task.state", "agent", machineId, taskId, task.command(), task.status(),
                     "attempt=" + attempt);
             return new TaskView(task);
@@ -664,6 +670,37 @@ public final class TaskService {
     /** Service-internal shorthand; resolves the current durable attempt. */
     public TaskView updateState(String machineId, String taskId, TaskUpdateRequest update) {
         return updateState(machineId, taskId, update, currentAttempt(machineId, taskId));
+    }
+
+    /** Apply an advisory progress snapshot with the dispatch-attempt fence. */
+    public TaskView updateProgress(String machineId, String taskId, TaskProgressUpdate progress, Integer attempt) {
+        if (progress == null) throw new IllegalArgumentException("progress is required");
+        if (jdbcStore != null) {
+            var view = jdbcStore.updateProgress(machineId, taskId, progress, attempt);
+            signalChanged(taskId);
+            return view;
+        }
+        lock.lock();
+        try {
+            var task = required(taskId);
+            assertMachine(task, machineId);
+            assertAttempt(task, attempt);
+            task.progressPhase(progress.phase());
+            task.progressPercent(progress.percent());
+            task.progressMessage(progress.message());
+            task.progressCurrent(progress.current());
+            task.progressTotal(progress.total());
+            task.progressUnit(progress.unit());
+            task.progressUpdatedAt(Instant.now());
+            signalChanged(taskId);
+            return new TaskView(task);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public TaskView updateProgress(String machineId, String taskId, TaskProgressUpdate progress) {
+        return updateProgress(machineId, taskId, progress, currentAttempt(machineId, taskId));
     }
 
     /** Append output while fencing the dispatch attempt. */
@@ -828,11 +865,15 @@ public final class TaskService {
     }
 
     public TaskView waitForChange(String taskId, long cursor, Duration timeout) throws InterruptedException {
+        return waitForChange(taskId, cursor, 0L, timeout);
+    }
+
+    public TaskView waitForChange(String taskId, long cursor, long changeSequence, Duration timeout) throws InterruptedException {
         if (jdbcStore != null) {
             var deadline = System.nanoTime() + timeout.toNanos();
             while (true) {
                 var task = jdbcStore.find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
-                if (task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
+                if (task.changeSequence() > changeSequence || task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
                     return new TaskView(task);
                 }
                 var remaining = deadline - System.nanoTime();
@@ -854,7 +895,7 @@ public final class TaskService {
                     var observed = taskChanges.version(taskId);
                     try {
                         task = jdbcStore.find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
-                        if (task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
+                        if (task.changeSequence() > changeSequence || task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
                             return new TaskView(task);
                         }
                         remaining = deadline - System.nanoTime();
@@ -874,7 +915,7 @@ public final class TaskService {
         try {
             while (true) {
                 var task = required(taskId);
-                if (task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
+                if (task.changeSequence() > changeSequence || task.outputBytes() > cursor || TaskStatus.terminal(task.status())) {
                     return new TaskView(task);
                 }
                 var remaining = deadline - System.nanoTime();
@@ -1343,6 +1384,10 @@ public final class TaskService {
         // IllegalMonitorStateException to the Agent/MCP request.
         lock.lock();
         try {
+            if (jdbcStore == null && taskId != null && !taskId.isBlank()) {
+                var task = tasks.get(taskId.trim());
+                if (task != null) task.bumpChangeSequence();
+            }
             localChangeSequence.incrementAndGet();
             changed.signalAll();
         } finally {
@@ -1361,6 +1406,10 @@ public final class TaskService {
     private void signalOutputChanged(String taskId) {
         lock.lock();
         try {
+            if (jdbcStore == null && taskId != null && !taskId.isBlank()) {
+                var task = tasks.get(taskId.trim());
+                if (task != null) task.bumpChangeSequence();
+            }
             localChangeSequence.incrementAndGet();
             changed.signalAll();
         } finally {

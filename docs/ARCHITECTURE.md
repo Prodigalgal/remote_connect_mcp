@@ -225,6 +225,8 @@ Agent 心跳自描述版本、平台、HostID、角色、能力、范围策略�
 
 当前核心模型面固定为 `machines`、`command`、`desktop`、`browser`、`project`、`artifact`、`task_read`、`task_cancel`；每个工具内部通过 operation/request 枚举承载能力，不把大量底层 API 一次性暴露给 ChatGPT。
 
+长任务使用持久化 `rcm_task.change_seq` 作为版本事实，`LISTEN/NOTIFY` 仅用于事件唤醒；`task_read` 可按 `change_seq` 和输出 cursor 增量读取。进度快照与状态机分离，不改变任务终态合同，也不会把原始日志塞入 MCP 上下文。
+
 ## 10. 演进顺序
 
 1. **已落地/正在固化**：异步 MCP/任务、独立进程输出 drain、断线续传、幂等、租约、工作区双端校验、输出/PNG 工件限制、Token 分层、HostID、多 Agent 能力路由。

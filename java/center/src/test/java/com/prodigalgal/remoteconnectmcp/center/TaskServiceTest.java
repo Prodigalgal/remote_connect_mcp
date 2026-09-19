@@ -15,6 +15,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -73,6 +74,27 @@ class TaskServiceTest {
         assertEquals(TaskStatus.COMPLETED, tasks.find(created.id()).orElseThrow().status());
         assertEquals(registration.machineId(), tasks.find(created.id()).orElseThrow().command().contract().machineId());
         assertEquals("unrestricted", tasks.find(created.id()).orElseThrow().command().contract().scopeMode().wireValue());
+    }
+
+    @Test
+    void progressSnapshotIsAttemptFencedAndAdvancesDurableChangeSequence() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var created = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "sleep 2", "/srv", Map.of(), 0, null, null), "progress-key"));
+        var leased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        var before = tasks.find(created.id()).orElseThrow().changeSequence();
+
+        var updated = tasks.updateProgress(registration.machineId(), created.id(),
+                new TaskProgressUpdate("running", 42, "waiting for child", 42L, 100L, "items"), leased.attempt());
+
+        assertTrue(updated.changeSequence() > before);
+        assertEquals("running", updated.progressPhase());
+        assertEquals(42, updated.progressPercent());
+        assertEquals(42L, updated.progressCurrent());
+        assertThrows(SecurityException.class, () -> tasks.updateProgress(registration.machineId(), created.id(),
+                new TaskProgressUpdate("stale", 1, null, null, null, null), leased.attempt() - 1));
     }
 
     @Test

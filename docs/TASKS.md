@@ -16,16 +16,18 @@
 - 每项代码完成后，在“验收证据”列补充 CI run/测试证据，再将代码状态改为 `[x]`；生产目标机证据随后补到独立验收表。
 - 不在本机编译 Java、Native Image、React 或正式安装包；构建证据必须来自 GitHub Actions。
 
-## 当前阶段：核心开发项与组件升级代码已闭环，等待 GitHub Actions/生产门禁
+## 当前阶段：核心开发项已闭环，Long Running Tasks v2 正在按实际缺口增量实现
 
 截至当前 `main`，P0/P1 的主要协议、Center/Agent/Console 主流程、Artifact Transport v2、会话/配额、READ/WRITE/EXCLUSIVE 车道、桌面/浏览器资源回收、MCP Apps Viewer 和 command/desktop/browser 组件级升级代码已经完成。当前剩余项主要是 GitHub Actions、真实 ChatGPT Web/平台矩阵和生产故障演练；现有 Task Artifact 继续承担小型截图和诊断结果，通用文件改走独立的流式 File Transfer 数据面。原 P2-02 和完整 SaaS 多租户仍明确不做，P2-05-lite 保持轻量主体隔离路线。MCP Tool/Schema 的 8 工具模型面也已完成代码硬切换，详见下方 `P1-TM` 清单。
 
 | 层级 | 当前判断 | 剩余工作 |
 | --- | --- | --- |
-| P0 | 核心可靠性、安全、Artifact Transport v2、Session 原子 admission 与组件升级协议代码已完成 | 统一 Actions 集成、Center/Agent 重启/断线组合矩阵、工件卷备份恢复和离线升级目标环境门禁 |
+| P0 | 核心可靠性、安全、Artifact Transport v2、Session 原子 admission 与组件升级协议代码已完成；Long Running Tasks v2 已开始补齐 durable change sequence 与进度快照 | 统一 Actions 集成、Center/Agent 重启/断线组合矩阵、工件卷备份恢复、长任务生命周期和离线升级目标环境门禁 |
 | P1 | 主流程、桌面/浏览器、控制台、Viewer、组件选择器和独立运行时合同代码已完成 | Windows/Linux Desktop 与 Browser、ChatGPT Web 文件对象、Git/Console/升级/长连接真实矩阵，以及无障碍/视觉验收 |
 | P2 | P2-01/03/04/06/07、P2-05-lite、Viewer 解耦/handler、去重和生命周期代码已完成 | QUIC/HTTP3 真实 Provider、集中日志/对象网关自身生命周期、SLO/告警演练和多主体双账号现场验收 |
 | MCP Tool/Schema | 8 个聚合 Tool、严格 Schema、结构化输出和仓库门禁已完成 | P1-TM-17/18：ChatGPT Web 真实发现/调用和生产收口 |
+
+本轮根据用户提供的 `LONG_RUNNING_TASKS_V2.md` 设计建议重新取舍：不新增长任务专用 Tool，不把 `last_accessed_at` 作为隐式续期，不把 `RCM_PROGRESS_FILE` 作为首版硬依赖；先把数据库真实版本、进度快照和已有事件唤醒链路接牢。附件中的测试任务不计入本轮代码完成状态。
 
 当前证据基线：Java Native Release `35043403122`（tag `java-v0.1.28`）成功；稳定 `java-v0.1.29` Release `35064539692` 的三平台 Native、镜像、SBOM、签名和 release jobs 成功，Linux GUI canary 已使用其 arm64 Desktop 资产完成真实 screens/截图；GitOps revision `eee62d2` 已由 Argo 报告 `Synced/Healthy/Succeeded`；事件驱动检查、仓库敏感信息扫描和浏览器脚本静态检查均通过。本机没有执行 Java、Gradle、Native Image 或 React 构建。
 
@@ -140,6 +142,19 @@
 | [x] | P2-AT-10 | 文件传输压缩与内容去重 | 可选 SHA-256 content-addressed wrapper 和磁盘 gzip wrapper 已加入，默认关闭 |
 | [x] | P2-AT-11 | Artifact 生命周期策略升级 | 已支持按方向/MIME/大小的有界保留期，以及 `ephemeral`/`task-bound`/`pinned` 管理字段和 Console 固定操作 |
 | [x] | P0-AT-26 | OpenAI 文件生态桥接契约 | `artifact` 发布标准 MCP Apps `ui.resourceUri` 与 `openai/fileParams`；只消费 ChatGPT 提供的 `download_url`，不读取 `/mnt/data` 或持久化临时 URL；Viewer 支持 `getFileDownloadUrl` 续取和 `uploadFile`/Library 回写；真实 Web 双向附件仍属于 P1-TM-17 验收 |
+
+### P0/P1：Long Running Tasks v2（按实际缺口取舍）
+
+文档建议被拆成以下最小增量，不重复已经存在的异步 Task、lease、幂等、游标输出和 LISTEN/NOTIFY 能力。`[~]` 表示代码已开始但仍需 GitHub Actions 证据；生产故障演练继续记录在 `PRODUCTION_ACCEPTANCE.md`。
+
+| 状态 | 编号 | 任务 | 实际取舍与完成条件 | 证据/下一步 |
+| --- | --- | --- | --- | --- |
+| [~] | P0-LR-01 | Durable task change sequence | `rcm_task.change_seq`、PostgreSQL 事务触发器和 MCP `task_read.change_seq` 已加入；数据库序列是事实来源，LISTEN/NOTIFY 只负责唤醒 | Liquibase `030`、TaskService/JDBC；Actions/PostgreSQL 集成待验证 |
+| [~] | P0-LR-02 | Progress snapshot 与 Agent ACK | Task 持久化 phase/percent/message/current/total/unit，新增 Agent `/tasks/{id}/progress`，复用 Attempt 栅栏；command/durable runner 首次上报为 best-effort，不因进度通道阻塞任务 | `TaskProgressUpdate`、AgentController、TaskService；Actions/限频和平台矩阵待验证 |
+| [ ] | P0-LR-03 | Task metadata/output retention 与统一 GC | Artifact TTL 已完成；继续增加 Task 元数据与输出独立 TTL、pinned/archived 语义和有界外部 GC；不在 Center 内启动固定清理线程 | 需要新增 Liquibase/GC 代码与 CronJob 收口 |
+| [ ] | P1-LR-04 | 结构化 next_action 与重试语义 | 将当前字符串 `next_action` 收敛为有限枚举/参数对象，明确“拿到 task_id 后不重新提交，传输重试复用原幂等键” | MCP Schema/黄金样例/ChatGPT Web 验收 |
+| [ ] | P1-LR-05 | Conversation/Connection 恢复模型 | 当前 ExecutionSession 已绑定 connection_id；仅当需要跨 MCP 连接恢复/审计时，才增加正式 Conversation/MCP Connection 表，不把 Conversation 当授权边界 | 先补需求证据，再决定是否迁移 |
+| [ ] | P2-LR-06 | 可选进度适配器与时间线 | `RCM_PROGRESS_FILE + WatchService` 仅作为受限 workspace/IPC 适配器，不进入首版硬路径；后续补 Console 时间线和低基数指标 | 依赖 P0-LR-02 和生产使用反馈 |
 
 ### command/desktop/browser 组件级升级
 

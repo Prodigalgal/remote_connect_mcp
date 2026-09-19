@@ -32,6 +32,13 @@ public interface AgentTransport {
     void updateState(String machineId, String token, String taskId, int attempt,
                      TaskUpdateRequest request) throws IOException, InterruptedException;
 
+    /** Send a bounded progress snapshot without changing task state. */
+    default void updateProgress(String machineId, String token, String taskId, int attempt,
+                                com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate progress)
+            throws IOException, InterruptedException {
+        throw new CenterTransportException("task progress is not supported by this Center", 404);
+    }
+
     OutputResponse appendOutput(String machineId, String token, String taskId, int attempt,
                                 long offset, byte[] data) throws IOException, InterruptedException;
 

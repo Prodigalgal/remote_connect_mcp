@@ -194,7 +194,7 @@ public class McpConfiguration {
                                     @Value("${rcm.version:dev}") String version) {
         var server = McpServer.async(transport)
                 .serverInfo("remote-connect-mcp-center", version)
-                .instructions("Use machines first to choose a machine by stable id, then command, desktop, browser, project or artifact as needed. Tools are asynchronous: return task handles promptly and use task_read for bounded progress. Keep MCP results compact; detailed logs, screenshots and documents are artifact references fetched on demand. Use an explicit scope object for project/worktree/path/workspace; unrestricted access must be explicit. The Center enforces principal, session, scope, lane and quota contracts regardless of model hints.")
+                .instructions("Use machines first to choose a machine by stable id, then command, desktop, browser, project or artifact as needed. Tools are asynchronous: once a task_id is returned, do not resubmit the operation; use task_read with the same task_id and change_seq, and reuse the same idempotency_key only when a transport retry is necessary. Keep MCP results compact; detailed logs, screenshots and documents are artifact references fetched on demand. Use an explicit scope object for project/worktree/path/workspace; unrestricted access must be explicit. The Center enforces principal, session, scope, lane and quota contracts regardless of model hints.")
                 .strictToolNameValidation(true)
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
@@ -392,6 +392,11 @@ public class McpConfiguration {
                 modelString(description, min, max), Map.of("type", "null")));
     }
 
+    private static Map<String, Object> modelNullableInteger(String description, long min, long max) {
+        return Map.of("description", description, "anyOf", List.of(
+                modelInteger(description, min, max), Map.of("type", "null")));
+    }
+
     private static Map<String, Object> modelEnum(String description, List<String> values) {
         return Map.of("type", "string", "description", description, "enum", values);
     }
@@ -537,6 +542,7 @@ public class McpConfiguration {
                 Map.entry("task_id", modelString("task identifier", 1, 180)),
                 Map.entry("cursor", modelInteger("output byte cursor", 0, Integer.MAX_VALUE)),
                 Map.entry("wait_ms", modelInteger("bounded wait", 0, 20000)),
+                Map.entry("change_seq", modelInteger("return when task change sequence advances", 0, Long.MAX_VALUE)),
                 Map.entry("limit", modelInteger("output page size", 1, MAX_OUTPUT_PAGE))), List.of("task_id"));
     }
 
@@ -556,6 +562,14 @@ public class McpConfiguration {
         taskProperties.put("artifact_bytes", modelInteger("artifact bytes", 0L, 4L * 1024 * 1024 * 1024));
         taskProperties.put("artifact_mime", modelNullableString("artifact MIME", 0, 256));
         taskProperties.put("artifact_sha256", modelNullableString("artifact SHA-256", 0, 128));
+        taskProperties.put("change_seq", modelInteger("durable task change sequence", 0, Long.MAX_VALUE));
+        taskProperties.put("progress_phase", modelNullableString("current task phase", 0, 64));
+        taskProperties.put("progress_percent", modelNullableInteger("progress percent", 0, 100));
+        taskProperties.put("progress_message", modelNullableString("bounded progress message", 0, 1024));
+        taskProperties.put("progress_current", modelNullableInteger("progress current value", 0L, Long.MAX_VALUE));
+        taskProperties.put("progress_total", modelNullableInteger("progress total value", 0L, Long.MAX_VALUE));
+        taskProperties.put("progress_unit", modelNullableString("progress unit", 0, 32));
+        taskProperties.put("progress_updated_at", modelNullableString("progress update timestamp", 0, 64));
         taskProperties.put("next_action", modelString("next action", 0, 512));
         var task = modelSchema(taskProperties, List.of("id", "machine_id", "kind", "status"));
         // Task projections intentionally grow as capabilities are added (for
@@ -1238,12 +1252,14 @@ public class McpConfiguration {
         try {
             var args = args(request, TaskWaitCoreArgs.class);
             var cursor = args.cursor() == null ? 0 : args.cursor();
+            var changeSequence = args.changeSeq() == null ? 0L : args.changeSeq();
             var waitMs = args.waitMs() == null ? 0 : args.waitMs();
             if (waitMs < 0 || waitMs > 20000) {
                 throw new IllegalArgumentException("wait_ms must be between 0 and 20000");
             }
             var task = tasks.findFor(origin, args.taskId()).orElseThrow(() -> new IllegalArgumentException("task not found"));
-            var view = waitMs == 0 ? new TaskView(task) : tasks.waitForChange(origin, args.taskId(), cursor, Duration.ofMillis(waitMs));
+            var view = waitMs == 0 ? new TaskView(task)
+                    : tasks.waitForChange(origin, args.taskId(), cursor, changeSequence, Duration.ofMillis(waitMs));
             return taskResult(tasks, origin, view, cursor, 16 * 1024);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -1510,6 +1526,14 @@ public class McpConfiguration {
         value.put("artifact_bytes", task.artifactBytes());
         value.put("artifact_mime", task.artifactMime());
         value.put("artifact_sha256", task.artifactSha256());
+        value.put("change_seq", task.changeSequence());
+        value.put("progress_phase", task.progressPhase());
+        value.put("progress_percent", task.progressPercent());
+        value.put("progress_message", compact(task.progressMessage(), 1024));
+        value.put("progress_current", task.progressCurrent());
+        value.put("progress_total", task.progressTotal());
+        value.put("progress_unit", task.progressUnit());
+        value.put("progress_updated_at", task.progressUpdatedAt());
         // Correlation identifiers are fixed-size and opaque.  Returning them
         // lets a caller correlate a task across a reconnect without exposing
         // the original Bearer token or broadcasting output to a whole session.
@@ -1755,7 +1779,8 @@ public class McpConfiguration {
 
     record TaskWaitCoreArgs(@JsonProperty("task_id") String taskId,
                                 Long cursor,
-                                @JsonProperty("wait_ms") Integer waitMs) {
+                                @JsonProperty("wait_ms") Integer waitMs,
+                                @JsonProperty("change_seq") Long changeSeq) {
     }
 
     record TaskOutputCoreArgs(@JsonProperty("task_id") String taskId, Long cursor, Integer limit) {

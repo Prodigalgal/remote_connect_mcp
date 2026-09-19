@@ -34,6 +34,15 @@ final class TaskState {
     private String artifactMime;
     private String artifactSha256;
     private byte[] artifactData;
+    /** Durable row version used by task_read; database trigger is authoritative. */
+    private long changeSequence;
+    private String progressPhase;
+    private Integer progressPercent;
+    private String progressMessage;
+    private Long progressCurrent;
+    private Long progressTotal;
+    private String progressUnit;
+    private Instant progressUpdatedAt;
 
     TaskState(String id, String machineId, TaskCommand command, String idempotencyKey, Instant createdAt) {
         this(id, machineId, command, idempotencyKey, createdAt, TaskOrigin.configured());
@@ -174,6 +183,24 @@ final class TaskState {
 
     long outputBytes() { return outputByteCount; }
     void outputBytes(long value) { outputByteCount = Math.max(0L, value); }
+
+    long changeSequence() { return changeSequence; }
+    void changeSequence(long value) { changeSequence = Math.max(0L, value); }
+    void bumpChangeSequence() { changeSequence = changeSequence == Long.MAX_VALUE ? Long.MAX_VALUE : changeSequence + 1; }
+    String progressPhase() { return progressPhase; }
+    void progressPhase(String value) { progressPhase = value; }
+    Integer progressPercent() { return progressPercent; }
+    void progressPercent(Integer value) { progressPercent = value; }
+    String progressMessage() { return progressMessage; }
+    void progressMessage(String value) { progressMessage = value; }
+    Long progressCurrent() { return progressCurrent; }
+    void progressCurrent(Long value) { progressCurrent = value; }
+    Long progressTotal() { return progressTotal; }
+    void progressTotal(Long value) { progressTotal = value; }
+    String progressUnit() { return progressUnit; }
+    void progressUnit(String value) { progressUnit = value; }
+    Instant progressUpdatedAt() { return progressUpdatedAt; }
+    void progressUpdatedAt(Instant value) { progressUpdatedAt = value; }
 
     private static String deriveExecutionSessionId(TaskCommand command, TaskOrigin origin) {
         var contract = command == null ? null : command.contract();

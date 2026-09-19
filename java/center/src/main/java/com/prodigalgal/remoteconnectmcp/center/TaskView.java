@@ -37,7 +37,15 @@ public record TaskView(
         String risk,
         Instant contractExpiresAt,
         String executionSessionId,
-        String resultChannel) {
+        String resultChannel,
+        long changeSequence,
+        String progressPhase,
+        Integer progressPercent,
+        String progressMessage,
+        Long progressCurrent,
+        Long progressTotal,
+        String progressUnit,
+        Instant progressUpdatedAt) {
 
     public TaskView(TaskState task) {
         this(task.id(), task.machineId(), task.command().kind().wireValue(), task.command().requiredCapability(),
@@ -53,6 +61,8 @@ public record TaskView(
                 task.command().contract() == null ? null : task.command().contract().laneMode(),
                 task.command().contract() == null ? null : task.command().contract().risk(),
                 task.command().contract() == null ? null : task.command().contract().expiresAt(),
-                task.executionSessionId(), task.resultChannel());
+                task.executionSessionId(), task.resultChannel(), task.changeSequence(), task.progressPhase(),
+                task.progressPercent(), task.progressMessage(), task.progressCurrent(), task.progressTotal(),
+                task.progressUnit(), task.progressUpdatedAt());
     }
 }

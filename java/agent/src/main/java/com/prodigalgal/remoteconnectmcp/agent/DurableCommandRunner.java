@@ -3,6 +3,7 @@ package com.prodigalgal.remoteconnectmcp.agent;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -114,6 +115,8 @@ final class DurableCommandRunner implements Runnable {
 
             if (!record.completed()) {
                 sendState(new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
+                TaskProgressReporter.send(LOG, transport, identity, task,
+                        new TaskProgressUpdate("running", 0, "durable command resumed", null, null, null));
             }
             var relay = relayOutput(Path.of(record.outputPath()), handle);
             // The original Agent may have been interrupted while its watcher

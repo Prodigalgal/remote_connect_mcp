@@ -57,3 +57,5 @@ databaseChangeLog:
       file: db/changelog/028-configured-principal-normalization.yaml
   - include:
       file: db/changelog/029-artifact-gc-index.yaml
+  - include:
+      file: db/changelog/030-long-running-task-v2.yaml

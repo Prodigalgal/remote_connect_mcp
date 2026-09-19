@@ -1,0 +1,126 @@
+databaseChangeLog:
+  - changeSet:
+      id: 030-long-running-task-v2
+      author: remote-connect-mcp
+      labels: task,long-running,progress
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - addColumn:
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: change_seq
+                  type: bigint
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: progress_phase
+                  type: varchar(64)
+              - column:
+                  name: progress_percent
+                  type: smallint
+              - column:
+                  name: progress_message
+                  type: varchar(1024)
+              - column:
+                  name: progress_current
+                  type: bigint
+              - column:
+                  name: progress_total
+                  type: bigint
+              - column:
+                  name: progress_unit
+                  type: varchar(32)
+              - column:
+                  name: progress_updated_at
+                  type: timestamptz
+        - sql:
+            sql: >-
+              ALTER TABLE rcm_task
+              ADD CONSTRAINT ck_rcm_task_progress_percent
+              CHECK (progress_percent IS NULL OR (progress_percent >= 0 AND progress_percent <= 100))
+        - sql:
+            sql: >-
+              ALTER TABLE rcm_task
+              ADD CONSTRAINT ck_rcm_task_progress_counts
+              CHECK (progress_current IS NULL OR progress_current >= 0)
+        - sql:
+            sql: >-
+              ALTER TABLE rcm_task
+              ADD CONSTRAINT ck_rcm_task_progress_total
+              CHECK (progress_total IS NULL OR progress_total >= 0)
+        - sql:
+            splitStatements: false
+            sql: |
+              CREATE OR REPLACE FUNCTION rcm_task_change_seq_before_update()
+              RETURNS trigger
+              LANGUAGE plpgsql
+              AS $$
+              BEGIN
+                  IF NEW.change_seq = OLD.change_seq THEN
+                      NEW.change_seq := OLD.change_seq + 1;
+                  END IF;
+                  RETURN NEW;
+              END;
+              $$;
+        - sql:
+            sql: >-
+              DROP TRIGGER IF EXISTS trg_rcm_task_change_seq ON rcm_task
+        - sql:
+            splitStatements: false
+            sql: |
+              CREATE TRIGGER trg_rcm_task_change_seq
+              BEFORE UPDATE ON rcm_task
+              FOR EACH ROW
+              EXECUTE FUNCTION rcm_task_change_seq_before_update()
+        - createIndex:
+            indexName: idx_rcm_task_change_seq
+            tableName: rcm_task
+            columns:
+              - column:
+                  name: task_id
+              - column:
+                  name: change_seq
+      rollback:
+        - sql:
+            sql: DROP TRIGGER IF EXISTS trg_rcm_task_change_seq ON rcm_task
+        - sql:
+            sql: DROP FUNCTION IF EXISTS rcm_task_change_seq_before_update()
+        - dropIndex:
+            indexName: idx_rcm_task_change_seq
+            tableName: rcm_task
+        - sql:
+            sql: ALTER TABLE rcm_task DROP CONSTRAINT IF EXISTS ck_rcm_task_progress_total
+        - sql:
+            sql: ALTER TABLE rcm_task DROP CONSTRAINT IF EXISTS ck_rcm_task_progress_counts
+        - sql:
+            sql: ALTER TABLE rcm_task DROP CONSTRAINT IF EXISTS ck_rcm_task_progress_percent
+        - dropColumn:
+            tableName: rcm_task
+            columnName: progress_updated_at
+        - dropColumn:
+            tableName: rcm_task
+            columnName: progress_unit
+        - dropColumn:
+            tableName: rcm_task
+            columnName: progress_total
+        - dropColumn:
+            tableName: rcm_task
+            columnName: progress_current
+        - dropColumn:
+            tableName: rcm_task
+            columnName: progress_message
+        - dropColumn:
+            tableName: rcm_task
+            columnName: progress_percent
+        - dropColumn:
+            tableName: rcm_task
+            columnName: progress_phase
+        - dropColumn:
+            tableName: rcm_task
+            columnName: change_seq
