@@ -326,7 +326,15 @@ final class AgentUpgradeRunner implements Runnable {
             case "browser-agent", "browser" -> "REMOTE_CONNECT_MCP_BROWSER_SERVICE_NAME";
             default -> "REMOTE_CONNECT_MCP_" + key.replace('-', '_').toUpperCase(Locale.ROOT) + "_SERVICE_NAME";
         };
-        return System.getenv().getOrDefault(env, "").trim();
+        var configured = System.getenv().getOrDefault(env, "").trim();
+        if (!configured.isBlank()) return configured;
+        // Windows installs use one stable interactive task name.  Keep the
+        // default here so a component installed before the service-name env
+        // field was introduced can still be drained and replaced safely.
+        if (isWindows() && ("desktop-companion".equals(key) || "desktop".equals(key))) {
+            return "RemoteConnectMCPDesktopCompanion";
+        }
+        return "";
     }
 
     private static boolean isWindows() {
