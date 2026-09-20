@@ -34,8 +34,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class AgentTransportClient implements AgentTransport {
     private static final Duration DEFAULT_TRANSFER_STALL_TIMEOUT = Duration.ofMinutes(2);
     private static final int TRANSFER_CHUNK_BYTES = 8 * 1024 * 1024;
-    private static final java.util.concurrent.ExecutorService TRANSFER_READ_EXECUTOR =
-            java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
     private final HttpClient http;
     private final URI centerUrl;
     private final Duration requestTimeout;
@@ -585,13 +583,18 @@ public final class AgentTransportClient implements AgentTransport {
         var remaining = deadlineNanos - System.nanoTime();
         if (remaining <= 0) throw new IOException("file transfer exceeded the maximum lifetime");
         var waitNanos = Math.min(remaining, transferStallTimeout.toNanos());
-        var future = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+        var future = new java.util.concurrent.CompletableFuture<Integer>();
+        // A transfer read is one bounded, one-shot operation.  Starting one
+        // virtual thread for it avoids a process-lifetime shared executor and
+        // lets the thread disappear immediately after the response body is
+        // closed on timeout/interruption.
+        var reader = Thread.startVirtualThread(() -> {
             try {
-                return input.read(buffer);
+                future.complete(input.read(buffer));
             } catch (IOException exception) {
-                throw new java.util.concurrent.CompletionException(exception);
+                future.completeExceptionally(exception);
             }
-        }, TRANSFER_READ_EXECUTOR);
+        });
         try {
             return future.get(waitNanos, TimeUnit.NANOSECONDS);
         } catch (TimeoutException exception) {
@@ -605,11 +608,13 @@ public final class AgentTransportClient implements AgentTransport {
             throw new IOException("file transfer read interrupted", exception);
         } catch (ExecutionException exception) {
             var cause = exception.getCause();
-            if (cause instanceof java.util.concurrent.CompletionException completion && completion.getCause() != null) {
-                cause = completion.getCause();
-            }
             if (cause instanceof IOException io) throw io;
             throw new IOException("file transfer read failed", cause == null ? exception : cause);
+        } finally {
+            if (!future.isDone()) {
+                try { input.close(); } catch (IOException ignored) { }
+                reader.interrupt();
+            }
         }
     }
 

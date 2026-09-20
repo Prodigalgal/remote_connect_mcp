@@ -27,6 +27,10 @@ graalvmNative {
         named("main") {
             imageName.set("rcm-desktop-companion")
             buildArgs.add("-march=$nativeMarch")
+            // The companion is optional and normally idle in the interactive
+            // session.  Prefer a smaller image; the AWT runtime remains
+            // isolated in this bundle and is never linked into command-agent.
+            buildArgs.add("-Os")
             // The Linux Native Image builder runs in a headless container. If
             // the default AWT property is captured from that environment, the
             // same binary reports a headless session even when the target has

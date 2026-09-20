@@ -25,6 +25,10 @@ graalvmNative {
         named("main") {
             imageName.set("rcm-browser-agent")
             buildArgs.add("-march=$nativeMarch")
+            // Browser is a short-lived supervisor started only for a browser
+            // task.  Keep its native wrapper small; browser engines remain
+            // external adapter dependencies.
+            buildArgs.add("-Os")
         }
     }
 }

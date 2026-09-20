@@ -102,7 +102,7 @@ try {
         # manual Center/Agent installation.  Checksums are kept beside them.
         $agentArchive = Join-Path $out "remote-connect-mcp-agent-$version-$os-$arch.zip"
         Push-Location (Join-Path $out 'agent')
-        try { Compress-Archive -Path '*.exe', '*.dll' -DestinationPath $agentArchive -Force }
+        try { Compress-Archive -Path '*.exe', '*.dll' -DestinationPath $agentArchive -CompressionLevel Optimal -Force }
         finally { Pop-Location }
         $agentArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $agentArchive).Hash.ToLowerInvariant()
         Set-Content -LiteralPath "$agentArchive.sha256" -Value "$agentArchiveHash  $(Split-Path -Leaf $agentArchive)" -Encoding ascii
@@ -110,7 +110,7 @@ try {
 
         $desktopArchive = Join-Path $out "remote-connect-mcp-desktop-$version-$os-$arch.zip"
         Push-Location (Join-Path $out 'desktop')
-        try { Compress-Archive -Path '*.exe', '*.dll' -DestinationPath $desktopArchive -Force }
+        try { Compress-Archive -Path '*.exe', '*.dll' -DestinationPath $desktopArchive -CompressionLevel Optimal -Force }
         finally { Pop-Location }
         $desktopArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $desktopArchive).Hash.ToLowerInvariant()
         Set-Content -LiteralPath "$desktopArchive.sha256" -Value "$desktopArchiveHash  $(Split-Path -Leaf $desktopArchive)" -Encoding ascii
@@ -118,7 +118,7 @@ try {
 
         $browserArchive = Join-Path $out "remote-connect-mcp-browser-$version-$os-$arch.zip"
         Push-Location (Join-Path $out 'browser')
-        try { Compress-Archive -Path '*.exe', '*.dll' -DestinationPath $browserArchive -Force }
+        try { Compress-Archive -Path '*.exe', '*.dll' -DestinationPath $browserArchive -CompressionLevel Optimal -Force }
         finally { Pop-Location }
         $browserArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $browserArchive).Hash.ToLowerInvariant()
         Set-Content -LiteralPath "$browserArchive.sha256" -Value "$browserArchiveHash  $(Split-Path -Leaf $browserArchive)" -Encoding ascii
@@ -126,7 +126,7 @@ try {
 
         $bundleArchive = Join-Path $out "remote-connect-mcp-$version-$os-$arch.zip"
         Push-Location $out
-        try { Compress-Archive -Path 'center', 'agent', 'desktop', 'browser' -DestinationPath $bundleArchive -Force }
+        try { Compress-Archive -Path 'center', 'agent', 'desktop', 'browser' -DestinationPath $bundleArchive -CompressionLevel Optimal -Force }
         finally { Pop-Location }
         $bundleArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bundleArchive).Hash.ToLowerInvariant()
         Set-Content -LiteralPath "$bundleArchive.sha256" -Value "$bundleArchiveHash  $(Split-Path -Leaf $bundleArchive)" -Encoding ascii

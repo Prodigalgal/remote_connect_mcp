@@ -266,10 +266,12 @@ jobs:
           center_files=$(cd "${center_bundle}" && find . -maxdepth 1 -type f \( -name 'rcm-center' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
           desktop_files=$(cd "${desktop_bundle}" && find . -maxdepth 1 -type f \( -name 'rcm-desktop-companion' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
           browser_files=$(cd "${browser_bundle}" && find . -maxdepth 1 -type f \( -name 'rcm-browser-agent' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
-          (cd "${agent_bundle}" && zip -q -j "${GITHUB_WORKSPACE}/${agent_archive}" ${agent_files})
-          (cd "${center_bundle}" && zip -q -j "${GITHUB_WORKSPACE}/${center_archive}" ${center_files})
-          (cd "${desktop_bundle}" && zip -q -j "${GITHUB_WORKSPACE}/${desktop_archive}" ${desktop_files})
-          (cd "${browser_bundle}" && zip -q -j "${GITHUB_WORKSPACE}/${browser_archive}" ${browser_files})
+          # Native binaries compress well; use maximum ZIP deflate without
+          # changing the flat bundle layout consumed by the installers.
+          (cd "${agent_bundle}" && zip -q -9 -j "${GITHUB_WORKSPACE}/${agent_archive}" ${agent_files})
+          (cd "${center_bundle}" && zip -q -9 -j "${GITHUB_WORKSPACE}/${center_archive}" ${center_files})
+          (cd "${desktop_bundle}" && zip -q -9 -j "${GITHUB_WORKSPACE}/${desktop_archive}" ${desktop_files})
+          (cd "${browser_bundle}" && zip -q -9 -j "${GITHUB_WORKSPACE}/${browser_archive}" ${browser_files})
           sha256sum "${agent_archive}" > "${agent_archive}.sha256"
           sha256sum "${center_archive}" > "${center_archive}.sha256"
           sha256sum "${desktop_archive}" > "${desktop_archive}.sha256"
@@ -277,7 +279,7 @@ jobs:
           bash scripts/verify-native-bundle.sh "${agent_archive}"
           bash scripts/verify-native-bundle.sh "${desktop_archive}" rcm-desktop-companion
           bash scripts/verify-native-bundle.sh "${browser_archive}" rcm-browser-agent
-          tar -C "out" -czf "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" "${TARGET_ARCH}"
+          tar -C "out" -I 'gzip -9' -cf "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" "${TARGET_ARCH}"
           sha256sum "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" > "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz.sha256"
       - name: Native Liquibase migration smoke
         shell: bash
@@ -400,23 +402,23 @@ jobs:
           # sync with UpgradeService.resolveReleaseArtifact().
           $agentArchive = Join-Path $PWD "remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"
           Push-Location $agentOut
-           try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath $agentArchive -Force }
+           try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath $agentArchive -CompressionLevel Optimal -Force }
            finally { Pop-Location }
            (Get-FileHash "remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip.sha256" -Encoding ascii
            & "$PWD/scripts/verify-native-bundle.ps1" -AgentArchive "$PWD/remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"
            $desktopArchive = Join-Path $PWD "remote-connect-mcp-desktop-$env:RELEASE_VERSION-windows-amd64.zip"
            Push-Location $desktopOut
-           try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath $desktopArchive -Force }
+           try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath $desktopArchive -CompressionLevel Optimal -Force }
            finally { Pop-Location }
            (Get-FileHash $desktopArchive -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-desktop-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "$desktopArchive.sha256" -Encoding ascii
            & "$PWD/scripts/verify-native-bundle.ps1" -AgentArchive $desktopArchive -ExecutableName 'rcm-desktop-companion.exe'
            $browserArchive = Join-Path $PWD "remote-connect-mcp-browser-$env:RELEASE_VERSION-windows-amd64.zip"
            Push-Location $browserOut
-           try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath $browserArchive -Force }
+           try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath $browserArchive -CompressionLevel Optimal -Force }
            finally { Pop-Location }
            (Get-FileHash $browserArchive -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-browser-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "$browserArchive.sha256" -Encoding ascii
            & "$PWD/scripts/verify-native-bundle.ps1" -AgentArchive $browserArchive -ExecutableName 'rcm-browser-agent.exe'
-           Compress-Archive -Path "$out/*" -DestinationPath "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Force
+           Compress-Archive -Path "$out/*" -DestinationPath "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -CompressionLevel Optimal -Force
           (Get-FileHash "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip.sha256" -Encoding ascii
       - name: Generate Windows Native SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0

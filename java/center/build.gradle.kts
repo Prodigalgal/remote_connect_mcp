@@ -40,6 +40,9 @@ graalvmNative {
         named("main") {
             imageName.set("rcm-center")
             buildArgs.add("-march=$nativeMarch")
+            // Keep the control-plane native image compact as well.  This does
+            // not change the runtime protocol or the database implementation.
+            buildArgs.add("-Os")
         }
     }
 }
