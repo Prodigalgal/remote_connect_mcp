@@ -412,7 +412,10 @@ public final class UpgradeService {
         var target = target(campaign, machine.id());
         if (target == null) return null;
         if (COMPLETED.equals(target.status)) return null;
-        if (machine.version() != null && machine.version().equals(campaign.version)) {
+        var componentWork = campaign.componentPlans.getOrDefault(
+                platform(machine.os(), machine.arch()), List.of());
+        if (machine.version() != null && machine.version().equals(campaign.version)
+                && componentWork.isEmpty()) {
             applyStatus(campaign, target, COMPLETED, "", now);
             reconcileJdbc(campaign, now);
             return null;
