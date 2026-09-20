@@ -38,7 +38,7 @@ final class AgentUpgradeHelper {
             config = JsonCodec.read(Files.readAllBytes(configFile), Config.class);
             validate(config);
             waitForParent(config.parentPid());
-            stopService(config.serviceName());
+            stopService(config.serviceName(), Path.of(config.target()).toAbsolutePath().normalize());
             applyArchive(config);
             startRuntime(config);
             var componentFailures = new ArrayList<String>();
@@ -46,7 +46,7 @@ final class AgentUpgradeHelper {
             for (var component : config.components()) {
                 try {
                     if (!"manual".equalsIgnoreCase(component.restartPolicy())) {
-                        stopService(component.serviceName());
+                        stopService(component.serviceName(), Path.of(component.target()).toAbsolutePath().normalize());
                     }
                     applyComponentArchive(component);
                     if (!"manual".equalsIgnoreCase(component.restartPolicy())) {
@@ -514,7 +514,7 @@ final class AgentUpgradeHelper {
         }
     }
 
-    private static void stopService(String service) throws IOException, InterruptedException {
+    private static void stopService(String service, Path target) throws IOException, InterruptedException {
         if (service == null || service.isBlank()) return;
         // A long-polling Agent can keep the unit in `deactivating` after the
         // systemctl command itself returns.  systemd has no --wait option for
@@ -526,9 +526,12 @@ final class AgentUpgradeHelper {
                 // The helper itself is launched by the Agent task.  Calling
                 // `schtasks /End` here could terminate this detached helper
                 // together with the task action.  waitForParent() above has
-                // already observed the Agent exit, so only wait for the
-                // PowerShell launcher/task action to drain naturally.
-                waitWindowsTaskStopped(service);
+                // already observed the Agent exit; wait for the executable
+                // process itself instead of the task XML state.  A PowerShell
+                // launcher can return the task to Ready while its child Agent
+                // is already running, so the scheduler state is not a
+                // reliable process liveness signal on Windows.
+                waitWindowsProcessStopped(target, ProcessHandle.current().pid());
             } else {
                 throw new IOException("Windows Agent task is missing: " + service);
             }
@@ -544,7 +547,7 @@ final class AgentUpgradeHelper {
             if (isWindows()) {
                 if (windowsTaskExists(service)) {
                     runServiceCommand(List.of("schtasks.exe", "/Run", "/TN", service), true);
-                    waitWindowsTaskRunning(service);
+                    waitWindowsProcessRunning(Path.of(config.target()).toAbsolutePath().normalize(), ProcessHandle.current().pid());
                 } else {
                     throw new IOException("Windows Agent task is missing: " + service);
                 }
@@ -570,7 +573,7 @@ final class AgentUpgradeHelper {
         if (isWindows()) {
             if (windowsTaskExists(service)) {
                 runServiceCommand(List.of("schtasks.exe", "/Run", "/TN", service), true);
-                waitWindowsTaskRunning(service);
+                waitWindowsProcessRunning(Path.of(component.target()).toAbsolutePath().normalize(), ProcessHandle.current().pid());
             } else {
                 throw new IOException("Windows component task is missing: " + service);
             }
@@ -600,44 +603,40 @@ final class AgentUpgradeHelper {
         return process.exitValue() == 0;
     }
 
-    private static boolean windowsTaskRunning(String task) throws IOException, InterruptedException {
-        var process = new ProcessBuilder("schtasks.exe", "/Query", "/TN", task, "/XML")
-                .redirectErrorStream(true).start();
-        if (!process.waitFor(10, TimeUnit.SECONDS)) {
-            process.destroyForcibly();
-            process.waitFor(5, TimeUnit.SECONDS);
+    private static void waitWindowsProcessStopped(Path target, long ignoredPid) throws IOException, InterruptedException {
+        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
+        while (true) {
+            if (!windowsProcessRunning(target, ignoredPid)) return;
+            if (System.nanoTime() >= deadline) throw new IOException("Agent process did not become stopped");
+            Thread.sleep(250L);
+        }
+    }
+
+    private static void waitWindowsProcessRunning(Path target, long ignoredPid) throws IOException, InterruptedException {
+        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
+        while (true) {
+            if (windowsProcessRunning(target, ignoredPid)) return;
+            if (System.nanoTime() >= deadline) throw new IOException("Agent process did not become running");
+            Thread.sleep(250L);
+        }
+    }
+
+    private static boolean windowsProcessRunning(Path target, long ignoredPid) {
+        var expected = normalizeExecutablePath(target);
+        try {
+            return ProcessHandle.allProcesses().anyMatch(process -> process.pid() != ignoredPid
+                    && process.info().command().map(command -> expected.equalsIgnoreCase(normalizeExecutablePath(Path.of(command))))
+                    .orElse(false));
+        } catch (RuntimeException ignored) {
             return false;
         }
-        var output = decodeWindowsOutput(process.getInputStream().readAllBytes());
-        return process.exitValue() == 0 && output.toLowerCase(Locale.ROOT).contains("<state>running</state>");
     }
 
-    private static String decodeWindowsOutput(byte[] bytes) {
-        if (bytes.length >= 2 && (bytes[0] & 0xff) == 0xfe && (bytes[1] & 0xff) == 0xff) {
-            return new String(bytes, StandardCharsets.UTF_16BE);
-        }
-        if (bytes.length >= 2 && ((bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xfe
-                || ((bytes[1] & 0xff) == 0 && bytes[0] != 0))) {
-            return new String(bytes, StandardCharsets.UTF_16LE);
-        }
-        return new String(bytes, StandardCharsets.UTF_8);
-    }
-
-    private static void waitWindowsTaskStopped(String task) throws IOException, InterruptedException {
-        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
-        while (true) {
-            if (!windowsTaskExists(task) || !windowsTaskRunning(task)) return;
-            if (System.nanoTime() >= deadline) throw new IOException("task " + task + " did not become stopped");
-            Thread.sleep(250L);
-        }
-    }
-
-    private static void waitWindowsTaskRunning(String task) throws IOException, InterruptedException {
-        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
-        while (true) {
-            if (windowsTaskRunning(task)) return;
-            if (System.nanoTime() >= deadline) throw new IOException("task " + task + " did not become running");
-            Thread.sleep(250L);
+    private static String normalizeExecutablePath(Path value) {
+        try {
+            return value.toAbsolutePath().normalize().toString();
+        } catch (RuntimeException ignored) {
+            return value.toString();
         }
     }
 
