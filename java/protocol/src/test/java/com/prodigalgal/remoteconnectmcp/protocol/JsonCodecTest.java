@@ -55,4 +55,14 @@ class JsonCodecTest {
         assertTrue(json.contains("\"max_duration_seconds\""));
         assertEquals(contract, JsonCodec.read(JsonCodec.write(contract), ExecutionContract.class));
     }
+
+    @Test
+    void roundTripsTaskProgressInSnakeCase() {
+        var progress = new TaskProgressUpdate("running", 42, "waiting for child", 42L, 100L, "items");
+        var json = new String(JsonCodec.write(progress), java.nio.charset.StandardCharsets.UTF_8);
+
+        assertTrue(json.contains("\"phase\":\"running\""));
+        assertTrue(json.contains("\"current\":42"));
+        assertEquals(progress, JsonCodec.read(JsonCodec.write(progress), TaskProgressUpdate.class));
+    }
 }

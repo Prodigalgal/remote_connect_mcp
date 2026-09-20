@@ -13,6 +13,8 @@
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract$Budget","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest","allDeclaredConstructors":true,"allDeclaredMethods":true},
+  {"name":"com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate","allDeclaredConstructors":true,"allDeclaredMethods":true},
+  {"name":"com.prodigalgal.remoteconnectmcp.protocol.Envelope","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradeArtifact","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradeComponentPlan","allDeclaredConstructors":true,"allDeclaredMethods":true},
