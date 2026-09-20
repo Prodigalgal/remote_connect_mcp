@@ -58,7 +58,13 @@ final class AgentUpgradeRunner implements Runnable {
             // websocket/HTTPS paths unchanged, but use a deterministic HTTP/1.1
             // connection for the bounded upgrade artifact fetch.
             .version(HttpClient.Version.HTTP_1_1)
-            .connectTimeout(Duration.ofSeconds(10))
+            // GitHub Release URLs redirect to release-assets.githubusercontent.com.
+            // On slower or filtered egress paths the redirected TLS connection
+            // can take more than ten seconds even though the Agent is healthy.
+            // Keep the bounded upgrade request, but allow a 30-second connect
+            // window so a transient slow route is not reported as a failed
+            // upgrade.
+            .connectTimeout(Duration.ofSeconds(30))
             .followRedirects(HttpClient.Redirect.NORMAL).build();
 
     AgentUpgradeRunner(AgentConfig config, AgentIdentity identity, AgentTransport transport,
