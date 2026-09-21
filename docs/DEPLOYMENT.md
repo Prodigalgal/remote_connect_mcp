@@ -290,6 +290,21 @@ kustomize build /path/to/private/java-production > /tmp/rcm-java-rendered.yaml
 
 React 控制台使用独立的 `web/Dockerfile` 镜像和 `console.yaml` Deployment。Nginx 只托管静态资源，并把同源 `/api/` 反向代理到 Center；因此 Admin Token 仍只在浏览器内存中，生产无需开启宽泛 CORS。控制台域名与 MCP/Agent 域名分开，均保留 `remote-connect-mcp-*` 前缀。
 
+### CI → GitOps CD
+
+`.github/workflows/java-release.yml` 的 `gitops-deploy` Job 只在完整 Native、镜像和
+GitHub Release 成功后运行。`main` 推送产生的不可变预发布版本更新私有
+`remote-connect-mcp-java-staging` overlay；`java-vX.Y.Z` 稳定 Tag 更新
+`remote-connect-mcp-java-production` overlay。Job 查询 GHCR 多架构镜像的 manifest digest，
+只改写私有 GitOps 仓库中的 `center.yaml`、`migration-job.yaml` 和 `console.yaml`，提交后由
+Argo CD 的既有 Application 自动同步；它不直接持有 kubeconfig，也不在应用仓库写入生产域名或 Secret。
+
+启用该 Job 只需要在应用仓库配置一个布尔变量 `RCM_GITOPS_ENABLED=true`，以及两个 Actions
+Secret：`RCM_GITOPS_REPOSITORY`（例如组织/私有 GitOps 仓库名）和
+`RCM_GITOPS_SSH_KEY`（仅允许该 GitOps 仓库写入的 Deploy Key 私钥）。Deploy Key 不应复用
+个人 PAT；轮换时先在 GitOps 仓库新增 Deploy Key，再更新应用仓库 Secret，最后删除旧 Key。
+如果没有启用变量，构建/Release 仍正常完成，但 CD Job 会明确跳过。
+
 模板域名均使用 `remote-connect-mcp-*` 示例名；真实域名只应在部署层注入，不进入源码、日志、指标或前端构建产物。
 
 Actions 产出的工件可在需要时下载到临时目录，再运行短时烟测，验证真实 HTTP 启动和 MCP 工具发现；

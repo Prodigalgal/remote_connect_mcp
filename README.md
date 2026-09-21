@@ -94,6 +94,7 @@ MCP 返回专门的精简视图：`machines` 使用分页摘要，`task_read` �
 ChatGPT 连接器继续使用固定 `/mcp` URL 和固定 Bearer Token，但本次 12→8 Tool 硬切换后必须在 Web 端重新发现一次工具列表；不需要更换 URL、Token 或重新注册 Agent。后续 Center、Agent、控制台、存储实现和机器数量升级不得再次改变这 8 个 Tool 的名称和资源 URI。
 
 - Center 通过 GitOps 固定镜像摘要升级；Service、HTTPRoute、域名和 Secret 名称保持不变，Java Center 的状态以 PostgreSQL 为准，不依赖 RWO PVC。
+- GitHub Actions 在 Native/镜像/Release 全部成功后自动提交私有 GitOps overlay：`main` 进入 staging，稳定 `java-vX.Y.Z` 进入 production；Argo CD 负责实际同步，应用仓库不保存 kubeconfig、域名或 Secret。
 - Agent 先在少量机器试运行，再按批次升级；心跳会持续刷新实际版本、平台和默认目录。
 - Center 和 Agent 按同一版本化协议发布；协议变更通过 GitHub Actions 合同测试后整体升级，不保留旧版本运行时解析分支。
 - 新内部能力优先扩展 Center/Agent 协议和控制台；只有需要模型直接调用且无法复用现有工具时，才新增 MCP 工具，并为其设置有界分页和输出上限。

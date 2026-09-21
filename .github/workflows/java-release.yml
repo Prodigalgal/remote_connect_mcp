@@ -588,3 +588,120 @@ jobs:
           if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then args+=(--prerelease); fi
           if [[ "${VERIFY_TAG}" == "true" ]]; then args+=(--verify-tag); fi
           gh release create "${args[@]}"
+
+  gitops-deploy:
+    # The build/release/image jobs are the promotion gate.  A successful
+    # preview (main) updates the private staging overlay; only a stable
+    # java-vX.Y.Z tag updates production.  Argo CD remains the component that
+    # applies the resulting Git commit to Kubernetes.
+    needs: [prepare, images, release]
+    if: needs.prepare.outputs.publish == 'true' && needs.release.result == 'success' && vars.RCM_GITOPS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      GITOPS_REPOSITORY: ${{ secrets.RCM_GITOPS_REPOSITORY }}
+      GITOPS_SSH_KEY: ${{ secrets.RCM_GITOPS_SSH_KEY }}
+    steps:
+      - name: Configure GitHub-only GitOps deploy key
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GITOPS_REPOSITORY}"
+          test -n "${GITOPS_SSH_KEY}"
+          install -d -m 700 "${HOME}/.ssh"
+          printf '%s\n' "${GITOPS_SSH_KEY}" > "${HOME}/.ssh/id_ed25519"
+          chmod 600 "${HOME}/.ssh/id_ed25519"
+          ssh-keyscan -t ed25519 github.com >> "${HOME}/.ssh/known_hosts"
+          chmod 644 "${HOME}/.ssh/known_hosts"
+      - name: Login to GHCR for immutable digest lookup
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Resolve published image digests
+        id: images
+        shell: bash
+        run: |
+          set -euo pipefail
+          center="ghcr.io/prodigalgal/remote-connect-mcp-center-java:${RELEASE_VERSION}"
+          console="ghcr.io/prodigalgal/remote-connect-mcp-console:${RELEASE_VERSION}"
+          center_digest="$(docker buildx imagetools inspect "${center}" | awk '/^Digest:/ {print $2; exit}')"
+          console_digest="$(docker buildx imagetools inspect "${console}" | awk '/^Digest:/ {print $2; exit}')"
+          [[ "${center_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${console_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'center=%s\nconsole=%s\n' "${center_digest}" "${console_digest}" >> "${GITHUB_OUTPUT}"
+      - name: Checkout private GitOps repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch main "git@github.com:${GITOPS_REPOSITORY}.git" gitops
+      - name: Pin Center and Console images by digest
+        shell: bash
+        env:
+          CENTER_DIGEST: ${{ steps.images.outputs.center }}
+          CONSOLE_DIGEST: ${{ steps.images.outputs.console }}
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+            overlay='remote-connect-mcp-java-staging'
+          else
+            overlay='remote-connect-mcp-java-production'
+          fi
+          export OVERLAY_DIR="gitops/${overlay}"
+          test -d "${OVERLAY_DIR}"
+          CENTER_DIGEST="${CENTER_DIGEST}" CONSOLE_DIGEST="${CONSOLE_DIGEST}" OVERLAY_DIR="${OVERLAY_DIR}" python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          root = pathlib.Path(os.environ['OVERLAY_DIR'])
+          center_digest = os.environ['CENTER_DIGEST']
+          console_digest = os.environ['CONSOLE_DIGEST']
+          center_files = [root / 'center.yaml', root / 'migration-job.yaml']
+          console_files = [root / 'console.yaml']
+          center_pattern = re.compile(r'(image:\s*ghcr\.io/prodigalgal/remote-connect-mcp-center-java@)sha256:[0-9a-f]{64}')
+          console_pattern = re.compile(r'(image:\s*ghcr\.io/prodigalgal/remote-connect-mcp-console@)sha256:[0-9a-f]{64}')
+
+          def replace(files, pattern, digest, label):
+              total = 0
+              for path in files:
+                  if not path.is_file():
+                      raise SystemExit(f'missing GitOps manifest: {path}')
+                  text = path.read_text(encoding='utf-8')
+                  text, count = pattern.subn(r'\1' + digest, text)
+                  if count == 0:
+                      raise SystemExit(f'{label} digest was not found in {path}')
+                  path.write_text(text, encoding='utf-8', newline='\n')
+                  total += count
+              return total
+
+          if replace(center_files, center_pattern, center_digest, 'Center') != 2:
+              raise SystemExit('expected exactly two Center image references')
+          if replace(console_files, console_pattern, console_digest, 'Console') != 1:
+              raise SystemExit('expected exactly one Console image reference')
+          PY
+          git -C gitops diff --check
+          git -C gitops diff -- "${overlay}/center.yaml" "${overlay}/migration-job.yaml" "${overlay}/console.yaml"
+      - name: Commit and push GitOps promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+            overlay='remote-connect-mcp-java-staging'
+          else
+            overlay='remote-connect-mcp-java-production'
+          fi
+          git -C gitops config user.name 'remote-connect-mcp-actions[bot]'
+          git -C gitops config user.email 'remote-connect-mcp-actions[bot]@users.noreply.github.com'
+          git -C gitops add "${overlay}/center.yaml" "${overlay}/migration-job.yaml" "${overlay}/console.yaml"
+          if git -C gitops diff --cached --quiet; then
+            echo 'GitOps overlay already points at this release.'
+            exit 0
+          fi
+          git -C gitops commit -m "chore(remote-connect-mcp): promote ${RELEASE_VERSION}"
+          git -C gitops push origin HEAD:main

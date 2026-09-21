@@ -44,6 +44,7 @@
 | [x] | P0-07 | Agent 资源硬限制 | 任务级进程树/墙钟/CPU/RSS 监督、输出/磁盘/并发上限、Linux cgroup 可选边界、Windows 有界进程树/Task Scheduler 路径和 Agent 总进程预算已实现；目标机压测属于独立生产验收 | GitHub Actions Native smoke、RSS gate、资源监督测试 |
 | [x] | P0-08 | 隐私、密钥和仓库卫生 | 公开仓库使用模板值；真实域名、Token、Secret 和私有 GitOps 留在受保护环境；日志/指标有脱敏约定 | 仓库扫描、CI hygiene、私有部署检查 |
 | [x] | P0-09 | GitHub Actions 构建和可安装包 | Java/Native/React/安装包、SBOM、签名和烟测由 GitHub Actions 完成；开发机不编译 | Java Release workflow、Native smoke、RSS gate |
+| [x] | P0-12 | CI → GitOps CD promotion | Native、镜像与 Release 全成功后按 main/tag 选择 staging/production，使用 GitOps Deploy Key 更新 Center/Console digest；Argo CD 负责同步，不直接使用 kubeconfig | `java-release.yml` `gitops-deploy`；私有 GitOps 提交与 Argo 状态属于生产验收 |
 | [x] | P0-10 | 全部已登记 Agent 的恢复 | 升级活动默认把未显式指定的全部登记 Agent（含离线）写入持久目标集；离线 Agent 下次心跳自动领取同一 offer；真实在线清单、升级活动和任务闭环属于独立生产验收 | 升级活动目标集测试、GitHub Actions |
 | [x] | P0-11 | Artifact Transport v2 双向文件链路 | 协议、`020` 元数据表、流式 ObjectStore、Agent GET/PUT、大小/SHA-256/范围校验、断点续传、并发/磁盘配额和精简 `artifact_put`/`artifact_get`/`artifact_read` 已完成；端到端 CI、ChatGPT Web 附件渲染和目标环境故障矩阵单独验收 | 设计基线见 [`ARTIFACT_TRANSPORT_V2.md`](ARTIFACT_TRANSPORT_V2.md)；本轮代码与测试完成，统一 Actions 待跑 |
 
