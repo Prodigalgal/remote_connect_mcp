@@ -10,7 +10,7 @@
 
 RCM 应采用“**模型看到少量能力入口，Center/Agent 内部完成路由**”的设计。外部不暴露每台机器、每个 Agent 或每个底层 API 一个 Tool；同一能力内部使用严格的 `operation` 枚举和分支 Schema。
 
-开发人员建议的方向成立。本轮采用硬切换：旧 `machines_list`、`command_start` 等 Tool 不再注册，也不保留旧参数或 legacy 开关；固定 `/mcp` URL、Bearer Token 和 Agent 身份保持不变，但 ChatGPT Web 连接器必须重新发现一次新的 8 个逻辑入口。
+开发人员建议的方向成立。本轮采用硬切换：旧 `machines_list`、`command_start` 等 Tool 不再注册，也不保留旧参数或 legacy 开关；固定 `/mcp` URL 和 Agent 身份保持不变。ChatGPT Web 使用 OAuth access token，Codex/CLI 使用直接 Bearer；认证方式不改变工具数量，连接器只需在模型面变化后重新发现一次新的 8 个逻辑入口。
 
 目标模型面如下：
 
@@ -53,6 +53,15 @@ Playwright MCP 官方文档同时强调了 accessibility snapshot 的 LLM 友好
 | 通用 Schema helper | 主要只有 `type`、`description`、`required` | 缺少 `enum`、长度/数值边界、互斥字段和条件必填 |
 | 输出 | 部分结果只有文本 JSON，结构化输出不统一 | 模型无法稳定判断下一步是等待、读游标还是读取工件 |
 | Tool annotations | 混合读写 Tool 只能使用一个静态 annotation | 截图、机器查询等低风险动作可能与写操作一样触发审批 |
+
+### 认证元数据
+
+当 Center 启用 OAuth 时，每个需要认证的 Tool 在 `_meta.securitySchemes` 中镜像
+`{ "type": "oauth2", "scopes": [...] }`；Java MCP SDK 当前没有顶层
+`securitySchemes` builder，因此使用 OpenAI Apps SDK 规定的 `_meta` 兼容镜像，不把静态
+Bearer/API Key 声明给 ChatGPT。未启用 OAuth 时不发布这段元数据，直接 Bearer 客户端仍由
+Center 传输层校验。缺少凭据时 Center 通过 `WWW-Authenticate: Bearer resource_metadata=...`
+触发 OAuth 发现；工具业务权限仍由 Principal scope/ACL 强制执行，元数据不是授权依据。
 
 旧 Go 版本值得保留的优点是：工具数量少、参数类型清楚、每个结果都给出下一步、命令和任务天然异步。新设计应保留这些优点，不直接复制 Go 版本缺少项目、浏览器和 Artifact 的限制。
 

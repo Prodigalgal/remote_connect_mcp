@@ -1,0 +1,277 @@
+databaseChangeLog:
+  - changeSet:
+      id: 033-oauth-bridge
+      author: remote-connect-mcp
+      labels: oauth,authentication
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - createTable:
+            tableName: rcm_oauth_authorization_code
+            columns:
+              - column:
+                  name: code_hash
+                  type: varchar(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: client_id
+                  type: varchar(512)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: redirect_uri
+                  type: varchar(2048)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: code_challenge
+                  type: varchar(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: code_challenge_method
+                  type: varchar(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: display_name
+                  type: varchar(256)
+              - column:
+                  name: scope_json
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: resource
+                  type: varchar(2048)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: consumed_at
+                  type: timestamptz
+        - addPrimaryKey:
+            tableName: rcm_oauth_authorization_code
+            columnNames: code_hash
+            constraintName: pk_rcm_oauth_authorization_code
+        - addForeignKeyConstraint:
+            baseTableName: rcm_oauth_authorization_code
+            baseColumnNames: principal_id
+            constraintName: fk_rcm_oauth_code_principal
+            referencedTableName: rcm_principal
+            referencedColumnNames: principal_id
+            onDelete: CASCADE
+        - createIndex:
+            indexName: idx_rcm_oauth_code_expiry
+            tableName: rcm_oauth_authorization_code
+            columns:
+              - column:
+                  name: expires_at
+              - column:
+                  name: consumed_at
+        - createTable:
+            tableName: rcm_oauth_access_token
+            columns:
+              - column:
+                  name: token_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: token_hash
+                  type: varchar(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: display_name
+                  type: varchar(256)
+              - column:
+                  name: client_id
+                  type: varchar(512)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: scope_json
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: resource
+                  type: varchar(2048)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: revoked_at
+                  type: timestamptz
+        - addPrimaryKey:
+            tableName: rcm_oauth_access_token
+            columnNames: token_id
+            constraintName: pk_rcm_oauth_access_token
+        - addUniqueConstraint:
+            tableName: rcm_oauth_access_token
+            columnNames: token_hash
+            constraintName: uk_rcm_oauth_access_token_hash
+        - addForeignKeyConstraint:
+            baseTableName: rcm_oauth_access_token
+            baseColumnNames: principal_id
+            constraintName: fk_rcm_oauth_access_principal
+            referencedTableName: rcm_principal
+            referencedColumnNames: principal_id
+            onDelete: CASCADE
+        - createIndex:
+            indexName: idx_rcm_oauth_access_lookup
+            tableName: rcm_oauth_access_token
+            columns:
+              - column:
+                  name: token_hash
+              - column:
+                  name: revoked_at
+              - column:
+                  name: expires_at
+        - createTable:
+            tableName: rcm_oauth_refresh_token
+            columns:
+              - column:
+                  name: token_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: token_hash
+                  type: varchar(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: principal_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: display_name
+                  type: varchar(256)
+              - column:
+                  name: client_id
+                  type: varchar(512)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: scope_json
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: resource
+                  type: varchar(2048)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: revoked_at
+                  type: timestamptz
+        - addPrimaryKey:
+            tableName: rcm_oauth_refresh_token
+            columnNames: token_id
+            constraintName: pk_rcm_oauth_refresh_token
+        - addUniqueConstraint:
+            tableName: rcm_oauth_refresh_token
+            columnNames: token_hash
+            constraintName: uk_rcm_oauth_refresh_token_hash
+        - addForeignKeyConstraint:
+            baseTableName: rcm_oauth_refresh_token
+            baseColumnNames: principal_id
+            constraintName: fk_rcm_oauth_refresh_principal
+            referencedTableName: rcm_principal
+            referencedColumnNames: principal_id
+            onDelete: CASCADE
+        - createIndex:
+            indexName: idx_rcm_oauth_refresh_lookup
+            tableName: rcm_oauth_refresh_token
+            columns:
+              - column:
+                  name: token_hash
+              - column:
+                  name: revoked_at
+              - column:
+                  name: expires_at
+      rollback:
+        - dropIndex:
+            indexName: idx_rcm_oauth_refresh_lookup
+            tableName: rcm_oauth_refresh_token
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_oauth_refresh_token
+            constraintName: fk_rcm_oauth_refresh_principal
+        - dropUniqueConstraint:
+            tableName: rcm_oauth_refresh_token
+            constraintName: uk_rcm_oauth_refresh_token_hash
+        - dropPrimaryKey:
+            tableName: rcm_oauth_refresh_token
+            constraintName: pk_rcm_oauth_refresh_token
+        - dropTable:
+            tableName: rcm_oauth_refresh_token
+        - dropIndex:
+            indexName: idx_rcm_oauth_access_lookup
+            tableName: rcm_oauth_access_token
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_oauth_access_token
+            constraintName: fk_rcm_oauth_access_principal
+        - dropUniqueConstraint:
+            tableName: rcm_oauth_access_token
+            constraintName: uk_rcm_oauth_access_token_hash
+        - dropPrimaryKey:
+            tableName: rcm_oauth_access_token
+            constraintName: pk_rcm_oauth_access_token
+        - dropTable:
+            tableName: rcm_oauth_access_token
+        - dropIndex:
+            indexName: idx_rcm_oauth_code_expiry
+            tableName: rcm_oauth_authorization_code
+        - dropForeignKeyConstraint:
+            baseTableName: rcm_oauth_authorization_code
+            constraintName: fk_rcm_oauth_code_principal
+        - dropPrimaryKey:
+            tableName: rcm_oauth_authorization_code
+            constraintName: pk_rcm_oauth_authorization_code
+        - dropTable:
+            tableName: rcm_oauth_authorization_code

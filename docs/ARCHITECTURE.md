@@ -7,7 +7,7 @@
 ```text
 多个 Web 账号 / 多个对话 / 其他 MCP 客户端
              |
-             | 固定 /mcp + 各自的不透明 Bearer Token
+             | 固定 /mcp + Web OAuth / 直接客户端不透明 Bearer
              v
       Center（Kubernetes，目标 Java 25 Native Image）
         |  MCP Gateway
@@ -58,7 +58,7 @@ Center 不扫描 Agent 文件系统，也不假设同一 `host_id` 的 Agent 权
 
 RCM 采用三层身份/上下文分离：
 
-1. `Principal` 是 RCM 内部用户或服务主体，由不透明 Bearer Token 识别；
+1. `Principal` 是 RCM 内部用户或服务主体，由直接 Bearer 或 OAuth access token 识别；
 2. `Conversation` 和 `MCPConnection` 是 Web 对话与 Streamable HTTP 连接的生命周期记录，
    一个主体可以拥有多个，多个对话也可以在授权后共同参与一个项目；Java Center 通过
    Liquibase `032-conversations-connections` 按主体复合键持久化它们，触碰发生在已认证工具
@@ -67,7 +67,8 @@ RCM 采用三层身份/上下文分离：
    capability、预算、幂等键和执行车道。
 
 MCP 工具不要求模型传入 `principal_id` 或用户账号。Center 从认证头派生主体，并在返回
-机器、项目、任务、输出和工件时做主体/项目 ACL 过滤。每个主体使用独立不透明 Bearer Token；
+机器、项目、任务、输出和工件时做主体/项目 ACL 过滤。直接客户端使用独立不透明 Bearer Token；
+ChatGPT Web 通过 OAuth 授权桥接到同一个 Principal 模型；
 配置型单主体部署也通过同一 Principal 流程解析。
 
 ### 2.2 执行车道与公平调度
@@ -239,4 +240,4 @@ Agent 心跳自描述版本、平台、HostID、角色、能力、范围策略�
 6. **专用自动化阶段**：Browser Agent 的 Playwright/Patchright/Comoufox 完整 Worker 协议、会话生命周期和工件策略；桌面输入基础能力已落地，继续补窗口/焦点适配。
 7. **规模化阶段**：在 PostgreSQL + Liquibase 持久化已经成为默认生产路径后，继续扩展轻量多主体/执行车道、集中日志、可选 S3 兼容对象存储适配、SLO/告警和可选 QUIC provider，保持 MCP URL 与工具契约不变；Center 多副本、完整 SaaS 多租户和跨组织计费不属于当前路线。单 Center 默认继续使用独立持久卷，外部对象存储只有在 `RCM_CENTER_ARTIFACT_STORE` 显式切换后才启用。
 
-明确不在当前范围：OAuth 2.1 强制化、代理其他 MCP、把任意范围模式冒充 OS 沙箱、把 ChatGPT 的动作审批策略写入 Center、或一次性暴露海量浏览器/桌面底层工具。
+明确不在当前范围：把 OAuth 强制为所有客户端的唯一入口、代理其他 MCP、把任意范围模式冒充 OS 沙箱、把 ChatGPT 的动作审批策略写入 Center、或一次性暴露海量浏览器/桌面底层工具。

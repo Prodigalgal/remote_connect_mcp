@@ -114,7 +114,8 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         ArtifactTransferService.ArtifactAdminView.class,
         McpConfiguration.ArtifactFileCore.class, McpConfiguration.ArtifactPutCoreArgs.class,
         McpConfiguration.ArtifactGetCoreArgs.class, McpConfiguration.ArtifactReadCoreArgs.class,
-        TaskService.ArtifactGcResult.class, TaskService.TaskRetentionGcResult.class})
+        TaskService.ArtifactGcResult.class, TaskService.TaskRetentionGcResult.class,
+        McpOAuthService.TokenResponse.class})
 public class McpConfiguration {
     /** Stable Apps SDK resource URI; changing it would require reconnecting every client. */
     static final String ARTIFACT_VIEWER_URI = "ui://remote-connect-mcp/artifact-viewer-v1.html";
@@ -137,8 +138,7 @@ public class McpConfiguration {
     private static final int ARTIFACT_URL_WAIT_MS = 30000;
 
     @Bean
-    public HttpServletStreamableServerTransportProvider mcpTransport(CenterTokenConfig tokens,
-                                                                      McpPrincipalService principals) {
+    public HttpServletStreamableServerTransportProvider mcpTransport(McpAuthenticationService authentication) {
         ServerTransportSecurityValidator security = headers -> {
             var authorization = headers.entrySet().stream()
                     .filter(entry -> "authorization".equalsIgnoreCase(entry.getKey()))
@@ -147,7 +147,7 @@ public class McpConfiguration {
                     .orElse("");
             var parts = authorization.trim().split("\\s+", 2);
             var bearer = parts.length == 2 && "Bearer".equalsIgnoreCase(parts[0]) ? parts[1].trim() : "";
-            if (principals.resolve(bearer).isEmpty()) {
+            if (authentication.resolve(bearer).isEmpty()) {
                 throw new ServerTransportSecurityException(401, "invalid MCP bearer token");
             }
         };
@@ -159,7 +159,7 @@ public class McpConfiguration {
                 // async tool exchange, so authorization never depends on a
                 // ThreadLocal surviving a scheduler hop.
                 .contextExtractor((HttpServletRequest request) -> {
-                    var principal = principals.resolve(request.getHeader("Authorization") == null
+                    var principal = authentication.resolve(request.getHeader("Authorization") == null
                             ? "" : bearerValue(request.getHeader("Authorization")))
                             // The transport invokes the security validator immediately
                             // before the extractor.  A checked
@@ -196,6 +196,7 @@ public class McpConfiguration {
                                     ArtifactTransferService transfers,
                                     McpConversationService conversations,
                                     ExecutorService mcpVirtualThreadExecutor,
+                                    CenterOAuthConfig oauth,
                                     @Value("${rcm.version:dev}") String version) {
         var server = McpServer.async(transport)
                 .serverInfo("remote-connect-mcp-center", version)
@@ -204,7 +205,8 @@ public class McpConfiguration {
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
                 .resources(artifactViewerResource(transfers))
-                .tools(modelToolSpecs(agents, tasks, projects, access, transfers, conversations, mcpVirtualThreadExecutor))
+                .tools(modelToolSpecs(agents, tasks, projects, access, transfers, conversations,
+                        mcpVirtualThreadExecutor, oauth))
                 .build();
         return server;
     }
@@ -280,7 +282,8 @@ public class McpConfiguration {
                                                                                     McpAccessService access,
                                                                                     ArtifactTransferService transfers,
                                                                                     McpConversationService conversations,
-                                                                                    ExecutorService mcpVirtualThreadExecutor) {
+                                                                                    ExecutorService mcpVirtualThreadExecutor,
+                                                                                    CenterOAuthConfig oauth) {
         var scheduler = Schedulers.fromExecutor(mcpVirtualThreadExecutor);
         // MCP Apps is the canonical UI contract.  ChatGPT consumes the same
         // nested metadata as other MCP Apps hosts; do not publish the old
@@ -296,42 +299,44 @@ public class McpConfiguration {
         return List.of(
                 tool("machines", "Discover registered machines or fetch one bounded machine detail. Returns stable IDs and compact capability summaries.",
                         machinesModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesModel(agents, access, origin(exchange, conversations), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesModel(agents, access, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("command", "Queue one shell command on a selected machine and return a durable task handle immediately.",
                         commandModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("desktop", "Control an explicitly desktop-capable user session with semantic screenshot, window, input and launch operations.",
                         desktopModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktopModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktopModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("browser", "Run one structured browser navigation, observation or interaction request on a browser-capable machine.",
                         browserModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browserModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browserModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("project", "Inspect or mutate a registered project/worktree through one explicit operation. Paths are opt-in and responses are paged.",
                         projectModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:project"); return projectModel(projects, access, origin(exchange, conversations), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:project"); return projectModel(projects, access, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("artifact", "Transfer a ChatGPT file to a machine, retrieve a machine file, or read a compact artifact handle.",
                         artifactModelSchema(), artifactMeta,
                         (exchange, request) -> { requireScope(exchange,
                                 "read".equalsIgnoreCase(asString(modelArguments(request).get("operation"))) ? "mcp:read" : "mcp:execute");
-                            return artifactModel(agents, tasks, projects, access, transfers, origin(exchange, conversations), request); }, scheduler),
+                            return artifactModel(agents, tasks, projects, access, transfers, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("task_read", "Read one durable task state and one bounded output page; optionally wait briefly for a change.",
                         taskReadModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, origin(exchange, conversations), request); }, scheduler),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("task_cancel", "Cancel one queued or running task owned by the current principal and session.",
                         taskCancelModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancelModel(tasks, transfers, origin(exchange, conversations), request); }, scheduler));
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancelModel(tasks, transfers, origin(exchange, conversations), request); }, scheduler, oauth));
     }
 
     private static McpServerFeatures.AsyncToolSpecification tool(String name, String description, Map<String, Object> schema,
                                                                    BiFunction<McpAsyncServerExchange, McpSchema.CallToolRequest, McpSchema.CallToolResult> handler,
-                                                                   reactor.core.scheduler.Scheduler scheduler) {
-        return tool(name, description, schema, Map.of(), handler, scheduler);
+                                                                   reactor.core.scheduler.Scheduler scheduler,
+                                                                   CenterOAuthConfig oauth) {
+        return tool(name, description, schema, Map.of(), handler, scheduler, oauth);
     }
 
     private static McpServerFeatures.AsyncToolSpecification tool(String name, String description, Map<String, Object> schema,
                                                                    Map<String, Object> meta,
                                                                    BiFunction<McpAsyncServerExchange, McpSchema.CallToolRequest, McpSchema.CallToolResult> handler,
-                                                                   reactor.core.scheduler.Scheduler scheduler) {
+                                                                   reactor.core.scheduler.Scheduler scheduler,
+                                                                   CenterOAuthConfig oauth) {
         var annotations = McpSchema.ToolAnnotations.builder()
                 .readOnlyHint(name.equals("machines") || name.equals("task_read"))
                 .idempotentHint(name.equals("machines") || name.equals("task_read") || name.equals("task_cancel"))
@@ -340,11 +345,23 @@ public class McpConfiguration {
                 .openWorldHint(name.equals("command") || name.equals("browser") || name.equals("project")
                         || name.equals("artifact"))
                 .build();
+        var toolMeta = new LinkedHashMap<String, Object>();
+        if (meta != null) toolMeta.putAll(meta);
+        // MCP Apps clients that implement the current OpenAI reference read
+        // this compatibility mirror from _meta.  The Java MCP SDK 2.0.1 does
+        // not yet expose a top-level securitySchemes builder field, so keeping
+        // the declaration here is the wire-compatible option without forking
+        // the SDK.  The Center still validates the token and scopes on every
+        // request; this metadata is never an authorization decision.
+        if (oauth != null && oauth.isEnabledAndConfigured()) {
+            toolMeta.put("securitySchemes", List.of(Map.of("type", "oauth2",
+                    "scopes", oauthScopesForTool(name))));
+        }
         var toolBuilder = McpSchema.Tool.builder(name)
                 .description(description)
                 .inputSchema(schema)
                 .annotations(annotations)
-                .meta(meta);
+                .meta(toolMeta);
         if (Set.of("machines", "command", "desktop", "browser", "project", "artifact", "task_read", "task_cancel").contains(name)) {
             toolBuilder.outputSchema(modelOutputSchema());
         }
@@ -1593,6 +1610,15 @@ public class McpConfiguration {
                 .addContent(McpSchema.ImageContent.builder(
                         java.util.Base64.getEncoder().encodeToString(value.data()), value.mimeType()).build())
                 .build();
+    }
+
+    private static List<String> oauthScopesForTool(String name) {
+        return switch (name) {
+            case "machines", "task_read" -> List.of("mcp:read");
+            case "project" -> List.of("mcp:project");
+            case "artifact" -> List.of("mcp:read", "mcp:execute");
+            default -> List.of("mcp:execute");
+        };
     }
 
     private static Map<String, Object> taskOutputNextAction(TaskView task, OutputPage page) {

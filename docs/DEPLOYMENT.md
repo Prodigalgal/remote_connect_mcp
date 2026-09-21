@@ -94,6 +94,10 @@ RCM_CENTER_PERSISTENCE_MODE=postgres
 RCM_CENTER_REQUIRE_DURABLE_STORAGE=true
 RCM_CENTER_LIQUIBASE_ENABLED=false
 RCM_CENTER_PUBLIC_BASE_URL=https://remote-connect-mcp-center.example.invalid
+RCM_CENTER_OAUTH_ENABLED=true
+RCM_CENTER_OAUTH_ISSUER=https://remote-connect-mcp-center.example.invalid
+RCM_CENTER_OAUTH_RESOURCE=https://remote-connect-mcp-center.example.invalid
+RCM_CENTER_OAUTH_ALLOW_STATIC_TOKEN_BOOTSTRAP=true
 RCM_CENTER_DATABASE_URL=jdbc:postgresql://<host>:5432/remote_connect_mcp
 RCM_CENTER_DATABASE_USERNAME=<user>
 RCM_CENTER_DATABASE_PASSWORD=<password>
@@ -105,9 +109,20 @@ REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID_PREVIOUS=v1
 ```
 
 `RCM_CENTER_PUBLIC_BASE_URL` 必须是用户/ChatGPT Web 能访问的稳定 HTTPS Center
-Origin；它用于签名 Artifact URL 和 MCP Apps Viewer 的 CSP 元数据。Artifact URL
+Origin；它用于签名 Artifact URL 和 MCP Apps Viewer 的 CSP 元数据。`RCM_CENTER_OAUTH_ISSUER`
+和 `RCM_CENTER_OAUTH_RESOURCE` 也必须是稳定 HTTPS URL；同一 Center 部署通常把两者设置为
+同一 Origin，独立授权服务器可以使用不同 issuer。Artifact URL
 签名使用独立的 `REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET`，不要复用 MCP
 或 Admin Token。
+
+启用混合认证后，Center 提供 `/.well-known/oauth-protected-resource`、
+`/.well-known/oauth-authorization-server`、`/oauth/authorize` 和 `/oauth/token`。
+ChatGPT Web 通过 Authorization Code + PKCE（S256）打开授权页；用户在授权页输入已有
+RCM Token，服务端只把它换成短期 OAuth access/refresh token。Codex/CLI 仍直接携带
+`Authorization: Bearer <RCM_TOKEN>`，两条路径最终都解析为相同的 Principal/ACL。不要把
+`REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN` 填入 ChatGPT 的自定义 API Key 字段；当前 ChatGPT
+连接器不支持自定义 API Key，且生产授权元数据不提供 DCR registration endpoint，优先走
+CIMD（`https://chatgpt.com/oauth/client.json`）。
 
 Artifact signing supports a current and previous key simultaneously. New URLs
 use the current `KID`; verification accepts both keys, so rotating the current

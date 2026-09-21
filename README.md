@@ -14,6 +14,17 @@ Remote Connect MCP 是一个面向 ChatGPT Web 的中心化多机器控制系统
 > [!CAUTION]
 > MCP Token、管理 Token、Enrollment Token 和 Agent 凭据都属于高权限秘密。MCP Token 等同于所有已注册机器上的远程代码执行权限。请只通过 HTTPS 使用，将真实值保存在 Secret 或权限为 `0600` 的配置文件中，禁止提交到 Git。
 
+### 混合认证
+
+ChatGPT Web 不直接接收自定义 API Key/Bearer 密钥。启用 `RCM_CENTER_OAUTH_ENABLED=true`
+后，ChatGPT 按 MCP OAuth 发现文档进入 `/oauth/authorize`；用户在页面中输入自己已有的
+RCM Token，Center 只用它验证主体并换发短期 OAuth access token，原始 Token 不会返回给
+ChatGPT。Codex、MCP Inspector 和本地脚本仍可直接发送 `Authorization: Bearer <RCM_TOKEN>`。
+
+因此 Web 端流程是“成员安装插件 → 浏览器授权 → 输入成员 Token → 返回 ChatGPT”，而不是
+让成员把 Token 粘贴进 ChatGPT 的 API Key 对话框。OAuth 端点需要稳定 HTTPS 公网域名，生产
+Center 必须通过 `/api/v1/readyz` 的 OAuth 配置检查。
+
 ## 架构
 
 完整的目标架构、Desktop/Browser Agent、项目注册、worktree、长连接和热更新边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
@@ -23,7 +34,7 @@ Java/React 已完成 Center/Console 生产切换：`java/` 提供 Java 25 多模
 ```text
 ChatGPT Web
     |
-    | HTTPS + Bearer Token
+    | HTTPS + OAuth 2.0/PKCE (Web) or Bearer (direct clients)
     v
 remote-connect-mcp-gateway.example.invalid/mcp
     |
@@ -91,14 +102,14 @@ MCP 返回专门的精简视图：`machines` 使用分页摘要，`task_read` �
 
 ## 升级契约
 
-ChatGPT 连接器继续使用固定 `/mcp` URL 和固定 Bearer Token，但本次 12→8 Tool 硬切换后必须在 Web 端重新发现一次工具列表；不需要更换 URL、Token 或重新注册 Agent。后续 Center、Agent、控制台、存储实现和机器数量升级不得再次改变这 8 个 Tool 的名称和资源 URI。
+ChatGPT 连接器继续使用固定 `/mcp` URL；Web 端使用 OAuth access token，Codex/CLI 使用固定或用户级 Bearer Token。本次 12→8 Tool 硬切换后必须在 Web 端重新发现一次工具列表；不需要更换 URL 或重新注册 Agent。后续 Center、Agent、控制台、存储实现和机器数量升级不得再次改变这 8 个 Tool 的名称和资源 URI。
 
 - Center 通过 GitOps 固定镜像摘要升级；Service、HTTPRoute、域名和 Secret 名称保持不变，Java Center 的状态以 PostgreSQL 为准，不依赖 RWO PVC。
 - GitHub Actions 在 Native/镜像/Release 全部成功后自动提交私有 GitOps overlay：`main` 进入 staging，稳定 `java-vX.Y.Z` 进入 production；Argo CD 负责实际同步，应用仓库不保存 kubeconfig、域名或 Secret。
 - Agent 先在少量机器试运行，再按批次升级；心跳会持续刷新实际版本、平台和默认目录。
 - Center 和 Agent 按同一版本化协议发布；协议变更通过 GitHub Actions 合同测试后整体升级，不保留旧版本运行时解析分支。
 - 新内部能力优先扩展 Center/Agent 协议和控制台；只有需要模型直接调用且无法复用现有工具时，才新增 MCP 工具，并为其设置有界分页和输出上限。
-- 只有 MCP Token 泄露需要修改 ChatGPT 认证；本次 Schema/Tool 面硬切换完成后执行一次连接器刷新，后续内部实现升级不改变连接器地址或 Token。
+- OAuth/Schema/Tool 面发生变化时按 ChatGPT 管理页面重新发现一次；OAuth access/refresh token 可由 Center 撤销或自然过期，直接客户端的 RCM Token 仍可独立轮换，不改变连接器地址。
 
 ## Agent 自动无感升级
 
@@ -138,8 +149,16 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 | `REMOTE_CONNECT_MCP_CENTER_HOST` | `0.0.0.0` | 监听地址 |
 | `REMOTE_CONNECT_MCP_CENTER_PORT` | `8080` | HTTP 端口 |
 | `REMOTE_CONNECT_MCP_CENTER_STATE_DIR` | `/var/lib/remote-connect-mcp-center` | 机器、任务和输出状态目录 |
-| `REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN` | 必填 | ChatGPT Bearer Token |
+| `REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN` | 必填 | 直接客户端/Bootstrap 使用的 RCM Bearer Token；ChatGPT Web 启用 OAuth 后不直接保存此值 |
 | `REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN` | 必填 | Web 控制台/API Token |
+| `RCM_CENTER_OAUTH_ENABLED` | `false` | 启用 ChatGPT Web OAuth 发现与授权桥接 |
+| `RCM_CENTER_OAUTH_ISSUER` | `RCM_CENTER_PUBLIC_BASE_URL` | OAuth issuer，必须是稳定 HTTPS Center Origin |
+| `RCM_CENTER_OAUTH_RESOURCE` | `RCM_CENTER_PUBLIC_BASE_URL` | 受保护 MCP 资源标识；通常与 Center 公网 Origin 相同，也允许使用独立授权服务器 issuer |
+| `RCM_CENTER_OAUTH_ALLOW_STATIC_TOKEN_BOOTSTRAP` | `true` | OAuth 授权页是否允许用已有 RCM Token 完成一次性登录 |
+| `RCM_CENTER_OAUTH_SCOPES` | `mcp:read mcp:execute mcp:project` | OAuth 工具权限范围；`offline_access` 由服务端额外支持以便刷新令牌 |
+| `RCM_CENTER_OAUTH_AUTHORIZATION_CODE_TTL_SECONDS` | `180` | 授权码有效期，范围 30–600 秒 |
+| `RCM_CENTER_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | `3600` | OAuth access token 有效期，范围 5 分钟–24 小时 |
+| `RCM_CENTER_OAUTH_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | OAuth refresh token 有效期，范围 1 小时–10 年 |
 | `REMOTE_CONNECT_MCP_CENTER_CONSOLE_HOSTNAME` | 空 | 控制台域名，用于根路径跳转 |
 | `RCM_CENTER_AGENT_UPGRADES_ENABLED` | `true` | 是否允许 Center 下发 Agent 升级计划；紧急情况下设为 `false` 只停止新升级，不影响现有任务 |
 | `RCM_CENTER_RELEASE_BASE_URL` | GitHub Releases 下载基址 | 自动解析发布资产和 `.sha256` 的基址；私有镜像源通过部署 Secret/env 覆盖 |

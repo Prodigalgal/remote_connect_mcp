@@ -15,7 +15,7 @@
 - 浏览器能力由 Java Agent 统一编排，Playwright/Patchright/Comoufox 只作为本机适配器，不把浏览器 Cookie、CDP 凭据或完整页面树上传到 Center；
 - 保持 MCP 工具面精简、有界，新增能力优先通过任务类型和 capability 协商实现，而不是复制大量工具。
 
-明确不在本阶段引入：微服务拆分、Kafka/NATS、强制 OAuth 2.1、代理其他 MCP、Next.js SSR、微前端、STOMP、直接把 QUIC 作为唯一传输，或一次性暴露完整桌面/浏览器底层 API。
+明确不在本阶段引入：微服务拆分、Kafka/NATS、把 OAuth 设为所有客户端唯一入口、代理其他 MCP、Next.js SSR、微前端、STOMP、直接把 QUIC 作为唯一传输，或一次性暴露完整桌面/浏览器底层 API。ChatGPT Web 的 OAuth 2.0/PKCE 桥接与直接 Bearer 客户端同时受支持。
 
 ### 当前实施状态（2026-09-11）
 

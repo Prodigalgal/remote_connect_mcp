@@ -13,7 +13,7 @@ Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布�
 | 领域 | 当前实现 | 证据 |
 | --- | --- | --- |
 | Java 工程 | `protocol`、`center`、`agent` Gradle 多模块，Java 25 toolchain | GitHub Actions `34745635544`：JVM、Liquibase、备份恢复、React、Linux amd64/arm64、Windows amd64 全部成功 |
-| MCP | Streamable HTTP `/mcp`、Bearer 校验、8 个聚合工具、分页结果 | 当前 Java Center `/mcp` 契约；连接器刷新后只发现新工具面 |
+| MCP | Streamable HTTP `/mcp`、OAuth/直接 Bearer 双路径、8 个聚合工具、分页结果 | 当前 Java Center `/mcp` 契约；OAuth discovery/PKCE 代码已接入，连接器刷新和真实 Web OAuth/附件体验仍需生产验收 |
 | 任务可靠性 | 异步入队、幂等键、租约、取消、输出游标、断线重连、有界 spool、无超时任务恢复；过期租约区分可恢复持久任务与不可安全重放的定时任务，任务 attempt 栅栏阻断断线后的旧进程重投；PostgreSQL 按任务摘要路由 `LISTEN/NOTIFY` 事件唤醒，高频输出只唤醒等待同一任务的请求，截止时间返回快照，不运行固定行读取循环 | Java Agent/Center 单元测试与 GitHub Actions 门禁 |
 | 注册与身份 | 一次性 Enrollment Token，注册后换取每 Agent 日常 Token；身份文件原子写入 | Agent/Center 测试通过 |
 | 配置热更新 | Center 下发 generation、长轮询等待时间和并发槽位；Agent 原子落盘并只接受更新代次；每次心跳携带版本化 runtime descriptor（单任务及 Agent 总进程预算、资源能力、scope_mode 与桌面/浏览器配置及会话状态），Center 以固定大小 JSONB 投影保存；管理员可将配置历史作为新 generation 回滚 | `AgentRuntimeSettingsTest`、`AgentConfigurationServiceTest`、runtime descriptor protocol/registry tests |

@@ -23,6 +23,7 @@ public class HealthController {
     private final ArtifactStore artifactStore;
     private final ArtifactTransferService transfers;
     private final CenterAsyncExecutor async;
+    private final CenterOAuthConfig oauth;
 
     @org.springframework.beans.factory.annotation.Autowired
     public HealthController(@Value("${rcm.version:dev}") String version,
@@ -31,7 +32,8 @@ public class HealthController {
                             ObjectProvider<JdbcTemplate> jdbcProvider,
                             ObjectProvider<ArtifactStore> artifactProvider,
                             ObjectProvider<ArtifactTransferService> transferProvider,
-                            CenterAsyncExecutor async) {
+                            CenterAsyncExecutor async,
+                            CenterOAuthConfig oauth) {
         this.version = version;
         this.persistenceMode = persistenceMode;
         this.requireDurableStorage = requireDurableStorage;
@@ -39,6 +41,7 @@ public class HealthController {
         this.artifactStore = artifactProvider.getIfAvailable();
         this.transfers = transferProvider == null ? null : transferProvider.getIfAvailable();
         this.async = async;
+        this.oauth = oauth;
     }
 
     @GetMapping("/healthz")
@@ -77,6 +80,11 @@ public class HealthController {
                         .body(Map.of("status", "not_ready", "reason", "database migration is not ready"));
             }
         }
+        if (oauth.enabled() && !oauth.isConfigured()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("status", "not_ready", "reason",
+                            "OAuth is enabled but issuer/resource must be matching HTTPS public URLs"));
+        }
         if (transfers != null) {
             var artifactFailure = transfers.readinessFailure(requireDurableStorage || "postgres".equalsIgnoreCase(persistenceMode));
             if (artifactFailure != null) {
@@ -84,7 +92,8 @@ public class HealthController {
                         .body(Map.of("status", "not_ready", "reason", artifactFailure));
             }
         }
-        return ResponseEntity.ok(Map.of("status", "ready", "migrationStage", "java", "persistence", persistenceMode));
+        return ResponseEntity.ok(Map.of("status", "ready", "migrationStage", "java", "persistence", persistenceMode,
+                "oauth", oauth.enabled() ? "configured" : "disabled"));
     }
 
     @GetMapping("/version")

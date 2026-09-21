@@ -16,3 +16,12 @@ spec:
               value: v0.1.0
             - name: RCM_CENTER_AGENT_WEBSOCKET_ENABLED
               value: "true"
+            - name: RCM_CENTER_OAUTH_ENABLED
+              value: "true"
+            - name: RCM_CENTER_OAUTH_ISSUER
+              # The private GitOps overlay replaces example.invalid with the
+              # real Center hostname before Argo sync; never commit that
+              # private domain to this public application repository.
+              value: https://remote-connect-mcp-center.example.invalid
+            - name: RCM_CENTER_OAUTH_RESOURCE
+              value: https://remote-connect-mcp-center.example.invalid

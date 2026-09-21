@@ -22,7 +22,7 @@
 
 | 层级 | 当前判断 | 剩余工作 |
 | --- | --- | --- |
-| P0 | 核心可靠性、安全、Artifact Transport v2、Session 原子 admission 与组件升级协议代码已完成；Long Running Tasks v2 已完成并通过统一 Actions | Center/Agent 重启/断线组合矩阵、工件卷备份恢复、长任务生命周期和离线升级目标环境门禁 |
+| P0 | 核心可靠性、安全、Artifact Transport v2、Session 原子 admission、混合认证与组件升级协议代码已完成；Long Running Tasks v2 已完成并通过统一 Actions | Center/Agent 重启/断线组合矩阵、OAuth/直接 Bearer 双路径、工件卷备份恢复、长任务生命周期和离线升级目标环境门禁 |
 | P1 | 主流程、桌面/浏览器、控制台、Viewer、组件选择器和独立运行时合同代码已完成 | Windows/Linux Desktop 与 Browser、ChatGPT Web 文件对象、Git/Console/升级/长连接真实矩阵，以及无障碍/视觉验收 |
 | P2 | P2-01/03/04/06/07、P2-05-lite、Viewer 解耦/handler、去重和生命周期代码已完成 | QUIC/HTTP3 真实 Provider、集中日志/对象网关自身生命周期、SLO/告警演练和多主体双账号现场验收 |
 | MCP Tool/Schema | 8 个聚合 Tool、严格 Schema、结构化输出和仓库门禁已完成 | P1-TM-17/18：ChatGPT Web 真实发现/调用和生产收口 |
@@ -37,6 +37,7 @@
 | --- | --- | --- | --- | --- |
 | [x] | P0-01 | 固定 MCP 地址和多机器路由 | `/mcp`、Bearer 和按 machine ID 路由已可用；后续不因 Center/Agent/Console 升级改变连接器地址 | v0.1.21 MCP/health/ready 验收 |
 | [x] | P0-02 | 机器注册与凭据分层 | 一次性 Enrollment Token、独立 Agent Token、稳定 MCP Token、独立 Admin Token 已实现；Enrollment 不写入长期配置 | 注册与身份测试、生产 Secret |
+| [~] | P0-13 | ChatGPT OAuth + 直接 Bearer 混合认证 | ChatGPT Web 通过 protected-resource/authorization-server discovery、Authorization Code + PKCE 和 RCM Token Bootstrap 换发短期 OAuth Token；Codex/CLI 继续使用 RCM Bearer；统一映射同一 Principal | `CenterOAuthConfig`、`McpOAuthService`、`McpOAuthController`、`033-oauth-bridge`；待 GitHub Actions 编译/迁移门禁，OAuth Web E2E 属于生产验收 |
 | [x] | P0-03 | 异步任务全链路恢复 | 已有幂等、租约、Attempt、旧 attempt 回传栅栏、取消、输出游标和 LISTEN/NOTIFY；Agent 对重复 poll 回传增加原子 `putIfAbsent` dispatch fence，避免覆盖正在运行的 Future；Center 重启、Agent 断线、重复重试、长任务和高并发属于独立生产验收 | `AgentRuntimeTest.duplicateTaskRegistrationKeepsTheFirstRunner`、GitHub Actions |
 | [x] | P0-04 | PostgreSQL + Liquibase 唯一事实来源 | PostgreSQL、Liquibase 当前 changelog 和迁移 Job 的代码与 CI 实现完成；生产迁移/版本收敛属于独立生产验收 | PostgreSQL/Liquibase CI、`PostgresIntegrationTest` |
 | [x] | P0-05 | 任务与工件的持久化边界 | `ArtifactStore`、默认 filesystem 持久卷、可选 HTTP 对象网关、原子写入/读取校验、TTL 元数据和显式 GC API 已实现；生产卷备份/恢复、CronJob 和规模压测属于独立生产验收 | 对象存储适配、迁移/恢复、生命周期测试、GitHub Actions |
@@ -261,6 +262,7 @@
 | [x] | P1-TM-15 | 上下文、选择、审批可观测性 | 已接入低基数 Schema/结果/校验/重复任务/stale ref/范围拒绝指标，不记录原始命令、Token、文件内容 | Metrics/Audit 实现 |
 | [x] | P1-TM-16 | GitHub Actions 唯一构建与验证入口 | Java/Native/React/Node schema、协议、集成和浏览器门禁统一由 Actions 执行；本机不生成正式产物 | `.github/workflows/java-react.yml` |
 | [ ] | P1-TM-17 | ChatGPT Web 连接器真实 E2E | 固定现有 `/mcp` URL、Token 和稳定 Viewer URI；完成一次工具声明刷新后验证 8 Tool 可发现、可调用、结果/图片/文档可展示；后续版本保持稳定 schema/URI，不要求重复录入 | 真实 ChatGPT Web；附件、桌面、浏览器、长任务流程 |
+| [ ] | P1-TM-19 | OAuth/直接 Bearer 双客户端矩阵 | ChatGPT Web 完成 OAuth 授权页输入成员 RCM Token、短期 access/refresh token、撤销/过期重授权；Codex/CLI 使用原 RCM Bearer；两条路径均不能跨主体读取任务 | 真实 Web/CLI 双路径；不在本机构建 |
 | [ ] | P1-TM-18 | 新模型面发布与生产收口 | 按连接/主体/机器观测错误率和重复率；异常时回滚到上一套 Java 构建，不恢复旧 MCP Tool 面，也不回滚已应用数据库迁移；通过生产验收后更新 `STATUS.md` 与 `PRODUCTION_ACCEPTANCE.md` | Release/rollback 演练；旧 Go 路径和旧 Tool 面不重新上线 |
 
 ### P1-LG：全仓正式协议收口（代码任务）

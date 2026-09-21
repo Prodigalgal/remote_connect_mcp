@@ -7,7 +7,7 @@
 状态：设计与代码实现完成；统一 GitHub Actions、目标机和双账号真实 Web 验收待进行
 
 本文把“多个用户、多个 Web 对话、多个 MCP 连接和多台终端”拆成独立关系。它是
-`P2-05-lite` 的设计基线。当前第一阶段已经把不透明 MCP Token 映射到 Principal，
+`P2-05-lite` 的设计基线。当前第一阶段已经把不透明 MCP Token 和 OAuth access token 映射到 Principal，
 并将主体、连接元数据、幂等键、READ/WRITE/EXCLUSIVE 执行车道、显式执行会话、任务专属结果通道、机器/项目 ACL、配额和会话最新合同接入任务生命周期；
 会话访问时过期回收、Desktop lease 和 Browser Context/Profile 隔离已经实现。配置 MCP Token
 只代表当前部署信任域；多用户场景使用 Console 签发的独立 Token。
@@ -20,7 +20,7 @@
 
 1. **MCP 地址保持唯一且稳定。** 所有 Web 账号继续连接同一个 `/mcp`，Center、Console
    和 Agent 升级不改变连接器地址。
-2. **Bearer Token 是当前唯一可信的调用主体来源。** MCP 协议不会自动向 Center 提供
+2. **Bearer 是传输层的唯一可信凭据来源。** ChatGPT Web 先通过 OAuth 授权页把已有 RCM Token 换成短期 access token，直接客户端继续使用 RCM Bearer。MCP 协议不会自动向 Center 提供
    可验证的 ChatGPT 账号身份；请求中的 `conversation_id`、`chat_id` 或自定义标头只能
    用作关联信息，不能用作授权依据。
 3. **一个用户可以有多个 Token、多个对话和多个连接。** Token 属于内部 `principal`，
@@ -256,7 +256,7 @@ Sessions/Contexts 设计允许并发浏览器，同时按 Context 持久化登�
 | B. 每用户不透明 Bearer + Center ACL | Token 映射 `Principal`，Center 派生主体并过滤机器/项目/任务 | 保持一个固定 `/mcp`；可撤销、限额、审计；适配真实 Windows/Linux 主机；实现量可控 | 需要新增主体、Token、ACL 和任务归属表；共享项目需显式成员关系 | **选定为基础身份模型** |
 | C. 每对话 Token/连接即权限 | 每个 Web 对话创建独立 Token 或独立服务入口 | 对话级配额和回收直观，误串话风险低 | ChatGPT Web 不一定提供可验证的稳定对话身份；Token 数量和连接器配置会爆炸；不利于固定 URL | 不作为认证模型；只把对话映射为内部 `ExecutionSession` |
 | D. 每用户/每对话物理沙箱 | E2B/Daytona VM，或 OpenHands/MCP Gateway 的每会话 runtime | 隔离、资源上限、可复现性最好；适合不可信用户和高风险任务 | 启动/存储/网络成本高；无法自然控制用户正在登录的 Windows 桌面和本机 GUI；改变 RCM 的真实主机语义 | 作为可选运行时，不替代默认 Agent |
-| E. OAuth/OIDC/企业 IdP | Gateway 通过 Entra/OIDC 发放委托 Token | 企业身份、统一撤销和组织联邦能力强 | 引入 IdP、动态注册、回调和更多运维面；不能单独解决 worktree、Desktop lease 或公平调度；与当前 ChatGPT DCR 问题冲突 | 预留适配器，当前不作为主路径 |
+| E. OAuth/OIDC/企业 IdP | Gateway 通过 OAuth 授权码 + PKCE 发放委托 Token；RCM Token 作为本地 Bootstrap | 兼容 ChatGPT Web 的官方连接流程，同时保留直接 Bearer；可撤销、短期化、按 scope 授权 | 引入发现端点、回调、刷新和更多运维面；不能单独解决 worktree、Desktop lease 或公平调度 | **选定为 Web 主路径，直接 Bearer 作为 CLI/本地路径** |
 | F. 每用户/机器独立 MCP Endpoint | 为账号、机器或项目生成不同 URL | 路由和隔离容易理解；服务端逻辑较少 | URL/连接器数量随规模增长；升级、域名、故障恢复和用户体验变差；违背稳定 `/mcp` 目标 | 不采用 |
 | G. 外置消息总线优先 | Redis/Kafka/NATS 负责任务队列、事件和锁 | 高吞吐、多副本和跨节点路由能力强 | 增加第二状态真相源和运维成本；当前单 Center + PostgreSQL 已能用行锁、`LISTEN/NOTIFY` 和有界队列完成需求 | 先不引入；达到明确吞吐/HA 指标再评估 |
 | H. 完整 SaaS 多租户 | 组织、复杂 RBAC、计费、Center HA 和跨租户治理 | 产品化能力最完整 | 明显超出当前“可信用户控制自有机器”的需求；开发和验收面大幅膨胀 | 当前路线明确不做 |
@@ -267,7 +267,7 @@ RCM 采用 **B + C（内部会话）+ 可选 D** 的混合方案，但不采用 
 的“默认沙箱”做法：
 
 ```text
-认证层：opaque Bearer Token -> Principal
+认证层：OAuth access token / opaque Bearer -> Principal
 上下文层：Principal + Conversation -> ExecutionSession
 资源层：MachineGrant/Project ACL -> Worktree/Path -> ExecutionLane
 运行时层：command-agent；Desktop lease；Browser Context/Profile；可选 sandbox
@@ -277,7 +277,7 @@ RCM 采用 **B + C（内部会话）+ 可选 D** 的混合方案，但不采用 
 
 1. **一个 Center、一个固定 `/mcp`。** 所有账号和窗口连接同一入口；协议层只提供精简、
    稳定的工具契约。
-2. **Token 是用户边界，Conversation 是任务上下文。** Center 从 Bearer 查出
+2. **Token 是用户边界，Conversation 是任务上下文。** Center 从 OAuth access token 或 Bearer 查出
    `Principal`；不信任模型传入的 `principal_id`，也不把不可验证的 ChatGPT 账号字段当权限。
 3. **每个对话在 Center 内生成 `ExecutionSession`。** 它保存目标机器、项目/worktree、
    范围、能力、预算和恢复游标；Web 重试只携带 `task_id`/幂等键，不携带长上下文。
@@ -299,15 +299,15 @@ RCM 采用 **B + C（内部会话）+ 可选 D** 的混合方案，但不采用 
 - **满足真实需求**：既能让多个 Web 账号和多个窗口共用一台真实机器，又能控制项目、worktree、
   桌面和浏览器资源；不强迫所有任务进入容器，也不牺牲无人值守任务的持久性。
 - **不改变用户入口**：不用为每个用户重新创建 ChatGPT 连接器，Center/Agent 升级也不改变
-  `/mcp`；新增用户只需生成和撤销自己的 Bearer Token。
+  `/mcp`；Web 新增用户只需在 OAuth 页面输入自己的 RCM Token，直接客户端仍可生成和撤销 Bearer Token。
 - **上下文克制**：主体、ACL、会话和调度都在 Center/Console/数据库完成，MCP 只返回任务 ID、
   状态摘要、游标和工件引用，不把每台机器或每个用户复制成一套工具。
-- **渐进式增强**：先完成轻量多主体和车道；需要更强隔离时增加 sandbox runtime，需要企业
-  身份时增加 OAuth/OIDC adapter，需要更高吞吐时再评估消息总线，不推翻现有协议。
+- **渐进式增强**：先完成轻量多主体和车道；OAuth 已作为 Web 桥接落地，需要更强隔离时增加
+  sandbox runtime，需要更高吞吐时再评估消息总线，不推翻现有协议。
 - **可验证、可回滚**：每一步都有主体、ACL、车道、租约、
   会话隔离和双账号端到端验收，不依赖“看起来已连接”作为成功标准。
 
-因此，`P2-05-lite` 的实现基线更新为：**per-user opaque Bearer + Center-derived Principal +
+因此，`P2-05-lite` 的实现基线更新为：**per-user OAuth/Bearer + Center-derived Principal +
 per-conversation ExecutionSession + project/worktree ACL + derived execution lane + isolated
 Desktop lease/Browser Context，sandbox/OAuth/broker 作为后续可插拔能力**。这也是本文件后续
 数据迁移、API 和验收的唯一推荐路径。
@@ -370,6 +370,6 @@ RCM 不是追求无限并发，而是追求 **可并发提交、按资源确定�
 - 项目开发优先使用 `isolated` worktree，避免两个对话覆盖彼此的代码；
 - 明确需要共同 checkout 时使用 `shared_serial`，让第二个写任务等待而不是冲突；
 - 整机/环境模式使用 `host`，普通进程隔离，主机全局写入和桌面输入串行；
-- 身份用每用户 Bearer，任务上下文用每对话 `ExecutionSession`，资源一致性用 Lane/Lease，
+- 身份用每用户 OAuth/Bearer，任务上下文用每对话 `ExecutionSession`，资源一致性用 Lane/Lease，
   结果隔离用任务句柄和专属游标；
-- 沙箱、OAuth、消息总线仍然只是未来可插拔实现，不能替代上述基本不变量。
+- 沙箱、消息总线仍然只是未来可插拔实现，不能替代上述基本不变量；OAuth 已作为 Web 认证桥接落地。

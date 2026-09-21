@@ -63,3 +63,5 @@ databaseChangeLog:
       file: db/changelog/031-task-retention-v2.yaml
   - include:
       file: db/changelog/032-conversations-connections.yaml
+  - include:
+      file: db/changelog/033-oauth-bridge.yaml

@@ -262,12 +262,12 @@ RCM 不要求所有任务运行在容器或虚拟机里。可信的整机模式�
 | 凭据 | 用途 | 生命周期 |
 | --- | --- | --- |
 | 配置 MCP Token | 把当前 Web 连接器映射到配置主体和其机器/项目/能力范围 | 不透明、可撤销；由部署环境注入并与 Agent Token 分离 |
-| 用户 MCP Token | 把 Web 用户或服务主体映射到 `/mcp` 及其机器/项目/能力范围 | 不透明、可撤销；由 Console/Admin 签发，可设置有效期和配额；不要求 OAuth/JWT |
+| 用户 MCP Token | 把直接客户端或 OAuth Bootstrap 用户映射到 `/mcp` 及其机器/项目/能力范围 | 不透明、可撤销；由 Console/Admin 签发，可设置有效期和配额；ChatGPT Web 不直接接收它，而是在 OAuth 授权页换发短期 access token |
 | Admin Token | React 控制台和 Admin API | 与 MCP Token 分离，手动通过部署环境替换 |
 | Enrollment Token | 首次安装、重装或身份恢复 | 一次性、短期、绑定机器名称 |
 | Agent Token | Agent 日常连接 Center | 每台 Agent 独立，注册成功后换取 |
 
-生产不使用长期注册令牌，不把 Enrollment Token 写入长期服务配置，也不要求 OAuth 2.1 才能完成基本接入。用户 MCP Token 使用不透明随机值，Center 只保存哈希并支持手动撤销/重新签发；不把 Token 轮换做成普通模型工具。紧急凭据替换通过受保护的环境变量/Kubernetes Secret 和受控重启完成。
+生产不使用长期注册令牌，不把 Enrollment Token 写入长期服务配置。RCM 采用混合认证：直接客户端继续使用不透明 RCM Bearer；ChatGPT Web 按 MCP OAuth 2.0/PKCE 发现端点，在授权页输入已有 RCM Token 后换发短期 access/refresh token。Center 只保存 RCM/OAuth Token 哈希并支持撤销；不把 Token 轮换做成普通模型工具。紧急凭据替换通过受保护的环境变量/Kubernetes Secret 和受控重启完成。
 
 ### 9.2 公网和宿主机
 
@@ -295,11 +295,11 @@ MCP 面遵循以下原则：
 - 工具按用户任务组织，而不是按内部类或每台机器复制；
 - 机器数量不增加工具元数据；
 - 目标 machine ID 必须显式、可审计；
-- 主体由 Bearer Token 在 Center 侧派生，模型不填写 `principal_id`；对话/连接 ID 只用于关联任务，不作为授权依据；
+- 主体由直接 Bearer 或 OAuth access token 在 Center 侧派生，模型不填写 `principal_id`；对话/连接 ID 只用于关联任务，不作为授权依据；
 - 默认返回下一步所需的最小结果；
 - 长输出、截图、DOM、错误和列表均有界；
 - 新能力优先扩展已有任务/能力协议，只有无法复用时才新增 MCP 工具；
-- Center/Agent/Companion 升级不改变 `/mcp` URL、Bearer Token 或机器身份；Tool 面改变时由连接器重新发现当前 Schema。
+- Center/Agent/Companion 升级不改变 `/mcp` URL 或机器身份；Web 端通过 OAuth 重新获取短期令牌，直接客户端 Bearer Token 保持独立；Tool 面改变时由连接器重新发现当前 Schema。
 
 ## 11. 升级和版本纪律
 
@@ -320,7 +320,7 @@ MCP 面遵循以下原则：
 当前版本不把以下内容作为核心交付：
 
 - 代理任意第三方 MCP；
-- 强制 OAuth 2.1；
+- 把 OAuth 当作唯一客户端入口；直接 Bearer 客户端仍是受支持的内部/CLI 接入方式；
 - 强制所有任务容器化；
 - 通用远程桌面/RMM 功能；
 - 完整多租户 SaaS、复杂 RBAC、跨组织计费和 Center 多副本高可用；

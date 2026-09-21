@@ -63,6 +63,17 @@ spec:
             # with the stable HTTPS Center hostname.
             - name: RCM_CENTER_PUBLIC_BASE_URL
               value: https://remote-connect-mcp-center.example.invalid
+            # ChatGPT Web uses OAuth discovery; direct Codex/CLI clients may
+            # continue using the static RCM Bearer token.  Production overlays
+            # must replace issuer/resource with the real HTTPS origin(s).
+            - name: RCM_CENTER_OAUTH_ENABLED
+              value: "false"
+            - name: RCM_CENTER_OAUTH_ISSUER
+              value: https://remote-connect-mcp-center.example.invalid
+            - name: RCM_CENTER_OAUTH_RESOURCE
+              value: https://remote-connect-mcp-center.example.invalid
+            - name: RCM_CENTER_OAUTH_ALLOW_STATIC_TOKEN_BOOTSTRAP
+              value: "true"
             - name: RCM_CENTER_TRANSFER_MAX_CONCURRENT
               value: "4"
             - name: RCM_CENTER_TRANSFER_MAX_PER_PRINCIPAL

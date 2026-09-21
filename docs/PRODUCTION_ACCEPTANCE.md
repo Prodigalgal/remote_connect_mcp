@@ -60,6 +60,7 @@ Java Agent `v0.1.26` 已通过 GitHub Actions Native Release（构建与签名�
 | Center 就绪与持久化 | 通过 | `/api/v1/readyz` 返回 200，状态 `ready`，持久化为 PostgreSQL |
 | 版本识别 | 通过 | `/api/v1/version` 返回 Java 实现和生产版本 |
 | MCP 未授权保护 | 通过 | 未携带 Bearer 调用 `/mcp` 返回 HTTP 401 |
+| MCP OAuth discovery/PKCE | 待验收 | 代码已提供 protected-resource、authorization-server、授权页和 token endpoint；需在真实公网 HTTPS/ChatGPT Web 完成成员 Token Bootstrap、access/refresh、过期重授权和主体隔离 |
 | MCP 授权会话 | 通过 | 有效 MCP Token 完成 `initialize`、会话建立和 `tools/list`；精简工具面 9 个工具均可发现 |
 | MCP 机器列表 | 通过 | `machines` 调用成功，结果未发现 Token、密码、Secret 或私钥字段 |
 | Admin 鉴权与基础分页 | 通过 | 有效 Admin Token 可读取机器列表；`items/offset/limit` 存在 |
