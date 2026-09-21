@@ -51,6 +51,13 @@ Windows 安装器 `scripts/install-java-agent.ps1` 的 `-BinaryPath` 只接收�
 用户安装的 Chromium 不会在 SYSTEM 会话中丢失。`-DesktopUser` 用于指定登录桌面账号；没有活动会话时
 仍只注册登录触发的 Companion 任务，不会把“已部署”误报为“桌面在线”。
 
+首次安装推荐使用 `scripts/first-install-java-agent.ps1` 或 `scripts/first-install-java-agent.sh`。控制台会将
+`CenterUrl`、稳定 Agent 名称、Release tag 和一次性 Enrollment Token 组合成可复制命令；入口只负责
+下载/校验对应平台的 command ZIP，`--mode full` 或 `-Mode full` 时再下载独立 Desktop/Browser ZIP。
+Windows 入口会在 PowerShell 5/非管理员终端中自动重新进入已安装的 PowerShell 7（包含 MSIX 安装）并按需提权；
+Linux 入口在非 root 时通过 `sudo` 重新执行。两者均不安装 Bootstrap 常驻进程，也不会把 Enrollment Token 写入长期
+服务环境；安装器完成注册后只留下 Agent identity 和不含一次性 Token 的服务配置。
+
 正式发布使用 `.github/workflows/java-release.yml`：推送 `main` 或 `java-vX.Y.Z` Tag 后，CI 先执行
 JVM/React 门禁，再在匹配架构的 GitHub-hosted runner（`ubuntu-24.04` 与
 `ubuntu-24.04-arm`）上构建并执行 Linux amd64/arm64 Native Image 烟测，随后在 Windows

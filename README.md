@@ -112,7 +112,7 @@ Java Center/Agent 已实现 Center 控制的 canary/批次升级协议；正式�
 
 升级活动及逐机状态在 Java Center 内存模式下用于协议回归，在 PostgreSQL 模式下由 Liquibase 管理的 `rcm_upgrade_campaign`/`rcm_upgrade_target` 表持久化。Center Pod 重启后会继续未完成批次。升级只改变 Agent 二进制，不改变机器身份、每机凭据、服务配置或 ChatGPT MCP 工具；React 页面调用真实 `/api/v1/admin/upgrades` API。
 
-首个支持本能力的版本需要沿用现有安装脚本人工引导一次；此后版本均可由 Center 自升级。发布包必须来自受信任的 HTTPS Release，Center 和 Agent 都会拒绝缺失或不匹配的 SHA-256。当前 Agent 按计划直接从校验过的 Release URL 下载；Center 尚未提供共享二进制缓存，后续可接入对象存储或内部镜像而不改变 Agent 协议。
+首次接入不需要先把多个 ZIP 和参数手工拼在一起：控制台注册令牌页会生成一个一次性 PowerShell/Bash 命令，入口脚本自动识别平台、下载对应 Native bundle 并校验 SHA-256；完整模式还会按需安装 Desktop/Browser companion。此后版本均可由 Center 自升级。发布包必须来自受信任的 HTTPS Release，Center 和 Agent 都会拒绝缺失或不匹配的 SHA-256。入口脚本不会安装常驻 Bootstrap 进程，安装成功后只保留正式 Agent 与按需 companion。
 
 ## Web 控制台
 
@@ -176,7 +176,7 @@ Kubernetes 模板位于 [`deploy/k8s/java-center`](deploy/k8s/java-center)。真
 
 日常接入新 Agent、重装 Agent 或恢复丢失的身份文件时，在 Center 控制台的“新增机器注册令牌”区域填写稳定机器名称，生成 1 小时至 30 天有效的一次性 Token。Token 与机器名称绑定，成功注册一次后立即失效；每次安装、重装或身份恢复都必须重新生成一个 Token。
 
-明文只在创建响应和当前浏览器页面显示一次，Center 仅持久化 SHA-256 摘要。生成后可以分别复制 Token、复制已解压发布包的安装命令，或下载包含本次一次性 Token 的 `.ps1` / `.sh` 一键安装脚本。下载脚本会自动识别 amd64/arm64、下载指定 Release、校验 SHA-256 并安装系统服务；安装成功后应立即删除该脚本。Agent 注册成功会换取日常长轮询使用的每机独立身份 Token；生产部署不接受共享 Enrollment 环境变量。
+明文只在创建响应和当前浏览器页面显示一次，Center 仅持久化 SHA-256 摘要。生成后可以分别复制 Token、下载 env，或复制带有目标 Center、Release、平台能力和一次性 Token 的 PowerShell/Bash 首次安装命令。`scripts/first-install-java-agent.ps1` 和 `.sh` 只在目标机执行一次：自动下载指定 Release、校验 SHA-256、按需配置 Desktop/Browser，并调用正式安装器；安装成功后临时文件会清理，不安装常驻 Bootstrap。Agent 注册成功会换取日常长轮询使用的每机独立身份 Token；生产部署不接受共享 Enrollment 环境变量。
 
 ## Agent 配置
 

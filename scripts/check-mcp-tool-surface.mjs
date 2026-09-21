@@ -17,6 +17,8 @@ const runtimeFiles = [
   'web/src/artifact-viewer',
   'scripts/install-java-agent.ps1',
   'scripts/install-java-agent.sh',
+  'scripts/first-install-java-agent.ps1',
+  'scripts/first-install-java-agent.sh',
   'scripts/deploy-java-desktop-browser.ps1',
   'scripts/smoke-java.ps1',
   'scripts/smoke-java.sh',

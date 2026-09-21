@@ -90,12 +90,12 @@ sha256sum "$BROWSER_ARCHIVE" > "$BROWSER_ARCHIVE.sha256"
 "$ROOT/scripts/verify-native-bundle.sh" "$DESKTOP_ARCHIVE" rcm-desktop-companion
 "$ROOT/scripts/verify-native-bundle.sh" "$BROWSER_ARCHIVE" rcm-browser-agent
 
-cp "$ROOT/scripts/install-java-agent.sh" "$ROOT/deploy/systemd/remote-connect-mcp-agent.service" "$OUT/"
+cp "$ROOT/scripts/install-java-agent.sh" "$ROOT/scripts/first-install-java-agent.sh" "$ROOT/deploy/systemd/remote-connect-mcp-agent.service" "$OUT/"
 cp "$ROOT/deploy/systemd/agent.env.example" "$OUT/agent.env.example"
 cp "$ROOT/README.md" "$ROOT/LICENSE" "$ROOT/NOTICE" "$OUT/"
-chmod +x "$OUT/install-java-agent.sh"
+chmod +x "$OUT/install-java-agent.sh" "$OUT/first-install-java-agent.sh"
 
-printf '{"version":"%s","os":"%s","arch":"%s","artifacts":["center/rcm-center","agent/rcm-agent","desktop/rcm-desktop-companion","browser/rcm-browser-agent","install-java-agent.sh","remote-connect-mcp-agent.service","agent.env.example","README.md","LICENSE","NOTICE"]}\n' \
+printf '{"version":"%s","os":"%s","arch":"%s","artifacts":["center/rcm-center","agent/rcm-agent","desktop/rcm-desktop-companion","browser/rcm-browser-agent","install-java-agent.sh","first-install-java-agent.sh","remote-connect-mcp-agent.service","agent.env.example","README.md","LICENSE","NOTICE"]}\n' \
   "$VERSION" "$OS" "$ARCH" > "$OUT/manifest.json"
 ARCHIVE="$ROOT/dist/remote-connect-mcp-$VERSION-$OS-$ARCH.tar.gz"
 tar -C "$OUT" -czf "$ARCHIVE" .

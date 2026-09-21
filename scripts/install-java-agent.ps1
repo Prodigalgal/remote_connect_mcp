@@ -140,15 +140,37 @@ function Stop-AgentProcessForReplacement {
     throw "Agent process did not exit before bundle replacement."
 }
 
+function Resolve-PowerShell7Path {
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($env:REMOTE_CONNECT_MCP_PWSH_PATH)) {
+        [void]$candidates.Add($env:REMOTE_CONNECT_MCP_PWSH_PATH)
+    }
+    foreach ($package in @(Get-AppxPackage -Name Microsoft.PowerShell -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending | Select-Object -First 1)) {
+        if (-not [string]::IsNullOrWhiteSpace($package.InstallLocation)) {
+            [void]$candidates.Add((Join-Path $package.InstallLocation 'pwsh.exe'))
+        }
+    }
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'))
+    foreach ($commandName in @('pwsh.exe', 'pwsh')) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($command -and $command.Source) { [void]$candidates.Add([string]$command.Source) }
+    }
+    foreach ($candidate in $candidates) {
+        try {
+            $resolved = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
+            if (Test-Path -LiteralPath $resolved -PathType Leaf) { return $resolved }
+        } catch { }
+    }
+    throw 'PowerShell 7 was not found. Install Microsoft.PowerShell 7 or set REMOTE_CONNECT_MCP_PWSH_PATH to pwsh.exe.'
+}
+
 function Register-AgentTask {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$LauncherPath
     )
-    $pwsh = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
-    if (-not (Test-Path -LiteralPath $pwsh -PathType Leaf)) {
-        throw "PowerShell 7 is required at $pwsh. Install PowerShell 7 before installing the Agent."
-    }
+    $pwsh = Resolve-PowerShell7Path
     $action = New-ScheduledTaskAction -Execute $pwsh -Argument (
         '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $LauncherPath)
     $trigger = New-ScheduledTaskTrigger -AtStartup

@@ -27,6 +27,31 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
+function Resolve-PowerShell7Path {
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($env:REMOTE_CONNECT_MCP_PWSH_PATH)) {
+        [void]$candidates.Add($env:REMOTE_CONNECT_MCP_PWSH_PATH)
+    }
+    foreach ($package in @(Get-AppxPackage -Name Microsoft.PowerShell -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending | Select-Object -First 1)) {
+        if (-not [string]::IsNullOrWhiteSpace($package.InstallLocation)) {
+            [void]$candidates.Add((Join-Path $package.InstallLocation 'pwsh.exe'))
+        }
+    }
+    [void]$candidates.Add((Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'))
+    foreach ($commandName in @('pwsh.exe', 'pwsh')) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($command -and $command.Source) { [void]$candidates.Add([string]$command.Source) }
+    }
+    foreach ($candidate in $candidates) {
+        try {
+            $resolved = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
+            if (Test-Path -LiteralPath $resolved -PathType Leaf) { return $resolved }
+        } catch { }
+    }
+    throw 'PowerShell 7 was not found. Install Microsoft.PowerShell 7 or set REMOTE_CONNECT_MCP_PWSH_PATH to pwsh.exe.'
+}
+
 if ([string]::IsNullOrWhiteSpace($HostId)) { $HostId = $AgentName }
 if ([string]::IsNullOrWhiteSpace($ReleaseTag)) { $ReleaseTag = "java-$Version" }
 if ([string]::IsNullOrWhiteSpace($CenterUrl) -or $CenterUrl.Contains("`r") -or $CenterUrl.Contains("`n")) {
@@ -52,10 +77,7 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw "Run this deployment from an elevated PowerShell or SYSTEM task."
 }
-$pwsh = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
-if (-not (Test-Path -LiteralPath $pwsh -PathType Leaf)) {
-    throw "PowerShell 7 is required at $pwsh."
-}
+$pwsh = Resolve-PowerShell7Path
 
 New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
 $driveName = [IO.Path]::GetPathRoot($StageRoot).TrimEnd('\').TrimEnd(':')
@@ -82,10 +104,15 @@ $agentZip = Download-Verified "remote-connect-mcp-agent-$Version-windows-amd64.z
 $desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-windows-amd64.zip"
 $browserZip = Download-Verified "remote-connect-mcp-browser-$Version-windows-amd64.zip"
 $installer = Join-Path $StageRoot "install-java-agent.ps1"
-# Stage the installer from the same immutable release tag as the three Native
-# bundles. Mixing a local script with a tagged bundle would create a second
-# protocol version and make upgrades non-reproducible.
-Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-java-agent.ps1" -OutFile $installer -TimeoutSec 30
+# Prefer the checked-out installer when this script is run from the repository;
+# this keeps local recovery aligned with the current PowerShell/MSIX fixes. A
+# downloaded tagged copy remains the fallback for standalone deployments.
+$localInstaller = Join-Path $PSScriptRoot 'install-java-agent.ps1'
+if (Test-Path -LiteralPath $localInstaller -PathType Leaf) {
+    Copy-Item -LiteralPath $localInstaller -Destination $installer -Force
+} else {
+    Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-java-agent.ps1" -OutFile $installer -TimeoutSec 30
+}
 
 $runtime = Join-Path $StageRoot "browser-runtime"
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
@@ -158,6 +185,7 @@ $applyLines = @(
     '  if ([string]::IsNullOrWhiteSpace($desktopUser)) { throw "no interactive user; pass -DesktopUser for a not-yet-logged-in GUI host" }',
     '  $env:USERNAME = $desktopUser',
     '  $node = $nodePath',
+    ('  $env:REMOTE_CONNECT_MCP_PWSH_PATH = {0}' -f (ConvertTo-PSLiteral $pwsh)),
     '  $worker = Join-Path $stage "browser-runtime\browser-worker.mjs"',
     # Keep the adapter executable invocation in a tiny .cmd shim.  Passing a
     # quoted multi-path command as one ProcessBuilder argument is parsed twice

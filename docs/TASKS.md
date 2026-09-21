@@ -165,6 +165,7 @@
 | [x] | P1-UP-03 | Windows/Linux companion 重启适配 | Windows Task/SCM、Linux systemd 和 Browser Worker service restart 均按组件处理，不重置 identity/profile |
 | [x] | P1-UP-04 | Console 组件版本与 canary | Console 显示组件计划/目标状态，并提供自动、仅 command-agent、按组件选择三种 campaign 入口；沿用 machine canary/retry |
 | [x] | P1-UP-05 | Browser runtime 独立生命周期 | Native browser-agent 作为独立组件升级，Profile/Cookie/cache 不触碰；Playwright/Patchright/Comoufox runtime 由安装脚本和独立 worker 生命周期管理 |
+| [x] | P1-UP-06 | 首次安装统一入口 | Windows/Linux 单命令入口自动识别运行时/权限、下载并校验对应 command/desktop/browser bundle，注册一次性 Token 后不保留 Bootstrap；控制台生成可复制命令 | `first-install-java-agent.ps1`、`first-install-java-agent.sh`；PowerShell/Bash 静态解析，构建交给 GitHub Actions |
 
 ## P1：核心生产体验
 

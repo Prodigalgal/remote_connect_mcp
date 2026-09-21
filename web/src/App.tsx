@@ -231,7 +231,7 @@ function App() {
           {page === 'tasks' && <Tasks rows={liveTasks} machines={liveMachines ?? []} projects={liveProjects ?? []} adminToken={adminToken} onRefresh={() => void refresh()} query={search} />}
           {page === 'artifacts' && <Artifacts token={adminToken} machines={liveMachines ?? []} query={search} />}
           {page === 'audit' && <Audit rows={liveAudit} machines={liveMachines ?? []} token={adminToken} onRefresh={() => void refresh()} query={search} />}
-          {page === 'enrollment' && <Enrollment adminToken={adminToken} />}
+          {page === 'enrollment' && <Enrollment adminToken={adminToken} releases={liveReleases} />}
           {page === 'access' && <AccessControl token={adminToken} machines={liveMachines ?? []} projects={liveProjects ?? []} />}
           {page === 'upgrades' && <Upgrades token={adminToken} rows={liveUpgrades} releases={liveReleases} machines={liveMachines ?? []} onRefresh={() => void refresh()} onRefreshReleases={() => void refresh(adminToken, true)} query={search} />}
           {page === 'settings' && <Settings token={adminToken} machines={liveMachines ?? []} onTokenChange={setAdminToken} onRefresh={() => void refresh()} />}
@@ -694,11 +694,29 @@ function TaskRow({ task, token, onRefresh }: { task: Task; token: string; onRefr
     </div>}
   </>
 }
-function Enrollment({ adminToken }: { adminToken: string }) {
+function psLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`
+}
+
+function shLiteral(value: string): string {
+  return "'" + value.split("'").join("'\"'\"'") + "'"
+}
+
+function Enrollment({ adminToken, releases }: { adminToken: string; releases: ReleaseCatalog | null }) {
   const [name, setName] = useState('')
+  const [centerUrl, setCenterUrl] = useState(() => import.meta.env.VITE_RCM_CENTER_URL ?? window.location.origin.replace(/-console(?=\.)/, '-center'))
   const [lifetime, setLifetime] = useState('86400')
+  const [version, setVersion] = useState('')
+  const [mode, setMode] = useState<'command' | 'full'>('command')
   const [issued, setIssued] = useState<{ tokenId: string; token: string; expiresAt: string } | null>(null)
   const [message, setMessage] = useState('')
+  useEffect(() => {
+    if (version || !releases?.items.length) return
+    const preferred = releases.items.find((release) => !release.prerelease && release.assets.some((asset) => asset.available && asset.checksumAvailable))
+      ?? releases.items.find((release) => release.assets.some((asset) => asset.available && asset.checksumAvailable))
+      ?? releases.items[0]
+    if (preferred) setVersion(preferred.version)
+  }, [releases, version])
   const generate = async () => {
     setMessage('')
     try {
@@ -723,7 +741,48 @@ function Enrollment({ adminToken }: { adminToken: string }) {
     link.click()
     URL.revokeObjectURL(url)
   }
-  return <><PageIntro kicker="SECURITY" title="注册令牌" action="生成一次性令牌" /><section className="split-grid"><div className="panel form-panel"><span className="section-kicker">ONE-TIME ENROLLMENT</span><h3>为新 Agent 生成令牌</h3><p>令牌与目标 Agent 名称绑定，注册成功一次后立即失效。</p><label>Agent 名称<input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 desktop-lab-02" /></label><label>有效期<select value={lifetime} onChange={(event) => setLifetime(event.target.value)}><option value="3600">1 小时</option><option value="21600">6 小时</option><option value="86400">1 天</option><option value="604800">7 天</option><option value="2592000">30 天</option></select></label><button className="primary full" onClick={() => void generate()} disabled={!adminToken || !name.trim()}>生成令牌</button>{issued && <div className="issued-token"><code>{issued.token}</code><div><button className="secondary" onClick={() => void copy()}>复制</button><button className="secondary" onClick={download}>下载 env</button></div></div>}{message && <p className="form-message">{message}</p>}</div><div className="panel info-panel"><span className="section-kicker">POLICY</span><h3>身份边界</h3><div className="policy-item"><span>⌁</span><div><strong>独立 Agent 身份</strong><p>同一 host_id 下的 command、desktop、browser 不共享 Token。</p></div></div><div className="policy-item"><span>◈</span><div><strong>一次性注册</strong><p>注册成功立即失效，日常通信换用独立 Agent Token。</p></div></div></div></section></>
+  const selectedRelease = releases?.items.find((release) => release.version === version)
+  const releaseTag = selectedRelease?.tag || `java-${version}`
+  const psCommand = issued && version.trim() && name.trim()
+    ? `$p=Join-Path $env:TEMP 'rcm-first-install.ps1'; Invoke-WebRequest -UseBasicParsing -Uri ${psLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-java-agent.ps1`)} -OutFile $p; & $p -CenterUrl ${psLiteral(centerUrl.trim())} -AgentName ${psLiteral(name.trim())} -Version ${psLiteral(version.trim())} -ReleaseTag ${psLiteral(releaseTag)} -EnrollmentToken ${psLiteral(issued.token)} -Mode ${psLiteral(mode)}`
+    : ''
+  const shCommand = issued && version.trim() && name.trim()
+    ? `$p=/tmp/rcm-first-install-java-agent.sh; curl -fsSL ${shLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-java-agent.sh`)} -o "$p"; chmod 700 "$p"; sudo "$p" --center-url ${shLiteral(centerUrl.trim())} --agent-name ${shLiteral(name.trim())} --version ${shLiteral(version.trim())} --release-tag ${shLiteral(releaseTag)} --enrollment-token ${shLiteral(issued.token)} --mode ${shLiteral(mode)}`
+    : ''
+  const copyCommand = async (value: string, label: string) => {
+    if (value) await navigator.clipboard.writeText(value)
+    setMessage(`${label}已复制；一次性令牌不会再次显示，请立即执行。`)
+  }
+  return <>
+    <PageIntro kicker="SECURITY" title="注册令牌" action="生成一次性令牌" />
+    <section className="split-grid">
+      <div className="panel form-panel">
+        <span className="section-kicker">ONE-TIME ENROLLMENT</span>
+        <h3>为新 Agent 生成令牌</h3>
+        <p>令牌与目标 Agent 名称绑定，注册成功一次后立即失效。生成后可直接复制适配 Windows/Linux 的首次安装命令。</p>
+        <label>Center URL<input value={centerUrl} onChange={(event) => setCenterUrl(event.target.value)} placeholder="https://remote-connect-mcp-center.example.invalid" /></label>
+        <label>Agent 名称<input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 desktop-lab-02" /></label>
+        <label>有效期<select value={lifetime} onChange={(event) => setLifetime(event.target.value)}><option value="3600">1 小时</option><option value="21600">6 小时</option><option value="86400">1 天</option><option value="604800">7 天</option><option value="2592000">30 天</option></select></label>
+        <label>目标 Release<select value={version} onChange={(event) => setVersion(event.target.value)} disabled={!releases?.items.length}><option value="">{releases?.items.length ? '请选择版本' : '等待版本目录'}</option>{releases?.items.map((release) => <option key={release.version} value={release.version}>{release.version}{release.prerelease ? ' · 预发布' : ''}</option>)}</select></label>
+        <label>安装能力<select value={mode} onChange={(event) => setMode(event.target.value as 'command' | 'full')}><option value="command">Command + 文件传输（轻量）</option><option value="full">Command + Desktop + Browser（完整）</option></select></label>
+        <button className="primary full" onClick={() => void generate()} disabled={!adminToken || !name.trim()}>生成令牌</button>
+        {issued && <div className="issued-token"><code>{issued.token}</code><div><button className="secondary" onClick={() => void copy()}>复制令牌</button><button className="secondary" onClick={download}>下载 env</button></div></div>}
+        {message && <p className="form-message">{message}</p>}
+      </div>
+      <div className="panel info-panel">
+        <span className="section-kicker">POLICY</span><h3>身份边界</h3>
+        <div className="policy-item"><span>⌁</span><div><strong>独立 Agent 身份</strong><p>同一 host_id 下的 command、desktop、browser 不共享 Token。</p></div></div>
+        <div className="policy-item"><span>◈</span><div><strong>一次性注册</strong><p>注册成功立即失效，日常通信换用独立 Agent Token。</p></div></div>
+        <div className="policy-item"><span>⇩</span><div><strong>单命令安装</strong><p>入口会自动校验 Native ZIP 和 SHA-256；Windows 自动识别 PowerShell 7/MSIX 并按需提权。</p></div></div>
+      </div>
+    </section>
+    {issued && <section className="panel install-command-panel">
+      <div className="section-kicker">FIRST INSTALL COMMAND</div><h3>在目标终端执行</h3>
+      <p>命令只在当前页面显示完整一次性令牌。Windows 不需要预装 Agent；完整模式的 Browser 需要目标机已有 Node.js/npm。</p>
+      {psCommand && <div className="install-command"><div><strong>Windows PowerShell</strong><button className="secondary" onClick={() => void copyCommand(psCommand, 'PowerShell 命令')}>复制命令</button></div><code>{psCommand}</code></div>}
+      {shCommand && <div className="install-command"><div><strong>Linux Bash</strong><button className="secondary" onClick={() => void copyCommand(shCommand, 'Bash 命令')}>复制命令</button></div><code>{shCommand}</code></div>}
+    </section>}
+  </>
 }
 function Upgrades({ token, rows, releases, machines, onRefresh, onRefreshReleases, query }: { token: string; rows: UpgradeCampaign[] | null; releases: ReleaseCatalog | null; machines: Machine[]; onRefresh: () => void; onRefreshReleases: () => void; query: string }) {
   const [version, setVersion] = useState('')

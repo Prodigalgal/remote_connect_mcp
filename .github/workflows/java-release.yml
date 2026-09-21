@@ -242,8 +242,8 @@ jobs:
           cp "${agent}" "out/${TARGET_ARCH}/rcm-agent"
           cp "${desktop}" "out/${TARGET_ARCH}/rcm-desktop-companion"
           cp "${browser}" "out/${TARGET_ARCH}/rcm-browser-agent"
-          cp scripts/install-java-agent.sh deploy/systemd/remote-connect-mcp-agent.service deploy/systemd/agent.env.example README.md LICENSE NOTICE "out/${TARGET_ARCH}/"
-          chmod +x "out/${TARGET_ARCH}/rcm-center" "out/${TARGET_ARCH}/rcm-agent" "${center_bundle}/rcm-center" "${agent_bundle}/rcm-agent" "out/${TARGET_ARCH}/install-java-agent.sh"
+          cp scripts/install-java-agent.sh scripts/first-install-java-agent.sh deploy/systemd/remote-connect-mcp-agent.service deploy/systemd/agent.env.example README.md LICENSE NOTICE "out/${TARGET_ARCH}/"
+          chmod +x "out/${TARGET_ARCH}/rcm-center" "out/${TARGET_ARCH}/rcm-agent" "${center_bundle}/rcm-center" "${agent_bundle}/rcm-agent" "out/${TARGET_ARCH}/install-java-agent.sh" "out/${TARGET_ARCH}/first-install-java-agent.sh"
           chmod +x "out/${TARGET_ARCH}/rcm-desktop-companion" "${desktop_bundle}/rcm-desktop-companion"
           chmod +x "out/${TARGET_ARCH}/rcm-browser-agent" "${browser_bundle}/rcm-browser-agent"
           (cd "${center_bundle}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS)
@@ -393,7 +393,7 @@ jobs:
            Get-ChildItem java/agent/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $agentOut
            Get-ChildItem java/desktop/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $desktopOut
            Get-ChildItem java/browser/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $browserOut
-           Copy-Item scripts/install-java-agent.ps1, README.md, LICENSE, NOTICE $out
+           Copy-Item scripts/install-java-agent.ps1, scripts/first-install-java-agent.ps1, README.md, LICENSE, NOTICE $out
            foreach ($bundle in @($centerOut, $agentOut, $desktopOut, $browserOut)) {
              Get-FileHash (Get-ChildItem $bundle -File | Where-Object { $_.Extension -in '.exe','.dll' }) -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content (Join-Path $bundle 'SHA256SUMS') -Encoding ascii
            }

@@ -77,6 +77,7 @@ try {
     $desktop = Join-Path (Get-Location) "desktop\build\native\nativeCompile\rcm-desktop-companion$suffix"
     $browser = Join-Path (Get-Location) "browser\build\native\nativeCompile\rcm-browser-agent$suffix"
     if ($os -eq 'windows') {
+        Copy-Item -LiteralPath (Join-Path $root 'scripts\first-install-java-agent.ps1') -Destination $out -Force
         $bundles = @(
             @{ Name = 'center'; Binary = $center }
             @{ Name = 'agent'; Binary = $agent }
