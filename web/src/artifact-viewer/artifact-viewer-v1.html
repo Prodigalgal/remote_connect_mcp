@@ -26,7 +26,8 @@
     let latestResult=null;
     const host=()=>window.openai||{};
     const output=()=>host().toolOutput||null;
-    const pick=()=>{const result=latestResult||{};const o=result.structuredContent||result.structured_content||output()||result||{};return o.file||o.artifact||o;};
+    const pick=()=>{const result=latestResult||{};const o=result.structuredContent||result.structured_content||output()||result||{};return o.file||o.artifact||o.transfer||o;};
+    const inferredMime=(value,name)=>{const raw=String(value||'').toLowerCase();if(raw&&raw!=='application/octet-stream')return raw;const n=String(name||'').toLowerCase();if(/\.png$/.test(n))return 'image/png';if(/\.(jpe?g)$/.test(n))return 'image/jpeg';if(/\.webp$/.test(n))return 'image/webp';if(/\.gif$/.test(n))return 'image/gif';if(/\.svg$/.test(n))return 'image/svg+xml';return raw||'application/octet-stream';};
     const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const hostFileUrl=async(file)=>{
       const fileId=file&&file.file_id;
@@ -73,7 +74,7 @@
       const generation=++renderGeneration;
       const f=pick(),directPreview=f.preview_url||f.download_url||f.url||'',directDownload=f.download_url||f.url||directPreview;
       const url=directPreview||await hostFileUrl(f),downloadUrl=directDownload||url;
-      const name=f.file_name||f.name||'artifact',mime=(f.mime_type||f.mime||'application/octet-stream').toLowerCase();
+      const name=f.file_name||f.name||'artifact',mime=inferredMime(f.mime_type||f.mime,name);
       if(generation!==renderGeneration)return;
       document.querySelector('#name').textContent=name;
       document.querySelector('#meta').textContent=[mime,f.bytes?Number(f.bytes).toLocaleString()+' bytes':'',f.sha256?'sha256 '+f.sha256:'',f.artifact_id?'artifact '+f.artifact_id:''].filter(Boolean).join(' · ');

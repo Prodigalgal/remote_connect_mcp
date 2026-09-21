@@ -127,11 +127,11 @@ public class McpConfiguration {
     private static final int MAX_OUTPUT_PAGE = 64 * 1024;
     private static final int MAX_INLINE_WORKTREE_SUMMARIES = 10;
     private static final int MAX_MCP_JSON_CHARS = 192 * 1024;
-    // Keep screenshots useful in the ChatGPT conversation without allowing a
-    // single desktop/browser result to consume the whole MCP context window.
-    // Larger artifacts remain available through the authenticated Console
-    // artifact endpoint using the returned SHA-256 metadata.
-    private static final int MAX_INLINE_IMAGE_BYTES = 512 * 1024;
+    // Keep ordinary screenshots/camera images useful in the ChatGPT
+    // conversation without allowing a single result to consume the whole MCP
+    // context window.  Larger files remain object-store backed handles.
+    private static final int MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+    private static final int DEFAULT_INLINE_ARTIFACT_WAIT_MS = 15000;
 
     @Bean
     public HttpServletStreamableServerTransportProvider mcpTransport(CenterTokenConfig tokens,
@@ -310,7 +310,7 @@ public class McpConfiguration {
                         artifactModelSchema(), artifactMeta,
                         (exchange, request) -> { requireScope(exchange,
                                 "read".equalsIgnoreCase(asString(modelArguments(request).get("operation"))) ? "mcp:read" : "mcp:execute");
-                            return artifactModel(agents, projects, access, transfers, origin(exchange, conversations), request); }, scheduler),
+                            return artifactModel(agents, tasks, projects, access, transfers, origin(exchange, conversations), request); }, scheduler),
                 tool("task_read", "Read one durable task state and one bounded output page; optionally wait briefly for a change.",
                         taskReadModelSchema(),
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, origin(exchange, conversations), request); }, scheduler),
@@ -754,7 +754,7 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult artifactModel(AgentRegistry agents, ProjectService projects,
+    private static McpSchema.CallToolResult artifactModel(AgentRegistry agents, TaskService tasks, ProjectService projects,
                                                           McpAccessService access, ArtifactTransferService transfers,
                                                           TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
@@ -782,7 +782,7 @@ public class McpConfiguration {
             normalized.put("source_path", requiredModelString(arguments, "source_path"));
             for (var key : List.of("file_name", "mime_type")) copyIfPresent(arguments, normalized, key);
             addScopeFields(arguments, normalized);
-            return artifactGetCore(agents, projects, access, transfers, origin, modelRequest("artifact", normalized));
+            return artifactGetCore(agents, tasks, projects, access, transfers, origin, modelRequest("artifact", normalized));
         } catch (Exception exception) {
             return error(exception);
         }
@@ -933,8 +933,8 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult artifactGetCore(AgentRegistry agents, ProjectService projects,
-                                                        McpAccessService access, ArtifactTransferService transfers,
+    private static McpSchema.CallToolResult artifactGetCore(AgentRegistry agents, TaskService tasks, ProjectService projects,
+                                                         McpAccessService access, ArtifactTransferService transfers,
                                                         TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, ArtifactGetCoreArgs.class);
@@ -946,11 +946,21 @@ public class McpConfiguration {
                     scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(), args.sessionId(), args.risk(),
                     Boolean.TRUE.equals(args.elevationRequired()), origin);
             var result = transfers.createAgentToWeb(origin, create, args.sourcePath(), args.fileName(), args.mimeType());
+            var finalTask = tasks.waitForTerminal(origin, result.task().id(), Duration.ofMillis(DEFAULT_INLINE_ARTIFACT_WAIT_MS));
+            var finalTransfer = transfers.findByTransfer(result.transfer().transferId(), origin).orElse(result.transfer());
+            var inline = transfers.readInline(finalTransfer.artifactId(), origin, MAX_INLINE_IMAGE_BYTES);
+            if (TaskStatus.COMPLETED.equals(finalTask.status()) && inline.isPresent()) {
+                return artifactImageResult(finalTask, finalTransfer, inline.get(), transfers, origin);
+            }
             var payload = new LinkedHashMap<String, Object>();
-            payload.put("task", taskMap(result.task()));
-            payload.put("transfer", transferMap(result.transfer()));
-            payload.put("next_action", nextAction("task_read", "wait", result.task().id(), 0L,
-                    result.task().changeSequence(), 20000, "wait_for_transfer"));
+            payload.put("task", taskMap(finalTask));
+            payload.put("transfer", transferMap(finalTransfer));
+            if ("delivered".equalsIgnoreCase(finalTransfer.status()) && finalTransfer.downloadUrl() != null
+                    && !finalTransfer.downloadUrl().isBlank()) {
+                payload.put("file", artifactFileMap(finalTransfer, transfers, origin));
+            }
+            payload.put("next_action", nextAction("task_read", "wait", finalTask.id(), 0L,
+                    finalTask.changeSequence(), 20000, "wait_for_transfer"));
             return structuredJson(payload);
         } catch (Exception exception) {
             return error(exception);
@@ -985,10 +995,76 @@ public class McpConfiguration {
                 file.put("sha256", descriptor.sha256());
                 payload.put("file", file);
             }
+            var inline = transfers.readInline(descriptor.artifactId(), origin, MAX_INLINE_IMAGE_BYTES);
+            if (inline.isPresent()) {
+                return artifactImageResult(null, descriptor, inline.get(), transfers, origin, payload);
+            }
             return structuredJson(payload);
         } catch (Exception exception) {
             return error(exception);
         }
+    }
+
+    private static McpSchema.CallToolResult artifactImageResult(TaskView task,
+                                                                 ArtifactTransferService.TransferDescriptor descriptor,
+                                                                 ArtifactTransferService.InlineArtifact inline,
+                                                                 ArtifactTransferService transfers,
+                                                                 TaskOrigin origin) {
+        var payload = new LinkedHashMap<String, Object>();
+        if (task != null) payload.put("task", taskMap(task));
+        payload.put("transfer", transferMap(descriptor));
+        payload.put("file", artifactFileMap(descriptor, transfers, origin));
+        var artifact = new LinkedHashMap<String, Object>();
+        artifact.put("artifact_id", inline.artifactId());
+        artifact.put("mime_type", inline.mimeType());
+        artifact.put("bytes", inline.data().length);
+        artifact.put("sha256", inline.sha256());
+        artifact.put("inline", true);
+        payload.put("artifact", artifact);
+        return McpSchema.CallToolResult.builder()
+                .structuredContent(payload)
+                .addTextContent(jsonText(payload))
+                .addContent(McpSchema.ImageContent.builder(
+                        java.util.Base64.getEncoder().encodeToString(inline.data()), inline.mimeType()).build())
+                .build();
+    }
+
+    private static McpSchema.CallToolResult artifactImageResult(TaskView task,
+                                                                 ArtifactTransferService.TransferDescriptor descriptor,
+                                                                 ArtifactTransferService.InlineArtifact inline,
+                                                                 ArtifactTransferService transfers,
+                                                                 TaskOrigin origin,
+                                                                 Map<String, Object> payload) {
+        var resultPayload = new LinkedHashMap<>(payload);
+        resultPayload.put("file", artifactFileMap(descriptor, transfers, origin));
+        var artifact = new LinkedHashMap<String, Object>();
+        artifact.put("artifact_id", inline.artifactId());
+        artifact.put("mime_type", inline.mimeType());
+        artifact.put("bytes", inline.data().length);
+        artifact.put("sha256", inline.sha256());
+        artifact.put("inline", true);
+        resultPayload.put("artifact", artifact);
+        if (task != null) resultPayload.put("task", taskMap(task));
+        return McpSchema.CallToolResult.builder()
+                .structuredContent(resultPayload)
+                .addTextContent(jsonText(resultPayload))
+                .addContent(McpSchema.ImageContent.builder(
+                        java.util.Base64.getEncoder().encodeToString(inline.data()), inline.mimeType()).build())
+                .build();
+    }
+
+    private static Map<String, Object> artifactFileMap(ArtifactTransferService.TransferDescriptor descriptor,
+                                                        ArtifactTransferService transfers, TaskOrigin origin) {
+        var file = new LinkedHashMap<String, Object>();
+        file.put("file_id", descriptor.artifactId());
+        file.put("download_url", descriptor.downloadUrl());
+        file.put("preview_url", transfers.publicUrl(descriptor.artifactId(), origin,
+                transfers.sessionForTask(descriptor.taskId()), "preview"));
+        file.put("file_name", descriptor.fileName());
+        file.put("mime_type", descriptor.mimeType());
+        file.put("bytes", descriptor.bytes());
+        file.put("sha256", descriptor.sha256());
+        return file;
     }
 
     private static Map<String, Object> transferMap(ArtifactTransferService.TransferDescriptor value) {

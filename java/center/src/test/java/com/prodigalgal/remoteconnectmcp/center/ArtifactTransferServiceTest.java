@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
@@ -23,6 +24,39 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class ArtifactTransferServiceTest {
+    @Test
+    void readsSmallImageInlineForMcpRendering(@TempDir Path root) throws Exception {
+        var registry = AgentRegistry.forTest("enrollment");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-image", "host-image", "linux", "amd64",
+                "dev", root.toString(), ScopeMode.UNRESTRICTED, null, List.of("command", "file_transfer")), "enrollment");
+        var tasks = new TaskService(registry);
+        var store = new FileSystemArtifactStore(root.resolve("objects"));
+        var tokens = new CenterTokenConfig() {
+            @Override
+            public String artifactDownloadSecret() {
+                return "image-artifact-signing-secret";
+            }
+        };
+        var service = new ArtifactTransferService(null, null, store, tasks, tokens);
+        var origin = new TaskOrigin("principal-image", "token-image", "connection-image");
+        var request = new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "ignored", root.toString(), Map.of(), 0, null, Instant.now()),
+                "image-transfer", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
+        var image = new byte[]{(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a};
+        var sha = sha256(image);
+        var created = service.createAgentToWeb(origin, request, root.resolve("camera.jpg").toString(), "camera.jpg", "image/jpeg");
+        var leased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        assertNotNull(leased);
+        service.receiveFromAgent(registration.machineId(), created.transfer().transferId(), new ByteArrayInputStream(image),
+                image.length, sha, "camera.jpg", "image/jpeg", leased.attempt());
+
+        var inline = service.readInline(created.transfer().artifactId(), origin, 512 * 1024).orElseThrow();
+        assertEquals("image/jpeg", inline.mimeType());
+        assertEquals(sha, inline.sha256());
+        assertArrayEquals(image, inline.data());
+        assertTrue(service.readInline(created.transfer().artifactId(), origin, 1).isEmpty());
+    }
+
     @Test
     void streamsAgentFileToAnOwnerBoundSignedArtifact(@TempDir Path root) throws Exception {
         var registry = AgentRegistry.forTest("enrollment");

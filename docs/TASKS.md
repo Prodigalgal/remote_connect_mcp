@@ -142,7 +142,7 @@
 | [x] | P2-AT-09 | Preview Handler 插件化 | Viewer 与 `web/src/artifact-viewer/previewHandlers.ts` 均采用 MIME → handler 注册表，未知类型安全降级下载 |
 | [x] | P2-AT-10 | 文件传输压缩与内容去重 | 可选 SHA-256 content-addressed wrapper 和磁盘 gzip wrapper 已加入，默认关闭 |
 | [x] | P2-AT-11 | Artifact 生命周期策略升级 | 已支持按方向/MIME/大小的有界保留期，以及 `ephemeral`/`task-bound`/`pinned` 管理字段和 Console 固定操作 |
-| [x] | P0-AT-26 | OpenAI 文件生态桥接契约 | `artifact` 发布标准 MCP Apps `ui.resourceUri` 与 `openai/fileParams`；只消费 ChatGPT 提供的 `download_url`，不读取 `/mnt/data` 或持久化临时 URL；Viewer 支持 `getFileDownloadUrl` 续取和 `uploadFile`/Library 回写；真实 Web 双向附件仍属于 P1-TM-17 验收 |
+| [x] | P0-AT-26 | OpenAI 文件生态桥接契约 | `artifact` 发布标准 MCP Apps `ui.resourceUri` 与 `openai/fileParams`；只消费 ChatGPT 提供的 `download_url`，不读取 `/mnt/data` 或持久化临时 URL；Viewer 支持 `getFileDownloadUrl` 续取和 `uploadFile`/Library 回写；≤5 MiB 图片在 Agent→Center 传输完成后 bounded fast path 直接返回 MCP `image` content，小型非图片文件返回 `file`/签名 URL，大文件仍只返回句柄；真实 Web 双向附件仍属于 P1-TM-17 验收 |
 
 ### P0/P1：Long Running Tasks v2（按实际缺口取舍）
 

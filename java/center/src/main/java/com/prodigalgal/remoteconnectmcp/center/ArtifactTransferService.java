@@ -209,7 +209,7 @@ public final class ArtifactTransferService {
         validatePath(destinationPath, "destinationPath");
         var safeName = fileNameOrLeaf(fileName, destinationPath);
         validateFileName(safeName);
-        var safeMime = normalizeMime(mimeType);
+        var safeMime = normalizeMime(mimeType, safeName);
         var ids = ids(origin, request.machineId(), request.idempotencyKey(), fileId, destinationPath);
         var existing = existingCreated(ids.transferId(), origin);
         if (existing != null) return existing;
@@ -381,7 +381,7 @@ public final class ArtifactTransferService {
         validatePath(sourcePath, "sourcePath");
         var safeName = fileNameOrLeaf(fileName, sourcePath);
         validateFileName(safeName);
-        var safeMime = normalizeMime(mimeType);
+        var safeMime = normalizeMime(mimeType, safeName);
         var ids = ids(origin, request.machineId(), request.idempotencyKey(), "", sourcePath);
         var existing = existingCreated(ids.transferId(), origin);
         if (existing != null) return existing;
@@ -815,6 +815,40 @@ public final class ArtifactTransferService {
         return Optional.of(new TransferDescriptor(row.transferId(), row.artifactId(), row.direction(), row.taskId(), row.principalId(),
                 row.machineId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), row.status(), row.error(),
                 downloadUrl(row.artifactId(), row.status(), taskSession(row.taskId()), origin), progressBytes(row)));
+    }
+
+    /**
+     * Read a small, already-delivered image for a direct MCP image content
+     * result.  File transfers remain object-store backed and large files never
+     * enter the MCP response; this bounded fast path only restores the natural
+     * Go-era behaviour for screenshots and camera-sized images.
+     */
+    public Optional<InlineArtifact> readInline(String artifactId, TaskOrigin origin, long maxBytes) {
+        if (artifactId == null || artifactId.isBlank() || origin == null || maxBytes < 1) return Optional.empty();
+        var descriptor = findByArtifact(artifactId, origin).orElse(null);
+        if (descriptor == null || descriptor.bytes() <= 0 || descriptor.bytes() > maxBytes
+                || descriptor.mimeType() == null || !descriptor.mimeType().toLowerCase(java.util.Locale.ROOT).startsWith("image/")) {
+            return Optional.empty();
+        }
+        var objectKey = jdbc == null
+                ? memory.values().stream()
+                .filter(value -> artifactId.trim().equals(value.descriptor().artifactId())
+                        && origin.principalId().equals(value.descriptor().principalId())
+                        && Set.of("ready", "delivered").contains(value.descriptor().status()))
+                .map(MemoryTransfer::objectKey).filter(value -> value != null && !value.isBlank()).findFirst().orElse("")
+                : jdbc.query("SELECT a.object_key FROM rcm_artifact a WHERE a.artifact_id = ? AND a.principal_id = ? AND a.status IN ('ready', 'delivered')",
+                ps -> { ps.setString(1, artifactId.trim()); ps.setString(2, origin.principalId()); },
+                rs -> rs.next() ? rs.getString(1) : "");
+        if (objectKey == null || objectKey.isBlank()) return Optional.empty();
+        var data = store.read(objectKey);
+        if (data.length != descriptor.bytes() || data.length > maxBytes) {
+            throw new ArtifactStore.StorageException("inline artifact metadata does not match stored bytes");
+        }
+        var digest = sha256(data);
+        if (!digest.equalsIgnoreCase(descriptor.sha256())) {
+            throw new ArtifactStore.StorageException("inline artifact SHA-256 does not match stored bytes");
+        }
+        return Optional.of(new InlineArtifact(descriptor.artifactId(), descriptor.fileName(), descriptor.mimeType(), digest, data));
     }
 
     /**
@@ -1945,6 +1979,25 @@ public final class ArtifactTransferService {
         return result;
     }
 
+    private static String normalizeMime(String value, String fileName) {
+        var candidate = value;
+        if (candidate == null || candidate.isBlank()) candidate = inferredMime(fileName);
+        return normalizeMime(candidate);
+    }
+
+    private static String inferredMime(String fileName) {
+        var name = fileName == null ? "" : fileName.trim().toLowerCase(java.util.Locale.ROOT);
+        if (name.endsWith(".png")) return "image/png";
+        if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+        if (name.endsWith(".webp")) return "image/webp";
+        if (name.endsWith(".gif")) return "image/gif";
+        if (name.endsWith(".svg")) return "image/svg+xml";
+        if (name.endsWith(".pdf")) return "application/pdf";
+        if (name.endsWith(".json")) return "application/json";
+        if (name.endsWith(".txt") || name.endsWith(".log")) return "text/plain";
+        return "application/octet-stream";
+    }
+
     private Ids ids(TaskOrigin origin, String machineId, String idempotency, String fileId, String path) {
         var seed = origin.principalId() + "\n" + machineId + "\n" + (idempotency == null ? "" : idempotency) + "\n" + fileId + "\n" + path;
         var digest = sha256(seed).substring(0, 48);
@@ -1953,6 +2006,11 @@ public final class ArtifactTransferService {
 
     private static String sha256(String value) {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8))); }
+        catch (java.security.NoSuchAlgorithmException exception) { throw new IllegalStateException("SHA-256 is unavailable", exception); }
+    }
+
+    private static String sha256(byte[] value) {
+        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value)); }
         catch (java.security.NoSuchAlgorithmException exception) { throw new IllegalStateException("SHA-256 is unavailable", exception); }
     }
 
@@ -2146,6 +2204,7 @@ public final class ArtifactTransferService {
             return "delivered".equalsIgnoreCase(status) ? Math.max(0L, bytes) : 0L;
         }
     }
+    public record InlineArtifact(String artifactId, String fileName, String mimeType, String sha256, byte[] data) { }
     public record AgentDownload(String transferId, String fileName, String mimeType, long bytes, String sha256, InputStream body,
                                 long offset, long totalBytes) { }
     public record TransferResume(String transferId, long offset, long expectedBytes, String expectedSha256, String status) { }
