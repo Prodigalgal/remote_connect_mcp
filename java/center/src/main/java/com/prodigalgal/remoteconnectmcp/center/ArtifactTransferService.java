@@ -2114,7 +2114,16 @@ public final class ArtifactTransferService {
             throw new SecurityException("invalid or expired artifact URL");
         }
         try {
-            var combined = Base64.getUrlDecoder().decode(token.trim());
+            var normalized = token.trim();
+            var combined = Base64.getUrlDecoder().decode(normalized);
+            // Reject alternate Base64URL spellings whose unused tail bits
+            // decode to the same bytes.  Without canonical encoding, a token
+            // with its final character changed can be accepted on one JDK but
+            // rejected on another, weakening tamper detection and making the
+            // signed URL contract platform-dependent.
+            if (!Base64.getUrlEncoder().withoutPadding().encodeToString(combined).equals(normalized)) {
+                throw new SecurityException("invalid or expired artifact URL");
+            }
             if (combined.length < 12 + 16) throw new SecurityException("invalid or expired artifact URL");
             var nonce = Arrays.copyOfRange(combined, 0, 12);
             var encrypted = Arrays.copyOfRange(combined, 12, combined.length);
