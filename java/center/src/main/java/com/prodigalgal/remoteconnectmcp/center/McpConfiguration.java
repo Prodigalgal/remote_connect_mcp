@@ -353,7 +353,7 @@ public class McpConfiguration {
         // the declaration here is the wire-compatible option without forking
         // the SDK.  The Center still validates the token and scopes on every
         // request; this metadata is never an authorization decision.
-        if (oauth != null && oauth.isEnabledAndConfigured()) {
+        if (oauth != null && oauth.isConfigured()) {
             toolMeta.put("securitySchemes", List.of(Map.of("type", "oauth2",
                     "scopes", oauthScopesForTool(name))));
         }
