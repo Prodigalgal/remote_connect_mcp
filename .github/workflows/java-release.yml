@@ -617,23 +617,28 @@ jobs:
           chmod 600 "${HOME}/.ssh/id_ed25519"
           ssh-keyscan -t ed25519 github.com >> "${HOME}/.ssh/known_hosts"
           chmod 644 "${HOME}/.ssh/known_hosts"
-      - name: Login to GHCR for immutable digest lookup
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Set up Buildx for manifest inspection
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - name: Resolve published image digests
         id: images
         shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          center="ghcr.io/prodigalgal/remote-connect-mcp-center-java:${RELEASE_VERSION}"
-          console="ghcr.io/prodigalgal/remote-connect-mcp-console:${RELEASE_VERSION}"
-          center_digest="$(docker buildx imagetools inspect "${center}" | awk '/^Digest:/ {print $2; exit}')"
-          console_digest="$(docker buildx imagetools inspect "${console}" | awk '/^Digest:/ {print $2; exit}')"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          resolve_digest() {
+            local package="$1"
+            local token
+            token="$(curl --fail --silent --show-error --user "${GHCR_USER}:${GHCR_TOKEN}" \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:${owner}/${package}:pull" | jq --raw-output --exit-status '.token')"
+            curl --fail --silent --show-error --head \
+              --header "Authorization: Bearer ${token}" \
+              --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/${owner}/${package}/manifests/${RELEASE_VERSION}" \
+              | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" { print $2; exit }'
+          }
+          center_digest="$(resolve_digest remote-connect-mcp-center-java)"
+          console_digest="$(resolve_digest remote-connect-mcp-console)"
           [[ "${center_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "${console_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
           printf 'center=%s\nconsole=%s\n' "${center_digest}" "${console_digest}" >> "${GITHUB_OUTPUT}"

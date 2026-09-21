@@ -131,7 +131,9 @@ public class McpConfiguration {
     // conversation without allowing a single result to consume the whole MCP
     // context window.  Larger files remain object-store backed handles.
     private static final int MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+    private static final int MAX_INLINE_CONTENT_BYTES = 5 * 1024 * 1024;
     private static final int DEFAULT_INLINE_ARTIFACT_WAIT_MS = 15000;
+    private static final int DEFAULT_EXPLICIT_INLINE_WAIT_MS = 20000;
     private static final int ARTIFACT_URL_WAIT_MS = 30000;
 
     @Bean
@@ -197,7 +199,7 @@ public class McpConfiguration {
                                     @Value("${rcm.version:dev}") String version) {
         var server = McpServer.async(transport)
                 .serverInfo("remote-connect-mcp-center", version)
-                .instructions("Use machines first to choose a machine by stable id, then command, desktop, browser, project or artifact as needed. Tools are asynchronous: once a task_id is returned, do not resubmit the operation; use task_read with the same task_id and change_seq, and reuse the same idempotency_key only when a transport retry is necessary. Keep MCP results compact; detailed logs, screenshots and documents are artifact references fetched on demand. Use an explicit scope object for project/worktree/path/workspace; unrestricted access must be explicit. The Center enforces principal, session, scope, lane and quota contracts regardless of model hints.")
+                .instructions("Use machines first to choose a machine by stable id, then command, desktop, browser, project or artifact as needed. Tools are asynchronous: once a task_id is returned, do not resubmit the operation; use task_read with the same task_id and change_seq, and reuse the same idempotency_key only when a transport retry is necessary. Keep MCP results compact; detailed logs, screenshots and documents are artifact references fetched on demand. For artifact get, use delivery_mode=inline only when the user explicitly asks to see the content immediately; use delivery_mode=async for long or unattended transfers; auto is the default. Inline is bounded and returns native MCP Content when ready, while async returns a file handle that the Viewer can render after delivery. Use an explicit scope object for project/worktree/path/workspace; unrestricted access must be explicit. The Center enforces principal, session, scope, lane and quota contracts regardless of model hints.")
                 .strictToolNameValidation(true)
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
@@ -553,6 +555,8 @@ public class McpConfiguration {
     private static Map<String, Object> artifactModelSchema() {
         return modelSchema(Map.ofEntries(
                 Map.entry("operation", modelEnum("artifact operation", List.of("put", "get", "read"))),
+                Map.entry("delivery_mode", modelEnum("artifact delivery: auto chooses the compact path, inline waits for native MCP Content when explicitly requested, async returns a durable file handle immediately", List.of("auto", "inline", "async"))),
+                Map.entry("wait_ms", modelInteger("bounded wait for inline delivery; ignored for async", 0, 60000)),
                 Map.entry("machine_id", modelString("target/source machine identifier", 1, 180)),
                 Map.entry("file", modelFileObjectSchema()),
                 Map.entry("artifact_id", modelString("artifact identifier", 1, 180)),
@@ -765,6 +769,8 @@ public class McpConfiguration {
                 var normalized = new LinkedHashMap<String, Object>();
                 copyIfPresent(arguments, normalized, "artifact_id");
                 copyIfPresent(arguments, normalized, "transfer_id");
+                copyIfPresent(arguments, normalized, "delivery_mode");
+                copyIfPresent(arguments, normalized, "wait_ms");
                 return artifactReadCore(transfers, origin, modelRequest("artifact", normalized));
             }
             var normalized = new LinkedHashMap<String, Object>();
@@ -781,7 +787,7 @@ public class McpConfiguration {
             }
             if (!"get".equals(operation)) throw new IllegalArgumentException("operation must be put, get, or read");
             normalized.put("source_path", requiredModelString(arguments, "source_path"));
-            for (var key : List.of("file_name", "mime_type")) copyIfPresent(arguments, normalized, key);
+            for (var key : List.of("file_name", "mime_type", "delivery_mode", "wait_ms")) copyIfPresent(arguments, normalized, key);
             addScopeFields(arguments, normalized);
             return artifactGetCore(agents, tasks, projects, access, transfers, origin, modelRequest("artifact", normalized));
         } catch (Exception exception) {
@@ -947,15 +953,23 @@ public class McpConfiguration {
                     scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(), args.sessionId(), args.risk(),
                     Boolean.TRUE.equals(args.elevationRequired()), origin);
             var result = transfers.createAgentToWeb(origin, create, args.sourcePath(), args.fileName(), args.mimeType());
-            var finalTask = tasks.waitForTerminal(origin, result.task().id(), Duration.ofMillis(DEFAULT_INLINE_ARTIFACT_WAIT_MS));
+            var deliveryMode = normalizeDeliveryMode(args.deliveryMode());
+            var waitMs = artifactWaitMs(deliveryMode, args.waitMs());
+            var finalTask = waitMs == 0
+                    ? result.task()
+                    : tasks.waitForTerminal(origin, result.task().id(), Duration.ofMillis(waitMs));
             var finalTransfer = transfers.findByTransfer(result.transfer().transferId(), origin).orElse(result.transfer());
-            var inline = transfers.readInline(finalTransfer.artifactId(), origin, MAX_INLINE_IMAGE_BYTES);
-            if (TaskStatus.COMPLETED.equals(finalTask.status()) && inline.isPresent()) {
-                return artifactImageResult(finalTask, finalTransfer, inline.get(), transfers, origin);
+            var inline = "async".equals(deliveryMode)
+                    ? java.util.Optional.<ArtifactTransferService.InlineArtifact>empty()
+                    : transfers.readInlineContent(finalTransfer.artifactId(), origin, MAX_INLINE_CONTENT_BYTES);
+            if (TaskStatus.COMPLETED.equals(finalTask.status()) && inline.isPresent()
+                    && ("inline".equals(deliveryMode) || isInlineImage(inline.get().mimeType(), inline.get().data().length))) {
+                return artifactInlineContentResult(finalTask, finalTransfer, inline.get(), transfers, origin);
             }
             var payload = new LinkedHashMap<String, Object>();
             payload.put("task", taskMap(finalTask));
             payload.put("transfer", transferMap(finalTransfer));
+            payload.put("delivery_mode", deliveryMode);
             if (!Set.of("failed", "canceled").contains(finalTransfer.status())) {
                 payload.put("file", artifactFileMap(finalTransfer, transfers, origin));
             }
@@ -971,6 +985,7 @@ public class McpConfiguration {
                                                          McpSchema.CallToolRequest request) {
         try {
             var args = args(request, ArtifactReadCoreArgs.class);
+            var deliveryMode = normalizeDeliveryMode(args.deliveryMode());
             var descriptor = args.artifactId() == null || args.artifactId().isBlank()
                     ? transfers.findByTransfer(args.transferId(), origin).orElseThrow(() -> new IllegalArgumentException("artifact or transfer id is required"))
                     : transfers.findByArtifact(args.artifactId(), origin).orElseThrow(() -> new IllegalArgumentException("artifact not found"));
@@ -982,6 +997,7 @@ public class McpConfiguration {
             payload.put("sha256", descriptor.sha256());
             payload.put("mime_type", descriptor.mimeType());
             payload.put("file_name", descriptor.fileName());
+            payload.put("delivery_mode", deliveryMode);
             if (descriptor.downloadUrl() != null && !descriptor.downloadUrl().isBlank()) {
                 var file = new LinkedHashMap<String, Object>();
                 file.put("file_id", descriptor.artifactId());
@@ -995,9 +1011,12 @@ public class McpConfiguration {
                 file.put("sha256", descriptor.sha256());
                 payload.put("file", file);
             }
-            var inline = transfers.readInline(descriptor.artifactId(), origin, MAX_INLINE_IMAGE_BYTES);
-            if (inline.isPresent()) {
-                return artifactImageResult(null, descriptor, inline.get(), transfers, origin, payload);
+            var inline = "async".equals(deliveryMode)
+                    ? java.util.Optional.<ArtifactTransferService.InlineArtifact>empty()
+                    : transfers.readInlineContent(descriptor.artifactId(), origin, MAX_INLINE_CONTENT_BYTES);
+            if (inline.isPresent() && ("inline".equals(deliveryMode)
+                    || isInlineImage(inline.get().mimeType(), inline.get().data().length))) {
+                return artifactInlineContentResult(null, descriptor, inline.get(), transfers, origin);
             }
             return structuredJson(payload);
         } catch (Exception exception) {
@@ -1005,15 +1024,16 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult artifactImageResult(TaskView task,
-                                                                 ArtifactTransferService.TransferDescriptor descriptor,
-                                                                 ArtifactTransferService.InlineArtifact inline,
-                                                                 ArtifactTransferService transfers,
-                                                                 TaskOrigin origin) {
+    private static McpSchema.CallToolResult artifactInlineContentResult(TaskView task,
+                                                                         ArtifactTransferService.TransferDescriptor descriptor,
+                                                                         ArtifactTransferService.InlineArtifact inline,
+                                                                         ArtifactTransferService transfers,
+                                                                         TaskOrigin origin) {
         var payload = new LinkedHashMap<String, Object>();
         if (task != null) payload.put("task", taskMap(task));
         payload.put("transfer", transferMap(descriptor));
         payload.put("file", artifactFileMap(descriptor, transfers, origin));
+        payload.put("delivery_mode", "inline");
         var artifact = new LinkedHashMap<String, Object>();
         artifact.put("artifact_id", inline.artifactId());
         artifact.put("mime_type", inline.mimeType());
@@ -1021,36 +1041,54 @@ public class McpConfiguration {
         artifact.put("sha256", inline.sha256());
         artifact.put("inline", true);
         payload.put("artifact", artifact);
-        return McpSchema.CallToolResult.builder()
+        var builder = McpSchema.CallToolResult.builder()
                 .structuredContent(payload)
-                .addTextContent(jsonText(payload))
-                .addContent(McpSchema.ImageContent.builder(
-                        java.util.Base64.getEncoder().encodeToString(inline.data()), inline.mimeType()).build())
-                .build();
+                .addTextContent(jsonText(payload));
+        var mime = inline.mimeType() == null || inline.mimeType().isBlank()
+                ? "application/octet-stream" : inline.mimeType();
+        if (mime.toLowerCase(java.util.Locale.ROOT).startsWith("image/")) {
+            builder.addContent(McpSchema.ImageContent.builder(
+                    java.util.Base64.getEncoder().encodeToString(inline.data()), mime).build());
+        } else if (mime.toLowerCase(java.util.Locale.ROOT).startsWith("audio/")) {
+            builder.addContent(McpSchema.AudioContent.builder(
+                    java.util.Base64.getEncoder().encodeToString(inline.data()), mime).build());
+        } else if (isInlineText(mime, inline.fileName())) {
+            builder.addTextContent(new String(inline.data(), StandardCharsets.UTF_8));
+        } else {
+            var resource = McpSchema.BlobResourceContents.builder(
+                            "artifact:" + inline.artifactId(),
+                            java.util.Base64.getEncoder().encodeToString(inline.data()))
+                    .mimeType(mime)
+                    .build();
+            builder.addContent(McpSchema.EmbeddedResource.builder(resource).build());
+        }
+        return builder.build();
     }
 
-    private static McpSchema.CallToolResult artifactImageResult(TaskView task,
-                                                                 ArtifactTransferService.TransferDescriptor descriptor,
-                                                                 ArtifactTransferService.InlineArtifact inline,
-                                                                 ArtifactTransferService transfers,
-                                                                 TaskOrigin origin,
-                                                                 Map<String, Object> payload) {
-        var resultPayload = new LinkedHashMap<>(payload);
-        resultPayload.put("file", artifactFileMap(descriptor, transfers, origin));
-        var artifact = new LinkedHashMap<String, Object>();
-        artifact.put("artifact_id", inline.artifactId());
-        artifact.put("mime_type", inline.mimeType());
-        artifact.put("bytes", inline.data().length);
-        artifact.put("sha256", inline.sha256());
-        artifact.put("inline", true);
-        resultPayload.put("artifact", artifact);
-        if (task != null) resultPayload.put("task", taskMap(task));
-        return McpSchema.CallToolResult.builder()
-                .structuredContent(resultPayload)
-                .addTextContent(jsonText(resultPayload))
-                .addContent(McpSchema.ImageContent.builder(
-                        java.util.Base64.getEncoder().encodeToString(inline.data()), inline.mimeType()).build())
-                .build();
+    private static boolean isInlineText(String mimeType, String fileName) {
+        var mime = mimeType == null ? "" : mimeType.toLowerCase(java.util.Locale.ROOT);
+        var name = fileName == null ? "" : fileName.toLowerCase(java.util.Locale.ROOT);
+        return mime.startsWith("text/") || mime.contains("json") || mime.contains("xml")
+                || mime.contains("yaml") || mime.contains("javascript") || mime.contains("markdown")
+                || name.matches(".*\\.(txt|log|md|markdown|csv|json|ya?ml|toml|ini|xml|html?|css|js|ts|java|go|py|sh|ps1|sql)$");
+    }
+
+    private static String normalizeDeliveryMode(String value) {
+        var mode = value == null || value.isBlank() ? "auto" : value.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of("auto", "inline", "async").contains(mode)) {
+            throw new IllegalArgumentException("delivery_mode must be auto, inline, or async");
+        }
+        return mode;
+    }
+
+    private static int artifactWaitMs(String deliveryMode, Integer requested) {
+        if ("async".equals(deliveryMode)) return 0;
+        var bounded = requested == null ? ("inline".equals(deliveryMode)
+                ? DEFAULT_EXPLICIT_INLINE_WAIT_MS : DEFAULT_INLINE_ARTIFACT_WAIT_MS) : requested;
+        if (bounded < 0 || bounded > 60000) throw new IllegalArgumentException("wait_ms must be between 0 and 60000");
+        // MCP request timeout is 30 seconds; keep the synchronous branch below
+        // that transport ceiling so a caller receives a structured fallback.
+        return Math.min(25000, bounded);
     }
 
     private static Map<String, Object> artifactFileMap(ArtifactTransferService.TransferDescriptor descriptor,
@@ -2083,6 +2121,8 @@ public class McpConfiguration {
                            @JsonProperty("source_path") String sourcePath,
                            @JsonProperty("file_name") String fileName,
                            @JsonProperty("mime_type") String mimeType,
+                           @JsonProperty("delivery_mode") String deliveryMode,
+                           @JsonProperty("wait_ms") Integer waitMs,
                            String cwd,
                            @JsonProperty("idempotency_key") String idempotencyKey,
                            @JsonProperty("project_id") String projectId,
@@ -2097,7 +2137,9 @@ public class McpConfiguration {
     }
 
     record ArtifactReadCoreArgs(@JsonProperty("artifact_id") String artifactId,
-                            @JsonProperty("transfer_id") String transferId) {
+                            @JsonProperty("transfer_id") String transferId,
+                            @JsonProperty("delivery_mode") String deliveryMode,
+                            @JsonProperty("wait_ms") Integer waitMs) {
     }
 
     private record ResolvedScope(String cwd, String root, ScopeMode mode) {

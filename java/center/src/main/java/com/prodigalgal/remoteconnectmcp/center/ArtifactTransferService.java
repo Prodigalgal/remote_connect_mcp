@@ -824,10 +824,24 @@ public final class ArtifactTransferService {
      * Go-era behaviour for screenshots and camera-sized images.
      */
     public Optional<InlineArtifact> readInline(String artifactId, TaskOrigin origin, long maxBytes) {
+        var value = readInlineContent(artifactId, origin, maxBytes);
+        if (value.isEmpty() || value.get().mimeType() == null
+                || !value.get().mimeType().toLowerCase(java.util.Locale.ROOT).startsWith("image/")) {
+            return Optional.empty();
+        }
+        return value;
+    }
+
+    /**
+     * Read a bounded, already-delivered artifact for an explicit inline MCP
+     * request.  Unlike the image-only fast path this supports text, audio and
+     * generic binary content; callers still choose the appropriate MCP
+     * Content subtype and never receive an unbounded object-store read.
+     */
+    public Optional<InlineArtifact> readInlineContent(String artifactId, TaskOrigin origin, long maxBytes) {
         if (artifactId == null || artifactId.isBlank() || origin == null || maxBytes < 1) return Optional.empty();
         var descriptor = findByArtifact(artifactId, origin).orElse(null);
-        if (descriptor == null || descriptor.bytes() <= 0 || descriptor.bytes() > maxBytes
-                || descriptor.mimeType() == null || !descriptor.mimeType().toLowerCase(java.util.Locale.ROOT).startsWith("image/")) {
+        if (descriptor == null || descriptor.bytes() < 0 || descriptor.bytes() > maxBytes) {
             return Optional.empty();
         }
         var objectKey = jdbc == null

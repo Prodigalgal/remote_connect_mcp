@@ -55,6 +55,18 @@ class ArtifactTransferServiceTest {
         assertEquals(sha, inline.sha256());
         assertArrayEquals(image, inline.data());
         assertTrue(service.readInline(created.transfer().artifactId(), origin, 1).isEmpty());
+
+        var textRequest = new CreateTaskRequest(registration.machineId(), request.command(), "text-transfer", "", "",
+                ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
+        var text = "inline text payload".getBytes(StandardCharsets.UTF_8);
+        var textCreated = service.createAgentToWeb(origin, textRequest, root.resolve("note.txt").toString(), "note.txt", "text/plain");
+        var textLeased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        assertNotNull(textLeased);
+        service.receiveFromAgent(registration.machineId(), textCreated.transfer().transferId(), new ByteArrayInputStream(text),
+                text.length, sha256(text), "note.txt", "text/plain", textLeased.attempt());
+        var inlineText = service.readInlineContent(textCreated.transfer().artifactId(), origin, 512 * 1024).orElseThrow();
+        assertEquals("text/plain", inlineText.mimeType());
+        assertArrayEquals(text, inlineText.data());
     }
 
     @Test
