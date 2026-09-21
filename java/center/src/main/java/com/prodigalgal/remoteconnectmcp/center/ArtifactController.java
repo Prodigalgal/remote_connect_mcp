@@ -32,10 +32,11 @@ public final class ArtifactController {
                                                           @RequestParam(defaultValue = "download") String purpose,
                                                           @RequestParam(defaultValue = "") String signature,
                                                           @RequestParam(defaultValue = "") String token,
+                                                          @RequestParam(name = "wait_ms", defaultValue = "0") long waitMs,
                                                           @org.springframework.web.bind.annotation.RequestHeader(value = "Range", required = false) String rangeHeader) {
         var artifact = token.isBlank()
                 ? transfers.openPublic(artifactId, expires == null ? 0L : expires, principal, connection, session, purpose, signature)
-                : transfers.openPublic(token);
+                : openPublicToken(token, waitMs);
         var range = parseRange(rangeHeader, artifact.bytes());
         if (range.invalid()) {
             var headers = new HttpHeaders();
@@ -73,6 +74,15 @@ public final class ArtifactController {
             return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT).headers(headers).body(body);
         }
         return ResponseEntity.ok().headers(headers).body(body);
+    }
+
+    private ArtifactTransferService.PublicArtifact openPublicToken(String token, long waitMs) {
+        try {
+            return transfers.openPublic(token, Math.max(0L, Math.min(30000L, waitMs)));
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("artifact wait interrupted", exception);
+        }
     }
 
     private static Range parseRange(String value, long total) {

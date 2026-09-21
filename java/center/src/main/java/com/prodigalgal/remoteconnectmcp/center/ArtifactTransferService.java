@@ -1317,6 +1317,29 @@ public final class ArtifactTransferService {
                 access.session(), access.purpose(), access.signature());
     }
 
+    /**
+     * Open a signed artifact URL with one bounded event-driven wait when the
+     * Agent upload is still in flight.  The HTTP request waits on the durable
+     * task change signal; it does not poll the database or expose an
+     * unauthenticated readiness endpoint.
+     */
+    public PublicArtifact openPublic(String token, long waitMs) throws InterruptedException {
+        var access = decodeAccessToken(token);
+        try {
+            return openPublic(access.artifactId(), access.expires(), access.principal(), access.connection(),
+                    access.session(), access.purpose(), access.signature());
+        } catch (IllegalArgumentException notReady) {
+            var boundedWait = Math.max(0L, Math.min(30000L, waitMs));
+            if (boundedWait == 0L) throw notReady;
+            var taskId = taskForArtifact(access.artifactId(), access.principal());
+            if (taskId.isBlank()) throw notReady;
+            var origin = new TaskOrigin(access.principal(), TaskOrigin.CONFIGURED_TOKEN, access.connection());
+            tasks.waitForTerminal(origin, taskId, Duration.ofMillis(boundedWait));
+            return openPublic(access.artifactId(), access.expires(), access.principal(), access.connection(),
+                    access.session(), access.purpose(), access.signature());
+        }
+    }
+
     public PublicArtifact openPublic(String artifactId, long expires, String principal, String connection,
                                       String session, String purpose, String signature) {
         if (artifactId == null || artifactId.isBlank() || principal == null || principal.isBlank()
@@ -1358,6 +1381,21 @@ public final class ArtifactTransferService {
                 : jdbc.queryForObject("SELECT object_key FROM rcm_artifact WHERE artifact_id = ?", String.class, artifactId);
         if (objectKey == null || objectKey.isBlank()) throw new IllegalArgumentException("artifact is not ready");
         return new PublicArtifact(row.artifactId(), row.fileName(), row.mimeType(), row.bytes(), row.sha256(), row.status(), store.open(objectKey));
+    }
+
+    private String taskForArtifact(String artifactId, String principal) {
+        if (artifactId == null || artifactId.isBlank() || principal == null || principal.isBlank()) return "";
+        if (jdbc == null) {
+            return memory.values().stream()
+                    .filter(value -> artifactId.equals(value.descriptor().artifactId())
+                            && principal.equals(value.descriptor().principalId()))
+                    .map(value -> value.descriptor().taskId())
+                    .filter(value -> value != null && !value.isBlank())
+                    .findFirst().orElse("");
+        }
+        return jdbc.query("SELECT task_id FROM rcm_file_transfer WHERE artifact_id = ? AND principal_id = ?",
+                ps -> { ps.setString(1, artifactId); ps.setString(2, principal); },
+                rs -> rs.next() ? rs.getString(1) : "");
     }
 
     /**

@@ -132,6 +132,7 @@ public class McpConfiguration {
     // context window.  Larger files remain object-store backed handles.
     private static final int MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
     private static final int DEFAULT_INLINE_ARTIFACT_WAIT_MS = 15000;
+    private static final int ARTIFACT_URL_WAIT_MS = 30000;
 
     @Bean
     public HttpServletStreamableServerTransportProvider mcpTransport(CenterTokenConfig tokens,
@@ -955,8 +956,7 @@ public class McpConfiguration {
             var payload = new LinkedHashMap<String, Object>();
             payload.put("task", taskMap(finalTask));
             payload.put("transfer", transferMap(finalTransfer));
-            if ("delivered".equalsIgnoreCase(finalTransfer.status()) && finalTransfer.downloadUrl() != null
-                    && !finalTransfer.downloadUrl().isBlank()) {
+            if (!Set.of("failed", "canceled").contains(finalTransfer.status())) {
                 payload.put("file", artifactFileMap(finalTransfer, transfers, origin));
             }
             payload.put("next_action", nextAction("task_read", "wait", finalTask.id(), 0L,
@@ -1055,16 +1055,33 @@ public class McpConfiguration {
 
     private static Map<String, Object> artifactFileMap(ArtifactTransferService.TransferDescriptor descriptor,
                                                         ArtifactTransferService transfers, TaskOrigin origin) {
+        var waitForDelivery = !Set.of("ready", "delivered", "failed", "canceled")
+                .contains(descriptor.status());
+        var downloadUrl = descriptor.downloadUrl();
+        if ((downloadUrl == null || downloadUrl.isBlank()) && waitForDelivery) {
+            downloadUrl = transfers.publicUrl(descriptor.artifactId(), origin,
+                    transfers.sessionForTask(descriptor.taskId()), "download");
+        }
+        var previewUrl = transfers.publicUrl(descriptor.artifactId(), origin,
+                transfers.sessionForTask(descriptor.taskId()), "preview");
+        if (waitForDelivery) {
+            downloadUrl = withWaitQuery(downloadUrl);
+            previewUrl = withWaitQuery(previewUrl);
+        }
         var file = new LinkedHashMap<String, Object>();
         file.put("file_id", descriptor.artifactId());
-        file.put("download_url", descriptor.downloadUrl());
-        file.put("preview_url", transfers.publicUrl(descriptor.artifactId(), origin,
-                transfers.sessionForTask(descriptor.taskId()), "preview"));
+        file.put("download_url", downloadUrl);
+        file.put("preview_url", previewUrl);
         file.put("file_name", descriptor.fileName());
         file.put("mime_type", descriptor.mimeType());
         file.put("bytes", descriptor.bytes());
         file.put("sha256", descriptor.sha256());
         return file;
+    }
+
+    private static String withWaitQuery(String url) {
+        if (url == null || url.isBlank()) return url;
+        return url + (url.indexOf('?') >= 0 ? '&' : '?') + "wait_ms=" + ARTIFACT_URL_WAIT_MS;
     }
 
     private static Map<String, Object> transferMap(ArtifactTransferService.TransferDescriptor value) {
