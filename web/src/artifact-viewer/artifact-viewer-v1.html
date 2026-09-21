@@ -37,6 +37,28 @@
         return result&&result.downloadUrl?String(result.downloadUrl):'';
       }catch(error){return '';}
     };
+    // A pending transfer is already event-driven on the Center side.  Media
+    // elements cannot inspect an HTTP 425/5xx response, so retry only after a
+    // failed load, with a small bounded backoff.  This is not a background
+    // polling loop and stops once the preview succeeds or the budget is spent.
+    const mediaRetryDelays=[1000,2000,4000,8000,15000,30000];
+    const attachMediaRetry=(element,url)=>{
+      let attempt=0;
+      const retry=()=>{
+        if(attempt>=mediaRetryDelays.length){
+          element.removeEventListener('error',retry);
+          return;
+        }
+        const delay=mediaRetryDelays[attempt++];
+        window.setTimeout(()=>{
+          if(!element.isConnected)return;
+          const separator=url.includes('?')?'&':'?';
+          element.src=url+separator+'rcm_retry='+Date.now();
+        },delay);
+      };
+      element.addEventListener('error',retry);
+      element.src=url;
+    };
     const fetchArtifact=async(file,url,options={})=>{
       let current=String(url||'');
       let response=null;
@@ -59,10 +81,10 @@
     };
     const previewHandlers=[];
     const registerPreviewHandler=(name,matches,render)=>previewHandlers.push({name,matches,render});
-    registerPreviewHandler('image',mime=>mime.startsWith('image/'),(p,url,name)=>{p.innerHTML='<img alt="'+esc(name)+'" src="'+esc(url)+'">';});
-    registerPreviewHandler('pdf',mime=>mime==='application/pdf',(p,url,name)=>{p.innerHTML='<iframe title="'+esc(name)+'" src="'+esc(url)+'" style="width:100%;height:70vh"></iframe>';});
-    registerPreviewHandler('video',mime=>mime.startsWith('video/'),(p,url)=>{p.innerHTML='<video controls src="'+esc(url)+'"></video>';});
-    registerPreviewHandler('audio',mime=>mime.startsWith('audio/'),(p,url)=>{p.innerHTML='<audio controls src="'+esc(url)+'"></audio>';});
+    registerPreviewHandler('image',mime=>mime.startsWith('image/'),(p,url,name)=>{const image=document.createElement('img');image.alt=name;attachMediaRetry(image,url);p.replaceChildren(image);});
+    registerPreviewHandler('pdf',mime=>mime==='application/pdf',(p,url,name)=>{const frame=document.createElement('iframe');frame.title=name;frame.style='width:100%;height:70vh';attachMediaRetry(frame,url);p.replaceChildren(frame);});
+    registerPreviewHandler('video',mime=>mime.startsWith('video/'),(p,url)=>{const video=document.createElement('video');video.controls=true;attachMediaRetry(video,url);p.replaceChildren(video);});
+    registerPreviewHandler('audio',mime=>mime.startsWith('audio/'),(p,url)=>{const audio=document.createElement('audio');audio.controls=true;attachMediaRetry(audio,url);p.replaceChildren(audio);});
     registerPreviewHandler('diff', (mime,name)=>mime.includes('diff')||/\.(diff|patch)$/i.test(name), (p,url,name,mime,file)=>{readPreview(file,url,262144).then(t=>{p.innerHTML='<pre class="artifact-diff">'+esc(t)+'</pre>';}).catch(()=>{p.innerHTML='<small>Diff preview unavailable; use download.</small>';});});
     registerPreviewHandler('text', (mime,name)=>mime.startsWith('text/')||mime.includes('json')||mime.includes('xml')||mime.includes('csv')||mime.includes('javascript')||mime.includes('yaml')||mime.includes('markdown')||/\.(md|markdown|csv|json|ya?ml|toml|ini|log|txt|xml|html?|css|js|ts|java|go|py|sh|ps1|sql)$/i.test(name), (p,url,name,mime,file)=>{readPreview(file,url,262144).then(t=>{p.innerHTML='<pre>'+esc(t)+'</pre>';}).catch(()=>{p.innerHTML='<small>Preview unavailable; use download.</small>';});});
     registerPreviewHandler('office', (mime,name)=>mime.includes('officedocument')||mime.includes('msword')||mime.includes('vnd.ms-')||/\.(docx?|xlsx?|pptx?|odt|ods|odp|rtf)$/i.test(name), (p,url,name)=>{p.innerHTML='<small>Office 文档为下载后本地打开，避免在 MCP App 中执行或解压不可信内容：'+esc(name)+'</small>';});
