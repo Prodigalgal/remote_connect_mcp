@@ -650,6 +650,7 @@ jobs:
       - name: Pin Center and Console images by digest
         shell: bash
         env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           CENTER_DIGEST: ${{ steps.images.outputs.center }}
           CONSOLE_DIGEST: ${{ steps.images.outputs.console }}
         run: |
@@ -661,18 +662,20 @@ jobs:
           fi
           export OVERLAY_DIR="gitops/${overlay}"
           test -d "${OVERLAY_DIR}"
-          CENTER_DIGEST="${CENTER_DIGEST}" CONSOLE_DIGEST="${CONSOLE_DIGEST}" OVERLAY_DIR="${OVERLAY_DIR}" python3 - <<'PY'
+          RELEASE_VERSION="${RELEASE_VERSION}" CENTER_DIGEST="${CENTER_DIGEST}" CONSOLE_DIGEST="${CONSOLE_DIGEST}" OVERLAY_DIR="${OVERLAY_DIR}" python3 - <<'PY'
           import os
           import pathlib
           import re
 
           root = pathlib.Path(os.environ['OVERLAY_DIR'])
+          release_version = os.environ['RELEASE_VERSION']
           center_digest = os.environ['CENTER_DIGEST']
           console_digest = os.environ['CONSOLE_DIGEST']
           center_files = [root / 'center.yaml', root / 'migration-job.yaml']
           console_files = [root / 'console.yaml']
           center_pattern = re.compile(r'(image:\s*ghcr\.io/prodigalgal/remote-connect-mcp-center-java@)sha256:[0-9a-f]{64}')
           console_pattern = re.compile(r'(image:\s*ghcr\.io/prodigalgal/remote-connect-mcp-console@)sha256:[0-9a-f]{64}')
+          version_pattern = re.compile(r'(?m)^(\s*-\s*name:\s*RCM_CENTER_VERSION\s*\n\s*value:\s*)[^\r\n]+$')
 
           def replace(files, pattern, digest, label):
               total = 0
@@ -691,6 +694,12 @@ jobs:
               raise SystemExit('expected exactly two Center image references')
           if replace(console_files, console_pattern, console_digest, 'Console') != 1:
               raise SystemExit('expected exactly one Console image reference')
+          center_manifest = root / 'center.yaml'
+          text = center_manifest.read_text(encoding='utf-8')
+          text, version_count = version_pattern.subn(r'\1' + release_version, text)
+          if version_count != 1:
+              raise SystemExit(f'expected exactly one RCM_CENTER_VERSION in {center_manifest}, found {version_count}')
+          center_manifest.write_text(text, encoding='utf-8', newline='\n')
           PY
           git -C gitops diff --check
           git -C gitops diff -- "${overlay}/center.yaml" "${overlay}/migration-job.yaml" "${overlay}/console.yaml"
