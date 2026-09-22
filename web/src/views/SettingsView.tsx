@@ -189,7 +189,7 @@ export function SettingsView({
                   onRefresh()
                 }}
               >
-                清空凭证 (切回脱敏演示)
+                退出登录并清空凭证
               </button>
 
               <button type="submit" className="btn btn-primary btn-sm">

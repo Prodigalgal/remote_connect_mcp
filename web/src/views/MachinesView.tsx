@@ -5,7 +5,7 @@ import { CopyButton } from '../components/CopyButton'
 import { EmptyState } from '../components/EmptyState'
 import { PaginationBar } from '../components/PaginationBar'
 import { listMachinesPage, type Machine } from '../api'
-import { demoMachines, type DemoMachine, matchesMachine, usePagedTail, usePagination } from '../utils'
+import { type DemoMachine, matchesMachine, usePagedTail, usePagination } from '../utils'
 
 interface MachinesViewProps {
   rows: Machine[] | null
@@ -18,7 +18,7 @@ export function MachinesView({ rows, token, onEnroll, query }: MachinesViewProps
   const [filter, setFilter] = useState<'all' | 'online' | 'offline'>('all')
   const paged = usePagedTail(rows, 200, (offset, limit) => listMachinesPage(token, offset, limit))
   const sourceRows: Array<Machine | DemoMachine> =
-    paged.rows ?? demoMachines.flatMap((m) => [m, { ...m, name: `${m.name}-02` }])
+    paged.rows ?? []
 
   const filteredRows = sourceRows
     .filter((machine) => {

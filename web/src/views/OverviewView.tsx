@@ -6,7 +6,7 @@ import { CopyButton } from '../components/CopyButton'
 import { PaginationBar } from '../components/PaginationBar'
 import type { PageId } from '../components/Sidebar'
 import type { Machine, Task, UpgradeCampaign } from '../api'
-import { demoMachines, type DemoMachine, demoTasks, matchesMachine, matchesTask, usePagination } from '../utils'
+import { type DemoMachine, matchesMachine, matchesTask, usePagination } from '../utils'
 
 interface OverviewViewProps {
   onNavigate: (page: PageId) => void
@@ -17,15 +17,15 @@ interface OverviewViewProps {
 }
 
 export function OverviewView({ onNavigate, rows, tasks, upgrades, query }: OverviewViewProps) {
-  const sourceRows: Array<Machine | DemoMachine> = rows ?? demoMachines
+  const sourceRows: Array<Machine | DemoMachine> = rows ?? []
   const filteredMachines = sourceRows.filter((machine) => matchesMachine(machine, query))
   const machinePaged = usePagination(filteredMachines, { defaultPageSize: 6 })
 
-  const sourceTasks: Task[] = tasks ?? demoTasks
+  const sourceTasks: Task[] = tasks ?? []
   const filteredTasks = sourceTasks.filter((task) => matchesTask(task, query))
   const taskPaged = usePagination(filteredTasks, { defaultPageSize: 5 })
-  const onlineCount = rows ? rows.filter((m) => m.online).length : 2
-  const totalCount = rows ? rows.length : 3
+  const onlineCount = rows ? rows.filter((m) => m.online).length : 0
+  const totalCount = rows ? rows.length : 0
   const activeTaskCount = tasks
     ? tasks.filter((t) => ['queued', 'dispatching', 'running', 'cancel_requested'].includes(t.status)).length
     : 0
@@ -41,7 +41,7 @@ export function OverviewView({ onNavigate, rows, tasks, upgrades, query }: Overv
           <span className="hero-kicker">REMOTE CONTROL PLANE · LIVE OPERATIONS</span>
           <h2 className="hero-title">让每一台分布式终端都清晰可控</h2>
           <p className="hero-desc">
-            Center、Agent 与控制台已完成解耦升级。配置 Admin Token 后即可直接接管真实节点状态；未接入时保留脱敏演示数据以便调试。
+            Center、Agent 与控制台已完成解耦升级。认证通过后即可直接接管真实节点状态，所有数据均来自当前 Center 会话。
           </p>
           <div className="hero-actions">
             <button
@@ -84,28 +84,28 @@ export function OverviewView({ onNavigate, rows, tasks, upgrades, query }: Overv
         <MetricCard
           label="已注册 Agent"
           value={String(totalCount)}
-          meta={rows ? 'Center 实时接入' : '脱敏演示数据'}
+          meta={rows ? 'Center 实时接入' : '等待认证数据'}
           tone="blue"
           icon={<ServerIcon size={18} />}
         />
         <MetricCard
           label="在线节点"
           value={String(onlineCount)}
-          meta={rows ? `${Math.round((onlineCount / Math.max(1, totalCount)) * 100)}% 节点可用率` : '67% 可用率'}
+          meta={`${Math.round((onlineCount / Math.max(1, totalCount)) * 100)}% 节点可用率`}
           tone="emerald"
           icon={<ActivityIcon size={18} />}
         />
         <MetricCard
           label="运行中任务"
           value={String(activeTaskCount)}
-          meta={tasks ? '排队及执行中' : '无活跃任务'}
+          meta="排队及执行中"
           tone="amber"
           icon={<ClockIcon size={18} />}
         />
         <MetricCard
           label="活动升级流程"
-          value={upgrades ? String(activeUpgradeCount) : '—'}
-          meta={upgrades ? `${upgrades.length} 项历史编排` : '输入 Token 后查询'}
+          value={String(activeUpgradeCount)}
+          meta={`${upgrades?.length ?? 0} 项历史编排`}
           tone="purple"
           icon={<RocketIcon size={18} />}
         />
