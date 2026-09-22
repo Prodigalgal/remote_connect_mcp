@@ -73,6 +73,7 @@ jobs:
     outputs:
       version: ${{ steps.coordinates.outputs.version }}
       tag: ${{ steps.coordinates.outputs.tag }}
+      publish: ${{ steps.coordinates.outputs.publish }}
       prerelease: ${{ steps.coordinates.outputs.prerelease }}
       deploy: ${{ steps.coordinates.outputs.deploy }}
     steps:
