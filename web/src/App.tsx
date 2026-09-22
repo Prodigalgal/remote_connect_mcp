@@ -77,6 +77,7 @@ function usePagedTail<T>(rows: T[] | null, pageSize: number, loadPage: (offset: 
 
 function App() {
   const [page, setPage] = useState<Page>('overview')
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [search, setSearch] = useState('')
   // The token lives only in React memory. It is never written to localStorage
   // or bundled into the static console.
@@ -91,6 +92,17 @@ function App() {
   const [loading, setLoading] = useState(false)
   const refreshInFlight = useRef<{ key: string; promise: Promise<void> } | null>(null)
   const current = nav.find((item) => item.id === page) ?? nav[0]
+  const navigate = useCallback((next: Page) => {
+    setPage(next)
+    setMobileNavOpen(false)
+  }, [])
+  const connectionState = loading ? 'connecting' : liveMachines ? 'online' : adminToken.trim() ? 'offline' : 'idle'
+  const connectionLabel = loading ? '连接中' : liveMachines ? 'Center 在线' : adminToken.trim() ? 'Center 不可达' : '未连接'
+
+  useEffect(() => {
+    document.body.classList.toggle('nav-open', mobileNavOpen)
+    return () => document.body.classList.remove('nav-open')
+  }, [mobileNavOpen])
 
   const refresh = useCallback((token = adminToken, forceReleases = false): Promise<void> => {
     const normalizedToken = token.trim()
@@ -179,8 +191,8 @@ function App() {
   }, [adminToken, refresh])
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
+    <div className={`app-shell${mobileNavOpen ? ' nav-open' : ''}`}>
+      <aside className={`sidebar${mobileNavOpen ? ' mobile-open' : ''}`}>
         <div className="brand">
           <div className="brand-mark">RC</div>
           <div>
@@ -194,7 +206,7 @@ function App() {
             <div className="nav-group" key={group}>
               <div className="nav-caption">{group}</div>
               {nav.filter((item) => item.group === group).map((item) => (
-                <button className={item.id === page ? 'nav-item active' : 'nav-item'} key={item.id} onClick={() => setPage(item.id)}>
+                <button className={item.id === page ? 'nav-item active' : 'nav-item'} key={item.id} onClick={() => navigate(item.id)} aria-current={item.id === page ? 'page' : undefined}>
                   <span className="nav-icon" aria-hidden="true">{item.icon}</span>
                   <span>{item.label}</span>
                 </button>
@@ -204,20 +216,24 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
-          <span className="status-dot" />
-          <span>Java Center · 迁移候选</span>
+          <span className={`status-dot ${connectionState}`} />
+          <span>{connectionLabel} · 控制台</span>
           <span className="version">0.1</span>
         </div>
       </aside>
 
+      {mobileNavOpen && <button className="mobile-nav-scrim" aria-label="关闭导航" onClick={() => setMobileNavOpen(false)} />}
+
       <main className="main-content">
         <header className="topbar">
-          <div>
+          <div className="topbar-title">
+            <button className="mobile-nav-toggle" aria-label="打开导航" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}>☰</button>
             <span className="eyebrow">CONTROL CENTER</span>
             <h1>{current.label}</h1>
           </div>
           <div className="topbar-actions">
-            <div className="search"><span>⌕</span><input aria-label="全局搜索" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索机器、任务或 ID" /></div>
+            <div className="search"><span aria-hidden="true">⌕</span><input type="search" aria-label="全局搜索" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索机器、任务或 ID" />{search && <button className="search-clear" aria-label="清除搜索" onClick={() => setSearch('')}>×</button>}</div>
+            <div className={`connection-chip ${connectionState}`} role="status"><i />{connectionLabel}</div>
             <button className="icon-button" title="刷新" aria-label="刷新" onClick={() => void refresh()} disabled={loading}>{loading ? '…' : '↻'}</button>
             <div className="profile"><span className="avatar">Z</span><span>管理员</span><span className="chevron">⌄</span></div>
           </div>
@@ -225,8 +241,8 @@ function App() {
 
         <div className="content">
           {apiMessage && <div className={liveMachines ? 'api-banner good' : 'api-banner'} role="status">{apiMessage}</div>}
-          {page === 'overview' && <Overview onNavigate={setPage} rows={liveMachines} tasks={liveTasks} upgrades={liveUpgrades} query={search} />}
-          {page === 'machines' && <Machines rows={liveMachines} token={adminToken} onEnroll={() => setPage('enrollment')} query={search} />}
+          {page === 'overview' && <Overview onNavigate={navigate} rows={liveMachines} tasks={liveTasks} upgrades={liveUpgrades} query={search} />}
+          {page === 'machines' && <Machines rows={liveMachines} token={adminToken} onEnroll={() => navigate('enrollment')} query={search} />}
           {page === 'projects' && <Projects rows={liveProjects} machines={liveMachines ?? []} token={adminToken} onRefresh={() => void refresh()} query={search} />}
           {page === 'tasks' && <Tasks rows={liveTasks} machines={liveMachines ?? []} projects={liveProjects ?? []} adminToken={adminToken} onRefresh={() => void refresh()} query={search} />}
           {page === 'artifacts' && <Artifacts token={adminToken} machines={liveMachines ?? []} query={search} />}
@@ -250,10 +266,10 @@ function Overview({ onNavigate, rows, tasks, upgrades, query }: { onNavigate: (p
     <>
       <section className="hero-card">
         <div>
-          <span className="section-kicker">JAVA MIGRATION · PHASE A</span>
+          <span className="section-kicker">REMOTE CONTROL PLANE · LIVE OPERATIONS</span>
           <h2>让每一台终端都清晰可控</h2>
           <p>Center、Agent 与控制台已拆分为可独立升级的组件。输入 Admin Token 后，页面直接读取 Center 的机器、任务和升级状态；未连接时保留脱敏演示数据。</p>
-          <div className="hero-actions"><button className="primary" onClick={() => onNavigate('machines')}>查看 Agent</button><button className="secondary" onClick={() => onNavigate('upgrades')}>查看迁移计划</button></div>
+          <div className="hero-actions"><button className="primary" onClick={() => onNavigate('machines')}>查看 Agent</button><button className="secondary" onClick={() => onNavigate('upgrades')}>查看升级编排</button></div>
         </div>
         <div className="hero-orbit"><div className="orbit-ring ring-one" /><div className="orbit-ring ring-two" /><div className="orbit-core">RCM</div></div>
       </section>
@@ -297,7 +313,7 @@ function Machines({ rows, token, onEnroll, query }: { rows: Machine[] | null; to
   const sourceRows: Array<Machine | DemoMachine> = paged.rows ?? demoMachines.flatMap((machine) => [machine, { ...machine, name: `${machine.name}-2` }])
   const displayRows = sourceRows.filter((machine) => (filter === 'all' || ('id' in machine ? (filter === 'online' ? machine.online : !machine.online) : (filter === 'online' ? machine.state !== '待接入' : machine.state === '待接入')))).filter((machine) => matchesMachine(machine, query))
   const online = paged.rows ? paged.rows.filter((machine) => machine.online).length : 9
-  return <><PageIntro kicker="RESOURCE MANAGEMENT" title="机器与 Agent" action="新增注册令牌" onAction={onEnroll} /><section className="panel table-panel"><div className="filter-bar"><div className="segmented"><button className={filter === 'all' ? 'selected' : ''} onClick={() => setFilter('all')} aria-pressed={filter === 'all'}>全部 <b>{paged.rows?.length ?? 12}</b></button><button className={filter === 'online' ? 'selected' : ''} onClick={() => setFilter('online')} aria-pressed={filter === 'online'}>在线 <b>{online}</b></button><button className={filter === 'offline' ? 'selected' : ''} onClick={() => setFilter('offline')} aria-pressed={filter === 'offline'}>离线 <b>{(paged.rows?.length ?? 12) - online}</b></button></div><span className="filter-summary">显示 {displayRows.length}{paged.rows ? ` / ${paged.rows.length}` : ''} 台</span></div><div className="table-head"><span>Agent</span><span>物理终端</span><span>能力</span><span>平台</span><span>状态</span></div>{displayRows.length > 0 ? displayRows.map((machine, index) => <MachineRow machine={machine} key={'id' in machine ? machine.id : `${machine.name}-${index}`} />) : <div className="filtered-empty">没有匹配的机器</div>}{paged.rows && (paged.hasMore || paged.loadingMore || paged.loadError) && <div className="pagination-bar"><span>{paged.loadError || '列表按页加载，避免大规模终端占用前端内存'}</span><button className="secondary" onClick={() => void paged.loadMore()} disabled={paged.loadingMore || !paged.hasMore}>{paged.loadingMore ? '加载中…' : paged.hasMore ? '加载下一页' : '已加载全部'}</button></div>}</section></>
+  return <><PageIntro kicker="RESOURCE MANAGEMENT" title="机器与 Agent" description="查看终端在线状态、能力组件与版本；注册新机器请使用一次性令牌。" action="新增注册令牌" onAction={onEnroll} /><section className="panel table-panel"><div className="filter-bar"><div className="segmented"><button className={filter === 'all' ? 'selected' : ''} onClick={() => setFilter('all')} aria-pressed={filter === 'all'}>全部 <b>{paged.rows?.length ?? 12}</b></button><button className={filter === 'online' ? 'selected' : ''} onClick={() => setFilter('online')} aria-pressed={filter === 'online'}>在线 <b>{online}</b></button><button className={filter === 'offline' ? 'selected' : ''} onClick={() => setFilter('offline')} aria-pressed={filter === 'offline'}>离线 <b>{(paged.rows?.length ?? 12) - online}</b></button></div><span className="filter-summary">显示 {displayRows.length}{paged.rows ? ` / ${paged.rows.length}` : ''} 台</span></div><div className="table-head"><span>Agent</span><span>物理终端</span><span>能力</span><span>平台</span><span>状态</span></div>{displayRows.length > 0 ? displayRows.map((machine, index) => <MachineRow machine={machine} key={'id' in machine ? machine.id : `${machine.name}-${index}`} />) : <div className="filtered-empty">没有匹配的机器</div>}{paged.rows && (paged.hasMore || paged.loadingMore || paged.loadError) && <div className="pagination-bar"><span>{paged.loadError || '列表按页加载，避免大规模终端占用前端内存'}</span><button className="secondary" onClick={() => void paged.loadMore()} disabled={paged.loadingMore || !paged.hasMore}>{paged.loadingMore ? '加载中…' : paged.hasMore ? '加载下一页' : '已加载全部'}</button></div>}</section></>
 }
 
 function Projects({ rows, machines, token, onRefresh, query }: { rows: Project[] | null; machines: Machine[]; token: string; onRefresh: () => void; query: string }) {
@@ -988,6 +1004,21 @@ function Settings({ token, machines, onTokenChange, onRefresh }: { token: string
   }
   return <><PageIntro kicker="SECURITY & POLICY" title="系统设置" action="保存变更" /><section className="panel token-panel"><span className="section-kicker">CENTER SESSION</span><h3>连接控制台 API</h3><p>令牌只保存在当前浏览器标签页内存，刷新页面后自动清除，不写入 localStorage。</p><label>Admin Token<input type="password" value={token} onChange={(event) => onTokenChange(event.target.value)} placeholder="粘贴 Center Admin Token" autoComplete="off" /></label><button className="primary" onClick={onRefresh}>验证并加载</button></section><section className="panel token-panel"><span className="section-kicker">AGENT RUNTIME</span><h3>热更新运行参数</h3><p>配置通过 generation CAS 发布；Agent 在下一次心跳收到后原子落盘。输出、Token 和工作区边界不能在这里修改。</p><div className="composer-grid"><label>目标 Agent<select value={machineId} onChange={(event) => setMachineId(event.target.value)} disabled={!machines.length || busy}><option value="">选择 Agent</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name} · {machine.online ? '在线' : '离线'}</option>)}</select></label><label>长轮询等待（毫秒）<input type="number" min="250" max="60000" value={poll} onChange={(event) => setPoll(event.target.value)} disabled={!config || busy} /></label><label>最大并发槽位<input type="number" min="1" max="32" value={concurrency} onChange={(event) => setConcurrency(event.target.value)} disabled={!config || busy} /></label></div><div className="composer-actions"><button className="primary" onClick={() => void save()} disabled={!token || !config || busy}>{busy ? '处理中…' : '发布配置'}</button><button className="secondary" onClick={() => void rollback()} disabled={!token || !config || busy}>回滚上一代</button>{config && <span className="mono">当前 generation {config.generation}</span>}{message && <span className="form-message">{message}</span>}</div></section><section className="settings-grid"><div className="panel setting-card"><span className="setting-icon">⌁</span><div><h3>连接策略</h3><p>控制台通过事件长连接获取变更，异常时才重试；Agent 使用长轮询/WebSocket 唤醒。</p></div><span className="toggle on" /></div><div className="panel setting-card"><span className="setting-icon">◈</span><div><h3>令牌存储</h3><p>仅保存摘要；前端不将 Admin Token 写入 localStorage。</p></div><span className="toggle on" /></div><div className="panel setting-card"><span className="setting-icon">▣</span><div><h3>工具上下文</h3><p>维持精简 MCP 工具面，结果分页且有界。</p></div><span className="toggle on" /></div></section></> }
 
-function PageIntro({ kicker, title, action, onAction }: { kicker: string; title: string; action?: string; onAction?: () => void }) { return <div className="page-intro"><div><span className="eyebrow">{kicker}</span><p>统一管理多 Agent 终端、任务和版本状态</p></div>{action && <button className="primary" onClick={onAction} disabled={!onAction}>{action} <span>＋</span></button>}</div> }
+const pageDescriptions: Record<string, string> = {
+  '机器与 Agent': '查看终端在线状态、能力组件与版本；注册新机器请使用一次性令牌。',
+  '项目与 Git Worktree': '注册项目根目录并管理隔离 Worktree，让多会话协作保持边界清晰。',
+  '任务记录': '创建异步任务并追踪有界输出、执行状态与可下载工件。',
+  '文件与工件': '管理跨机器文件传输、进度、保留期限与下载入口。',
+  '注册令牌': '为新终端生成一次性注册凭据，并在目标机器执行安装命令。',
+  '访问控制': '签发用户身份并显式授予机器、项目和执行权限。',
+  '升级编排': '按组件、平台和批次推进 Center、Agent 与 Console 的版本升级。',
+  '审计日志': '查看脱敏的操作元数据，不记录命令正文、Token 或工件内容。',
+  '系统设置': '管理控制台会话、Agent 热更新参数和回滚操作。',
+}
+
+function PageIntro({ kicker, title, action, onAction, description }: { kicker: string; title: string; action?: string; onAction?: () => void; description?: string }) {
+  const resolvedDescription = description ?? pageDescriptions[title] ?? '统一管理多 Agent 终端、任务和版本状态'
+  return <div className="page-intro"><div className="page-intro-copy"><span className="eyebrow">{kicker}</span><h2>{title}</h2><p>{resolvedDescription}</p></div>{action && onAction && <button className="primary page-intro-action" onClick={onAction}>{action} <span aria-hidden="true">＋</span></button>}</div>
+}
 
 export default App
