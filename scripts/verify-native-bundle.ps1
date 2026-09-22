@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$AgentArchive,
-    [ValidateSet('rcm-agent', 'rcm-agent.exe', 'rcm-desktop-companion', 'rcm-desktop-companion.exe', 'rcm-browser-agent', 'rcm-browser-agent.exe')]
+    [ValidateSet('rcm-center', 'rcm-center.exe', 'rcm-agent', 'rcm-agent.exe', 'rcm-desktop-companion', 'rcm-desktop-companion.exe', 'rcm-browser-agent', 'rcm-browser-agent.exe')]
     [string]$ExecutableName = ''
 )
 
@@ -28,7 +28,7 @@ try {
         if ($name.Contains('/') -or $name.StartsWith('/') -or $name.Contains(':') -or $name -match '(^|/)\.\.(/|$)') {
             throw "Agent archive must contain only flat file names: $($entry.FullName)"
         }
-        if ($name -notmatch '^(?i:rcm-(?:agent|desktop-companion|browser-agent)(?:\.exe)?|[A-Za-z0-9_.-]+\.dll|[A-Za-z0-9_.-]+\.so(?:\.[0-9]+(?:\.[0-9]+)*)?)$') {
+        if ($name -notmatch '^(?i:rcm-(?:center|agent|desktop-companion|browser-agent)(?:\.exe)?|[A-Za-z0-9_.-]+\.dll|[A-Za-z0-9_.-]+\.so(?:\.[0-9]+(?:\.[0-9]+)*)?)$') {
             throw "Unexpected file in Native bundle: $($entry.FullName)"
         }
         if (-not $names.Add($name)) { throw "Duplicate file in Agent archive: $name" }
@@ -38,7 +38,7 @@ try {
         $totalBytes += $entry.Length
         if ($totalBytes -gt $maxTotalBytes) { throw 'Agent archive exceeds 256 MiB uncompressed.' }
     }
-    $executables = @($names | Where-Object { $_ -match '^(?i:rcm-(?:agent|desktop-companion|browser-agent)(?:\.exe)?)$' })
+    $executables = @($names | Where-Object { $_ -match '^(?i:rcm-(?:center|agent|desktop-companion|browser-agent)(?:\.exe)?)$' })
     if ($executables.Count -ne 1) {
         throw 'Native bundle must contain exactly one canonical executable.'
     }

@@ -162,8 +162,8 @@ jobs:
           find "$(dirname "${agent}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "out/${TARGET_ARCH}/agent/" \;
           find "$(dirname "${desktop}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "out/${TARGET_ARCH}/desktop/" \;
           find "$(dirname "${browser}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "out/${TARGET_ARCH}/browser/" \;
-          for bin in "out/${TARGET_ARCH}/agent/rcm-agent" "out/${TARGET_ARCH}/desktop/rcm-desktop-companion" "out/${TARGET_ARCH}/browser/rcm-browser-agent"; do
-            chmod +x "${bin}"
+          chmod +x "out/${TARGET_ARCH}/agent/rcm-agent" "out/${TARGET_ARCH}/desktop/rcm-desktop-companion" "out/${TARGET_ARCH}/browser/rcm-browser-agent"
+          for bin in "out/${TARGET_ARCH}/desktop/rcm-desktop-companion" "out/${TARGET_ARCH}/browser/rcm-browser-agent"; do
             set +e; "${bin}" --invalid-arguments >/dev/null 2>&1; code=$?; set -e
             test "${code}" -eq 2
           done
@@ -225,12 +225,12 @@ jobs:
       - name: Validate Agent Native contracts
         shell: pwsh
         run: |
-          $bins = @(
-            '.\java\agent\build\native\nativeCompile\rcm-agent.exe',
+          $agent = '.\java\agent\build\native\nativeCompile\rcm-agent.exe'
+          if (-not (Test-Path -LiteralPath $agent -PathType Leaf)) { throw "Native binary missing: $agent" }
+          foreach ($bin in @(
             '.\java\desktop\build\native\nativeCompile\rcm-desktop-companion.exe',
             '.\java\browser\build\native\nativeCompile\rcm-browser-agent.exe'
-          )
-          foreach ($bin in $bins) {
+          )) {
             if (-not (Test-Path -LiteralPath $bin -PathType Leaf)) { throw "Native binary missing: $bin" }
             & $bin --invalid-arguments *> $null
             if ($LASTEXITCODE -ne 2) { throw "argument contract failed for $bin (exit $LASTEXITCODE)" }

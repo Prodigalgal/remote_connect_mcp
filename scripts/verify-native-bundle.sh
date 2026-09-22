@@ -19,9 +19,9 @@ max_entry = 128 * 1024 * 1024
 max_total = 256 * 1024 * 1024
 expected_arg = sys.argv[2].strip() if len(sys.argv) > 2 else ""
 expected = expected_arg.casefold() or None
-if expected is not None and not re.fullmatch(r"rcm-(?:agent|desktop-companion|browser-agent)(?:\.exe)?", expected, re.I):
-    raise SystemExit("executable-name must be rcm-agent, rcm-agent.exe, rcm-desktop-companion, rcm-desktop-companion.exe, rcm-browser-agent, or rcm-browser-agent.exe")
-allowed = re.compile(r"(?:rcm-(?:agent|desktop-companion|browser-agent)(?:\.exe)?|[A-Za-z0-9_.-]+\.dll|[A-Za-z0-9_.-]+\.so(?:\.[0-9]+(?:\.[0-9]+)*)?)$", re.I)
+if expected is not None and not re.fullmatch(r"rcm-(?:center|agent|desktop-companion|browser-agent)(?:\.exe)?", expected, re.I):
+    raise SystemExit("executable-name must be rcm-center, rcm-center.exe, rcm-agent, rcm-agent.exe, rcm-desktop-companion, rcm-desktop-companion.exe, rcm-browser-agent, or rcm-browser-agent.exe")
+allowed = re.compile(r"(?:rcm-(?:center|agent|desktop-companion|browser-agent)(?:\.exe)?|[A-Za-z0-9_.-]+\.dll|[A-Za-z0-9_.-]+\.so(?:\.[0-9]+(?:\.[0-9]+)*)?)$", re.I)
 
 with zipfile.ZipFile(archive) as bundle:
     entries = [entry for entry in bundle.infolist() if entry.filename and not entry.is_dir()]
@@ -44,7 +44,7 @@ with zipfile.ZipFile(archive) as bundle:
         total += entry.file_size
         if total > max_total:
             raise SystemExit("Agent archive exceeds 256 MiB uncompressed.")
-    executables = [name for name in names if re.fullmatch(r"rcm-(?:agent|desktop-companion|browser-agent)(?:\.exe)?", name, re.I)]
+    executables = [name for name in names if re.fullmatch(r"rcm-(?:center|agent|desktop-companion|browser-agent)(?:\.exe)?", name, re.I)]
     if len(executables) != 1:
         raise SystemExit("Native bundle must contain exactly one canonical executable.")
     if expected is not None and executables[0].casefold() != expected:
