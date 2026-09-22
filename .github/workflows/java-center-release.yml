@@ -1,0 +1,419 @@
+name: Center Component Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["center-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Center version, for example v0.1.32"
+        required: true
+        type: string
+      prerelease:
+        description: "Publish as a prerelease and promote staging"
+        required: true
+        default: false
+        type: boolean
+      deploy:
+        description: "Promote the Center image through GitOps"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: rcm-center-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+
+jobs:
+  changes:
+    name: Detect Center changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" || "${REF_TYPE}" == "tag" ]]; then
+            echo 'changed=true' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ -z "${BEFORE}" || "${BEFORE}" =~ ^0+$ ]]; then
+            files="$(git ls-files)"
+          else
+            files="$(git diff --name-only "${BEFORE}" "${SHA}")"
+          fi
+          if printf '%s\n' "${files}" | grep -Eq '^(java/center/|java/protocol/|java/(build.gradle.kts|settings.gradle.kts|gradle.properties)$|java/gradle/|java/gradlew(\.bat)?$|java/Dockerfile.center|scripts/sync-artifact-viewer.sh|web/src/artifact-viewer/|\.github/workflows/java-center-release.yml$)'; then
+            echo 'changed=true' >> "${GITHUB_OUTPUT}"
+          else
+            echo 'changed=false' >> "${GITHUB_OUTPUT}"
+          fi
+
+  prepare:
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.coordinates.outputs.version }}
+      tag: ${{ steps.coordinates.outputs.tag }}
+      prerelease: ${{ steps.coordinates.outputs.prerelease }}
+      deploy: ${{ steps.coordinates.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Repository hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/scan-repository-secrets.sh
+          bash scripts/validate-java-production-overlay.sh --template
+      - name: Resolve Center coordinates
+        id: coordinates
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RUN_NUMBER: ${{ github.run_number }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          INPUT_DEPLOY: ${{ inputs.deploy }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            version="${INPUT_VERSION#center-}"
+            prerelease="${INPUT_PRERELEASE:-false}"
+            deploy="${INPUT_DEPLOY:-true}"
+          elif [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == center-v* ]]; then
+            version="${REF_NAME#center-}"
+            prerelease=false
+            deploy=true
+          else
+            version="v0.0.0-center.${RUN_NUMBER}"
+            prerelease=true
+            deploy=true
+          fi
+          [[ "${version}" =~ ^v[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$ ]] || {
+            echo 'Center version must start with v and contain only release-safe characters' >&2
+            exit 2
+          }
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=center-${version}" >> "${GITHUB_OUTPUT}"
+          echo 'publish=true' >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+          echo "deploy=${deploy}" >> "${GITHUB_OUTPUT}"
+
+  center-tests:
+    name: Center JVM and PostgreSQL gate
+    needs: prepare
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: remote_connect_mcp
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d remote_connect_mcp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      RCM_TEST_POSTGRES_URL: jdbc:postgresql://127.0.0.1:5432/remote_connect_mcp
+      RCM_TEST_POSTGRES_USERNAME: postgres
+      RCM_TEST_POSTGRES_PASSWORD: postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - name: Sync standalone MCP Apps artifact viewer
+        run: bash scripts/sync-artifact-viewer.sh
+      - name: Center tests
+        working-directory: java
+        run: bash ./gradlew -PreleaseVersion=${{ needs.prepare.outputs.version }} :center:test --no-daemon
+
+  linux-native:
+    name: Center Native (${{ matrix.arch }})
+    needs: [prepare, center-tests]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: remote_connect_mcp
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d remote_connect_mcp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Sync standalone MCP Apps artifact viewer
+        run: bash scripts/sync-artifact-viewer.sh
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0 # v4.3.0
+      - name: Build Center Native Image
+        shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          native_march='x86-64-v2'
+          if [[ "${TARGET_ARCH}" == 'arm64' ]]; then native_march='armv8-a'; fi
+          sudo apt-get update
+          sudo apt-get install -y zip
+          mkdir -p "out/${TARGET_ARCH}/center"
+          docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
+            --build-arg RCM_CI_BUILD=true --build-arg RCM_NATIVE_MARCH="${native_march}" \
+            --file java/Dockerfile.center.native --output "type=local,dest=out/${TARGET_ARCH}/center-build" java
+          center="$(find "out/${TARGET_ARCH}/center-build" -type f -name rcm-center -print -quit)"
+          test -n "${center}"
+          if [[ "${TARGET_ARCH}" == 'amd64' ]]; then
+            python3 scripts/normalize-native-isa.py --normalize "${center}"
+          fi
+          python3 scripts/normalize-native-isa.py --check "${center}"
+          cp "${center}" "out/${TARGET_ARCH}/center/rcm-center"
+          find "$(dirname "${center}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "out/${TARGET_ARCH}/center/" \;
+          chmod +x "out/${TARGET_ARCH}/center/rcm-center"
+          (cd "out/${TARGET_ARCH}/center" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS)
+          bash scripts/smoke-java.sh "out/${TARGET_ARCH}/center/rcm-center"
+          RCM_CENTER_PERSISTENCE_MODE=postgres \
+          RCM_CENTER_REQUIRE_DURABLE_STORAGE=false \
+          RCM_CENTER_LIQUIBASE_ENABLED=true \
+          RCM_CENTER_DATABASE_URL=jdbc:postgresql://127.0.0.1:5432/remote_connect_mcp \
+          RCM_CENTER_DATABASE_USERNAME=postgres \
+          RCM_CENTER_DATABASE_PASSWORD=postgres \
+          timeout 120s "out/${TARGET_ARCH}/center/rcm-center" --migrate
+          archive="remote-connect-mcp-center-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          files=$(cd "out/${TARGET_ARCH}/center" && find . -maxdepth 1 -type f \( -name 'rcm-center' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
+          (cd "out/${TARGET_ARCH}/center" && zip -q -9 -j "${GITHUB_WORKSPACE}/${archive}" ${files})
+          sha256sum "${archive}" > "${archive}.sha256"
+          bash scripts/verify-native-bundle.sh "${archive}" rcm-center
+      - name: Generate Center SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: out/${{ matrix.arch }}/center
+          format: spdx-json
+          output-file: remote-connect-mcp-center-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rcm-center-linux-${{ matrix.arch }}
+          path: |
+            remote-connect-mcp-center-*-linux-${{ matrix.arch }}.zip
+            remote-connect-mcp-center-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-connect-mcp-center-*-linux-${{ matrix.arch }}.spdx.json
+          if-no-files-found: error
+
+  images:
+    name: Publish Center images
+    needs: [prepare, linux-native]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0 # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rcm-center-linux-amd64
+          path: image-input/amd64
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rcm-center-linux-arm64
+          path: image-input/arm64
+      - name: Assemble and publish Center image
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${IMAGE_OWNER,,}"
+          mkdir -p image-root/amd64 image-root/arm64
+          unzip -q "image-input/amd64/remote-connect-mcp-center-${RELEASE_VERSION}-linux-amd64.zip" -d image-root/amd64
+          unzip -q "image-input/arm64/remote-connect-mcp-center-${RELEASE_VERSION}-linux-arm64.zip" -d image-root/arm64
+          for arch in amd64 arm64; do
+            docker buildx build --platform "linux/${arch}" \
+              --file java/Dockerfile.center.native-runtime \
+              --tag "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}-${arch}" \
+              --provenance=true --sbom=true --push "image-root/${arch}"
+          done
+          docker buildx imagetools create \
+            --tag "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}" \
+            "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}-amd64" \
+            "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}-arm64"
+          if [[ "${{ needs.prepare.outputs.prerelease }}" != 'true' ]]; then
+            docker buildx imagetools create \
+              --tag "ghcr.io/${owner}/remote-connect-mcp-center-java:latest" \
+              "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}-amd64" \
+              "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}-arm64"
+          fi
+
+  release:
+    name: Publish Center release
+    needs: [prepare, linux-native, images]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: release
+          pattern: rcm-center-linux-*
+          merge-multiple: true
+      - name: Sign Center assets
+        uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
+        with:
+          inputs: |
+            release/*.zip
+            release/*.zip.sha256
+            release/*.spdx.json
+          release-signing-artifacts: false
+      - name: Publish GitHub Center release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' assets < <(find release -maxdepth 1 -type f \( -name '*.zip' -o -name '*.zip.sha256' -o -name '*.spdx.json' -o -name '*.sigstore.json' \) -print0 | sort -z)
+          ((${#assets[@]} > 0))
+          args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --title "Center ${RELEASE_VERSION}" --generate-notes)
+          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then args+=(--prerelease); fi
+          gh release create "${args[@]}"
+
+  gitops-deploy:
+    name: Promote Center through GitOps
+    needs: [prepare, images, release]
+    if: needs.prepare.outputs.deploy == 'true' && needs.release.result == 'success' && vars.RCM_GITOPS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      GITOPS_REPOSITORY: ${{ secrets.RCM_GITOPS_REPOSITORY }}
+      GITOPS_SSH_KEY: ${{ secrets.RCM_GITOPS_SSH_KEY }}
+    steps:
+      - name: Configure GitHub-only GitOps deploy key
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GITOPS_REPOSITORY}" && test -n "${GITOPS_SSH_KEY}"
+          install -d -m 700 "${HOME}/.ssh"
+          printf '%s\n' "${GITOPS_SSH_KEY}" > "${HOME}/.ssh/id_ed25519"
+          chmod 600 "${HOME}/.ssh/id_ed25519"
+          ssh-keyscan -t ed25519 github.com >> "${HOME}/.ssh/known_hosts"
+          chmod 644 "${HOME}/.ssh/known_hosts"
+      - name: Resolve Center image digest
+        id: image
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner="${IMAGE_OWNER,,}"
+          token="$(curl --fail --silent --show-error --user "${GHCR_USER}:${GHCR_TOKEN}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${owner}/remote-connect-mcp-center-java:pull" | jq --raw-output --exit-status '.token')"
+          digest="$(curl --fail --silent --show-error --head \
+            --header "Authorization: Bearer ${token}" \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/${owner}/remote-connect-mcp-center-java/manifests/center-${RELEASE_VERSION}" \
+            | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" { print $2; exit }')"
+          [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+      - name: Checkout private GitOps repository
+        shell: bash
+        run: git clone --depth 1 --branch main "git@github.com:${GITOPS_REPOSITORY}.git" gitops
+      - name: Pin only Center manifests
+        env:
+          CENTER_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then overlay='remote-connect-mcp-java-staging'; else overlay='remote-connect-mcp-java-production'; fi
+          export OVERLAY_DIR="gitops/${overlay}"
+          RELEASE_VERSION="${RELEASE_VERSION}" CENTER_DIGEST="${CENTER_DIGEST}" OVERLAY_DIR="${OVERLAY_DIR}" python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          root = pathlib.Path(os.environ['OVERLAY_DIR'])
+          digest = os.environ['CENTER_DIGEST']
+          version = os.environ['RELEASE_VERSION']
+          files = [root / 'center.yaml', root / 'migration-job.yaml']
+          image_pattern = re.compile(r'(image:\s*ghcr\.io/prodigalgal/remote-connect-mcp-center-java@)sha256:[0-9a-f]{64}')
+          version_pattern = re.compile(r'(?m)^(\s*-\s*name:\s*RCM_CENTER_VERSION\s*\n\s*value:\s*)[^\r\n]+$')
+          total = 0
+          for path in files:
+              if not path.is_file(): raise SystemExit(f'missing GitOps manifest: {path}')
+              text = path.read_text(encoding='utf-8')
+              text, count = image_pattern.subn(r'\1' + digest, text)
+              if count == 0: raise SystemExit(f'Center image digest missing from {path}')
+              path.write_text(text, encoding='utf-8', newline='\n')
+              total += count
+          center = root / 'center.yaml'
+          text = center.read_text(encoding='utf-8')
+          text, count = version_pattern.subn(r'\1' + version, text)
+          if count != 1: raise SystemExit(f'expected one RCM_CENTER_VERSION, found {count}')
+          center.write_text(text, encoding='utf-8', newline='\n')
+          if total != 2: raise SystemExit(f'expected two Center image references, found {total}')
+          PY
+          git -C gitops diff --check
+          git -C gitops diff -- "${overlay}/center.yaml" "${overlay}/migration-job.yaml"
+      - name: Commit and push Center promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then overlay='remote-connect-mcp-java-staging'; else overlay='remote-connect-mcp-java-production'; fi
+          git -C gitops config user.name 'remote-connect-mcp-actions[bot]'
+          git -C gitops config user.email 'remote-connect-mcp-actions[bot]@users.noreply.github.com'
+          git -C gitops add "${overlay}/center.yaml" "${overlay}/migration-job.yaml"
+          if git -C gitops diff --cached --quiet; then echo 'Center overlay already points at this release.'; exit 0; fi
+          git -C gitops commit -m "chore(remote-connect-mcp): promote center ${RELEASE_VERSION}"
+          git -C gitops push origin HEAD:main

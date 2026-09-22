@@ -1,4 +1,4 @@
-name: Java and React migration
+name: Java and React selective CI
 
 on:
   push:
@@ -9,16 +9,55 @@ on:
 permissions:
   contents: read
 
-# A newer push supersedes an older PR run.  Native Image is intentionally
-# expensive, so canceling stale runs avoids burning runner time while keeping
-# the latest commit fully gated.
 concurrency:
   group: java-react-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect component changes
+    runs-on: ubuntu-latest
+    outputs:
+      center: ${{ steps.filter.outputs.center }}
+      agent: ${{ steps.filter.outputs.agent }}
+      console: ${{ steps.filter.outputs.console }}
+      contract: ${{ steps.filter.outputs.contract }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == 'workflow_dispatch' ]]; then
+            printf 'center=true\nagent=true\nconsole=true\ncontract=true\n' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ "${EVENT_NAME}" == 'pull_request' ]]; then
+            files="$(git diff --name-only "${BASE_SHA}" "${SHA}")"
+          elif [[ -z "${BEFORE}" || "${BEFORE}" =~ ^0+$ ]]; then
+            files="$(git ls-files)"
+          else
+            files="$(git diff --name-only "${BEFORE}" "${SHA}")"
+          fi
+          center=false; agent=false; console=false; contract=false
+          if printf '%s\n' "${files}" | grep -Eq '^(java/center/|web/src/artifact-viewer/|scripts/sync-artifact-viewer.sh)'; then center=true; fi
+          if printf '%s\n' "${files}" | grep -Eq '^(java/(agent|desktop|browser)/|scripts/(install-java-agent|first-install-java-agent|deploy-java-desktop-browser|browser-worker))'; then agent=true; fi
+          if printf '%s\n' "${files}" | grep -Eq '^(web/)'; then console=true; fi
+          if printf '%s\n' "${files}" | grep -Eq '^(java/protocol/|java/(build.gradle.kts|settings.gradle.kts|gradle.properties)$|java/gradle/|java/gradlew(\.bat)?$)'; then
+            contract=true; center=true; agent=true
+          fi
+          printf 'center=%s\nagent=%s\nconsole=%s\ncontract=%s\n' "${center}" "${agent}" "${console}" "${contract}" >> "${GITHUB_OUTPUT}"
+
   repository-hygiene:
     name: Repository hygiene
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,114 +76,10 @@ jobs:
       - name: Validate single MCP model surface
         run: node scripts/check-mcp-tool-surface.mjs
 
-  jvm-and-console:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          distribution: temurin
-          java-version: '25'
-          cache: gradle
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10.15.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - name: Java tests and JVM packages (Unix)
-        if: matrix.os != 'windows-latest'
-        working-directory: java
-        run: bash ./gradlew test :center:bootJar :agent:jar :desktop:jar :browser:jar --no-daemon
-      - name: Java tests and JVM packages (Windows)
-        if: matrix.os == 'windows-latest'
-        working-directory: java
-        shell: pwsh
-        run: .\gradlew.bat test :center:bootJar :agent:jar :desktop:jar :browser:jar --no-daemon
-      - name: Install React dependencies
-        working-directory: web
-        run: pnpm install --frozen-lockfile
-      - name: Build React production bundle
-        working-directory: web
-        run: pnpm build
-      - name: Validate browser worker syntax
-        run: node --check scripts/browser-worker.mjs
-
-  native-linux:
-    # Build and execute the binary on a matching host.  The release workflow
-    # uses the same matrix, so PRs exercise the same architecture boundary.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: graalvm/setup-graalvm@0426e2e191540e8514dff98dc52a5f5146a2a276 # v1.6.6
-        with:
-          java-version: '25'
-          distribution: graalvm-community
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          native-image-job-reports: false
-      - name: Native Image smoke build
-        working-directory: java
-        # Native Image is memory intensive; compile one image at a time on the
-        # hosted runner instead of letting Gradle launch Center and Agent in
-        # parallel. This keeps the CI gate deterministic on 16 GiB runners.
-        run: |
-          set -euo pipefail
-          native_march=x86-64-v2
-          if [[ "${{ matrix.arch }}" == "arm64" ]]; then native_march=armv8-a; fi
-          bash ./gradlew -PnativeMarch="$native_march" :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-      - name: Native MCP smoke tests
-        env:
-          CENTER_BINARY: java/center/build/native/nativeCompile/rcm-center
-          AGENT_BINARY: java/agent/build/native/nativeCompile/rcm-agent
-        run: |
-          chmod +x "$CENTER_BINARY" "$AGENT_BINARY"
-          RCM_SMOKE_PORT=18180 bash scripts/smoke-java.sh "$CENTER_BINARY"
-          RCM_SMOKE_RESOURCE_REPORT="$RUNNER_TEMP/rcm-agent-resource.json" \
-            bash scripts/smoke-java-agent.sh "$CENTER_BINARY" "$AGENT_BINARY" 18181
-          bash scripts/smoke-java-websocket.sh "$CENTER_BINARY" 18182
-          test -x java/desktop/build/native/nativeCompile/rcm-desktop-companion
-          set +e
-          java/desktop/build/native/nativeCompile/rcm-desktop-companion --invalid-arguments >/dev/null 2>&1
-          desktop_code=$?
-          set -e
-          test "$desktop_code" -eq 2
-          test -x java/browser/build/native/nativeCompile/rcm-browser-agent
-          set +e
-          java/browser/build/native/nativeCompile/rcm-browser-agent --invalid-arguments >/dev/null 2>&1
-          browser_code=$?
-          set -e
-          test "$browser_code" -eq 2
-      - name: Enforce Native Agent RSS budget
-        env:
-          RCM_AGENT_MAX_RSS_MIB: '256'
-        run: python3 scripts/check-agent-resource-report.py "$RUNNER_TEMP/rcm-agent-resource.json"
-      - name: Upload Agent resource report
-        if: success()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: java-agent-resource-${{ matrix.arch }}
-          path: ${{ runner.temp }}/rcm-agent-resource.json
-          if-no-files-found: error
-
-  postgres-integration:
-    name: PostgreSQL and Liquibase integration
+  center-test:
+    name: Center selective test
+    needs: changes
+    if: needs.changes.outputs.center == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -166,33 +101,47 @@ jobs:
       RCM_TEST_POSTGRES_PASSWORD: postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.0
         with:
           distribution: temurin
           java-version: '25'
           cache: gradle
-      - name: Run PostgreSQL contract test
+      - run: bash scripts/sync-artifact-viewer.sh
+      - name: Center tests
         working-directory: java
-        run: bash ./gradlew :center:test --tests '*PostgresIntegrationTest' --no-daemon
-      - name: PostgreSQL backup and restore gate
-        env:
-          PGHOST: 127.0.0.1
-          PGPORT: '5432'
-          PGDATABASE: remote_connect_mcp
-          PGUSER: postgres
-          PGPASSWORD: postgres
-          RCM_BACKUP_OUTPUT_DIR: ${{ runner.temp }}/rcm-backups
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client
-          bash ./scripts/backup-postgres.sh
-          dump="$(find "${RCM_BACKUP_OUTPUT_DIR}" -maxdepth 1 -name '*.dump' -print -quit)"
-          test -n "${dump}"
-          pg_restore --list "${dump}" >/dev/null
-          restore_db=remote_connect_mcp_restore
-          dropdb --if-exists --host "${PGHOST}" --port "${PGPORT}" --username "${PGUSER}" "${restore_db}"
-          createdb --host "${PGHOST}" --port "${PGPORT}" --username "${PGUSER}" "${restore_db}"
-          pg_restore --exit-on-error --no-owner --no-acl --host "${PGHOST}" --port "${PGPORT}" --username "${PGUSER}" --dbname "${restore_db}" "${dump}"
-          test "$(psql --host "${PGHOST}" --port "${PGPORT}" --username "${PGUSER}" --dbname "${restore_db}" -Atqc "SELECT to_regclass('public.rcm_agent')")" = 'rcm_agent'
-          dropdb --if-exists --host "${PGHOST}" --port "${PGPORT}" --username "${PGUSER}" "${restore_db}"
+        run: bash ./gradlew :center:test --no-daemon
+
+  agent-test:
+    name: Agent selective test
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - name: Agent, Desktop and Browser tests
+        working-directory: java
+        run: bash ./gradlew :agent:test :desktop:test :browser:test --no-daemon
+
+  console-test:
+    name: Console selective test
+    needs: changes
+    if: needs.changes.outputs.console == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v10.15.0
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Console build
+        working-directory: web
+        run: pnpm install --frozen-lockfile && pnpm build

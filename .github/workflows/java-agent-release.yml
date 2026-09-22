@@ -1,0 +1,390 @@
+name: Agent Component Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["java-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Agent release version, for example v0.1.32"
+        required: true
+        type: string
+      prerelease:
+        description: "Publish as a prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: rcm-agent-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+
+jobs:
+  changes:
+    name: Detect Agent changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" || "${REF_TYPE}" == "tag" ]]; then
+            echo 'changed=true' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ -z "${BEFORE}" || "${BEFORE}" =~ ^0+$ ]]; then files="$(git ls-files)"; else files="$(git diff --name-only "${BEFORE}" "${SHA}")"; fi
+          if printf '%s\n' "${files}" | grep -Eq '^(java/(agent|desktop|browser|protocol)/|java/(build.gradle.kts|settings.gradle.kts|gradle.properties)$|java/gradle/|java/gradlew(\.bat)?$|java/Dockerfile\.(agent|desktop|browser)|scripts/(install-java-agent|first-install-java-agent|deploy-java-desktop-browser|browser-worker|normalize-native-isa|verify-native-bundle)|deploy/systemd/|\.github/workflows/java-agent-release.yml$)'; then
+            echo 'changed=true' >> "${GITHUB_OUTPUT}"
+          else
+            echo 'changed=false' >> "${GITHUB_OUTPUT}"
+          fi
+
+  prepare:
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.coordinates.outputs.version }}
+      tag: ${{ steps.coordinates.outputs.tag }}
+      prerelease: ${{ steps.coordinates.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Repository hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/scan-repository-secrets.sh
+          python3 scripts/verify-agent-boundaries.py
+      - name: Resolve Agent coordinates
+        id: coordinates
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RUN_NUMBER: ${{ github.run_number }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            version="${INPUT_VERSION#java-}"
+            prerelease="${INPUT_PRERELEASE:-false}"
+          elif [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == java-v* ]]; then
+            version="${REF_NAME#java-}"
+            prerelease=false
+          else
+            version="v0.0.0-main.${RUN_NUMBER}"
+            prerelease=true
+          fi
+          [[ "${version}" =~ ^v[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$ ]] || {
+            echo 'Agent version must start with v and contain only release-safe characters' >&2
+            exit 2
+          }
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=java-${version}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+
+  agent-tests:
+    name: Agent JVM component gate
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+      - name: Agent, Desktop and Browser tests
+        working-directory: java
+        run: bash ./gradlew -PreleaseVersion=${{ needs.prepare.outputs.version }} :agent:test :desktop:test :browser:test --no-daemon
+
+  linux-native:
+    name: Agent Native (${{ matrix.arch }})
+    needs: [prepare, agent-tests]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0 # v4.3.0
+      - name: Build and package Agent component bundles
+        shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          native_march='x86-64-v2'
+          if [[ "${TARGET_ARCH}" == 'arm64' ]]; then native_march='armv8-a'; fi
+          sudo apt-get update
+          sudo apt-get install -y zip
+          mkdir -p "out/${TARGET_ARCH}" "out/${TARGET_ARCH}/agent" "out/${TARGET_ARCH}/desktop" "out/${TARGET_ARCH}/browser"
+          for kind in agent desktop browser; do
+            docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
+              --build-arg RCM_CI_BUILD=true --build-arg RCM_NATIVE_MARCH="${native_march}" \
+              --file "java/Dockerfile.${kind}.native" --output "type=local,dest=out/${kind}-${TARGET_ARCH}" java
+          done
+          agent="$(find "out/agent-${TARGET_ARCH}" -type f -name rcm-agent -print -quit)"
+          desktop="$(find "out/desktop-${TARGET_ARCH}" -type f -name rcm-desktop-companion -print -quit)"
+          browser="$(find "out/browser-${TARGET_ARCH}" -type f -name rcm-browser-agent -print -quit)"
+          test -n "${agent}" && test -n "${desktop}" && test -n "${browser}"
+          if [[ "${TARGET_ARCH}" == 'amd64' ]]; then python3 scripts/normalize-native-isa.py --normalize "${agent}" "${desktop}" "${browser}"; fi
+          python3 scripts/normalize-native-isa.py --check "${agent}" "${desktop}" "${browser}"
+          cp "${agent}" "out/${TARGET_ARCH}/agent/rcm-agent"
+          cp "${desktop}" "out/${TARGET_ARCH}/desktop/rcm-desktop-companion"
+          cp "${browser}" "out/${TARGET_ARCH}/browser/rcm-browser-agent"
+          find "$(dirname "${agent}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "out/${TARGET_ARCH}/agent/" \;
+          find "$(dirname "${desktop}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "out/${TARGET_ARCH}/desktop/" \;
+          find "$(dirname "${browser}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "out/${TARGET_ARCH}/browser/" \;
+          for bin in "out/${TARGET_ARCH}/agent/rcm-agent" "out/${TARGET_ARCH}/desktop/rcm-desktop-companion" "out/${TARGET_ARCH}/browser/rcm-browser-agent"; do
+            chmod +x "${bin}"
+            set +e; "${bin}" --invalid-arguments >/dev/null 2>&1; code=$?; set -e
+            test "${code}" -eq 2
+          done
+          for dir in agent desktop browser; do (cd "out/${TARGET_ARCH}/${dir}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS); done
+          agent_archive="remote-connect-mcp-agent-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          desktop_archive="remote-connect-mcp-desktop-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          browser_archive="remote-connect-mcp-browser-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          for spec in "agent:${agent_archive}" "desktop:${desktop_archive}" "browser:${browser_archive}"; do
+            dir="${spec%%:*}"; archive="${spec#*:}"
+            files=$(cd "out/${TARGET_ARCH}/${dir}" && find . -maxdepth 1 -type f \( -name 'rcm-*' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
+            (cd "out/${TARGET_ARCH}/${dir}" && zip -q -9 -j "${GITHUB_WORKSPACE}/${archive}" ${files})
+            sha256sum "${archive}" > "${archive}.sha256"
+          done
+          bash scripts/verify-native-bundle.sh "${agent_archive}" rcm-agent
+          bash scripts/verify-native-bundle.sh "${desktop_archive}" rcm-desktop-companion
+          bash scripts/verify-native-bundle.sh "${browser_archive}" rcm-browser-agent
+          cp scripts/install-java-agent.sh scripts/first-install-java-agent.sh deploy/systemd/remote-connect-mcp-agent.service deploy/systemd/agent.env.example README.md LICENSE NOTICE "out/${TARGET_ARCH}/"
+          tar -C out -I 'gzip -9' -cf "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" "${TARGET_ARCH}"
+          sha256sum "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" > "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz.sha256"
+      - name: Generate Agent SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: out/${{ matrix.arch }}
+          format: spdx-json
+          output-file: remote-connect-mcp-agent-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rcm-agent-linux-${{ matrix.arch }}
+          path: |
+            remote-connect-mcp-*.tar.gz
+            remote-connect-mcp-*.tar.gz.sha256
+            remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.zip
+            remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-connect-mcp-desktop-*-linux-${{ matrix.arch }}.zip
+            remote-connect-mcp-desktop-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-connect-mcp-browser-*-linux-${{ matrix.arch }}.zip
+            remote-connect-mcp-browser-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.spdx.json
+          if-no-files-found: error
+
+  windows-native:
+    name: Agent Native (windows-amd64)
+    needs: [prepare, agent-tests]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: graalvm/setup-graalvm@0426e2e191540e8514dff98dc52a5f5146a2a276 # v1.6.6
+        with:
+          java-version: '25'
+          distribution: graalvm-community
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: false
+      - name: Build Agent Native Images
+        working-directory: java
+        shell: pwsh
+        run: .\gradlew.bat -PnativeMarch=x86-64-v2 :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
+      - name: Validate Agent Native contracts
+        shell: pwsh
+        run: |
+          $bins = @(
+            '.\java\agent\build\native\nativeCompile\rcm-agent.exe',
+            '.\java\desktop\build\native\nativeCompile\rcm-desktop-companion.exe',
+            '.\java\browser\build\native\nativeCompile\rcm-browser-agent.exe'
+          )
+          foreach ($bin in $bins) {
+            if (-not (Test-Path -LiteralPath $bin -PathType Leaf)) { throw "Native binary missing: $bin" }
+            & $bin --invalid-arguments *> $null
+            if ($LASTEXITCODE -ne 2) { throw "argument contract failed for $bin (exit $LASTEXITCODE)" }
+          }
+      - name: Package Agent Windows bundles
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD 'agent-release-windows-amd64'
+          $agentOut = Join-Path $out 'agent'; $desktopOut = Join-Path $out 'desktop'; $browserOut = Join-Path $out 'browser'
+          New-Item -ItemType Directory -Force -Path $agentOut,$desktopOut,$browserOut | Out-Null
+          Copy-Item java/agent/build/native/nativeCompile/rcm-agent.exe $agentOut/rcm-agent.exe
+          Copy-Item java/desktop/build/native/nativeCompile/rcm-desktop-companion.exe $desktopOut/rcm-desktop-companion.exe
+          Copy-Item java/browser/build/native/nativeCompile/rcm-browser-agent.exe $browserOut/rcm-browser-agent.exe
+          Get-ChildItem java/agent/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $agentOut
+          Get-ChildItem java/desktop/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $desktopOut
+          Get-ChildItem java/browser/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $browserOut
+          Copy-Item scripts/install-java-agent.ps1, scripts/first-install-java-agent.ps1, README.md, LICENSE, NOTICE $out
+          foreach ($bundle in @($agentOut,$desktopOut,$browserOut)) {
+            Get-FileHash (Get-ChildItem $bundle -File | Where-Object { $_.Extension -in '.exe','.dll' }) -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content (Join-Path $bundle 'SHA256SUMS') -Encoding ascii
+          }
+          $specs = @(
+            @{ Dir=$agentOut; Name="remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-agent.exe' },
+            @{ Dir=$desktopOut; Name="remote-connect-mcp-desktop-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-desktop-companion.exe' },
+            @{ Dir=$browserOut; Name="remote-connect-mcp-browser-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-browser-agent.exe' }
+          )
+          foreach ($spec in $specs) {
+            Push-Location $spec.Dir
+            try { Compress-Archive -Path '*.exe','*.dll' -DestinationPath (Join-Path $PWD "..\..\$($spec.Name)") -CompressionLevel Optimal -Force }
+            finally { Pop-Location }
+            $archive = Join-Path $PWD $spec.Name
+            (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() + "  $($spec.Name)" | Set-Content "$archive.sha256" -Encoding ascii
+            & "$PWD/scripts/verify-native-bundle.ps1" -AgentArchive $archive -ExecutableName $spec.Exe
+          }
+          Compress-Archive -Path "$out/*" -DestinationPath "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -CompressionLevel Optimal -Force
+          (Get-FileHash "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip.sha256" -Encoding ascii
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rcm-agent-windows-amd64
+          path: |
+            remote-connect-mcp-*.zip
+            remote-connect-mcp-*.zip.sha256
+            remote-connect-mcp-*.tar.gz
+          if-no-files-found: error
+
+  images:
+    name: Publish command-agent image
+    needs: [prepare, linux-native]
+    if: needs.prepare.outputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0 # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rcm-agent-linux-amd64
+          path: image-input/amd64
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rcm-agent-linux-arm64
+          path: image-input/arm64
+      - name: Assemble and publish command-agent image
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${IMAGE_OWNER,,}"
+          mkdir -p image-root/amd64 image-root/arm64
+          unzip -q "image-input/amd64/remote-connect-mcp-agent-${RELEASE_VERSION}-linux-amd64.zip" -d image-root/amd64
+          unzip -q "image-input/arm64/remote-connect-mcp-agent-${RELEASE_VERSION}-linux-arm64.zip" -d image-root/arm64
+          for arch in amd64 arm64; do
+            docker buildx build --platform "linux/${arch}" --file java/Dockerfile.agent.native-runtime \
+              --tag "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}-${arch}" \
+              --provenance=true --sbom=true --push "image-root/${arch}"
+          done
+          docker buildx imagetools create --tag "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}" \
+            "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}-amd64" \
+            "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}-arm64"
+          if [[ "${{ needs.prepare.outputs.prerelease }}" != 'true' ]]; then
+            docker buildx imagetools create --tag "ghcr.io/${owner}/remote-connect-mcp-agent-java:latest" \
+              "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}-amd64" \
+              "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}-arm64"
+          fi
+
+  release:
+    name: Publish Agent release
+    needs: [prepare, linux-native, windows-native, images]
+    if: needs.prepare.outputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: release
+          pattern: rcm-agent-*
+          merge-multiple: true
+      - name: Generate component release manifest
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re
+          root = pathlib.Path('release')
+          version = os.environ['RELEASE_VERSION']
+          tag = os.environ['RELEASE_TAG']
+          repo = os.environ['RELEASE_REPOSITORY']
+          components = []
+          pattern = re.compile(r'^remote-connect-mcp-(desktop|browser)-' + re.escape(version) + r'-(linux|windows)-(amd64|arm64)\.zip$')
+          for path in sorted(root.glob('remote-connect-mcp-*.zip')):
+              match = pattern.match(path.name)
+              if not match: continue
+              kind, os_name, arch = match.groups()
+              component = 'desktop-companion' if kind == 'desktop' else 'browser-agent'
+              components.append({'component': component, 'version': version, 'os': os_name, 'arch': arch,
+                  'url': f'https://github.com/{repo}/releases/download/{tag}/{path.name}',
+                  'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'bytes': path.stat().st_size,
+                  'restart_policy': 'drain-and-restart'})
+          target = root / f'remote-connect-mcp-manifest-{version}.json'
+          target.write_text(json.dumps({'version': version, 'components': components}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          PY
+      - name: Sign Agent assets
+        uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
+        with:
+          inputs: |
+            release/*.zip
+            release/*.zip.sha256
+            release/*.tar.gz
+            release/*.tar.gz.sha256
+            release/*.spdx.json
+            release/remote-connect-mcp-manifest-*.json
+          release-signing-artifacts: false
+      - name: Publish GitHub Agent release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' assets < <(find release -maxdepth 1 -type f \( -name '*.zip' -o -name '*.zip.sha256' -o -name '*.tar.gz' -o -name '*.tar.gz.sha256' -o -name '*.spdx.json' -o -name '*.sigstore.json' -o -name 'remote-connect-mcp-manifest-*.json' \) -print0 | sort -z)
+          ((${#assets[@]} > 0))
+          args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --title "Agent ${RELEASE_VERSION}" --generate-notes)
+          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then args+=(--prerelease); fi
+          gh release create "${args[@]}"
