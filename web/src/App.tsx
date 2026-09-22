@@ -35,6 +35,7 @@ export default function App() {
   const [search, setSearch] = useState('')
   const [adminToken, setAdminToken] = useState('')
   const [authenticated, setAuthenticated] = useState(false)
+  const [centerReachable, setCenterReachable] = useState(false)
   const [liveMachines, setLiveMachines] = useState<Machine[] | null>(null)
   const [liveProjects, setLiveProjects] = useState<Project[] | null>(null)
   const [liveTasks, setLiveTasks] = useState<Task[] | null>(null)
@@ -58,7 +59,7 @@ export default function App() {
 
   const connectionState: 'online' | 'connecting' | 'offline' | 'idle' = loading
     ? 'connecting'
-    : authenticated && liveMachines
+    : authenticated && centerReachable && liveMachines
     ? 'online'
     : authenticated
     ? 'offline'
@@ -66,7 +67,7 @@ export default function App() {
 
   const connectionLabel = loading
     ? '正在验证 Center...'
-    : authenticated && liveMachines
+    : authenticated && centerReachable && liveMachines
     ? 'Center 实时在线'
     : authenticated
     ? 'Center 暂时离线'
@@ -87,6 +88,7 @@ export default function App() {
       const operation = (async () => {
         if (!normalizedToken) {
           markAuthenticated(false)
+          setCenterReachable(false)
           setLiveMachines(null)
           setLiveProjects(null)
           setLiveTasks(null)
@@ -122,10 +124,12 @@ export default function App() {
           setLiveReleases(releases)
           setLiveAudit(audit)
           markAuthenticated(true)
+          setCenterReachable(true)
           setApiMessage(`已接入 Center · 活跃同步中 (${new Date().toLocaleTimeString()})`)
         } catch (error) {
           const message = error instanceof AdminApiError ? error.message : 'Center 暂时不可达'
           const authRejected = error instanceof AdminApiError && (error.status === 401 || error.status === 403)
+          setCenterReachable(false)
           if (authRejected || !authenticatedRef.current) {
             markAuthenticated(false)
             setLiveMachines(null)
@@ -155,6 +159,7 @@ export default function App() {
   useEffect(() => {
     if (!adminToken.trim()) {
       markAuthenticated(false)
+      setCenterReachable(false)
       setLiveMachines(null)
       setLiveProjects(null)
       setLiveTasks(null)
