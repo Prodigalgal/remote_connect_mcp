@@ -244,3 +244,161 @@ button:disabled { cursor: not-allowed; opacity: .56; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* Third-pass polish: keep every control on the same dark surface, make
+   desktop tables intentionally scrollable, and remove browser-default
+   styling that previously made some selects look like unthemed HTML. */
+html { color-scheme: dark; }
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+}
+
+.table-panel { overflow-x: auto; overflow-y: hidden; }
+.table-head.audit-head,
+.table-row.audit-row {
+  grid-template-columns: 1.3fr 1.1fr .8fr 1.3fr .8fr 2fr;
+  min-width: 980px;
+}
+.table-row.audit-row { align-items: start; }
+
+.task-composer {
+  padding: 24px;
+}
+.task-composer > div:first-child h3 {
+  margin: 0 0 7px;
+  color: var(--text-strong);
+  font-size: 19px;
+  letter-spacing: -.035em;
+}
+.task-composer > div:first-child p {
+  margin: 0;
+  color: #8ba3bc;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.composer-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.runtime-grid {
+  grid-template-columns: minmax(0, 1fr) 180px 180px;
+}
+
+/* Direct labels are used by the upgrade composer and should look identical
+   to fields inside the regular composer grid. */
+.task-composer > label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.task-composer > label > select,
+.task-composer > label > input,
+.task-composer > label > textarea,
+.project-card input,
+.project-card select,
+.worktree-toolbar input,
+.git-actions input,
+.git-actions select,
+.idempotency-field input,
+.manual-release input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  padding: 9px 11px;
+  color: var(--text);
+  background: linear-gradient(180deg, #10223a, var(--surface-input));
+  font: inherit;
+  outline: 0;
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+.task-composer > label > select:hover,
+.task-composer > label > input:hover,
+.task-composer > label > textarea:hover,
+.project-card input:hover,
+.project-card select:hover,
+.worktree-toolbar input:hover,
+.git-actions input:hover,
+.git-actions select:hover,
+.idempotency-field input:hover,
+.manual-release input:hover { border-color: #41688f; }
+.task-composer > label > select:focus,
+.task-composer > label > input:focus,
+.task-composer > label > textarea:focus,
+.project-card input:focus,
+.project-card select:focus,
+.worktree-toolbar input:focus,
+.git-actions input:focus,
+.git-actions select:focus,
+.idempotency-field input:focus,
+.manual-release input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(81, 181, 255, .12); }
+
+select,
+select option,
+select optgroup,
+input[type='number'] {
+  color-scheme: dark;
+}
+select {
+  appearance: none;
+  padding-right: 38px !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #86a4bf 50%),
+    linear-gradient(135deg, #86a4bf 50%, transparent 50%);
+  background-position:
+    calc(100% - 17px) 50%,
+    calc(100% - 12px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+select option,
+select optgroup {
+  color: var(--text);
+  background: #10223a;
+}
+select:disabled { color: #6c829b; }
+
+.task-composer input::placeholder,
+.task-composer textarea::placeholder,
+.project-card input::placeholder,
+.worktree-toolbar input::placeholder,
+.git-actions input::placeholder,
+.idempotency-field input::placeholder,
+.manual-release input::placeholder { color: #5e7895; }
+
+.metric-card { --metric-tone: var(--blue); }
+.metric-card.blue { --metric-tone: var(--blue); }
+.metric-card.green { --metric-tone: var(--green); }
+.metric-card.amber { --metric-tone: var(--amber); }
+.metric-card.purple { --metric-tone: var(--purple); }
+.metric-icon { background: var(--metric-tone); }
+
+.pagination-bar { padding-bottom: 16px; }
+.manual-release summary {
+  padding: 7px 9px;
+  border: 1px solid rgba(49, 84, 117, .7);
+  border-radius: 7px;
+  background: rgba(8, 18, 31, .4);
+}
+.manual-release summary:hover { color: var(--text); border-color: #41688f; }
+
+@media (max-width: 980px) {
+  .runtime-grid { grid-template-columns: minmax(0, 1fr) 180px; }
+  .runtime-grid > label:last-child { grid-column: 1 / -1; }
+}
+
+@media (max-width: 680px) {
+  .task-composer { padding: 20px; }
+  .composer-grid,
+  .runtime-grid { grid-template-columns: 1fr; }
+  .runtime-grid > label:last-child { grid-column: auto; }
+  .idempotency-field { align-items: stretch; flex-direction: column; gap: 7px; min-width: 0; padding-top: 0; }
+  .idempotency-field input { min-width: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
