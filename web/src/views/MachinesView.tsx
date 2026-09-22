@@ -3,8 +3,9 @@ import { AlertCircleIcon, PlusIcon, ServerIcon } from '../icons/Icons'
 import { StatusBadge, StatusTone } from '../components/StatusBadge'
 import { CopyButton } from '../components/CopyButton'
 import { EmptyState } from '../components/EmptyState'
+import { PaginationBar } from '../components/PaginationBar'
 import { listMachinesPage, type Machine } from '../api'
-import { demoMachines, type DemoMachine, matchesMachine, usePagedTail } from '../utils'
+import { demoMachines, type DemoMachine, matchesMachine, usePagedTail, usePagination } from '../utils'
 
 interface MachinesViewProps {
   rows: Machine[] | null
@@ -26,6 +27,8 @@ export function MachinesView({ rows, token, onEnroll, query }: MachinesViewProps
       return filter === 'online' ? isOnline : !isOnline
     })
     .filter((machine) => matchesMachine(machine, query))
+
+  const pagination = usePagination(filteredRows, { defaultPageSize: 10 })
 
   const totalCount = sourceRows.length
   const onlineCount = sourceRows.filter((m) => ('id' in m ? m.online : m.state !== '待接入')).length
@@ -98,8 +101,8 @@ export function MachinesView({ rows, token, onEnroll, query }: MachinesViewProps
             </tr>
           </thead>
           <tbody>
-            {filteredRows.length > 0 ? (
-              filteredRows.map((machine) => {
+            {pagination.pagedItems.length > 0 ? (
+              pagination.pagedItems.map((machine) => {
                 const isLive = 'id' in machine
                 const isOnline = isLive ? machine.online : machine.state !== '待接入'
                 const tone: StatusTone = isLive ? (isOnline ? 'online' : 'offline') : (machine.tone as StatusTone)
@@ -115,44 +118,34 @@ export function MachinesView({ rows, token, onEnroll, query }: MachinesViewProps
                 return (
                   <tr key={isLive ? machine.id : machine.name}>
                     <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                         <div
                           style={{
-                            width: '34px',
-                            height: '34px',
-                            borderRadius: 'var(--radius-md)',
-                            background: 'rgba(99, 102, 241, 0.12)',
-                            border: '1px solid rgba(99, 102, 241, 0.25)',
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: 'var(--radius-sm)',
+                            background: 'rgba(99, 102, 241, 0.1)',
+                            border: '1px solid rgba(99, 102, 241, 0.2)',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            color: 'var(--accent-sky)',
+                            color: 'var(--accent-primary)',
                           }}
                         >
-                          <ServerIcon size={17} />
+                          <ServerIcon size={16} />
                         </div>
                         <div>
-                          <strong style={{ color: '#fff', fontSize: '14px', display: 'block' }}>
-                            {machine.name}
-                          </strong>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
-                            {isLive && machine.version && (
-                              <span className="version-tag">v{machine.version}</span>
-                            )}
-                            {runtime && (
-                              <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                限流 {runtime.maxConcurrency} 并发
-                              </span>
-                            )}
-                          </div>
+                          <strong style={{ color: '#fff', fontSize: '13px' }}>{machine.name}</strong>
+                          {isLive && machine.version && (
+                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                              v{machine.version}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>
                     <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <span className="font-mono">{host}</span>
-                        <CopyButton text={host} label="" size="sm" />
-                      </div>
+                      <span className="font-mono">{host}</span>
                     </td>
                     <td>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
@@ -164,13 +157,18 @@ export function MachinesView({ rows, token, onEnroll, query }: MachinesViewProps
                       </div>
                     </td>
                     <td>
-                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{osInfo}</span>
+                      <span style={{ fontSize: '12px' }}>{osInfo}</span>
                     </td>
                     <td>
-                      <div style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={workspace}>
-                        <span className="font-mono" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      <div>
+                        <span className="font-mono" style={{ fontSize: '12px', color: '#e2e8f0' }}>
                           {workspace}
                         </span>
+                        {runtime && (
+                          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                            模式: {(isLive ? machine.scopeMode : undefined) ?? 'shared'} · 并发 {runtime.maxConcurrency}
+                          </div>
+                        )}
                       </div>
                     </td>
                     <td>
@@ -197,27 +195,23 @@ export function MachinesView({ rows, token, onEnroll, query }: MachinesViewProps
         </table>
       </div>
 
-      {/* Pagination */}
-      {(paged.hasMore || paged.loadingMore || paged.loadError) && (
-        <div className="pagination-bar">
-          {paged.loadError && (
-            <div className="pagination-error">
-              <AlertCircleIcon size={14} />
-              <span>{paged.loadError}</span>
-            </div>
-          )}
-          {paged.hasMore && (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={paged.loadMore}
-              disabled={paged.loadingMore}
-            >
-              {paged.loadingMore ? '正在加载更多节点...' : '加载下一页节点'}
-            </button>
-          )}
-        </div>
-      )}
+      {/* Unified Apple/Stripe Pagination */}
+      <PaginationBar
+        currentPage={pagination.currentPage}
+        totalPages={pagination.totalPages}
+        totalItems={pagination.totalItems}
+        startIndex={pagination.startIndex}
+        endIndex={pagination.endIndex}
+        pageSize={pagination.pageSize}
+        onPageChange={pagination.goToPage}
+        onPageSizeChange={pagination.setPageSize}
+        pageSizeOptions={[10, 25, 50]}
+        serverHasMore={paged.hasMore}
+        serverLoading={paged.loadingMore}
+        serverError={paged.loadError}
+        onServerLoadMore={paged.loadMore}
+        unit="台"
+      />
     </div>
   )
 }

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { FolderGitIcon, PlusIcon, TrashIcon } from '../icons/Icons'
 import { CopyButton } from '../components/CopyButton'
 import { EmptyState } from '../components/EmptyState'
+import { PaginationBar } from '../components/PaginationBar'
 import {
   createProjectWorktree,
   registerProject,
@@ -11,6 +12,7 @@ import {
   type Machine,
   type Project,
 } from '../api'
+import { usePagination } from '../utils'
 
 interface ProjectsViewProps {
   rows: Project[] | null
@@ -69,6 +71,8 @@ export function ProjectsView({ rows, machines, token, onRefresh, query }: Projec
       p.machineId.toLowerCase().includes(q)
     )
   })
+
+  const pagination = usePagination(filteredProjects, { defaultPageSize: 6 })
 
   return (
     <div>
@@ -193,17 +197,32 @@ export function ProjectsView({ rows, machines, token, onRefresh, query }: Projec
       )}
 
       {/* Projects Grid */}
-      {filteredProjects.length > 0 ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))', gap: '20px' }}>
-          {filteredProjects.map((project) => (
-            <ProjectCard
-              key={project.id}
-              project={project}
-              token={token}
-              onRefresh={onRefresh}
-            />
-          ))}
-        </div>
+      {pagination.pagedItems.length > 0 ? (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))', gap: '20px' }}>
+            {pagination.pagedItems.map((project) => (
+              <ProjectCard
+                key={project.id}
+                project={project}
+                token={token}
+                onRefresh={onRefresh}
+              />
+            ))}
+          </div>
+
+          <PaginationBar
+            currentPage={pagination.currentPage}
+            totalPages={pagination.totalPages}
+            totalItems={pagination.totalItems}
+            startIndex={pagination.startIndex}
+            endIndex={pagination.endIndex}
+            pageSize={pagination.pageSize}
+            onPageChange={pagination.goToPage}
+            onPageSizeChange={pagination.setPageSize}
+            pageSizeOptions={[6, 12, 24]}
+            unit="个项目"
+          />
+        </>
       ) : (
         <EmptyState
           title="尚未登记 Git 项目"
@@ -231,6 +250,8 @@ function ProjectCard({
   const [newWorktreePath, setNewWorktreePath] = useState('')
   const [newWorktreeRef, setNewWorktreeRef] = useState('')
   const [addingWorktree, setAddingWorktree] = useState(false)
+
+  const wtPagination = usePagination(project.worktrees ?? [], { defaultPageSize: 3 })
 
   const handleRunGit = async () => {
     if (!token.trim()) return
@@ -403,7 +424,7 @@ function ProjectCard({
 
         {project.worktrees && project.worktrees.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
-            {project.worktrees.map((wt) => (
+            {wtPagination.pagedItems.map((wt) => (
               <div
                 key={wt.id}
                 style={{
@@ -438,6 +459,20 @@ function ProjectCard({
                 </button>
               </div>
             ))}
+
+            {project.worktrees.length > 3 && (
+              <PaginationBar
+                currentPage={wtPagination.currentPage}
+                totalPages={wtPagination.totalPages}
+                totalItems={wtPagination.totalItems}
+                startIndex={wtPagination.startIndex}
+                endIndex={wtPagination.endIndex}
+                pageSize={wtPagination.pageSize}
+                onPageChange={wtPagination.goToPage}
+                compact={true}
+                unit="个工作树"
+              />
+            )}
           </div>
         ) : (
           <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '10px' }}>

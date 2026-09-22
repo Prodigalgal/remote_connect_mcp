@@ -2,8 +2,9 @@ import { useState } from 'react'
 import { AlertCircleIcon, ShieldIcon, TrashIcon } from '../icons/Icons'
 import { CopyButton } from '../components/CopyButton'
 import { EmptyState } from '../components/EmptyState'
+import { PaginationBar } from '../components/PaginationBar'
 import { listAuditPage, purgeAudit, type AuditEvent, type Machine } from '../api'
-import { usePagedTail } from '../utils'
+import { usePagedTail, usePagination } from '../utils'
 
 interface AuditViewProps {
   rows: AuditEvent[] | null
@@ -34,6 +35,8 @@ export function AuditView({ rows, machines, token, onRefresh, query }: AuditView
         (e.agentId && e.agentId.toLowerCase().includes(q))
       )
     })
+
+  const pagination = usePagination(filtered, { defaultPageSize: 15 })
 
   const handlePurge = async () => {
     const daysStr = window.prompt('清除多少天之前的安全审计日志？', '30')
@@ -113,8 +116,8 @@ export function AuditView({ rows, machines, token, onRefresh, query }: AuditView
             </tr>
           </thead>
           <tbody>
-            {filtered.length > 0 ? (
-              filtered.map((item) => {
+            {pagination.pagedItems.length > 0 ? (
+              pagination.pagedItems.map((item) => {
                 const isHighRisk = item.risk === 'high' || item.risk === 'critical'
                 const isSuccess = item.outcome === 'success' || item.outcome === 'allow'
 
@@ -209,27 +212,23 @@ export function AuditView({ rows, machines, token, onRefresh, query }: AuditView
         </table>
       </div>
 
-      {/* Pagination */}
-      {(paged.hasMore || paged.loadingMore || paged.loadError) && (
-        <div className="pagination-bar">
-          {paged.loadError && (
-            <div className="pagination-error">
-              <AlertCircleIcon size={14} />
-              <span>{paged.loadError}</span>
-            </div>
-          )}
-          {paged.hasMore && (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={paged.loadMore}
-              disabled={paged.loadingMore}
-            >
-              {paged.loadingMore ? '正在加载更多审计记录...' : '加载更多记录'}
-            </button>
-          )}
-        </div>
-      )}
+      {/* Unified Apple/Stripe Pagination */}
+      <PaginationBar
+        currentPage={pagination.currentPage}
+        totalPages={pagination.totalPages}
+        totalItems={pagination.totalItems}
+        startIndex={pagination.startIndex}
+        endIndex={pagination.endIndex}
+        pageSize={pagination.pageSize}
+        onPageChange={pagination.goToPage}
+        onPageSizeChange={pagination.setPageSize}
+        pageSizeOptions={[15, 30, 60]}
+        serverHasMore={paged.hasMore}
+        serverLoading={paged.loadingMore}
+        serverError={paged.loadError}
+        onServerLoadMore={paged.loadMore}
+        unit="条记录"
+      />
     </div>
   )
 }

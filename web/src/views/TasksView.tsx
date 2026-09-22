@@ -11,6 +11,7 @@ import { StatusBadge, StatusTone } from '../components/StatusBadge'
 import { CopyButton } from '../components/CopyButton'
 import { TerminalOutput } from '../components/TerminalOutput'
 import { EmptyState } from '../components/EmptyState'
+import { PaginationBar } from '../components/PaginationBar'
 import {
   cancelTask,
   createTask,
@@ -21,7 +22,7 @@ import {
   type Project,
   type Task,
 } from '../api'
-import { usePagedTail } from '../utils'
+import { usePagedTail, usePagination } from '../utils'
 
 interface TasksViewProps {
   rows: Task[] | null
@@ -63,6 +64,8 @@ export function TasksView({
         task.kind.toLowerCase().includes(q)
       )
     })
+
+  const pagination = usePagination(filteredTasks, { defaultPageSize: 10 })
 
   return (
     <div>
@@ -144,9 +147,9 @@ export function TasksView({
       )}
 
       {/* Task Cards List */}
-      {filteredTasks.length > 0 ? (
+      {pagination.pagedItems.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          {filteredTasks.map((task) => (
+          {pagination.pagedItems.map((task) => (
             <TaskItem
               key={task.id}
               task={task}
@@ -163,27 +166,23 @@ export function TasksView({
         />
       )}
 
-      {/* Pagination */}
-      {(paged.hasMore || paged.loadingMore || paged.loadError) && (
-        <div className="pagination-bar">
-          {paged.loadError && (
-            <div className="pagination-error">
-              <AlertCircleIcon size={14} />
-              <span>{paged.loadError}</span>
-            </div>
-          )}
-          {paged.hasMore && (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={paged.loadMore}
-              disabled={paged.loadingMore}
-            >
-              {paged.loadingMore ? '正在加载历史记录...' : '加载更多任务'}
-            </button>
-          )}
-        </div>
-      )}
+      {/* Unified Apple/Stripe Pagination */}
+      <PaginationBar
+        currentPage={pagination.currentPage}
+        totalPages={pagination.totalPages}
+        totalItems={pagination.totalItems}
+        startIndex={pagination.startIndex}
+        endIndex={pagination.endIndex}
+        pageSize={pagination.pageSize}
+        onPageChange={pagination.goToPage}
+        onPageSizeChange={pagination.setPageSize}
+        pageSizeOptions={[10, 20, 50]}
+        serverHasMore={paged.hasMore}
+        serverLoading={paged.loadingMore}
+        serverError={paged.loadError}
+        onServerLoadMore={paged.loadMore}
+        unit="个任务"
+      />
     </div>
   )
 }

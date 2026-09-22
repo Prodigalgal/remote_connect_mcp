@@ -2,9 +2,11 @@ import { ActivityIcon, ChevronRightIcon, ClockIcon, RocketIcon, ServerIcon, Term
 import { MetricCard } from '../components/MetricCard'
 import { StatusBadge, StatusTone } from '../components/StatusBadge'
 import { EmptyState } from '../components/EmptyState'
+import { CopyButton } from '../components/CopyButton'
+import { PaginationBar } from '../components/PaginationBar'
 import type { PageId } from '../components/Sidebar'
 import type { Machine, Task, UpgradeCampaign } from '../api'
-import { demoMachines, type DemoMachine, matchesMachine } from '../utils'
+import { demoMachines, type DemoMachine, demoTasks, matchesMachine, matchesTask, usePagination } from '../utils'
 
 interface OverviewViewProps {
   onNavigate: (page: PageId) => void
@@ -16,7 +18,12 @@ interface OverviewViewProps {
 
 export function OverviewView({ onNavigate, rows, tasks, upgrades, query }: OverviewViewProps) {
   const sourceRows: Array<Machine | DemoMachine> = rows ?? demoMachines
-  const displayRows = sourceRows.filter((machine) => matchesMachine(machine, query)).slice(0, 8)
+  const filteredMachines = sourceRows.filter((machine) => matchesMachine(machine, query))
+  const machinePaged = usePagination(filteredMachines, { defaultPageSize: 6 })
+
+  const sourceTasks: Task[] = tasks ?? demoTasks
+  const filteredTasks = sourceTasks.filter((task) => matchesTask(task, query))
+  const taskPaged = usePagination(filteredTasks, { defaultPageSize: 5 })
   const onlineCount = rows ? rows.filter((m) => m.online).length : 2
   const totalCount = rows ? rows.length : 3
   const activeTaskCount = tasks
@@ -134,8 +141,8 @@ export function OverviewView({ onNavigate, rows, tasks, upgrades, query }: Overv
             </tr>
           </thead>
           <tbody>
-            {displayRows.length > 0 ? (
-              displayRows.map((machine) => {
+            {machinePaged.pagedItems.length > 0 ? (
+              machinePaged.pagedItems.map((machine) => {
                 const isLive = 'id' in machine
                 const role = isLive ? machine.capabilities[0] ?? 'command' : machine.role
                 const isOnline = isLive ? machine.online : machine.state !== '待接入'
@@ -209,6 +216,130 @@ export function OverviewView({ onNavigate, rows, tasks, upgrades, query }: Overv
           </tbody>
         </table>
       </div>
+
+      <PaginationBar
+        currentPage={machinePaged.currentPage}
+        totalPages={machinePaged.totalPages}
+        totalItems={machinePaged.totalItems}
+        startIndex={machinePaged.startIndex}
+        endIndex={machinePaged.endIndex}
+        pageSize={machinePaged.pageSize}
+        onPageChange={machinePaged.goToPage}
+        onPageSizeChange={machinePaged.setPageSize}
+        pageSizeOptions={[6, 12, 24]}
+        unit="台"
+      />
+
+      {/* Recent Tasks List */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '36px', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#fff' }}>最近执行任务</h3>
+          <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>实时追踪集群节点的指令调度与执行结果</span>
+        </div>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => onNavigate('tasks')}
+          style={{ gap: '4px' }}
+        >
+          <span>查看全部任务</span>
+          <ChevronRightIcon size={14} />
+        </button>
+      </div>
+
+      <div className="table-wrapper">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>任务 ID</th>
+              <th>目标节点</th>
+              <th>类型</th>
+              <th>执行指令 / 行为</th>
+              <th>状态</th>
+              <th style={{ textAlign: 'right' }}>提交时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            {taskPaged.pagedItems.length > 0 ? (
+              taskPaged.pagedItems.map((task) => {
+                const isSuccess = task.status === 'succeeded'
+                const isRunning = ['queued', 'dispatching', 'running'].includes(task.status)
+                const tone: StatusTone = isSuccess
+                  ? 'online'
+                  : isRunning
+                  ? 'info'
+                  : task.status === 'failed'
+                  ? 'offline'
+                  : 'muted'
+
+                return (
+                  <tr key={task.id}>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span className="font-mono" style={{ fontSize: '12px', color: '#fff', fontWeight: 600 }}>
+                          {task.id.slice(0, 16)}
+                        </span>
+                        <CopyButton text={task.id} label="" size="sm" />
+                      </div>
+                    </td>
+                    <td>
+                      <span className="font-mono">{task.machineId}</span>
+                    </td>
+                    <td>
+                      <span className="tag-badge" style={{ color: 'var(--accent-sky)' }}>
+                        {task.kind}
+                      </span>
+                    </td>
+                    <td>
+                      <div
+                        className="font-mono"
+                        style={{
+                          maxWidth: '360px',
+                          fontSize: '11px',
+                          color: 'var(--text-secondary)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                        title={task.command || task.kind}
+                      >
+                        {task.command || task.kind}
+                      </div>
+                    </td>
+                    <td>
+                      <StatusBadge label={task.status} tone={tone} pulse={isRunning} />
+                    </td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                        {task.createdAt ? new Date(task.createdAt).toLocaleTimeString() : '—'}
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })
+            ) : (
+              <tr>
+                <td colSpan={6} style={{ padding: 0 }}>
+                  <EmptyState title="未找到匹配的任务记录" description="请检查搜索关键词或调整过滤规则" />
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <PaginationBar
+        currentPage={taskPaged.currentPage}
+        totalPages={taskPaged.totalPages}
+        totalItems={taskPaged.totalItems}
+        startIndex={taskPaged.startIndex}
+        endIndex={taskPaged.endIndex}
+        pageSize={taskPaged.pageSize}
+        onPageChange={taskPaged.goToPage}
+        onPageSizeChange={taskPaged.setPageSize}
+        pageSizeOptions={[5, 10, 20]}
+        unit="个任务"
+      />
     </div>
   )
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AlertCircleIcon, PlayIcon, PlusIcon, RefreshCwIcon, RocketIcon, XIcon } from '../icons/Icons'
 import { StatusBadge, StatusTone } from '../components/StatusBadge'
 import { EmptyState } from '../components/EmptyState'
+import { PaginationBar } from '../components/PaginationBar'
 import {
   controlUpgrade,
   createUpgrade,
@@ -13,7 +14,7 @@ import {
   type UpgradeCampaign,
   type UpgradeComponentCatalog,
 } from '../api'
-import { usePagedTail } from '../utils'
+import { usePagedTail, usePagination } from '../utils'
 
 interface UpgradesViewProps {
   token: string
@@ -47,7 +48,6 @@ export function UpgradesView({
 
   const paged = usePagedTail(rows, 50, (offset, limit) => listUpgradesPage(token, offset, limit))
   const campaigns = paged.rows ?? []
-
   const names = Object.fromEntries(machines.map((machine) => [machine.id, machine.name]))
 
   useEffect(() => {
@@ -154,6 +154,8 @@ export function UpgradesView({
       c.version.toLowerCase().includes(q)
     )
   })
+
+  const pagination = usePagination(filteredCampaigns, { defaultPageSize: 5 })
 
   return (
     <div>
@@ -317,9 +319,9 @@ export function UpgradesView({
       </div>
 
       {/* Campaigns List */}
-      {filteredCampaigns.length > 0 ? (
+      {pagination.pagedItems.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {filteredCampaigns.map((campaign) => {
+          {pagination.pagedItems.map((campaign) => {
             const isRunning = campaign.status === 'running'
             const isPaused = campaign.status === 'paused'
             const isCompleted = campaign.status === 'completed'
@@ -414,48 +416,12 @@ export function UpgradesView({
 
                 {/* Target nodes list */}
                 {campaign.targets.length > 0 && (
-                  <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid var(--border-subtle)' }}>
-                    <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase' }}>
-                      目标节点执行状态
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 260px), 1fr))', gap: '8px' }}>
-                      {campaign.targets.map((target) => (
-                        <div
-                          key={target.machineId}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            padding: '6px 10px',
-                            borderRadius: 'var(--radius-sm)',
-                            background: 'rgba(255, 255, 255, 0.02)',
-                            border: '1px solid var(--border-subtle)',
-                            fontSize: '11px',
-                          }}
-                        >
-                          <div style={{ minWidth: 0 }}>
-                            <strong style={{ color: '#fff', display: 'block' }}>{names[target.machineId] ?? target.machineId}</strong>
-                            <span style={{ fontSize: '10px', color: target.status === 'failed' ? 'var(--accent-rose)' : 'var(--text-tertiary)' }}>
-                              {target.status}{target.error ? ` · ${target.error}` : ''}
-                            </span>
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span className="font-mono" style={{ fontSize: '10px' }}>{target.attempts}次</span>
-                            {target.status === 'failed' && retryAllowed && (
-                              <button
-                                type="button"
-                                className="btn btn-secondary btn-sm"
-                                style={{ padding: '2px 5px', fontSize: '10px' }}
-                                onClick={() => retryTarget(campaign, target.machineId)}
-                              >
-                                重试该机
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  <CampaignTargetGrid
+                    campaign={campaign}
+                    names={names}
+                    retryAllowed={retryAllowed}
+                    onRetry={retryTarget}
+                  />
                 )}
               </div>
             )
@@ -468,26 +434,97 @@ export function UpgradesView({
         />
       )}
 
-      {/* Pagination */}
-      {(paged.hasMore || paged.loadingMore || paged.loadError) && (
-        <div className="pagination-bar">
-          {paged.loadError && (
-            <div className="pagination-error">
-              <AlertCircleIcon size={14} />
-              <span>{paged.loadError}</span>
-            </div>
-          )}
-          {paged.hasMore && (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={paged.loadMore}
-              disabled={paged.loadingMore}
-            >
-              {paged.loadingMore ? '正在加载更多升级活动...' : '加载更多升级活动'}
-            </button>
-          )}
+      {/* Unified Apple/Stripe Pagination */}
+      <PaginationBar
+        currentPage={pagination.currentPage}
+        totalPages={pagination.totalPages}
+        totalItems={pagination.totalItems}
+        startIndex={pagination.startIndex}
+        endIndex={pagination.endIndex}
+        pageSize={pagination.pageSize}
+        onPageChange={pagination.goToPage}
+        onPageSizeChange={pagination.setPageSize}
+        pageSizeOptions={[5, 10, 20]}
+        serverHasMore={paged.hasMore}
+        serverLoading={paged.loadingMore}
+        serverError={paged.loadError}
+        onServerLoadMore={paged.loadMore}
+        unit="个编排"
+      />
+    </div>
+  )
+}
+
+function CampaignTargetGrid({
+  campaign,
+  names,
+  retryAllowed,
+  onRetry,
+}: {
+  campaign: UpgradeCampaign
+  names: Record<string, string>
+  retryAllowed: boolean
+  onRetry: (campaign: UpgradeCampaign, machineId: string) => void
+}) {
+  const targetPagination = usePagination(campaign.targets, { defaultPageSize: 8 })
+
+  return (
+    <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid var(--border-subtle)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+          目标节点执行状态 ({campaign.targets.length} 台)
         </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 260px), 1fr))', gap: '8px' }}>
+        {targetPagination.pagedItems.map((target) => (
+          <div
+            key={target.machineId}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '6px 10px',
+              borderRadius: 'var(--radius-sm)',
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid var(--border-subtle)',
+              fontSize: '11px',
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <strong style={{ color: '#fff', display: 'block' }}>{names[target.machineId] ?? target.machineId}</strong>
+              <span style={{ fontSize: '10px', color: target.status === 'failed' ? 'var(--accent-rose)' : 'var(--text-tertiary)' }}>
+                {target.status}{target.error ? ` · ${target.error}` : ''}
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span className="font-mono" style={{ fontSize: '10px' }}>{target.attempts}次</span>
+              {target.status === 'failed' && retryAllowed && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  style={{ padding: '2px 5px', fontSize: '10px' }}
+                  onClick={() => onRetry(campaign, target.machineId)}
+                >
+                  重试该机
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {campaign.targets.length > 8 && (
+        <PaginationBar
+          currentPage={targetPagination.currentPage}
+          totalPages={targetPagination.totalPages}
+          totalItems={targetPagination.totalItems}
+          startIndex={targetPagination.startIndex}
+          endIndex={targetPagination.endIndex}
+          pageSize={targetPagination.pageSize}
+          onPageChange={targetPagination.goToPage}
+          compact={true}
+          unit="台"
+        />
       )}
     </div>
   )

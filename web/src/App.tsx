@@ -17,6 +17,7 @@ import {
 } from './api'
 import { PageId, Sidebar } from './components/Sidebar'
 import { Topbar } from './components/Topbar'
+import { AuthGate } from './components/AuthGate'
 import { OverviewView } from './views/OverviewView'
 import { MachinesView } from './views/MachinesView'
 import { ProjectsView } from './views/ProjectsView'
@@ -33,6 +34,7 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [adminToken, setAdminToken] = useState('')
+  const [authenticated, setAuthenticated] = useState(false)
   const [liveMachines, setLiveMachines] = useState<Machine[] | null>(null)
   const [liveProjects, setLiveProjects] = useState<Project[] | null>(null)
   const [liveTasks, setLiveTasks] = useState<Task[] | null>(null)
@@ -42,6 +44,12 @@ export default function App() {
   const [apiMessage, setApiMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const refreshInFlight = useRef<{ key: string; promise: Promise<void> } | null>(null)
+  const authenticatedRef = useRef(false)
+
+  const markAuthenticated = useCallback((value: boolean) => {
+    authenticatedRef.current = value
+    setAuthenticated(value)
+  }, [])
 
   const navigate = useCallback((next: PageId) => {
     setPage(next)
@@ -50,19 +58,19 @@ export default function App() {
 
   const connectionState: 'online' | 'connecting' | 'offline' | 'idle' = loading
     ? 'connecting'
-    : liveMachines
+    : authenticated && liveMachines
     ? 'online'
-    : adminToken.trim()
+    : authenticated
     ? 'offline'
     : 'idle'
 
   const connectionLabel = loading
-    ? '正在连接 Center...'
-    : liveMachines
+    ? '正在验证 Center...'
+    : authenticated && liveMachines
     ? 'Center 实时在线'
-    : adminToken.trim()
-    ? 'Center 无法连通'
-    : '演示脱敏模式'
+    : authenticated
+    ? 'Center 暂时离线'
+    : '需要 Admin Token 登录'
 
   // Scroll to top on page change
   useEffect(() => {
@@ -78,13 +86,14 @@ export default function App() {
 
       const operation = (async () => {
         if (!normalizedToken) {
+          markAuthenticated(false)
           setLiveMachines(null)
           setLiveProjects(null)
           setLiveTasks(null)
           setLiveAudit(null)
           setLiveUpgrades(null)
           setLiveReleases(null)
-          setApiMessage('脱敏演示模式：在“系统设置”输入 Admin Token 后加载 Center 实时集群数据')
+          setApiMessage('')
           return
         }
 
@@ -112,16 +121,21 @@ export default function App() {
           setLiveUpgrades(upgrades)
           setLiveReleases(releases)
           setLiveAudit(audit)
+          markAuthenticated(true)
           setApiMessage(`已接入 Center · 活跃同步中 (${new Date().toLocaleTimeString()})`)
         } catch (error) {
           const message = error instanceof AdminApiError ? error.message : 'Center 暂时不可达'
-          setApiMessage(message)
-          setLiveMachines(null)
-          setLiveProjects(null)
-          setLiveTasks(null)
-          setLiveUpgrades(null)
-          setLiveReleases(null)
-          setLiveAudit(null)
+          const authRejected = error instanceof AdminApiError && (error.status === 401 || error.status === 403)
+          if (authRejected || !authenticatedRef.current) {
+            markAuthenticated(false)
+            setLiveMachines(null)
+            setLiveProjects(null)
+            setLiveTasks(null)
+            setLiveUpgrades(null)
+            setLiveReleases(null)
+            setLiveAudit(null)
+          }
+          setApiMessage(authRejected ? 'Admin Token 无效或已过期，请重新登录' : message)
         } finally {
           setLoading(false)
         }
@@ -133,12 +147,28 @@ export default function App() {
       refreshInFlight.current = { key, promise: tracked }
       return tracked
     },
-    [adminToken]
+    [adminToken, markAuthenticated]
   )
 
-  // Real-time long polling loop
+  // Authenticate before exposing any business page. The request only starts
+  // after the user submits a token from AuthGate.
   useEffect(() => {
-    if (!adminToken.trim()) return
+    if (!adminToken.trim()) {
+      markAuthenticated(false)
+      setLiveMachines(null)
+      setLiveProjects(null)
+      setLiveTasks(null)
+      setLiveAudit(null)
+      setLiveUpgrades(null)
+      setLiveReleases(null)
+      return
+    }
+    void refresh(adminToken)
+  }, [adminToken, markAuthenticated, refresh])
+
+  // Real-time long polling loop, enabled only after authentication succeeds.
+  useEffect(() => {
+    if (!adminToken.trim() || !authenticated) return
     const controller = new AbortController()
     let stopped = false
     let retryTimer: number | undefined
@@ -160,7 +190,6 @@ export default function App() {
       }
     }
 
-    void refresh(adminToken)
     void watch()
 
     return () => {
@@ -168,7 +197,7 @@ export default function App() {
       controller.abort()
       if (retryTimer !== undefined) window.clearTimeout(retryTimer)
     }
-  }, [adminToken, refresh])
+  }, [adminToken, authenticated, refresh])
 
   // Keyboard shortcut (⌘K or / to focus search)
   useEffect(() => {
@@ -184,6 +213,20 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
+
+  if (!authenticated) {
+    return (
+      <AuthGate
+        initialToken={adminToken}
+        loading={loading}
+        message={apiMessage}
+        onSubmit={(token) => {
+          setApiMessage('')
+          setAdminToken(token)
+        }}
+      />
+    )
+  }
 
   return (
     <div className="app-shell">

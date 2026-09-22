@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { CheckCircleIcon, KeyIcon, LockIcon, PlusIcon, RefreshCwIcon, ShieldIcon, TrashIcon } from '../icons/Icons'
 import { CopyButton } from '../components/CopyButton'
 import { EmptyState } from '../components/EmptyState'
+import { PaginationBar } from '../components/PaginationBar'
 import {
   closeExecutionSession,
   getQuota,
@@ -23,6 +24,7 @@ import {
   type ProjectMember,
   type Quota,
 } from '../api'
+import { usePagination } from '../utils'
 
 interface AccessControlViewProps {
   token: string
@@ -93,6 +95,19 @@ export function AccessControlView({ token, machines, projects }: AccessControlVi
   useEffect(() => {
     void reload()
   }, [reload])
+
+  const tokenPagination = usePagination(tokens, { defaultPageSize: 5 })
+  const sessionPagination = usePagination(sessions, { defaultPageSize: 5 })
+
+  type GrantEntry =
+    | { kind: 'machine'; item: MachineGrant }
+    | { kind: 'project'; item: ProjectMember }
+
+  const allGrants: GrantEntry[] = [
+    ...machineGrants.map((m) => ({ kind: 'machine' as const, item: m })),
+    ...projectMembers.map((p) => ({ kind: 'project' as const, item: p })),
+  ]
+  const grantPagination = usePagination(allGrants, { defaultPageSize: 5 })
 
   const issue = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -440,8 +455,8 @@ export function AccessControlView({ token, machines, projects }: AccessControlVi
               </tr>
             </thead>
             <tbody>
-              {tokens.length > 0 ? (
-                tokens.map((item) => (
+              {tokenPagination.pagedItems.length > 0 ? (
+                tokenPagination.pagedItems.map((item) => (
                   <tr key={item.tokenId}>
                     <td>
                       <strong style={{ color: '#fff', display: 'block' }}>{item.displayName || '未命名'}</strong>
@@ -492,6 +507,19 @@ export function AccessControlView({ token, machines, projects }: AccessControlVi
             </tbody>
           </table>
         </div>
+
+        <PaginationBar
+          currentPage={tokenPagination.currentPage}
+          totalPages={tokenPagination.totalPages}
+          totalItems={tokenPagination.totalItems}
+          startIndex={tokenPagination.startIndex}
+          endIndex={tokenPagination.endIndex}
+          pageSize={tokenPagination.pageSize}
+          onPageChange={tokenPagination.goToPage}
+          onPageSizeChange={tokenPagination.setPageSize}
+          pageSizeOptions={[5, 10, 20]}
+          unit="个Token"
+        />
       </div>
 
       {/* Table: Sessions */}
@@ -511,8 +539,8 @@ export function AccessControlView({ token, machines, projects }: AccessControlVi
               </tr>
             </thead>
             <tbody>
-              {sessions.length > 0 ? (
-                sessions.map((item) => (
+              {sessionPagination.pagedItems.length > 0 ? (
+                sessionPagination.pagedItems.map((item) => (
                   <tr key={`${item.principalId}:${item.sessionId}`}>
                     <td>
                       <strong style={{ color: '#fff', display: 'block' }}>{item.sessionId}</strong>
@@ -552,6 +580,19 @@ export function AccessControlView({ token, machines, projects }: AccessControlVi
             </tbody>
           </table>
         </div>
+
+        <PaginationBar
+          currentPage={sessionPagination.currentPage}
+          totalPages={sessionPagination.totalPages}
+          totalItems={sessionPagination.totalItems}
+          startIndex={sessionPagination.startIndex}
+          endIndex={sessionPagination.endIndex}
+          pageSize={sessionPagination.pageSize}
+          onPageChange={sessionPagination.goToPage}
+          onPageSizeChange={sessionPagination.setPageSize}
+          pageSizeOptions={[5, 10, 20]}
+          unit="个会话"
+        />
       </div>
 
       {/* Table: Machine & Project Grants */}
@@ -571,41 +612,48 @@ export function AccessControlView({ token, machines, projects }: AccessControlVi
               </tr>
             </thead>
             <tbody>
-              {machineGrants.map((item) => (
-                <tr key={`m:${item.principalId}:${item.machineId}`}>
-                  <td><span className="tag-badge" style={{ color: 'var(--accent-sky)' }}>机器</span></td>
-                  <td><span className="font-mono">{item.machineId}</span></td>
-                  <td><strong style={{ color: '#fff' }}>{item.principalId}</strong></td>
-                  <td><span>{item.scopes.join(', ')}</span></td>
-                  <td style={{ textAlign: 'right' }}>
-                    <button
-                      type="button"
-                      className="btn btn-danger btn-sm"
-                      onClick={() => revokeMachine(token, { principal_id: item.principalId, machine_id: item.machineId }).then(reload)}
-                    >
-                      撤销
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {projectMembers.map((item) => (
-                <tr key={`p:${item.principalId}:${item.projectId}`}>
-                  <td><span className="tag-badge" style={{ color: 'var(--accent-emerald)' }}>项目</span></td>
-                  <td><span className="font-mono">{item.projectId}</span></td>
-                  <td><strong style={{ color: '#fff' }}>{item.principalId}</strong></td>
-                  <td><span>{item.scopes.join(', ')}</span></td>
-                  <td style={{ textAlign: 'right' }}>
-                    <button
-                      type="button"
-                      className="btn btn-danger btn-sm"
-                      onClick={() => revokeProject(token, { principal_id: item.principalId, project_id: item.projectId }).then(reload)}
-                    >
-                      撤销
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {!machineGrants.length && !projectMembers.length && (
+              {grantPagination.pagedItems.length > 0 ? (
+                grantPagination.pagedItems.map((entry) => {
+                  if (entry.kind === 'machine') {
+                    const item = entry.item
+                    return (
+                      <tr key={`m:${item.principalId}:${item.machineId}`}>
+                        <td><span className="tag-badge" style={{ color: 'var(--accent-sky)' }}>机器</span></td>
+                        <td><span className="font-mono">{item.machineId}</span></td>
+                        <td><strong style={{ color: '#fff' }}>{item.principalId}</strong></td>
+                        <td><span>{item.scopes.join(', ')}</span></td>
+                        <td style={{ textAlign: 'right' }}>
+                          <button
+                            type="button"
+                            className="btn btn-danger btn-sm"
+                            onClick={() => revokeMachine(token, { principal_id: item.principalId, machine_id: item.machineId }).then(reload)}
+                          >
+                            撤销
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  }
+                  const item = entry.item
+                  return (
+                    <tr key={`p:${item.principalId}:${item.projectId}`}>
+                      <td><span className="tag-badge" style={{ color: 'var(--accent-emerald)' }}>项目</span></td>
+                      <td><span className="font-mono">{item.projectId}</span></td>
+                      <td><strong style={{ color: '#fff' }}>{item.principalId}</strong></td>
+                      <td><span>{item.scopes.join(', ')}</span></td>
+                      <td style={{ textAlign: 'right' }}>
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          onClick={() => revokeProject(token, { principal_id: item.principalId, project_id: item.projectId }).then(reload)}
+                        >
+                          撤销
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })
+              ) : (
                 <tr>
                   <td colSpan={5} style={{ padding: 0 }}>
                     <EmptyState title="暂无显式授权规则" description="使用上方表单为用户授予机器或项目权限" />
@@ -615,6 +663,19 @@ export function AccessControlView({ token, machines, projects }: AccessControlVi
             </tbody>
           </table>
         </div>
+
+        <PaginationBar
+          currentPage={grantPagination.currentPage}
+          totalPages={grantPagination.totalPages}
+          totalItems={grantPagination.totalItems}
+          startIndex={grantPagination.startIndex}
+          endIndex={grantPagination.endIndex}
+          pageSize={grantPagination.pageSize}
+          onPageChange={grantPagination.goToPage}
+          onPageSizeChange={grantPagination.setPageSize}
+          pageSizeOptions={[5, 10, 20]}
+          unit="条授权"
+        />
       </div>
     </div>
   )

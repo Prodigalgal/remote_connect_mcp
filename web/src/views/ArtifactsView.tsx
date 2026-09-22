@@ -3,6 +3,7 @@ import { AlertCircleIcon, ClockIcon, FileCodeIcon, RefreshCwIcon, TrashIcon } fr
 import { CopyButton } from '../components/CopyButton'
 import { StatusBadge, StatusTone } from '../components/StatusBadge'
 import { EmptyState } from '../components/EmptyState'
+import { PaginationBar } from '../components/PaginationBar'
 import {
   deleteArtifact,
   extendArtifactRetention,
@@ -10,7 +11,7 @@ import {
   type ArtifactAdmin,
   type Machine,
 } from '../api'
-import { usePagedTail } from '../utils'
+import { usePagedTail, usePagination } from '../utils'
 
 interface ArtifactsViewProps {
   token: string
@@ -91,6 +92,8 @@ export function ArtifactsView({ token, machines, query }: ArtifactsViewProps) {
       )
     })
 
+  const pagination = usePagination(filtered, { defaultPageSize: 10 })
+
   const getStatusTone = (status: string): StatusTone => {
     const s = status.toLowerCase()
     if (s === 'completed' || s === 'succeeded' || s === 'ready') return 'good'
@@ -163,8 +166,8 @@ export function ArtifactsView({ token, machines, query }: ArtifactsViewProps) {
             </tr>
           </thead>
           <tbody>
-            {filtered.length > 0 ? (
-              filtered.map((item) => {
+            {pagination.pagedItems.length > 0 ? (
+              pagination.pagedItems.map((item) => {
                 const statusStr = item.transferStatus || item.status || 'unknown'
                 const tone = getStatusTone(statusStr)
                 const isTransferring = statusStr === 'transferring' || statusStr === 'in_progress'
@@ -268,27 +271,23 @@ export function ArtifactsView({ token, machines, query }: ArtifactsViewProps) {
         </table>
       </div>
 
-      {/* Pagination */}
-      {(paged.hasMore || paged.loadingMore || paged.loadError) && (
-        <div className="pagination-bar">
-          {paged.loadError && (
-            <div className="pagination-error">
-              <AlertCircleIcon size={14} />
-              <span>{paged.loadError}</span>
-            </div>
-          )}
-          {paged.hasMore && (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={paged.loadMore}
-              disabled={paged.loadingMore}
-            >
-              {paged.loadingMore ? '正在加载更多工件...' : '加载下一页工件'}
-            </button>
-          )}
-        </div>
-      )}
+      {/* Unified Apple/Stripe Pagination */}
+      <PaginationBar
+        currentPage={pagination.currentPage}
+        totalPages={pagination.totalPages}
+        totalItems={pagination.totalItems}
+        startIndex={pagination.startIndex}
+        endIndex={pagination.endIndex}
+        pageSize={pagination.pageSize}
+        onPageChange={pagination.goToPage}
+        onPageSizeChange={pagination.setPageSize}
+        pageSizeOptions={[10, 25, 50]}
+        serverHasMore={paged.hasMore}
+        serverLoading={paged.loadingMore}
+        serverError={paged.loadError}
+        onServerLoadMore={paged.loadMore}
+        unit="个工件"
+      />
     </div>
   )
 }
