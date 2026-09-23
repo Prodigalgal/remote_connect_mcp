@@ -248,6 +248,7 @@ jobs:
       - name: Validate Agent Native contracts
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           $agent = '.\java\agent\build\native\nativeCompile\rcm-agent.exe'
           if (-not (Test-Path -LiteralPath $agent -PathType Leaf)) { throw "Native binary missing: $agent" }
           foreach ($bin in @(
@@ -256,8 +257,11 @@ jobs:
           )) {
             if (-not (Test-Path -LiteralPath $bin -PathType Leaf)) { throw "Native binary missing: $bin" }
             & $bin --invalid-arguments *> $null
-            if ($LASTEXITCODE -ne 2) { throw "argument contract failed for $bin (exit $LASTEXITCODE)" }
+            $exitCode = $LASTEXITCODE
+            Write-Host "Invalid-argument contract: $bin exited $exitCode"
+            if ($exitCode -ne 2) { throw "argument contract failed for $bin (exit $exitCode)" }
           }
+          $global:LASTEXITCODE = 0
       - name: Package Agent Windows bundles
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
