@@ -12,10 +12,14 @@ import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
 import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
+import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
@@ -115,6 +119,30 @@ class AgentRuntimeTest {
         assertEquals(2, transport.pollCalls.get());
         assertTrue(elapsedMillis < 3000,
                 "idle loop ignored the hot-reloaded 250ms interval: " + elapsedMillis + "ms");
+    }
+
+    @Test
+    void reportsHelperResultWrittenAfterAgentStartup(@TempDir Path tempDir) throws Exception {
+        var transport = new ScriptedTransport();
+        transport.registerResponse = new RegisterResponse("machine_new", "daily-new");
+        transport.secondPollFailure = new InterruptedException("stop test");
+        var resultFile = tempDir.resolve("upgrade-result.json");
+        transport.afterFirstPoll = () -> {
+            var result = new AgentUpgradeHelper.Result("upgrade_late", "completed", null,
+                    Instant.now(), 1, java.util.Map.of("browser-agent", "completed"));
+            try {
+                Files.write(resultFile, JsonCodec.write(result));
+            } catch (IOException exception) {
+                throw new RuntimeException(exception);
+            }
+        };
+
+        assertThrows(InterruptedException.class,
+                () -> new AgentRuntime(config(tempDir), transport, new AgentIdentityStore(tempDir)).run());
+
+        assertEquals(2, transport.pollCalls.get());
+        assertEquals("completed", transport.upgradeReports.getFirst().status());
+        assertTrue(!Files.exists(resultFile));
     }
 
     @Test
@@ -255,6 +283,8 @@ class AgentRuntimeTest {
         private Exception pollFailure;
         private Exception secondPollFailure;
         private PollRequest lastPoll;
+        private Runnable afterFirstPoll;
+        private final List<UpgradeStatusRequest> upgradeReports = new CopyOnWriteArrayList<>();
 
         @Override
         public RegisterResponse register(AgentConfig config) {
@@ -266,6 +296,7 @@ class AgentRuntimeTest {
         public PollResponse poll(String machineId, String token, PollRequest request) throws IOException, InterruptedException {
             lastPoll = request;
             var count = pollCalls.incrementAndGet();
+            if (count == 1 && afterFirstPoll != null) afterFirstPoll.run();
             var failure = count == 1 ? pollFailure : secondPollFailure;
             if (failure instanceof IOException io) {
                 throw io;
@@ -278,6 +309,11 @@ class AgentRuntimeTest {
 
         @Override
         public void updateState(String machineId, String token, String taskId, int attempt, TaskUpdateRequest request) {
+        }
+
+        @Override
+        public void reportUpgrade(String machineId, String token, UpgradeStatusRequest request) {
+            upgradeReports.add(request);
         }
 
         @Override

@@ -83,6 +83,8 @@ public final class AgentRuntime {
             reportPendingUpgradeResult(identity);
             recoverDurable(identity, durableStore, executor, settings, resourceBudget, processBudget);
             while (!Thread.currentThread().isInterrupted() && !stopRequested.get()) {
+                // The detached helper may finish companion installs after this Agent has restarted.
+                reportPendingUpgradeResult(identity);
                 try {
                     var availableSlots = upgrading.get() ? 0 : Math.max(0, settings.maxConcurrency() - running.size());
                     var runningTaskIds = running.keySet().stream().sorted().toList();
