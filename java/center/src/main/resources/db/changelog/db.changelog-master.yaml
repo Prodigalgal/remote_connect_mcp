@@ -65,3 +65,9 @@ databaseChangeLog:
       file: db/changelog/032-conversations-connections.yaml
   - include:
       file: db/changelog/033-oauth-bridge.yaml
+  - include:
+      file: db/changelog/034-remove-project-tables-and-wildcard-grant.yaml
+  - include:
+      file: db/changelog/036-remove-agent-scope-columns.yaml
+  - include:
+      file: db/changelog/037-remove-audit-scope-column.yaml

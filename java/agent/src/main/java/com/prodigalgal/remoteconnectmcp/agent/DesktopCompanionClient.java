@@ -50,8 +50,6 @@ final class DesktopCompanionClient {
         var request = new DesktopCompanionProtocol.Request(endpoint.token(), action.operation(), action.executable(), action.args(),
                 action.cwd(), action.text(), action.x(), action.y(), action.key(), action.x2(), action.y2(),
                 action.durationMs(), action.screen(), action.windowTitle(),
-                contract == null ? null : contract.scopeMode().wireValue(),
-                contract == null ? null : contract.scopeRoot(),
                 contract == null ? null : contract.expiresAt(),
                 contract == null ? null : contract.sessionId());
         var payload = JsonCodec.write(request);

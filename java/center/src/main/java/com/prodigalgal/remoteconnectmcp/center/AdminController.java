@@ -2,7 +2,6 @@ package com.prodigalgal.remoteconnectmcp.center;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -45,7 +44,6 @@ public final class AdminController {
     private final AgentConfigurationService configurations;
     private final CenterAsyncExecutor async;
     private final AgentWakeRegistry wakes;
-    private final ProjectService projects;
     private final TaskChangeRegistry changes;
     private final ReleaseCatalogService releases;
     private final AuditService audit;
@@ -60,7 +58,6 @@ public final class AdminController {
                            EnrollmentTokenService enrollments, UpgradeService upgrades,
                            AgentConfigurationService configurations, CenterAsyncExecutor async,
                            ObjectProvider<AgentWakeRegistry> wakeProvider,
-                           ProjectService projects,
                            ObjectProvider<TaskChangeRegistry> changeProvider,
                            ObjectProvider<ReleaseCatalogService> releaseProvider,
                            ObjectProvider<AuditService> auditProvider,
@@ -78,7 +75,6 @@ public final class AdminController {
         this.configurations = configurations;
         this.async = async;
         this.wakes = wakeProvider == null ? null : wakeProvider.getIfAvailable();
-        this.projects = projects;
         this.changes = changeProvider == null ? null : changeProvider.getIfAvailable();
         this.releases = releaseProvider == null ? null : releaseProvider.getIfAvailable();
         this.audit = auditProvider == null ? null : auditProvider.getIfAvailable();
@@ -91,7 +87,7 @@ public final class AdminController {
     AdminController(CenterTokenConfig tokens, AgentRegistry agents, TaskService tasks,
                     EnrollmentTokenService enrollments, UpgradeService upgrades,
                     AgentConfigurationService configurations, CenterAsyncExecutor async) {
-        this(tokens, agents, tasks, null, null, null, enrollments, upgrades, configurations, async, null, null, null, null, null, null, null, null);
+        this(tokens, agents, tasks, null, null, null, enrollments, upgrades, configurations, async, null, null, null, null, null, null, null);
     }
 
     /**
@@ -167,7 +163,7 @@ public final class AdminController {
             authenticate(authorization);
             var deleted = audit == null ? 0 : audit.purge(retentionDays, limit);
             if (audit != null) {
-                audit.record("audit.gc", "admin", null, null, null, "medium", "accepted",
+                audit.record("audit.gc", "admin", null, null, "medium", "accepted",
                         "deleted=" + deleted + ",retention_days=" + retentionDays);
             }
             return ResponseEntity.ok(Map.of("deleted", deleted, "retention_days", retentionDays, "limit", limit));
@@ -220,7 +216,7 @@ public final class AdminController {
             // the new generation over the authoritative HTTPS poll path.
             if (wakes != null) wakes.signal(machineId);
             signalChange();
-            if (audit != null) audit.record("agent.config.update", "admin", machineId, null, null, "medium", "accepted",
+            if (audit != null) audit.record("agent.config.update", "admin", machineId, null, "medium", "accepted",
                     "generation=" + updated.generation());
             return ResponseEntity.ok(updated);
         });
@@ -236,7 +232,7 @@ public final class AdminController {
             var rolledBack = configurations.rollback(machineId);
             if (wakes != null) wakes.signal(machineId);
             signalChange();
-            if (audit != null) audit.record("agent.config.rollback", "admin", machineId, null, null, "medium", "accepted",
+            if (audit != null) audit.record("agent.config.rollback", "admin", machineId, null, "medium", "accepted",
                     "generation=" + rolledBack.generation());
             return ResponseEntity.ok(rolledBack);
         });
@@ -321,37 +317,20 @@ public final class AdminController {
         return execute(() -> {
             authenticate(authorization);
             if (request == null) throw new IllegalArgumentException("task request is required");
-            var decoded = new DecodedTaskRequest(request.toInternal(), request.projectId(), request.worktreeId(), request.cwd(),
-                    !request.scopeMode().isBlank());
-            var internal = decoded.internal();
-            // A bounded machine may safely inherit its registered workspace
-            // when scope fields are omitted.  An unrestricted machine may not:
-            // whole-host authority must be visible in the request so a UI,
-            // retry handler, or model cannot obtain it by omission.
-            if (!decoded.scopeExplicit() && decoded.projectId().isBlank()) {
-                var machine = agents.findMachine(internal.machineId(), java.time.Instant.now())
-                        .orElseThrow(() -> new IllegalArgumentException("machine not found"));
-                if (ScopeMode.fromWireValue(machine.scopeMode()) == ScopeMode.UNRESTRICTED) {
-                    throw new IllegalArgumentException("scope_mode=unrestricted must be explicit");
-                }
-            }
-            if (!decoded.projectId().isBlank()) {
-                if (projects == null) throw new IllegalStateException("project service is unavailable");
-                var cwd = projects.resolveCwd(internal.machineId(), decoded.projectId(), decoded.worktreeId(), decoded.requestedCwd());
-                var scopeRoot = projects.resolveScopeRoot(internal.machineId(), decoded.projectId(), decoded.worktreeId());
-                var original = internal.command();
-                var scoped = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand(
-                        "", original.kind(), original.requiredCapability(), original.command(), cwd,
-                        original.env(), original.timeoutSeconds(), original.desktop(), original.createdAt(), original.contract(),
-                        original.attempt(), original.fileTransfer());
-                var mode = internal.scopeMode() == null
-                        ? (decoded.worktreeId().isBlank() ? ScopeMode.PROJECT : ScopeMode.WORKTREE)
-                        : internal.scopeMode();
-                internal = new CreateTaskRequest(internal.machineId(), scoped, internal.idempotencyKey(),
-                        decoded.projectId(), decoded.worktreeId(), mode, scopeRoot,
-                        internal.workspacePolicy(), internal.laneMode(), internal.sessionId(),
-                        internal.risk(), internal.elevationRequired(), internal.origin());
-            }
+            var internal = request.toInternal();
+            var machine = agents.findMachine(internal.machineId(), java.time.Instant.now())
+                    .orElseThrow(() -> new IllegalArgumentException("machine not found"));
+            var requestedCwd = request.cwd() == null ? "" : request.cwd().trim();
+            var defaultCwd = machine.defaultCwd() == null ? "" : machine.defaultCwd().trim();
+            var cwd = requestedCwd.isBlank() ? defaultCwd : requestedCwd;
+            var original = internal.command();
+            var normalizedCommand = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand(
+                    "", original.kind(), original.requiredCapability(), original.command(), cwd,
+                    original.env(), original.timeoutSeconds(), original.desktop(), original.createdAt(), original.contract(),
+                    original.attempt(), original.fileTransfer());
+            internal = new CreateTaskRequest(internal.machineId(), normalizedCommand, internal.idempotencyKey(),
+                    internal.laneMode(), internal.sessionId(), internal.risk(),
+                    internal.elevationRequired(), internal.origin());
             return ResponseEntity.status(HttpStatus.CREATED).body(tasks.create(internal, "console"));
         });
     }
@@ -443,7 +422,7 @@ public final class AdminController {
             var issued = principals.issue(new McpPrincipalService.IssueRequest(body.principalId(), body.displayName(),
                     body.expiresInSeconds(), body.scopes()));
             signalChange();
-            if (audit != null) audit.record("mcp-token.issue", "admin", null, null, null, "medium", "accepted",
+            if (audit != null) audit.record("mcp-token.issue", "admin", null, null, "medium", "accepted",
                     "token_id=" + issued.tokenId() + ",principal_id=" + issued.principalId());
             return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
                     "token_id", issued.tokenId(), "principal_id", issued.principalId(),
@@ -477,7 +456,7 @@ public final class AdminController {
             if (principals == null) throw new IllegalStateException("MCP principal service is unavailable");
             var revoked = principals.revoke(tokenId);
             if (revoked) signalChange();
-            if (audit != null) audit.record("mcp-token.revoke", "admin", null, null, null, "medium",
+            if (audit != null) audit.record("mcp-token.revoke", "admin", null, null, "medium",
                     revoked ? "accepted" : "not_found", "token_id_present=" + (tokenId != null && !tokenId.isBlank()));
             return ResponseEntity.ok(Map.of("token_id", tokenId == null ? "" : tokenId, "revoked", revoked));
         });
@@ -496,7 +475,7 @@ public final class AdminController {
                     grantExpiry(body.expiresInSeconds()));
             signalChange();
             if (audit != null) audit.record("mcp-access.machine-grant", "admin", body.machineId(), null,
-                    null, "medium", "accepted", "principal_id=" + body.principalId());
+                    "medium", "accepted", "principal_id=" + body.principalId());
             return ResponseEntity.status(HttpStatus.CREATED).body(grant);
         });
     }
@@ -532,54 +511,6 @@ public final class AdminController {
         });
     }
 
-    /** Grant a user Token explicit membership in one registered project. */
-    @PostMapping("/access/projects")
-    public CompletableFuture<ResponseEntity<?>> grantProjectAccess(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @RequestBody(required = false) ProjectMemberRequest request) {
-        return execute(() -> {
-            authenticate(authorization);
-            if (access == null) throw new IllegalStateException("MCP access service is unavailable");
-            var body = request == null ? new ProjectMemberRequest("", "", java.util.Set.of(), null) : request;
-            var grant = access.grantProject(body.principalId(), body.projectId(), body.scopes(),
-                    grantExpiry(body.expiresInSeconds()));
-            signalChange();
-            if (audit != null) audit.record("mcp-access.project-grant", "admin", null, body.projectId(),
-                    null, "medium", "accepted", "principal_id=" + body.principalId());
-            return ResponseEntity.status(HttpStatus.CREATED).body(grant);
-        });
-    }
-
-    @GetMapping("/access/projects")
-    public CompletableFuture<ResponseEntity<?>> projectAccess(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @RequestParam(defaultValue = "") String principalId,
-            @RequestParam(defaultValue = "0") int offset,
-            @RequestParam(defaultValue = "50") int limit) {
-        return execute(() -> {
-            authenticate(authorization);
-            if (access == null) throw new IllegalStateException("MCP access service is unavailable");
-            var items = access.listProject(principalId, offset, limit);
-            var total = access.projectCount(principalId);
-            return ResponseEntity.ok(Map.of("items", items, "offset", offset, "limit", limit,
-                    "total", total, "has_more", hasMore(offset, items.size(), total)));
-        });
-    }
-
-    @DeleteMapping("/access/projects")
-    public CompletableFuture<ResponseEntity<?>> revokeProjectAccess(
-            @RequestHeader(value = "Authorization", required = false) String authorization,
-            @RequestBody(required = false) ProjectMemberRequest request) {
-        return execute(() -> {
-            authenticate(authorization);
-            if (access == null) throw new IllegalStateException("MCP access service is unavailable");
-            var body = request == null ? new ProjectMemberRequest("", "", java.util.Set.of(), null) : request;
-            var revoked = access.revokeProject(body.principalId(), body.projectId());
-            if (revoked) signalChange();
-            return ResponseEntity.ok(Map.of("principal_id", body.principalId(), "project_id", body.projectId(),
-                    "revoked", revoked));
-        });
-    }
 
     /** Bounded execution-session projection for recovery and support tooling. */
     @GetMapping("/execution-sessions")
@@ -626,9 +557,6 @@ public final class AdminController {
         });
     }
 
-    private record DecodedTaskRequest(CreateTaskRequest internal, String projectId, String worktreeId,
-                                      String requestedCwd, boolean scopeExplicit) {
-    }
 
     @PostMapping("/tasks/{taskId}/cancel")
     public CompletableFuture<ResponseEntity<?>> cancelTask(@RequestHeader(value = "Authorization", required = false) String authorization,
@@ -739,7 +667,7 @@ public final class AdminController {
                 // requested machine name) into audit storage.  The token is
                 // returned once in the response and only its lifecycle event
                 // is retained here.
-                audit.record("enrollment.issue", "admin", null, null, null, "medium", "accepted",
+                audit.record("enrollment.issue", "admin", null, null, "medium", "accepted",
                         "token_issued=true,expires_at=" + issued.expiresAt());
             }
             // The plaintext token is returned exactly once by this response;
@@ -758,7 +686,7 @@ public final class AdminController {
             var revoked = enrollments.revoke(tokenId) > 0;
             if (revoked) signalChange();
             if (audit != null) {
-                audit.record("enrollment.revoke", "admin", null, null, null, "medium",
+                audit.record("enrollment.revoke", "admin", null, null, "medium",
                         revoked ? "accepted" : "not_found", "token_id_present=" + !tokenId.isBlank());
             }
             return ResponseEntity.ok(Map.of("token_id", tokenId, "revoked", revoked));
@@ -840,12 +768,6 @@ public final class AdminController {
             @JsonProperty("expires_in_seconds") Long expiresInSeconds) {
     }
 
-    public record ProjectMemberRequest(
-            @JsonProperty("principal_id") String principalId,
-            @JsonProperty("project_id") String projectId,
-            java.util.Set<String> scopes,
-            @JsonProperty("expires_in_seconds") Long expiresInSeconds) {
-    }
 
     public record SessionCloseRequest(
             @JsonProperty("principal_id") String principalId,

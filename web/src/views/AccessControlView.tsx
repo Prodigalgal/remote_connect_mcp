@@ -1,681 +1,184 @@
 import { useCallback, useEffect, useState } from 'react'
-import { CheckCircleIcon, KeyIcon, LockIcon, PlusIcon, RefreshCwIcon, ShieldIcon, TrashIcon } from '../icons/Icons'
 import { CopyButton } from '../components/CopyButton'
-import { EmptyState } from '../components/EmptyState'
-import { PaginationBar } from '../components/PaginationBar'
 import {
-  closeExecutionSession,
-  getQuota,
   grantMachine,
-  grantProject,
   issueMcpToken,
-  listExecutionSessions,
   listMachineGrants,
   listMcpTokens,
-  listProjectMembers,
   revokeMachine,
   revokeMcpToken,
-  revokeProject,
-  type ExecutionSession,
   type Machine,
   type MachineGrant,
   type McpToken,
-  type Project,
-  type ProjectMember,
-  type Quota,
 } from '../api'
-import { usePagination } from '../utils'
 
 interface AccessControlViewProps {
   token: string
   machines: Machine[]
-  projects: Project[]
 }
 
-export function AccessControlView({ token, machines, projects }: AccessControlViewProps) {
-  const [principal, setPrincipal] = useState('')
-  const [displayName, setDisplayName] = useState('')
-  const [expires, setExpires] = useState('86400')
+export function AccessControlView({ token, machines }: AccessControlViewProps) {
+  const [principal, setPrincipal] = useState('owner')
+  const [expires, setExpires] = useState('2592000')
   const [tokens, setTokens] = useState<McpToken[]>([])
-  const [machineGrants, setMachineGrants] = useState<MachineGrant[]>([])
-  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([])
-  const [sessions, setSessions] = useState<ExecutionSession[]>([])
-  const [quota, setQuota] = useState<Quota | null>(null)
-  const [machineId, setMachineId] = useState(machines[0]?.id ?? '')
-  const [projectId, setProjectId] = useState(projects[0]?.id ?? '')
+  const [grants, setGrants] = useState<MachineGrant[]>([])
   const [issued, setIssued] = useState('')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    if (machines.length > 0 && (!machineId || !machines.some((m) => m.id === machineId))) {
-      setMachineId(machines[0].id)
-    }
-  }, [machines, machineId])
-
-  useEffect(() => {
-    if (projects.length > 0 && (!projectId || !projects.some((p) => p.id === projectId))) {
-      setProjectId(projects[0].id)
-    }
-  }, [projects, projectId])
-
-  const reload = useCallback(async () => {
+  const refresh = useCallback(async (principalId = principal) => {
     if (!token.trim()) return
-    setBusy(true)
-    setMessage('')
     try {
-      const [tokenPage, machineRows, projectRows, sessionRows] = await Promise.all([
+      const [tokenPage, machineGrants] = await Promise.all([
         listMcpTokens(token),
-        listMachineGrants(token, principal),
-        listProjectMembers(token, principal),
-        listExecutionSessions(token, principal),
+        listMachineGrants(token, principalId),
       ])
       setTokens(tokenPage.items)
-      setMachineGrants(machineRows)
-      setProjectMembers(projectRows)
-      setSessions(sessionRows)
-
-      if (principal.trim()) {
-        try {
-          const q = await getQuota(token, principal.trim())
-          setQuota(q)
-        } catch {
-          setQuota(null)
-        }
-      } else {
-        setQuota(null)
-      }
+      setGrants(machineGrants)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '读取访问控制数据失败')
-    } finally {
-      setBusy(false)
+      setMessage(error instanceof Error ? error.message : '读取连接凭证失败')
     }
   }, [token, principal])
 
-  useEffect(() => {
-    void reload()
-  }, [reload])
+  useEffect(() => { void refresh() }, [refresh])
 
-  const tokenPagination = usePagination(tokens, { defaultPageSize: 5 })
-  const sessionPagination = usePagination(sessions, { defaultPageSize: 5 })
+  const hasAllMachines = grants.some((grant) => grant.principalId === principal.trim()
+    && grant.machineId === '*' && grant.scopes.includes('execute'))
 
-  type GrantEntry =
-    | { kind: 'machine'; item: MachineGrant }
-    | { kind: 'project'; item: ProjectMember }
-
-  const allGrants: GrantEntry[] = [
-    ...machineGrants.map((m) => ({ kind: 'machine' as const, item: m })),
-    ...projectMembers.map((p) => ({ kind: 'project' as const, item: p })),
-  ]
-  const grantPagination = usePagination(allGrants, { defaultPageSize: 5 })
-
-  const issue = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!token.trim()) return
+  const issue = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!token.trim() || !principal.trim()) return
     setBusy(true)
-    setMessage('')
     setIssued('')
+    setMessage('')
     try {
       const result = await issueMcpToken(token, {
-        principal_id: principal.trim() || undefined,
-        display_name: displayName.trim() || undefined,
-        expires_in_seconds: Number(expires) || 0,
-        scopes: ['mcp:read', 'mcp:execute', 'mcp:project'],
+        principal_id: principal.trim(),
+        display_name: principal.trim(),
+        expires_in_seconds: Number(expires),
+        scopes: ['mcp:read', 'mcp:execute'],
       })
-      setPrincipal(result.principalId)
       setIssued(result.token)
-      setMessage('Token 只显示一次，请立即复制保存；Center 仅保存摘要哈希。')
-      await reload()
+      try {
+        await grantMachine(token, {
+          principal_id: result.principalId,
+          machine_id: '*',
+          scopes: ['read', 'execute'],
+        })
+        setMessage('连接凭证已创建，并可访问所有机器。明文仅显示一次，请立即复制。')
+      } catch (error) {
+        setMessage(`凭证已创建，但机器授权失败：${error instanceof Error ? error.message : String(error)}。请使用下方按钮重试。`)
+      }
+      await refresh(result.principalId)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '生成 MCP Token 失败')
+      setMessage(error instanceof Error ? error.message : '创建连接凭证失败')
     } finally {
       setBusy(false)
     }
   }
 
-  const grantMachineAccess = async () => {
-    if (!principal.trim() || !machineId) return
+  const changeGrant = async () => {
+    if (!principal.trim()) return
     setBusy(true)
+    setMessage('')
     try {
-      await grantMachine(token, {
-        principal_id: principal.trim(),
-        machine_id: machineId,
-        scopes: ['read', 'execute'],
-      })
-      setMessage(`已为 ${principal} 授予机器读写执行权限 (read, execute)`)
-      await reload()
+      const payload = { principal_id: principal.trim(), machine_id: '*' }
+      if (hasAllMachines) {
+        await revokeMachine(token, payload)
+        setMessage('已撤销所有机器的访问权限。')
+      } else {
+        await grantMachine(token, { ...payload, scopes: ['read', 'execute'] })
+        setMessage('已授权访问所有机器，包括之后加入的机器。')
+      }
+      await refresh()
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '授予机器访问失败')
+      setMessage(error instanceof Error ? error.message : '修改机器授权失败')
     } finally {
       setBusy(false)
     }
   }
 
-  const grantProjectAccess = async () => {
-    if (!principal.trim() || !projectId) return
+  const revoke = async (tokenId: string) => {
+    if (!window.confirm('撤销后，使用此凭证的连接将失效。确定撤销吗？')) return
     setBusy(true)
-    try {
-      await grantProject(token, {
-        principal_id: principal.trim(),
-        project_id: projectId,
-        scopes: ['read', 'write'],
-      })
-      setMessage(`已为 ${principal} 授予项目读写权限 (read, write)`)
-      await reload()
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : '授予项目访问失败')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const handleRevokeToken = async (tokenId: string) => {
-    if (!window.confirm('确认撤销该 MCP Token 吗？撤销后连接将立即断开。')) return
     try {
       await revokeMcpToken(token, tokenId)
-      await reload()
-    } catch (err) {
-      alert(`撤销失败: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
-
-  const handleCloseSession = async (session: ExecutionSession) => {
-    if (!window.confirm(`确认终止会话 [${session.sessionId}] 吗？`)) return
-    try {
-      await closeExecutionSession(token, session.principalId, session.sessionId)
-      await reload()
-    } catch (err) {
-      alert(`关闭会话失败: ${err instanceof Error ? err.message : String(err)}`)
+      await refresh()
+      setMessage('凭证已撤销。')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '撤销凭证失败')
+    } finally {
+      setBusy(false)
     }
   }
 
   return (
     <div>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', gap: '12px' }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 800, color: '#fff', letterSpacing: '-0.02em' }}>
-            访问控制与鉴权策略 (RBAC)
-          </h2>
-          <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
-            签发 MCP Client 凭证、对机器与项目显式授权 (read/execute)、监控执行会话与安全配额。
+          <h2 style={{ margin: 0, fontSize: '20px', color: '#fff' }}>连接凭证</h2>
+          <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)' }}>
+            为自己的 MCP 客户端创建凭证，统一访问 {machines.length} 台机器。
           </p>
         </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={() => void reload()}
-            disabled={busy}
-          >
-            <RefreshCwIcon size={14} style={{ animation: busy ? 'spin 1s linear infinite' : undefined }} />
-            <span>刷新授权</span>
-          </button>
-        </div>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => void refresh()} disabled={busy}>刷新</button>
       </div>
 
-      {message && (
-        <div className={`toast-bar ${message.includes('失败') ? 'error' : 'success'}`}>
-          <CheckCircleIcon size={15} />
-          <span>{message}</span>
-        </div>
-      )}
+      {message && <div className={`toast-bar ${message.includes('失败') ? 'error' : 'success'}`}><span>{message}</span></div>}
 
-      {/* Forms Section */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: '24px', marginBottom: '24px' }}>
-        {/* Token Form */}
-        <div className="card" style={{ padding: '24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-            <div
-              style={{
-                width: '34px',
-                height: '34px',
-                borderRadius: 'var(--radius-md)',
-                background: 'rgba(99, 102, 241, 0.12)',
-                border: '1px solid rgba(99, 102, 241, 0.25)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--accent-primary)',
-              }}
-            >
-              <KeyIcon size={17} />
-            </div>
-            <div>
-              <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#fff' }}>
-                签发用户 Token (MCP Principal)
-              </h3>
-              <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                客户端连接器的唯一主体身份
-              </span>
-            </div>
-          </div>
-
-          <form onSubmit={issue}>
+      <div className="card" style={{ padding: '24px', marginBottom: '20px' }}>
+        <form onSubmit={issue}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: '16px' }}>
             <div className="form-group">
-              <label className="form-label">Principal ID (主体标识)</label>
-              <input
-                type="text"
-                className="form-input font-mono"
-                placeholder="例如: user-alice 或 default"
-                value={principal}
-                onChange={(e) => setPrincipal(e.target.value)}
-              />
+              <label className="form-label">我的账户</label>
+              <input className="form-input font-mono" value={principal} onChange={(event) => setPrincipal(event.target.value)} required />
             </div>
-
-            <div className="form-group">
-              <label className="form-label">显示名称 (Display Name)</label>
-              <input
-                type="text"
-                className="form-input"
-                placeholder="例如: Alice's Laptop"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-              />
-            </div>
-
             <div className="form-group">
               <label className="form-label">有效期</label>
-              <select
-                className="form-select"
-                value={expires}
-                onChange={(e) => setExpires(e.target.value)}
-              >
-                <option value="3600">1 小时</option>
-                <option value="86400">1 天</option>
+              <select className="form-select" value={expires} onChange={(event) => setExpires(event.target.value)}>
                 <option value="2592000">30 天</option>
-                <option value="0">不过期（仅受撤销控制）</option>
+                <option value="86400">1 天</option>
+                <option value="0">不过期，手动撤销</option>
               </select>
             </div>
-
-            <button
-              type="submit"
-              className="btn btn-primary"
-              style={{ width: '100%', marginTop: '10px' }}
-              disabled={!token || busy}
-            >
-              {busy ? '签发中...' : '签发 Token'}
-            </button>
-
-            {issued && (
-              <div style={{ marginTop: '16px', padding: '12px', borderRadius: 'var(--radius-md)', background: '#07090f', border: '1px solid var(--border-default)' }}>
-                <div style={{ fontSize: '11px', color: 'var(--accent-emerald)', marginBottom: '4px', fontWeight: 600 }}>
-                  新 Token 仅显示一次，请妥善保存：
-                </div>
-                <div className="font-mono" style={{ color: '#fff', wordBreak: 'break-all', fontSize: '11px', marginBottom: '8px' }}>
-                  {issued}
-                </div>
-                <CopyButton text={issued} label="复制明文" size="sm" />
-              </div>
-            )}
-          </form>
-        </div>
-
-        {/* Grants Form */}
-        <div className="card" style={{ padding: '24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-            <div
-              style={{
-                width: '34px',
-                height: '34px',
-                borderRadius: 'var(--radius-md)',
-                background: 'rgba(56, 189, 248, 0.1)',
-                border: '1px solid rgba(56, 189, 248, 0.25)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--accent-sky)',
-              }}
-            >
-              <ShieldIcon size={17} />
-            </div>
-            <div>
-              <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#fff' }}>
-                授予资源范围 (Grants)
-              </h3>
-              <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                为当前 Principal ID 显式开放机器或项目权限
-              </span>
-            </div>
           </div>
-
-          <div className="form-group">
-            <label className="form-label">当前被授权主体</label>
-            <input
-              type="text"
-              className="form-input font-mono"
-              value={principal}
-              onChange={(e) => setPrincipal(e.target.value)}
-              placeholder="请输入或选择已签发的 Principal ID"
-            />
+          <button className="btn btn-primary" type="submit" disabled={busy || !principal.trim() || !token.trim()}>
+            创建连接凭证并授权所有机器
+          </button>
+        </form>
+        {issued && (
+          <div style={{ marginTop: '16px', padding: '12px', borderRadius: 'var(--radius-md)', background: 'var(--bg-subtle)' }}>
+            <div style={{ marginBottom: '8px' }}>凭证只显示这一次：</div>
+            <div className="font-mono" style={{ wordBreak: 'break-all', marginBottom: '8px' }}>{issued}</div>
+            <CopyButton text={issued} label="复制凭证" size="sm" />
           </div>
-
-          <div style={{ padding: '14px', borderRadius: 'var(--radius-md)', background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)', marginBottom: '16px' }}>
-            <label className="form-label">授予机器 read + execute</label>
-            <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
-              <select
-                className="form-select"
-                value={machineId}
-                onChange={(e) => setMachineId(e.target.value)}
-                style={{ flex: 1 }}
-              >
-                <option value="">选择机器</option>
-                {machines.map((m) => (
-                  <option key={m.id} value={m.id}>{m.name} ({m.hostId})</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={grantMachineAccess}
-                disabled={!principal.trim() || !machineId || busy}
-              >
-                授权机器
-              </button>
-            </div>
-          </div>
-
-          <div style={{ padding: '14px', borderRadius: 'var(--radius-md)', background: 'var(--bg-subtle)', border: '1px solid var(--border-subtle)' }}>
-            <label className="form-label">授予项目 read + write</label>
-            <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
-              <select
-                className="form-select"
-                value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                style={{ flex: 1 }}
-              >
-                <option value="">选择项目</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={grantProjectAccess}
-                disabled={!principal.trim() || !projectId || busy}
-              >
-                授权项目
-              </button>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
 
-      {/* Quota Summary Card if Principal queried */}
-      {quota && (
-        <div className="card" style={{ padding: '20px', marginBottom: '24px', background: 'linear-gradient(135deg, #131726 0%, #1c2132 100%)' }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--accent-sky)', marginBottom: '8px' }}>
-            QUOTA · {quota.principalId}
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '14px' }}>
-            <div>
-              <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>活动任务</span>
-              <div style={{ fontSize: '16px', fontWeight: 700, color: '#fff' }}>{quota.activeTasks} / {quota.maxActiveTasks}</div>
-            </div>
-            <div>
-              <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>排队任务</span>
-              <div style={{ fontSize: '16px', fontWeight: 700, color: '#fff' }}>{quota.queuedTasks} / {quota.maxQueuedTasks}</div>
-            </div>
-            <div>
-              <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>活动会话</span>
-              <div style={{ fontSize: '16px', fontWeight: 700, color: '#fff' }}>{quota.activeSessions} / {quota.maxSessions}</div>
-            </div>
-            <div>
-              <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>预约传输流量</span>
-              <div style={{ fontSize: '16px', fontWeight: 700, color: '#fff' }}>
-                {(quota.reservedTransferBytes / 1024 / 1024).toFixed(1)} / {(quota.maxTransferBytes / 1024 / 1024).toFixed(0)} MB
-              </div>
-            </div>
-            <div>
-              <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>已传输总量</span>
-              <div style={{ fontSize: '16px', fontWeight: 700, color: '#fff' }}>
-                {(quota.transferredTransferBytes / 1024 / 1024).toFixed(1)} MB
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Table: Tokens */}
-      <div style={{ marginBottom: '24px' }}>
-        <h3 style={{ margin: '0 0 12px', fontSize: '16px', fontWeight: 700, color: '#fff' }}>
-          已签发 MCP Token ({tokens.length})
-        </h3>
-        <div className="table-wrapper">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>显示名 / Principal ID</th>
-                <th>Token ID</th>
-                <th>Scopes</th>
-                <th>状态 / 过期时间</th>
-                <th style={{ textAlign: 'right' }}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tokenPagination.pagedItems.length > 0 ? (
-                tokenPagination.pagedItems.map((item) => (
-                  <tr key={item.tokenId}>
-                    <td>
-                      <strong style={{ color: '#fff', display: 'block' }}>{item.displayName || '未命名'}</strong>
-                      <span className="font-mono" style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                        {item.principalId}
-                      </span>
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <span className="font-mono">{item.tokenId.slice(0, 14)}...</span>
-                        <CopyButton text={item.tokenId} label="" size="sm" />
-                      </div>
-                    </td>
-                    <td>
-                      <span className="tag-badge">{item.scopes.join(', ')}</span>
-                    </td>
-                    <td>
-                      <span style={{ fontSize: '12px' }}>
-                        {item.revokedAt ? (
-                          <span style={{ color: 'var(--accent-rose)' }}>已撤销</span>
-                        ) : item.expiresAt ? (
-                          new Date(item.expiresAt).toLocaleDateString()
-                        ) : (
-                          '永久有效'
-                        )}
-                      </span>
-                    </td>
-                    <td style={{ textAlign: 'right' }}>
-                      {!item.revokedAt && (
-                        <button
-                          type="button"
-                          className="btn btn-danger btn-sm"
-                          onClick={() => handleRevokeToken(item.tokenId)}
-                        >
-                          撤销
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={5} style={{ padding: 0 }}>
-                    <EmptyState title="暂无活跃 Token" description="使用上方表单签发第一个客户端接入 Token" />
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <PaginationBar
-          currentPage={tokenPagination.currentPage}
-          totalPages={tokenPagination.totalPages}
-          totalItems={tokenPagination.totalItems}
-          startIndex={tokenPagination.startIndex}
-          endIndex={tokenPagination.endIndex}
-          pageSize={tokenPagination.pageSize}
-          onPageChange={tokenPagination.goToPage}
-          onPageSizeChange={tokenPagination.setPageSize}
-          pageSizeOptions={[5, 10, 20]}
-          unit="个Token"
-        />
+      <div className="card" style={{ padding: '20px', marginBottom: '20px' }}>
+        <strong style={{ color: '#fff' }}>机器访问</strong>
+        <p style={{ color: 'var(--text-secondary)' }}>
+          {principal.trim() || '当前账户'}：{hasAllMachines ? '已授权全部机器' : '尚未授权全部机器'}
+        </p>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => void changeGrant()} disabled={busy || !principal.trim()}>
+          {hasAllMachines ? '撤销全部机器授权' : '授权全部机器'}
+        </button>
       </div>
 
-      {/* Table: Sessions */}
-      <div style={{ marginBottom: '24px' }}>
-        <h3 style={{ margin: '0 0 12px', fontSize: '16px', fontWeight: 700, color: '#fff' }}>
-          活动执行会话与车道 ({sessions.length})
-        </h3>
-        <div className="table-wrapper">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>会话 ID / 对话 ID</th>
-                <th>机器 ID</th>
-                <th>状态与能力</th>
-                <th>隔离策略与车道</th>
-                <th style={{ textAlign: 'right' }}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sessionPagination.pagedItems.length > 0 ? (
-                sessionPagination.pagedItems.map((item) => (
-                  <tr key={`${item.principalId}:${item.sessionId}`}>
-                    <td>
-                      <strong style={{ color: '#fff', display: 'block' }}>{item.sessionId}</strong>
-                      <span className="font-mono" style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                        conv: {item.conversationId} · {item.principalId}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="font-mono">{item.machineId}</span>
-                    </td>
-                    <td>
-                      <span className="tag-badge">{item.status} · {item.capability ?? '—'}</span>
-                    </td>
-                    <td>
-                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        {item.workspacePolicy ?? 'shared_serial'} · {item.laneMode ?? 'write'}
-                      </span>
-                    </td>
-                    <td style={{ textAlign: 'right' }}>
-                      <button
-                        type="button"
-                        className="btn btn-danger btn-sm"
-                        onClick={() => handleCloseSession(item)}
-                      >
-                        关闭
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={5} style={{ padding: 0 }}>
-                    <EmptyState title="暂无活动会话" description="客户端在调用长连接或桌面会话时将在此列出" />
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <PaginationBar
-          currentPage={sessionPagination.currentPage}
-          totalPages={sessionPagination.totalPages}
-          totalItems={sessionPagination.totalItems}
-          startIndex={sessionPagination.startIndex}
-          endIndex={sessionPagination.endIndex}
-          pageSize={sessionPagination.pageSize}
-          onPageChange={sessionPagination.goToPage}
-          onPageSizeChange={sessionPagination.setPageSize}
-          pageSizeOptions={[5, 10, 20]}
-          unit="个会话"
-        />
-      </div>
-
-      {/* Table: Machine & Project Grants */}
-      <div>
-        <h3 style={{ margin: '0 0 12px', fontSize: '16px', fontWeight: 700, color: '#fff' }}>
-          机器与项目显式授权 ({machineGrants.length + projectMembers.length})
-        </h3>
-        <div className="table-wrapper">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>资源类型</th>
-                <th>目标资源 ID</th>
-                <th>主体 (Principal ID)</th>
-                <th>授权 Scopes</th>
-                <th style={{ textAlign: 'right' }}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {grantPagination.pagedItems.length > 0 ? (
-                grantPagination.pagedItems.map((entry) => {
-                  if (entry.kind === 'machine') {
-                    const item = entry.item
-                    return (
-                      <tr key={`m:${item.principalId}:${item.machineId}`}>
-                        <td><span className="tag-badge" style={{ color: 'var(--accent-sky)' }}>机器</span></td>
-                        <td><span className="font-mono">{item.machineId}</span></td>
-                        <td><strong style={{ color: '#fff' }}>{item.principalId}</strong></td>
-                        <td><span>{item.scopes.join(', ')}</span></td>
-                        <td style={{ textAlign: 'right' }}>
-                          <button
-                            type="button"
-                            className="btn btn-danger btn-sm"
-                            onClick={() => revokeMachine(token, { principal_id: item.principalId, machine_id: item.machineId }).then(reload)}
-                          >
-                            撤销
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  }
-                  const item = entry.item
-                  return (
-                    <tr key={`p:${item.principalId}:${item.projectId}`}>
-                      <td><span className="tag-badge" style={{ color: 'var(--accent-emerald)' }}>项目</span></td>
-                      <td><span className="font-mono">{item.projectId}</span></td>
-                      <td><strong style={{ color: '#fff' }}>{item.principalId}</strong></td>
-                      <td><span>{item.scopes.join(', ')}</span></td>
-                      <td style={{ textAlign: 'right' }}>
-                        <button
-                          type="button"
-                          className="btn btn-danger btn-sm"
-                          onClick={() => revokeProject(token, { principal_id: item.principalId, project_id: item.projectId }).then(reload)}
-                        >
-                          撤销
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                })
-              ) : (
-                <tr>
-                  <td colSpan={5} style={{ padding: 0 }}>
-                    <EmptyState title="暂无显式授权规则" description="使用上方表单为用户授予机器或项目权限" />
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <PaginationBar
-          currentPage={grantPagination.currentPage}
-          totalPages={grantPagination.totalPages}
-          totalItems={grantPagination.totalItems}
-          startIndex={grantPagination.startIndex}
-          endIndex={grantPagination.endIndex}
-          pageSize={grantPagination.pageSize}
-          onPageChange={grantPagination.goToPage}
-          onPageSizeChange={grantPagination.setPageSize}
-          pageSizeOptions={[5, 10, 20]}
-          unit="条授权"
-        />
+      <div className="card" style={{ padding: '20px' }}>
+        <h3 style={{ margin: '0 0 12px', color: '#fff' }}>已有凭证</h3>
+        {tokens.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>还没有连接凭证。</p>}
+        {tokens.map((item) => (
+          <div key={item.tokenId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '12px 0', borderTop: '1px solid var(--border-subtle)' }}>
+            <div>
+              <strong style={{ color: '#fff' }}>{item.displayName || item.principalId}</strong>
+              <div style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                {item.principalId} · {item.revokedAt ? '已撤销' : item.expiresAt ? `到期 ${new Date(item.expiresAt).toLocaleDateString()}` : '不过期'}
+              </div>
+            </div>
+            {!item.revokedAt && <button type="button" className="btn btn-danger btn-sm" onClick={() => void revoke(item.tokenId)} disabled={busy}>撤销</button>}
+          </div>
+        ))}
       </div>
     </div>
   )

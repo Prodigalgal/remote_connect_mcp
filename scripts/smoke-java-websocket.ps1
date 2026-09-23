@@ -121,7 +121,6 @@ try {
         arch = 'amd64'
         version = 'smoke'
         default_cwd = $root
-        scope_mode = 'unrestricted'
         capabilities = @('command')
         runtime = @{
             schema_version = 1
@@ -137,7 +136,6 @@ try {
             max_cpu_seconds = 0
             desktop_enabled = $false
             browser_adapter_configured = $false
-            scope_mode = 'unrestricted'
             desktop_session_available = $false
             browser_session_available = $false
             resource_enforcement = 'process-tree'
@@ -164,7 +162,6 @@ try {
 
     $task = Invoke-Json 'POST' '/api/v1/admin/tasks' $adminToken @{
         machine_id = [string]$registration.machine_id
-        scope_mode = 'unrestricted'
         command = 'echo websocket-wake'
         cwd = $root
         env = @{}

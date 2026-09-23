@@ -24,7 +24,6 @@ export const demoTasks: Task[] = [
     createdAt: '2026-09-22T14:10:00Z',
     finishedAt: '2026-09-22T14:10:05Z',
     timeoutSeconds: 120,
-    projectId: 'remote-connect-mcp',
   },
   {
     id: 'task-demo-02',
@@ -57,7 +56,7 @@ export function matchesMachine(machine: Machine | DemoMachine, query: string): b
   const needle = query.trim().toLocaleLowerCase()
   if (!needle) return true
   const searchable = 'id' in machine
-    ? [machine.id, machine.name, machine.hostId, machine.hostname, machine.os, machine.arch, machine.version, machine.scopeMode, machine.workspaceRoot, ...machine.capabilities]
+    ? [machine.id, machine.name, machine.hostId, machine.hostname, machine.os, machine.arch, machine.version, ...machine.capabilities]
     : [machine.name, machine.host, machine.role, machine.os, machine.state]
   return searchable.filter(Boolean).some((value) => String(value).toLocaleLowerCase().includes(needle))
 }
@@ -169,4 +168,3 @@ export function usePagination<T>(items: T[], options?: UsePaginationOptions) {
     hasNext: currentPage < totalPages,
   }
 }
-

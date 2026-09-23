@@ -8,20 +8,18 @@ param(
     [string]$AgentName = $env:COMPUTERNAME,
     [string]$HostId = "",
     [string]$DefaultCwd = "C:\",
-        [ValidateSet("unrestricted", "project", "worktree", "path", "workspace")]
-        [string]$ScopeMode = "workspace",
-    [string]$WorkspaceRoot = "",
     [string]$Capabilities = "command,durable_tasks,file_transfer",
     [string]$Version = "dev",
     [string]$BrowserAdapter = "",
     [string]$BrowserProfileDir = $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR,
-    [ValidateSet("playwright", "patchright", "comoufox")]
-    [string]$BrowserEngine = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE } else { "playwright" }),
+    [ValidateSet("camoufox", "playwright", "patchright")]
+    [string]$BrowserEngine = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE } else { "camoufox" }),
     [ValidateSet("chromium", "firefox", "webkit")]
-    [string]$BrowserName = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER } else { "chromium" }),
+    [string]$BrowserName = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER } else { "firefox" }),
     [ValidateSet("0", "1")]
     [string]$BrowserHeadless = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS } else { "1" }),
     [string]$PlaywrightBrowsersPath = $env:REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH,
+    [string]$CamoufoxInstallDir = $env:REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR,
     [string]$DesktopBinaryPath = "",
     [string]$BrowserBinaryPath = "",
     [switch]$DesktopEnabled,
@@ -265,7 +263,7 @@ if ($Uninstall) {
     Remove-AgentScmService -Name $serviceName
     if (Test-Path -LiteralPath $InstallRoot) { Remove-Item -LiteralPath $InstallRoot -Recurse -Force }
     if ($PurgeState -and (Test-Path -LiteralPath $StateDir)) { Remove-Item -LiteralPath $StateDir -Recurse -Force }
-    Write-Host "Remote Connect MCP Java Agent task removed."
+    Write-Host "Remote Connect MCP Agent task removed."
     return
 }
 
@@ -279,10 +277,6 @@ if ([string]::IsNullOrWhiteSpace($AgentName)) { throw "AgentName is required." }
 if ([string]::IsNullOrWhiteSpace($HostId)) { $HostId = $AgentName }
 if ($CgroupPath -and ($CgroupPath.Contains("`r") -or $CgroupPath.Contains("`n") -or $CgroupPath.Length -gt 4096)) { throw "CgroupPath must be a single path up to 4096 characters." }
 if (-not (Test-Path -LiteralPath $DefaultCwd -PathType Container)) { throw "DefaultCwd does not exist: $DefaultCwd" }
-if ($ScopeMode -eq "workspace") {
-    if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) { $WorkspaceRoot = $DefaultCwd }
-    if (-not (Test-Path -LiteralPath $WorkspaceRoot -PathType Container)) { throw "WorkspaceRoot does not exist: $WorkspaceRoot" }
-}
 if ($MaxAggregateOutputBytes -eq 0) {
     $product = [decimal]$MaxOutputBytes * [decimal]$MaxConcurrency
     $MaxAggregateOutputBytes = [long][Math]::Max([decimal]$MaxOutputBytes, [Math]::Min([decimal]268435456, $product))
@@ -390,8 +384,6 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
         REMOTE_CONNECT_MCP_AGENT_NAME = $AgentName.Trim()
         REMOTE_CONNECT_MCP_AGENT_HOST_ID = $HostId.Trim()
         REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD = $DefaultCwd
-        REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE = $ScopeMode
-        REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT = $WorkspaceRoot
         REMOTE_CONNECT_MCP_AGENT_CAPABILITIES = $Capabilities
         REMOTE_CONNECT_MCP_AGENT_VERSION = $Version.Trim()
         REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER = $BrowserAdapter.Trim()
@@ -400,6 +392,7 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
         REMOTE_CONNECT_MCP_AGENT_BROWSER = $BrowserName
         REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS = $BrowserHeadless
         REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH = [string]$PlaywrightBrowsersPath
+        REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR = [string]$CamoufoxInstallDir
         REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED = $DesktopEnabled.IsPresent.ToString().ToLowerInvariant()
         REMOTE_CONNECT_MCP_AGENT_STATE_DIR = $StateDir
         REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY = $MaxConcurrency.ToString()
@@ -442,8 +435,6 @@ $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_NAME=$($AgentName.Trim())",
     "REMOTE_CONNECT_MCP_AGENT_HOST_ID=$($HostId.Trim())",
     "REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD=$DefaultCwd",
-    "REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE=$ScopeMode",
-    "REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT=$WorkspaceRoot",
     "REMOTE_CONNECT_MCP_AGENT_CAPABILITIES=$Capabilities",
     "REMOTE_CONNECT_MCP_AGENT_VERSION=$($Version.Trim())",
     "REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER=$($BrowserAdapter.Trim())",
@@ -452,6 +443,7 @@ $environment = [string[]]@(
     "REMOTE_CONNECT_MCP_AGENT_BROWSER=$BrowserName",
     "REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS=$BrowserHeadless",
     "REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH=$PlaywrightBrowsersPath",
+    "REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR=$CamoufoxInstallDir",
     "REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=$($DesktopEnabled.IsPresent.ToString().ToLowerInvariant())",
     "REMOTE_CONNECT_MCP_AGENT_STATE_DIR=$StateDir",
     "REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY=$MaxConcurrency",
@@ -480,6 +472,9 @@ if ($browserDestination) {
 }
 if (-not [string]::IsNullOrWhiteSpace($PlaywrightBrowsersPath)) {
     $environment += "PLAYWRIGHT_BROWSERS_PATH=$PlaywrightBrowsersPath"
+}
+if (-not [string]::IsNullOrWhiteSpace($CamoufoxInstallDir)) {
+    $environment += "CAMOUFOX_INSTALL_DIR=$CamoufoxInstallDir"
 }
 $launcherPath = Join-Path $InstallRoot 'run-agent.ps1'
 $launcherLines = [System.Collections.Generic.List[string]]::new()

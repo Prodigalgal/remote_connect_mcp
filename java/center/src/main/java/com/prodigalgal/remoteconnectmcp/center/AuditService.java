@@ -33,7 +33,7 @@ public final class AuditService implements AutoCloseable {
     private static final Logger LOG = Logger.getLogger(AuditService.class.getName());
     private static final int MAX_QUEUE = 4096;
     private static final int MAX_MEMORY_EVENTS = 2048;
-    private static final Event STOP = new Event("", "", "", null, null, null, null, null, null, Instant.EPOCH);
+    private static final Event STOP = new Event("", "", "", null, null, null, null, null, Instant.EPOCH);
 
     private final JdbcTemplate jdbc;
     private final ArrayBlockingQueue<Event> queue = new ArrayBlockingQueue<>(MAX_QUEUE);
@@ -57,12 +57,12 @@ public final class AuditService implements AutoCloseable {
 
     /** Queue one already-redacted event. Null/invalid fields are normalized. */
     public void record(String eventType, String actor, String agentId, String taskId,
-                       String scopeMode, String risk, String outcome, String detail) {
+                       String risk, String outcome, String detail) {
         if (closed.get()) return;
         var event = new Event(
                 id(), normalize(eventType, 64, "unknown"), normalize(actor, 128, "system"),
                 normalizeNullable(agentId, 180), normalizeNullable(taskId, 180),
-                normalizeNullable(scopeMode, 32), normalizeNullable(risk, 16),
+                normalizeNullable(risk, 16),
                 normalizeNullable(outcome, 32), normalizeNullable(detail, 4096), Instant.now());
         if (!queue.offer(event)) {
             // Keep the newest evidence under pressure. Dropping an old audit
@@ -102,7 +102,7 @@ public final class AuditService implements AutoCloseable {
                     .filter(value -> task == null || task.equals(value.taskId()))
                     .skip(offset).limit(limit).toList();
         }
-        var sql = new StringBuilder("SELECT audit_id, event_type, actor, agent_id, task_id, scope_mode, risk, outcome, detail_text, created_at FROM rcm_audit_event WHERE 1=1");
+        var sql = new StringBuilder("SELECT audit_id, event_type, actor, agent_id, task_id, risk, outcome, detail_text, created_at FROM rcm_audit_event WHERE 1=1");
         var args = new ArrayList<String>();
         if (type != null) { sql.append(" AND event_type = ?"); args.add(type); }
         if (agent != null) { sql.append(" AND agent_id = ?"); args.add(agent); }
@@ -113,8 +113,8 @@ public final class AuditService implements AutoCloseable {
         params.add(limit);
         return List.copyOf(jdbc.query(sql.toString(), params.toArray(), (rs, row) -> new AuditEventView(
                 rs.getString("audit_id"), rs.getString("event_type"), rs.getString("actor"),
-                rs.getString("agent_id"), rs.getString("task_id"), rs.getString("scope_mode"),
-                rs.getString("risk"), rs.getString("outcome"), rs.getString("detail_text"),
+                rs.getString("agent_id"), rs.getString("task_id"), rs.getString("risk"),
+                rs.getString("outcome"), rs.getString("detail_text"),
                 rs.getTimestamp("created_at") == null ? null : rs.getTimestamp("created_at").toInstant())));
     }
 
@@ -187,10 +187,10 @@ public final class AuditService implements AutoCloseable {
                     try {
                         jdbc.update("""
                                 INSERT INTO rcm_audit_event(audit_id, event_type, actor, agent_id, task_id,
-                                    scope_mode, risk, outcome, detail_text, created_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    risk, outcome, detail_text, created_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """, view.id(), view.eventType(), view.actor(), view.agentId(), view.taskId(),
-                                view.scopeMode(), view.risk(), view.outcome(), view.detail(),
+                                view.risk(), view.outcome(), view.detail(),
                                 java.sql.Timestamp.from(view.createdAt()));
                     } catch (RuntimeException failure) {
                         persistFailures.increment();
@@ -246,9 +246,9 @@ public final class AuditService implements AutoCloseable {
     }
 
     private record Event(String id, String eventType, String actor, String agentId, String taskId,
-                         String scopeMode, String risk, String outcome, String detail, Instant createdAt) {
+                         String risk, String outcome, String detail, Instant createdAt) {
         AuditEventView view() {
-            return new AuditEventView(id, eventType, actor, agentId, taskId, scopeMode, risk, outcome, detail, createdAt);
+            return new AuditEventView(id, eventType, actor, agentId, taskId, risk, outcome, detail, createdAt);
         }
     }
 }

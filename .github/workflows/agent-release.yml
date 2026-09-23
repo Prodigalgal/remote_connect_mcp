@@ -51,7 +51,7 @@ jobs:
             exit 0
           fi
           if [[ -z "${BEFORE}" || "${BEFORE}" =~ ^0+$ ]]; then files="$(git ls-files)"; else files="$(git diff --name-only "${BEFORE}" "${SHA}")"; fi
-          if printf '%s\n' "${files}" | grep -Eq '^(java/(agent|desktop|browser|protocol)/|java/(build.gradle.kts|settings.gradle.kts|gradle.properties)$|java/gradle/|java/gradlew(\.bat)?$|java/Dockerfile\.(agent|desktop|browser)|scripts/(install-java-agent|first-install-java-agent|deploy-java-desktop-browser|browser-worker|normalize-native-isa|verify-native-bundle)|deploy/systemd/|\.github/workflows/java-agent-release.yml$)'; then
+          if printf '%s\n' "${files}" | grep -Eq '^(java/(agent|desktop|browser|protocol)/|java/(build.gradle.kts|settings.gradle.kts|gradle.properties)$|java/gradle/|java/gradlew(\.bat)?$|java/Dockerfile\.(agent|desktop|browser)|scripts/(install-agent|first-install-agent|deploy-desktop-browser|browser-worker|smoke-browser-runtime|normalize-native-isa|verify-native-bundle)|scripts/browser-runtime/|deploy/systemd/|\.github/workflows/agent-release.yml$)'; then
             echo 'changed=true' >> "${GITHUB_OUTPUT}"
           else
             echo 'changed=false' >> "${GITHUB_OUTPUT}"
@@ -118,9 +118,32 @@ jobs:
         working-directory: java
         run: bash ./gradlew -PreleaseVersion=${{ needs.prepare.outputs.version }} :agent:test :desktop:test :browser:test --no-daemon
 
+  browser-runtime:
+    name: Camoufox navigation gate
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: scripts/browser-runtime/package-lock.json
+      - name: Install and smoke Camoufox
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check scripts/browser-worker.mjs
+          node --check scripts/smoke-browser-runtime.mjs
+          npm ci --prefix scripts/browser-runtime --no-audit --no-fund
+          export CAMOUFOX_INSTALL_DIR="${RUNNER_TEMP}/camoufox"
+          node scripts/browser-runtime/node_modules/camoufox-js/dist/__main__.js fetch
+          cp scripts/browser-worker.mjs scripts/browser-runtime/browser-worker.mjs
+          node scripts/smoke-browser-runtime.mjs
+
   linux-native:
     name: Agent Native (${{ matrix.arch }})
-    needs: [prepare, agent-tests]
+    needs: [prepare, agent-tests, browser-runtime]
     strategy:
       fail-fast: false
       matrix:
@@ -180,7 +203,7 @@ jobs:
           bash scripts/verify-native-bundle.sh "${agent_archive}" rcm-agent
           bash scripts/verify-native-bundle.sh "${desktop_archive}" rcm-desktop-companion
           bash scripts/verify-native-bundle.sh "${browser_archive}" rcm-browser-agent
-          cp scripts/install-java-agent.sh scripts/first-install-java-agent.sh deploy/systemd/remote-connect-mcp-agent.service deploy/systemd/agent.env.example README.md LICENSE NOTICE "out/${TARGET_ARCH}/"
+          cp scripts/install-agent.sh scripts/first-install-agent.sh deploy/systemd/remote-connect-mcp-agent.service deploy/systemd/agent.env.example README.md LICENSE NOTICE "out/${TARGET_ARCH}/"
           tar -C out -I 'gzip -9' -cf "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" "${TARGET_ARCH}"
           sha256sum "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" > "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz.sha256"
       - name: Generate Agent SBOM
@@ -249,7 +272,7 @@ jobs:
           Get-ChildItem java/agent/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $agentOut
           Get-ChildItem java/desktop/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $desktopOut
           Get-ChildItem java/browser/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $browserOut
-          Copy-Item scripts/install-java-agent.ps1, scripts/first-install-java-agent.ps1, README.md, LICENSE, NOTICE $out
+          Copy-Item scripts/install-agent.ps1, scripts/first-install-agent.ps1, README.md, LICENSE, NOTICE $out
           foreach ($bundle in @($agentOut,$desktopOut,$browserOut)) {
             Get-FileHash (Get-ChildItem $bundle -File | Where-Object { $_.Extension -in '.exe','.dll' }) -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content (Join-Path $bundle 'SHA256SUMS') -Encoding ascii
           }

@@ -1,6 +1,7 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -10,8 +11,8 @@ import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
 import com.prodigalgal.remoteconnectmcp.protocol.FileTransferAction;
 import com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor;
+import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
@@ -27,16 +28,16 @@ class TaskServiceTest {
     @Test
     void isolatesIdempotencyAndTaskReadsByPrincipal() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         var command = new TaskCommand("", TaskKind.COMMAND, "command", "printf owner", "/srv", Map.of(), 0, null, null);
         var ownerA = new TaskOrigin("user-a", "token-a", "connection-a");
         var ownerB = new TaskOrigin("user-b", "token-b", "connection-b");
 
-        var first = tasks.create(new CreateTaskRequest(registration.machineId(), command, "same-key", "", "", ScopeMode.UNRESTRICTED,
-                "", "", "low", false, ownerA), "mcp", ownerA);
-        var second = tasks.create(new CreateTaskRequest(registration.machineId(), command, "same-key", "", "", ScopeMode.UNRESTRICTED,
-                "", "", "low", false, ownerB), "mcp", ownerB);
+        var first = tasks.create(new CreateTaskRequest(registration.machineId(), command, "same-key", null,
+                "", "low", false, ownerA), "mcp", ownerA);
+        var second = tasks.create(new CreateTaskRequest(registration.machineId(), command, "same-key", null,
+                "", "low", false, ownerB), "mcp", ownerB);
 
         assertTrue(!first.id().equals(second.id()));
         assertTrue(first.executionSessionId().startsWith("session_"));
@@ -50,7 +51,7 @@ class TaskServiceTest {
     @Test
     void createsIdempotentTaskDispatchesAndStreamsOutput() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         var command = new TaskCommand("ignored", null, null, "printf hello", "/srv", java.util.Map.of(), 0, null, null);
 
@@ -73,13 +74,12 @@ class TaskServiceTest {
         assertEquals(5, page.nextCursor());
         assertEquals(TaskStatus.COMPLETED, tasks.find(created.id()).orElseThrow().status());
         assertEquals(registration.machineId(), tasks.find(created.id()).orElseThrow().command().contract().machineId());
-        assertEquals("unrestricted", tasks.find(created.id()).orElseThrow().command().contract().scopeMode().wireValue());
     }
 
     @Test
     void progressSnapshotIsAttemptFencedAndAdvancesDurableChangeSequence() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         var created = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "sleep 2", "/srv", Map.of(), 0, null, null), "progress-key"));
@@ -100,7 +100,7 @@ class TaskServiceTest {
     @Test
     void retentionGcPurgesExpiredOutputBeforeTaskMetadata() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         var created = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "printf retained", "/srv", Map.of(), 30, null, null), "retention-key"));
@@ -122,7 +122,7 @@ class TaskServiceTest {
     @Test
     void staleDispatchAttemptCannotPublishAfterLeaseIsReclaimed() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "printf retry", "/srv", java.util.Map.of(), 0, null, null), "attempt-fence"));
@@ -143,7 +143,7 @@ class TaskServiceTest {
     @Test
     void publishesPreparedFileTransferActionAgainstTheDurableTaskId() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("file_transfer")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("file_transfer")), "enroll-test");
         var tasks = new TaskService(registry);
         var pending = new FileTransferAction(FileTransferAction.WEB_TO_AGENT, "transfer-prepared", "artifact-prepared",
                 "", "/srv/input.txt", "input.txt", "text/plain", 0L, "", true);
@@ -164,7 +164,7 @@ class TaskServiceTest {
     @Test
     void serializesQueuedTasksThatTargetTheSameExecutionLane() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         var first = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "printf first", "/srv", Map.of(), 0, null, null), "lane-1"));
@@ -187,7 +187,7 @@ class TaskServiceTest {
     @Test
     void rejectsOversizedOutputChunkBeforeTouchingTaskState() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "printf output", "/srv", Map.of(), 30, null, null), "chunk-limit"));
@@ -201,7 +201,7 @@ class TaskServiceTest {
     @Test
     void missingAttemptIsRejectedAfterLeaseProgresses() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "printf retry", "/srv", java.util.Map.of(), 0, null, null), "attempt-fence"));
@@ -215,28 +215,26 @@ class TaskServiceTest {
     }
 
     @Test
-    void createsBoundedContractForWorkspaceAgent() {
+    void createsFullHostContractForEveryAgent() {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("workspace-agent", "host-a", "host-a", "linux", "amd64", "dev",
-                "/srv/project", ScopeMode.WORKSPACE, "/srv/project", List.of("command")), "enroll-test");
+                "/srv/project", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
 
         var task = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "echo scoped", "src", java.util.Map.of(), 30, null, null),
-                "scope-key", "", "", ScopeMode.WORKSPACE, "/srv/project", "session-1", "low", false));
+                "scope-key", null, "session-1", "low", false, TaskOrigin.configured()));
 
         var state = tasks.find(task.id()).orElseThrow();
-        assertEquals(ScopeMode.WORKSPACE, state.command().contract().scopeMode());
-        assertEquals("/srv/project", state.command().contract().scopeRoot());
     }
 
     @Test
     void centerNeverLetsCallerSuppliedContractEnlargeOuterBudgets() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
-        var supplied = new ExecutionContract(registration.machineId(), "host-a", ScopeMode.UNRESTRICTED,
-                null, null, null, "caller-session", "command",
+        var supplied = new ExecutionContract(registration.machineId(), "host-a", LaneMode.WRITE,
+                "caller-session", "command",
                 new ExecutionContract.Budget(3600, 128L * 1024 * 1024, 16L * 1024 * 1024, 64),
                 java.time.Instant.now().plus(java.time.Duration.ofDays(365)), "caller-key", "low", false, null);
 
@@ -258,10 +256,10 @@ class TaskServiceTest {
                 2L * 1024 * 1024, 4L * 1024 * 1024, 5, 60,
                 100L * 1024 * 1024, 120, false, false);
         var registration = registry.register(new RegisterRequest("bounded-agent", "host-a", "host-a", "linux", "amd64", "dev",
-                "/srv", ScopeMode.UNRESTRICTED, null, List.of("command"), runtime), "enroll-test");
+                "/srv", List.of("command"), runtime), "enroll-test");
         var tasks = new TaskService(registry);
-        var supplied = new ExecutionContract(registration.machineId(), "host-a", ScopeMode.UNRESTRICTED,
-                null, null, null, "caller-session", "command",
+        var supplied = new ExecutionContract(registration.machineId(), "host-a", LaneMode.WRITE,
+                "caller-session", "command",
                 new ExecutionContract.Budget(3600, 128L * 1024 * 1024, 16L * 1024 * 1024, 64,
                         2L * 1024 * 1024 * 1024, 3600),
                 java.time.Instant.now().plus(java.time.Duration.ofDays(365)), "runtime-bound", "low", false, null);
@@ -281,7 +279,7 @@ class TaskServiceTest {
     @Test
     void stripsCredentialShapedEnvironmentBeforeDurableTaskStorage() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "echo safe", "/srv",
@@ -292,33 +290,33 @@ class TaskServiceTest {
     }
 
     @Test
-    void rejectsPathContractEscapeEvenWhenAgentIsUnrestricted() {
+    void acceptsAnyWorkingDirectoryHintOnFullHostAgent() {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("unrestricted-agent", "host-a", "host-a", "linux", "amd64", "dev",
-                "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+                "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
 
-        assertThrows(IllegalArgumentException.class, () -> tasks.create(new CreateTaskRequest(registration.machineId(),
+        assertDoesNotThrow(() -> tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "echo blocked", "../etc", java.util.Map.of(), 0, null, null),
-                "path-escape", "", "", ScopeMode.PATH, "/srv/project", "session-1", "low", false)));
+                "path-escape", null, "session-1", "low", false, TaskOrigin.configured())));
     }
 
     @Test
-    void doesNotAllowExplicitUnrestrictedTaskOnWorkspaceAgent() {
+    void allowsFullHostTaskOnEveryRegisteredAgent() {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("workspace-agent", "host-a", "host-a", "linux", "amd64", "dev",
-                "/srv/project", ScopeMode.WORKSPACE, "/srv/project", List.of("command")), "enroll-test");
+                "/srv/project", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
 
-        assertThrows(SecurityException.class, () -> tasks.create(new CreateTaskRequest(registration.machineId(),
+        assertDoesNotThrow(() -> tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "echo blocked", "/srv/project", java.util.Map.of(), 0, null, null),
-                "scope-upgrade", "", "", ScopeMode.UNRESTRICTED, "", "session-1", "low", false)));
+                "scope-upgrade", null, "session-1", "low", false, TaskOrigin.configured())));
     }
 
     @Test
     void rejectsIdempotencyReuseWithDifferentParameters() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         tasks.create(new CreateTaskRequest(registration.machineId(), new TaskCommand("", null, null, "echo one", null, java.util.Map.of(), 0, null, null), "same-key"));
 
@@ -328,7 +326,7 @@ class TaskServiceTest {
     @Test
     void doesNotDispatchWhenAgentHasNoMatchingCapability() {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "windows", "amd64", "dev", "C:\\", ScopeMode.UNRESTRICTED, null, List.of("desktop")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "windows", "amd64", "dev", "C:\\", List.of("desktop")), "enroll-test");
         var tasks = new TaskService(registry);
         tasks.create(new CreateTaskRequest(registration.machineId(), new TaskCommand("", TaskKind.DESKTOP, null, null, null, java.util.Map.of(), 30,
                 new TaskCommand.DesktopAction("screenshot", null, List.of(), null), null), "desktop"));
@@ -339,7 +337,7 @@ class TaskServiceTest {
     @Test
     void storesAndReadsBoundedArtifactsWithDigestVerification() throws Exception {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "windows", "amd64", "dev", "C:\\", ScopeMode.UNRESTRICTED, null, List.of("desktop")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "windows", "amd64", "dev", "C:\\", List.of("desktop")), "enroll-test");
         var tasks = new TaskService(registry);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(), new TaskCommand("", TaskKind.DESKTOP, "desktop", null, null, java.util.Map.of(), 30,
                 new TaskCommand.DesktopAction("screenshot", null, List.of(), null), null), "artifact"));
@@ -359,7 +357,7 @@ class TaskServiceTest {
     @Test
     void storesAndReadsZeroByteTaskArtifacts() throws Exception {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "windows", "amd64", "dev", "C:\\", ScopeMode.UNRESTRICTED, null, List.of("desktop")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "windows", "amd64", "dev", "C:\\", List.of("desktop")), "enroll-test");
         var tasks = new TaskService(registry);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(), new TaskCommand("", TaskKind.DESKTOP, "desktop", null, null, Map.of(), 30,
                 new TaskCommand.DesktopAction("screenshot", null, List.of(), null), null), "empty-artifact"));
@@ -376,10 +374,10 @@ class TaskServiceTest {
     @Test
     void enforcesArtifactBudgetFromTheCenterContract() throws Exception {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "windows", "amd64", "dev", "C:\\", ScopeMode.UNRESTRICTED, null, List.of("desktop")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("desktop-agent", "host-a", "host-a", "windows", "amd64", "dev", "C:\\", List.of("desktop")), "enroll-test");
         var tasks = new TaskService(registry);
-        var contract = new ExecutionContract(registration.machineId(), "host-a", ScopeMode.UNRESTRICTED,
-                null, null, null, "session", "desktop",
+        var contract = new ExecutionContract(registration.machineId(), "host-a", LaneMode.WRITE,
+                "session", "desktop",
                 new ExecutionContract.Budget(30, 1024L * 1024, 0, 32),
                 java.time.Instant.now().plusSeconds(300), "artifact-budget", "low", false, null);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(),
@@ -396,7 +394,7 @@ class TaskServiceTest {
     @Test
     void waitForChangeDoesNotReturnRepeatedlyWhileRunningWithoutNewOutput() throws Exception {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, null, "sleep 10", "/srv", java.util.Map.of(), 30, null, null), "wait-test"));
@@ -419,15 +417,15 @@ class TaskServiceTest {
     }
 
     @Test
-    void rejectsWorkspaceEscapeBeforeEnqueueing() {
+    void acceptsWorkingDirectoryAndDesktopPathsWithoutFence() {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("workspace-agent", "host-a", "host-a", "linux", "amd64", "dev",
-                "/srv/project/src", ScopeMode.WORKSPACE, "/srv/project", List.of("command", "desktop")), "enroll-test");
+                "/srv/project/src", List.of("command", "desktop")), "enroll-test");
         var tasks = new TaskService(registry);
 
-        assertThrows(IllegalArgumentException.class, () -> tasks.create(new CreateTaskRequest(registration.machineId(),
+        assertDoesNotThrow(() -> tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "echo blocked", "../../etc", java.util.Map.of(), 0, null, null), "escape-1")));
-        assertThrows(IllegalArgumentException.class, () -> tasks.create(new CreateTaskRequest(registration.machineId(),
+        assertDoesNotThrow(() -> tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.DESKTOP, "desktop", null, null, java.util.Map.of(), 30,
                         new TaskCommand.DesktopAction("launch", "app", List.of(), "../../etc"), null), "escape-2")));
     }
@@ -435,11 +433,12 @@ class TaskServiceTest {
     @Test
     void recoversDurableLeaseOnlyWithRunningTaskHintAndFailsTimedLease() throws Exception {
         var registry = AgentRegistry.forTest("enroll-test");
-        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
         var tasks = new TaskService(registry);
 
         var durable = tasks.create(new CreateTaskRequest(registration.machineId(),
-                new TaskCommand("", TaskKind.COMMAND, "command", "sleep 10", "/srv", java.util.Map.of(), 0, null, null), "durable-lease"));
+                new TaskCommand("", TaskKind.COMMAND, "command", "sleep 10", "/srv", java.util.Map.of(), 0, null, null),
+                "durable-lease", LaneMode.READ, "", "low", false, TaskOrigin.configured(), true));
         tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command")));
         tasks.updateState(registration.machineId(), durable.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false));
         tasks.find(durable.id()).orElseThrow().leaseUntil(java.time.Instant.now().minusSeconds(1));
@@ -449,12 +448,11 @@ class TaskServiceTest {
         assertEquals(TaskStatus.RUNNING, tasks.find(durable.id()).orElseThrow().status());
         assertTrue(tasks.find(durable.id()).orElseThrow().leaseUntil().isAfter(java.time.Instant.now()));
 
-        // The durable task is still running and therefore owns the default
-        // host lane.  Put the timed lease probe in an explicit path lane so
-        // the test exercises lease expiry rather than queue serialization.
+        // The durable task is still running in the read-only lane.
+        // Run the timed task also in the read-only lane so both can run concurrently on one host.
         var timed = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "sleep 10", "/srv/timed", java.util.Map.of(), 30, null, null),
-                "timed-lease", "", "", ScopeMode.PATH, "/srv", "timed-session", "low", false));
+                "timed-lease", LaneMode.READ, "timed-session", "low", false, TaskOrigin.configured(), true));
         tasks.poll(registration.machineId(), new PollRequest(List.of(durable.id()), 1, List.of("command")));
         tasks.updateState(registration.machineId(), timed.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false));
         tasks.find(timed.id()).orElseThrow().leaseUntil(java.time.Instant.now().minusSeconds(1));

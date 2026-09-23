@@ -60,7 +60,7 @@ jobs:
           else
             files="$(git diff --name-only "${BEFORE}" "${SHA}")"
           fi
-          if printf '%s\n' "${files}" | grep -Eq '^(java/center/|java/protocol/|java/(build.gradle.kts|settings.gradle.kts|gradle.properties)$|java/gradle/|java/gradlew(\.bat)?$|java/Dockerfile.center|scripts/(sync-artifact-viewer|verify-native-bundle)|web/src/artifact-viewer/|\.github/workflows/java-center-release.yml$)'; then
+          if printf '%s\n' "${files}" | grep -Eq '^(java/center/|java/protocol/|java/(build.gradle.kts|settings.gradle.kts|gradle.properties)$|java/gradle/|java/gradlew(\.bat)?$|java/Dockerfile.center|scripts/(sync-artifact-viewer|verify-native-bundle)|web/src/artifact-viewer/|\.github/workflows/center-release.yml$)'; then
             echo 'changed=true' >> "${GITHUB_OUTPUT}"
           else
             echo 'changed=false' >> "${GITHUB_OUTPUT}"

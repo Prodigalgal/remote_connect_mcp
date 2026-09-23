@@ -23,6 +23,8 @@ private/
 /java/*/build/
 /java/center/databasechangelog.csv
 /web/node_modules/
+/scripts/browser-runtime/node_modules/
+/scripts/browser-runtime/browser-worker.mjs
 /web/dist/
 /backups/
 scripts/reinstall-local-zzp-agent.ps1

@@ -95,7 +95,7 @@ export function MachinesView({ rows, token, onEnroll, query }: MachinesViewProps
               <th>宿主 Host ID</th>
               <th>支持能力</th>
               <th>平台系统</th>
-              <th>工作空间路径与隔离</th>
+              <th>执行权限与资源</th>
               <th>心跳状态</th>
               <th style={{ textAlign: 'right' }}>操作</th>
             </tr>
@@ -110,9 +110,6 @@ export function MachinesView({ rows, token, onEnroll, query }: MachinesViewProps
                 const host = isLive ? machine.hostId : machine.host
                 const osInfo = isLive ? `${machine.os ?? 'unknown'} · ${machine.arch ?? 'unknown'}` : machine.os
                 const capabilities = isLive ? machine.capabilities : [machine.role]
-                const workspace = isLive
-                  ? machine.workspaceRoot ?? machine.defaultCwd ?? '默认安全沙盒'
-                  : '/workspace/default'
                 const runtime = isLive ? machine.runtime : undefined
 
                 return (
@@ -161,12 +158,10 @@ export function MachinesView({ rows, token, onEnroll, query }: MachinesViewProps
                     </td>
                     <td>
                       <div>
-                        <span className="font-mono" style={{ fontSize: '12px', color: '#e2e8f0' }}>
-                          {workspace}
-                        </span>
+                        <span style={{ fontSize: '12px', color: '#e2e8f0' }}>全机权限</span>
                         {runtime && (
                           <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                            模式: {(isLive ? machine.scopeMode : undefined) ?? 'shared'} · 并发 {runtime.maxConcurrency}
+                            无路径栅栏 · 并发 {runtime.maxConcurrency}
                           </div>
                         )}
                       </div>

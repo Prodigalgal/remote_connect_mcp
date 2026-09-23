@@ -20,10 +20,11 @@ desktop_enabled="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED:-false}"
 desktop_enabled="${desktop_enabled,,}"
 desktop_user="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_USER:-${SUDO_USER:-}}"
 browser_profile_dir="${REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR:-}"
-browser_engine="${REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE:-playwright}"
-browser_name="${REMOTE_CONNECT_MCP_AGENT_BROWSER:-chromium}"
+browser_engine="${REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE:-camoufox}"
+browser_name="${REMOTE_CONNECT_MCP_AGENT_BROWSER:-firefox}"
 browser_headless="${REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS:-1}"
 browser_browsers_path="${REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH:-}"
+camoufox_install_dir="${REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR:-}"
 
 verify_archive_checksum() {
   local artifact="$1" sidecar="${1}.sha256" expected listed actual
@@ -103,8 +104,8 @@ cgroup_path="${REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH:-}"
 [[ "$browser_profile_dir" != *$'\r'* && "$browser_profile_dir" != *$'\n'* && ${#browser_profile_dir} -le 4096 ]] || {
   echo "REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR must be a single path up to 4096 characters" >&2; exit 1;
 }
-[[ "$browser_engine" == playwright || "$browser_engine" == patchright || "$browser_engine" == comoufox ]] || {
-  echo "REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE must be playwright, patchright, or comoufox" >&2; exit 1;
+[[ "$browser_engine" == camoufox || "$browser_engine" == playwright || "$browser_engine" == patchright ]] || {
+  echo "REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE is invalid" >&2; exit 1;
 }
 [[ "$browser_name" == chromium || "$browser_name" == firefox || "$browser_name" == webkit ]] || {
   echo "REMOTE_CONNECT_MCP_AGENT_BROWSER must be chromium, firefox, or webkit" >&2; exit 1;
@@ -114,6 +115,9 @@ cgroup_path="${REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH:-}"
 }
 [[ "$browser_browsers_path" != *$'\r'* && "$browser_browsers_path" != *$'\n'* && "$browser_browsers_path" != *'"'* && ${#browser_browsers_path} -le 4096 ]] || {
   echo "REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH must be a single path up to 4096 characters" >&2; exit 1;
+}
+[[ "$camoufox_install_dir" != *$'\r'* && "$camoufox_install_dir" != *$'\n'* && "$camoufox_install_dir" != *'"'* && ${#camoufox_install_dir} -le 4096 ]] || {
+  echo "REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR must be a single path up to 4096 characters" >&2; exit 1;
 }
 [[ "$desktop_enabled" == true || "$desktop_enabled" == false ]] || {
   echo "REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED must be true or false" >&2; exit 1;
@@ -334,8 +338,6 @@ if [[ "$re_enroll" == true || ! -f "$identity" ]]; then
   REMOTE_CONNECT_MCP_AGENT_NAME="$REMOTE_CONNECT_MCP_AGENT_NAME" \
   REMOTE_CONNECT_MCP_AGENT_HOST_ID="${REMOTE_CONNECT_MCP_AGENT_HOST_ID:-$REMOTE_CONNECT_MCP_AGENT_NAME}" \
   REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD="${REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD:-/}" \
-  REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE="${REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE:-workspace}" \
-  REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT="${REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT:-}" \
   REMOTE_CONNECT_MCP_AGENT_CAPABILITIES="${REMOTE_CONNECT_MCP_AGENT_CAPABILITIES:-command,durable_tasks,file_transfer}" \
   REMOTE_CONNECT_MCP_AGENT_VERSION="${REMOTE_CONNECT_MCP_AGENT_VERSION:-dev}" \
   REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER="${REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER:-}" \
@@ -344,6 +346,7 @@ if [[ "$re_enroll" == true || ! -f "$identity" ]]; then
   REMOTE_CONNECT_MCP_AGENT_BROWSER="$browser_name" \
   REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS="$browser_headless" \
   REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH="$browser_browsers_path" \
+  REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR="$camoufox_install_dir" \
   REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED:-false}" \
   REMOTE_CONNECT_MCP_AGENT_STATE_DIR="$state_dir" \
   REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY="$max_concurrency" \
@@ -378,8 +381,6 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   printf 'REMOTE_CONNECT_MCP_AGENT_NAME=%s\n' "$REMOTE_CONNECT_MCP_AGENT_NAME"
   printf 'REMOTE_CONNECT_MCP_AGENT_HOST_ID=%s\n' "${REMOTE_CONNECT_MCP_AGENT_HOST_ID:-$REMOTE_CONNECT_MCP_AGENT_NAME}"
   printf 'REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD=%s\n' "${REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD:-/}"
-  printf 'REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE=%s\n' "${REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE:-workspace}"
-  printf 'REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT=%s\n' "${REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT:-}"
   printf 'REMOTE_CONNECT_MCP_AGENT_CAPABILITIES=%s\n' "${REMOTE_CONNECT_MCP_AGENT_CAPABILITIES:-command,durable_tasks,file_transfer}"
   printf 'REMOTE_CONNECT_MCP_AGENT_VERSION=%s\n' "${REMOTE_CONNECT_MCP_AGENT_VERSION:-dev}"
   printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER=%s\n' "$(systemd_env_quote "${REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER:-}")"
@@ -388,6 +389,7 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER=%s\n' "$browser_name"
   printf 'REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS=%s\n' "$browser_headless"
   printf 'REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH=%s\n' "$browser_browsers_path"
+  printf 'REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR=%s\n' "$camoufox_install_dir"
   printf 'REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=%s\n' "${REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED:-false}"
   printf 'REMOTE_CONNECT_MCP_AGENT_STATE_DIR=%s\n' "$state_dir"
   printf 'REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY=%s\n' "$max_concurrency"
@@ -414,6 +416,9 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   fi
   if [[ -n "$browser_browsers_path" ]]; then
     printf 'PLAYWRIGHT_BROWSERS_PATH=%s\n' "$browser_browsers_path"
+  fi
+  if [[ -n "$camoufox_install_dir" ]]; then
+    printf 'CAMOUFOX_INSTALL_DIR=%s\n' "$camoufox_install_dir"
   fi
  } > /etc/remote-connect-mcp-agent/agent.env
 

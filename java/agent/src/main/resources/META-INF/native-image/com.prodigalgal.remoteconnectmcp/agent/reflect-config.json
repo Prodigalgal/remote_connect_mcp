@@ -28,6 +28,5 @@
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradeComponentPlan","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest","allDeclaredConstructors":true,"allDeclaredMethods":true},
-  {"name":"com.prodigalgal.remoteconnectmcp.protocol.ScopeMode","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remoteconnectmcp.protocol.TaskKind","allDeclaredConstructors":true,"allDeclaredMethods":true}
 ]

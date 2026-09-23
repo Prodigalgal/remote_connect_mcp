@@ -1,8 +1,6 @@
-name: Java and React selective CI
+name: Change checks
 
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -10,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: java-react-${{ github.event.pull_request.number || github.ref }}
+  group: change-checks-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -48,7 +46,7 @@ jobs:
           fi
           center=false; agent=false; console=false; contract=false
           if printf '%s\n' "${files}" | grep -Eq '^(java/center/|web/src/artifact-viewer/|scripts/sync-artifact-viewer.sh)'; then center=true; fi
-          if printf '%s\n' "${files}" | grep -Eq '^(java/(agent|desktop|browser)/|scripts/(install-java-agent|first-install-java-agent|deploy-java-desktop-browser|browser-worker))'; then agent=true; fi
+          if printf '%s\n' "${files}" | grep -Eq '^(java/(agent|desktop|browser)/|scripts/(install-agent|first-install-agent|deploy-desktop-browser|browser-worker)|scripts/browser-runtime/)'; then agent=true; fi
           if printf '%s\n' "${files}" | grep -Eq '^(web/)'; then console=true; fi
           if printf '%s\n' "${files}" | grep -Eq '^(java/protocol/|java/(build.gradle.kts|settings.gradle.kts|gradle.properties)$|java/gradle/|java/gradlew(\.bat)?$)'; then
             contract=true; center=true; agent=true

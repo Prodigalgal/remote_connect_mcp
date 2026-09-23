@@ -9,6 +9,8 @@ public final class UpgradeConfig {
     private final String releaseBaseUrl;
     private final String releaseTagPrefix;
     private final String releasesApiUrl;
+    private final boolean automatic;
+    private final boolean includePrerelease;
 
     public UpgradeConfig() {
         enabled = Boolean.parseBoolean(env("RCM_CENTER_AGENT_UPGRADES_ENABLED", "true"));
@@ -19,6 +21,8 @@ public final class UpgradeConfig {
         validateHttps(releaseBaseUrl, "RCM_CENTER_RELEASE_BASE_URL");
         releasesApiUrl = trimTrailingSlash(env("RCM_CENTER_RELEASES_API_URL", defaultReleasesApi(releaseBaseUrl)));
         validateHttps(releasesApiUrl, "RCM_CENTER_RELEASES_API_URL");
+        automatic = Boolean.parseBoolean(env("RCM_CENTER_AGENT_AUTO_UPGRADE_ENABLED", "false"));
+        includePrerelease = Boolean.parseBoolean(env("RCM_CENTER_AGENT_AUTO_UPGRADE_INCLUDE_PRERELEASE", "false"));
     }
 
     UpgradeConfig(boolean enabled, String releaseBaseUrl) {
@@ -34,6 +38,8 @@ public final class UpgradeConfig {
         this.releaseBaseUrl = trimTrailingSlash(releaseBaseUrl == null ? "" : releaseBaseUrl.trim());
         this.releaseTagPrefix = releaseTagPrefix == null ? "" : releaseTagPrefix.trim();
         this.releasesApiUrl = trimTrailingSlash(releasesApiUrl == null ? "" : releasesApiUrl.trim());
+        this.automatic = false;
+        this.includePrerelease = false;
         validateTagPrefix(this.releaseTagPrefix);
         validateHttps(this.releaseBaseUrl, "RCM_CENTER_RELEASE_BASE_URL");
         validateHttps(this.releasesApiUrl, "RCM_CENTER_RELEASES_API_URL");
@@ -59,6 +65,14 @@ public final class UpgradeConfig {
     /** GitHub Releases API endpoint used by the admin version catalog. */
     public String releasesApiUrl() {
         return releasesApiUrl;
+    }
+
+    public boolean automatic() {
+        return automatic;
+    }
+
+    public boolean includePrerelease() {
+        return includePrerelease;
     }
 
     private static String env(String key, String fallback) {

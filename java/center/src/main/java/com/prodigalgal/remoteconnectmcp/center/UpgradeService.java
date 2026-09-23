@@ -635,6 +635,20 @@ public final class UpgradeService {
         applyStatus(campaign, target, status, error, now, Map.of());
     }
 
+    /** Prevent a discovered release from starting a second fleet campaign after restart. */
+    public boolean hasCampaignVersion(String version) {
+        if (jdbc != null) {
+            var count = jdbc.queryForObject("SELECT COUNT(*) FROM rcm_upgrade_campaign WHERE version = ?", Long.class, version);
+            return count != null && count > 0;
+        }
+        memoryLock.lock();
+        try {
+            return memory.values().stream().anyMatch(campaign -> campaign.version.equals(version));
+        } finally {
+            memoryLock.unlock();
+        }
+    }
+
     private void applyStatus(Campaign campaign, Target target, String status, String error, Instant now,
                              Map<String, String> componentStatuses) {
         if (componentStatuses != null && !componentStatuses.isEmpty()) {
@@ -950,7 +964,7 @@ public final class UpgradeService {
     }
 
     private void audit(String eventType, String actor, String agentId, String outcome, String detail) {
-        if (audit != null) audit.record(eventType, actor, agentId, null, null, null, outcome, detail);
+        if (audit != null) audit.record(eventType, actor, agentId, null, null, outcome, detail);
     }
 
     /** Wake only Agents participating in a campaign; no fleet-wide timer is needed. */

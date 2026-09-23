@@ -306,7 +306,7 @@ final class AgentUpgradeRunner implements Runnable {
         // The installer keeps all component bundles beside the command-agent.
         // Resolve that immutable layout when an older installation did not
         // persist the optional component path variable.  This is the canonical
-        // layout, not a second download or a legacy component name.
+        // layout, not a second download or a duplicate component bundle.
         var commandPath = System.getenv("REMOTE_CONNECT_MCP_AGENT_BINARY_PATH");
         if (commandPath != null && !commandPath.isBlank()) {
             var root = Path.of(commandPath.trim()).toAbsolutePath().normalize().getParent();

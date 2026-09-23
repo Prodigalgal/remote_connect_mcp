@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import java.util.List;
 import java.util.Map;
@@ -16,7 +15,7 @@ class MetricsControllerTest {
     void exposesOnlyLowCardinalityCountersAndRequiresAdminToken() {
         var registry = AgentRegistry.forTest("enroll");
         var registration = registry.register(new RegisterRequest("metrics-agent", "host-metrics", "host-metrics",
-                "linux", "amd64", "test", "/tmp", ScopeMode.UNRESTRICTED, null, List.of("command")), "enroll");
+                "linux", "amd64", "test", "/tmp", List.of("command")), "enroll");
         var tasks = new TaskService(registry);
         var task = tasks.create(new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", null, null, "secret-command", "/private/path", Map.of("SECRET", "hidden"),

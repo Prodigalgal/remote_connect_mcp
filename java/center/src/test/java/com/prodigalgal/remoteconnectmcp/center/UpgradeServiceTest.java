@@ -1,13 +1,14 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeArtifact;
@@ -28,8 +29,10 @@ class UpgradeServiceTest {
         var upgrades = new UpgradeService(registry, tasks, new UpgradeConfig(true, ""));
         var artifacts = Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA));
 
+        assertFalse(upgrades.hasCampaignVersion("v2.0.0"));
         var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
                 List.of(first.machineId(), second.machineId()), artifacts));
+        assertTrue(upgrades.hasCampaignVersion("v2.0.0"));
         assertEquals(UpgradeService.RUNNING, campaign.status());
 
         var request = new PollRequest(List.of(), 1, List.of("command"));
@@ -184,6 +187,6 @@ class UpgradeServiceTest {
     }
 
     private static RegisterRequest registration(String name, String version) {
-        return new RegisterRequest(name, name, name, "linux", "amd64", version, "/", ScopeMode.UNRESTRICTED, null, List.of("command", "durable_tasks"));
+        return new RegisterRequest(name, name, name, "linux", "amd64", version, "/", List.of("command", "durable_tasks"));
     }
 }

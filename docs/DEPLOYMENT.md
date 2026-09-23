@@ -1,5 +1,7 @@
 # Java/React 生产发布门禁
 
+> 本文保留历史发布细节，其中的 `java-release.yml` 已移除。当前日常操作请以 [组件发布](COMPONENT_RELEASES.md) 为准。
+
 产品需求基线：[`docs/REQUIREMENTS.md`](REQUIREMENTS.md)。本文只描述构建、发布和部署验收，不定义新的产品范围。
 
 Java Center/Agent 的目标发布物是 Java 25 Native Image；JVM JAR 只作为 CI 诊断产物。所有测试、JVM 包、React 资源和 Native Image 均由 GitHub Actions 完成；开发机和目标宿主机不执行任何编译或打包，避免 Native Image 峰值占满内存。
@@ -14,7 +16,7 @@ git tag java-vX.Y.Z
 git push origin java-vX.Y.Z
 ```
 
-`.github/workflows/java-react.yml` 负责 PR/main 的 JVM、React、PostgreSQL、Liquibase 和 Native
+`.github/workflows/change-checks.yml` 负责 PR/main 的 JVM、React、PostgreSQL、Liquibase 和 Native
 门禁；`.github/workflows/java-release.yml` 在 `main` 推送时额外构建并发布不可变的
 `java-v0.0.0-main.<run>` 预发布版本，在 `java-vX.Y.Z` 标签时发布稳定版本。两种 Release 都经过
 匹配架构 Native Image、烟测、校验、SBOM 和签名；预发布不会移动 GHCR 的 `latest` 标签。开发机
@@ -39,19 +41,19 @@ GraalVM 运行时 DLL 会分别与 `rcm-center.exe`、`rcm-agent.exe` 放入各�
 
 `java/Dockerfile.*.native` 和 `web/Dockerfile` 同样要求构建参数 `RCM_CI_BUILD=true`；工作流会自动注入，本机直接 `docker build` 会在编译前拒绝执行。
 
-Windows 安装器 `scripts/install-java-agent.ps1` 的 `-BinaryPath` 只接收平铺 command-agent ZIP；`-DesktopBinaryPath` 和 `-BrowserBinaryPath` 只接收两个独立 companion ZIP，安装到隔离子目录，避免 `java.dll`/`jvm.dll` 同名覆盖。它会在复制完整 bundle 前停止旧启动任务和桌面计划任务，避免只替换 exe 造成运行时 DLL 不匹配；command-agent 由内置 Task Scheduler 以 SYSTEM 启动，Native Image 不再被误注册为 SCM 服务。启用 Desktop 时，登录触发任务使用 `wscript.exe //B //NoLogo` 调用生成的 VBS 启动器，避免 PowerShell 窗口在登录阶段短暂闪现；安装器和启动任务统一要求机器级 PowerShell 7。
+Windows 安装器 `scripts/install-agent.ps1` 的 `-BinaryPath` 只接收平铺 command-agent ZIP；`-DesktopBinaryPath` 和 `-BrowserBinaryPath` 只接收两个独立 companion ZIP，安装到隔离子目录，避免 `java.dll`/`jvm.dll` 同名覆盖。它会在复制完整 bundle 前停止旧启动任务和桌面计划任务，避免只替换 exe 造成运行时 DLL 不匹配；command-agent 由内置 Task Scheduler 以 SYSTEM 启动，Native Image 不再被误注册为 SCM 服务。启用 Desktop 时，登录触发任务使用 `wscript.exe //B //NoLogo` 调用生成的 VBS 启动器，避免 PowerShell 窗口在登录阶段短暂闪现；安装器和启动任务统一要求机器级 PowerShell 7。
 
 已安装旧版本若仍有登录黑框，可在管理员 PowerShell 7 中单独执行
 `scripts/repair-desktop-companion-task.ps1`；该脚本只更新桌面计划任务和 VBS 启动器，
 不触碰 Agent 身份、Enrollment Token 或 Center 配置。
 
-需要一次性给 Windows 目标启用三套能力时，可使用 `scripts/deploy-java-desktop-browser.ps1`：必须显式传入
+需要一次性给 Windows 目标启用三套能力时，可使用 `scripts/deploy-desktop-browser.ps1`：必须显式传入
 `-CenterUrl`，脚本会下载并校验同版本的 command-agent、desktop 和 browser ZIP，并为 Playwright
 浏览器安装一个 `ProgramData` 共享缓存，再由 SYSTEM Agent 继承 `PLAYWRIGHT_BROWSERS_PATH`；这样按
 用户安装的 Chromium 不会在 SYSTEM 会话中丢失。`-DesktopUser` 用于指定登录桌面账号；没有活动会话时
 仍只注册登录触发的 Companion 任务，不会把“已部署”误报为“桌面在线”。
 
-首次安装推荐使用 `scripts/first-install-java-agent.ps1` 或 `scripts/first-install-java-agent.sh`。控制台会将
+首次安装推荐使用 `scripts/first-install-agent.ps1` 或 `scripts/first-install-agent.sh`。控制台会将
 `CenterUrl`、稳定 Agent 名称、Release tag 和一次性 Enrollment Token 组合成可复制命令；入口只负责
 下载/校验对应平台的 command ZIP，`--mode full` 或 `-Mode full` 时再下载独立 Desktop/Browser ZIP。
 Windows 入口会在 PowerShell 5/非管理员终端中自动重新进入已安装的 PowerShell 7（包含 MSIX 安装）并按需提权；
@@ -68,10 +70,10 @@ Native Image 运行库的同名平铺 ZIP。Windows 主安装包另外包含 `ce
 隔离 bundle。main 推送会创建预发布 Release，供 Center 版本目录选择；稳定 Tag 会创建正式 Release；
 手动运行工作流只构建，不创建 Release。
 
-Linux 完整 tar 包的根目录包含 `install-java-agent.sh` 和匹配版本的
+Linux 完整 tar 包的根目录包含 `install-agent.sh` 和匹配版本的
 `remote-connect-mcp-agent.service`；必须把正式 bundle ZIP 传给
 `REMOTE_CONNECT_MCP_AGENT_BINARY`，例如
-`REMOTE_CONNECT_MCP_AGENT_BINARY=./agent/remote-connect-mcp-agent-<version>-linux-amd64.zip ./install-java-agent.sh`。需要桌面/浏览器能力时，再设置
+`REMOTE_CONNECT_MCP_AGENT_BINARY=./agent/remote-connect-mcp-agent-<version>-linux-amd64.zip ./install-agent.sh`。需要桌面/浏览器能力时，再设置
 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY=./desktop/rcm-desktop-companion.zip` 和
 `REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=./browser/rcm-browser-agent.zip`；安装器会将两个
 companion 放到隔离目录。Linux 同时设置 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=true`、

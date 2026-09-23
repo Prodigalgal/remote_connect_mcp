@@ -7,8 +7,10 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.ImportRuntimeHints;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
+@EnableScheduling
 @ImportRuntimeHints(RemoteConnectCenterRuntimeHints.class)
 public class RemoteConnectCenterApplication {
     public static void main(String[] args) {

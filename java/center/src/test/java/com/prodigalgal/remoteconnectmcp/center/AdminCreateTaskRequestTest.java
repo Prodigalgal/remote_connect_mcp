@@ -3,7 +3,6 @@ package com.prodigalgal.remoteconnectmcp.center;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -11,7 +10,7 @@ class AdminCreateTaskRequestTest {
     @Test
     void convertsFlatConsolePayloadToInternalCommand() {
         var request = new AdminCreateTaskRequest("machine-1", "echo ok", "/srv/project",
-                Map.of("LANG", "C"), 30, "retry-1", "project-1", "worktree-1");
+                Map.of("LANG", "C"), 30, "retry-1");
         var internal = request.toInternal();
 
         assertEquals("machine-1", internal.machineId());
@@ -25,12 +24,10 @@ class AdminCreateTaskRequestTest {
 
     @Test
     void carriesExplicitPathContractInputsWithoutEmbeddingAContract() {
-        var request = new AdminCreateTaskRequest("machine-1", "echo ok", "/srv/project",
-                Map.of(), 30, "retry-path", "", "", "path", "/srv/project", "session-1", "high", true);
+        var request = new AdminCreateTaskRequest("machine-1", "command", "command", "echo ok", "/srv/project",
+                Map.of(), 30, "retry-path", "session-1", "high", true, null, null);
         var internal = request.toInternal();
 
-        assertEquals(ScopeMode.PATH, internal.scopeMode());
-        assertEquals("/srv/project", internal.scopeRoot());
         assertEquals("session-1", internal.sessionId());
         assertEquals("high", internal.risk());
         assertEquals(true, internal.elevationRequired());
@@ -42,8 +39,7 @@ class AdminCreateTaskRequestTest {
         var action = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand.DesktopAction(
                 "launch", "notepad.exe", java.util.List.of("test.txt"), "/srv/project");
         var request = new AdminCreateTaskRequest("machine-1", "desktop", "desktop", "",
-                "/srv/project", Map.of(), 60, "retry-desktop", "project-1", "",
-                "project", "/srv/project", "session-desktop", "low", false, null, null, action);
+                "/srv/project", Map.of(), 60, "retry-desktop", "session-desktop", "low", false, null, action);
         var internal = request.toInternal();
 
         assertEquals("machine-1", internal.machineId());
@@ -56,8 +52,7 @@ class AdminCreateTaskRequestTest {
     @Test
     void convertsBrowserTaskPayload() {
         var request = new AdminCreateTaskRequest("machine-1", "browser", "browser", "{\"operation\":\"snapshot\"}",
-                "", Map.of(), 120, "retry-browser", "", "",
-                "", "", "", "low", false, null, null, null);
+                "", Map.of(), 120, "retry-browser", "", "low", false, null, null);
         var internal = request.toInternal();
 
         assertEquals("machine-1", internal.machineId());

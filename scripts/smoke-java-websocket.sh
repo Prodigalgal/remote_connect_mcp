@@ -118,7 +118,6 @@ const registration = await jsonFetch("/agent/v1/register", {
     arch: "amd64",
     version: "smoke",
     default_cwd: process.cwd(),
-    scope_mode: "unrestricted",
     capabilities: ["command"],
     runtime: {
       schema_version: 1,
@@ -134,7 +133,6 @@ const registration = await jsonFetch("/agent/v1/register", {
       max_cpu_seconds: 0,
       desktop_enabled: false,
       browser_adapter_configured: false,
-      scope_mode: "unrestricted",
       desktop_session_available: false,
       browser_session_available: false,
       resource_enforcement: "process-tree",
@@ -163,7 +161,6 @@ const task = await jsonFetch("/api/v1/admin/tasks", {
   method: "POST",
   body: JSON.stringify({
     machine_id: registration.machine_id,
-    scope_mode: "unrestricted",
     command: "echo websocket-wake",
     cwd: process.cwd(),
     env: {},

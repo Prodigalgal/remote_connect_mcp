@@ -1,7 +1,6 @@
 import React from 'react'
 import {
   FileCodeIcon,
-  FolderGitIcon,
   HomeIcon,
   KeyIcon,
   LockIcon,
@@ -15,7 +14,6 @@ import {
 export type PageId =
   | 'overview'
   | 'machines'
-  | 'projects'
   | 'tasks'
   | 'artifacts'
   | 'audit'
@@ -33,14 +31,13 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { id: 'overview', label: '总览', group: '工作台', icon: HomeIcon },
-  { id: 'machines', label: '机器与 Agent', group: '资源管理', icon: ServerIcon },
-  { id: 'projects', label: '项目与 Worktree', group: '资源管理', icon: FolderGitIcon },
+  { id: 'machines', label: '机器', group: '资源管理', icon: ServerIcon },
   { id: 'tasks', label: '任务记录', group: '执行记录', icon: TerminalIcon },
   { id: 'artifacts', label: '文件与工件', group: '执行记录', icon: FileCodeIcon },
   { id: 'audit', label: '审计日志', group: '执行记录', icon: ShieldIcon },
-  { id: 'enrollment', label: '注册令牌', group: '安全中心', icon: KeyIcon },
-  { id: 'access', label: '访问控制', group: '安全中心', icon: LockIcon },
-  { id: 'upgrades', label: '升级编排', group: '运维治理', icon: RocketIcon },
+  { id: 'enrollment', label: '添加机器', group: '安全中心', icon: KeyIcon },
+  { id: 'access', label: '连接凭证', group: '安全中心', icon: LockIcon },
+  { id: 'upgrades', label: '更新', group: '运维治理', icon: RocketIcon },
   { id: 'settings', label: '系统设置', group: '安全中心', icon: SettingsIcon },
 ]
 

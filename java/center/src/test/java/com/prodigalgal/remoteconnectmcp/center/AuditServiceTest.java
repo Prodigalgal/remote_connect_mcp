@@ -11,7 +11,7 @@ class AuditServiceTest {
     @Test
     void memorySinkKeepsNewestRedactedEventsWithinBoundedProjection() throws Exception {
         try (var audit = new AuditService(null)) {
-            audit.record("task.state", "agent", "machine-1", "task-1", "workspace", "low", "completed",
+            audit.record("task.state", "agent", "machine-1", "task-1", "low", "completed",
                     "line1\nline2");
             var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             var events = java.util.List.<AuditEventView>of();
@@ -28,7 +28,7 @@ class AuditServiceTest {
     @Test
     void retentionIsExplicitlyBoundedAndRejectsUnboundedRequests() throws Exception {
         try (var audit = new AuditService(null)) {
-            audit.record("task.state", "agent", "machine-1", "task-1", "workspace", "low", "completed", "old");
+            audit.record("task.state", "agent", "machine-1", "task-1", "low", "completed", "old");
             var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (System.nanoTime() < deadline && audit.list(null, null, null, 0, 10).isEmpty()) {
                 Thread.sleep(10);

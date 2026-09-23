@@ -19,8 +19,6 @@ const requestFile = requiredEnv("RCM_BROWSER_TASK_REQUEST_FILE");
 const resultFile = requiredEnv("RCM_BROWSER_RESULT_FILE");
 const artifactDir = path.resolve(requiredEnv("RCM_BROWSER_ARTIFACT_DIR"));
 const timeoutMs = boundedInteger(process.env.RCM_BROWSER_TASK_TIMEOUT_SECONDS, 300, 1, 24 * 60 * 60) * 1000;
-const engineName = (process.env.RCM_BROWSER_ENGINE || "playwright").trim().toLowerCase();
-const browserName = (process.env.RCM_BROWSER_BROWSER || "chromium").trim().toLowerCase();
 const profileDir = process.env.RCM_BROWSER_PROFILE_DIR?.trim();
 const sessionFile = process.env.RCM_BROWSER_SESSION_FILE?.trim();
 const headless = !["0", "false", "no"].includes((process.env.RCM_BROWSER_HEADLESS || "1").trim().toLowerCase());
@@ -90,20 +88,28 @@ async function run(command) {
   // of silently executing an unrelated snapshot.
   const operation = text(command.operation).toLowerCase();
   if (!operation) throw new Error("browser action is required");
-  const module = await loadEngine(engineName);
-  const browserType = module[browserName];
-  if (!browserType || typeof browserType.launch !== "function") {
-    throw new Error("browser engine " + engineName + " does not expose " + browserName);
+  let Camoufox;
+  try {
+    ({ Camoufox } = await import("camoufox-js"));
+  } catch (error) {
+    throw new Error("camoufox-js is not installed: " + (error instanceof Error ? error.message : String(error)));
   }
+  if (typeof Camoufox !== "function") throw new Error("camoufox-js does not export Camoufox");
   await mkdir(artifactDir, { recursive: true });
   if (profileDir) await mkdir(path.resolve(profileDir), { recursive: true });
 
-  const launchOptions = { headless, timeout: timeoutMs, acceptDownloads: true };
-  if (profileDir && typeof browserType.launchPersistentContext === "function") {
-    context = await browserType.launchPersistentContext(path.resolve(profileDir), launchOptions);
+  // Camoufox returns a Browser for an ephemeral run and a BrowserContext when
+  // user_data_dir is supplied. Both expose the same Playwright Page API.
+  const launched = await Camoufox({
+    headless,
+    timeout: timeoutMs,
+    ...(profileDir ? { user_data_dir: path.resolve(profileDir), acceptDownloads: true } : {}),
+  });
+  if (profileDir) {
+    context = launched;
   } else {
-    browser = await browserType.launch(launchOptions);
-    context = await browser.newContext();
+    browser = launched;
+    context = await browser.newContext({ acceptDownloads: true });
   }
   const page = context.pages()[0] || await context.newPage();
   page.setDefaultTimeout(timeoutMs);
@@ -534,21 +540,6 @@ function boundedValues(value, field) {
     return value.map((item) => boundedText(item, 2048, field + " item"));
   }
   return [boundedText(value, 2048, field)];
-}
-
-async function loadEngine(name) {
-  if (!["playwright", "patchright", "comoufox"].includes(name)) {
-    throw new Error("RCM_BROWSER_ENGINE must be playwright, patchright, or comoufox");
-  }
-  let imported;
-  try {
-    imported = await import(name);
-  } catch (error) {
-    throw new Error("browser package " + name + " is not installed: " + (error instanceof Error ? error.message : String(error)));
-  }
-  return imported.default && typeof imported.default === "object"
-    ? Object.assign({}, imported.default, imported)
-    : imported;
 }
 
 async function writeResult(value) {

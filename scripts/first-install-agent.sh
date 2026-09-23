@@ -11,23 +11,19 @@ mode='command'
 desktop=false
 browser=false
 desktop_user=''
-browser_engine='playwright'
-browser_name='chromium'
 browser_headless='1'
-playwright_version='1.63.0'
 install_root='/opt/remote-connect-mcp-agent'
 state_dir='/var/lib/remote-connect-mcp-agent'
 re_enroll=false
+original_args=("$@")
 
 usage() {
   cat >&2 <<'EOF'
-Usage: first-install-java-agent.sh --center-url URL --enrollment-token TOKEN --agent-name NAME --version vX [options]
+Usage: first-install-agent.sh --center-url URL --enrollment-token TOKEN --agent-name NAME --version vX [options]
   --mode command|full       full enables Desktop and Browser
   --desktop                  install the Desktop companion
-  --browser                  install the Browser companion and Playwright runtime
+  --browser                  install the Browser companion and Camoufox runtime
   --desktop-user USER        graphical Linux user for Desktop
-  --browser-engine ENGINE    playwright|patchright|comoufox
-  --browser-name NAME        chromium|firefox|webkit
   --browser-headless 0|1
   --re-enroll                consume a new token even when identity exists
 EOF
@@ -44,10 +40,7 @@ while [[ $# -gt 0 ]]; do
     --desktop) desktop=true; shift ;;
     --browser) browser=true; shift ;;
     --desktop-user) desktop_user="${2:?missing desktop user}"; shift 2 ;;
-    --browser-engine) browser_engine="${2:?missing browser engine}"; shift 2 ;;
-    --browser-name) browser_name="${2:?missing browser name}"; shift 2 ;;
     --browser-headless) browser_headless="${2:?missing browser headless}"; shift 2 ;;
-    --playwright-version) playwright_version="${2:?missing Playwright version}"; shift 2 ;;
     --install-root) install_root="${2:?missing install root}"; shift 2 ;;
     --state-dir) state_dir="${2:?missing state dir}"; shift 2 ;;
     --re-enroll) re_enroll=true; shift ;;
@@ -61,12 +54,10 @@ if [[ "$mode" == full ]]; then desktop=true; browser=true; fi
 [[ -n "$version" && "$version" =~ ^v[0-9A-Za-z][0-9A-Za-z.-]*$ ]] || { echo '--version must look like v0.1.29' >&2; exit 2; }
 [[ -z "$release_tag" || "$release_tag" =~ ^[A-Za-z0-9_.-]{1,128}$ ]] || { echo '--release-tag contains unsupported characters' >&2; exit 2; }
 [[ "$mode" == command || "$mode" == full ]] || { echo '--mode must be command or full' >&2; exit 2; }
-[[ "$browser_engine" == playwright || "$browser_engine" == patchright || "$browser_engine" == comoufox ]] || { echo 'invalid --browser-engine' >&2; exit 2; }
-[[ "$browser_name" == chromium || "$browser_name" == firefox || "$browser_name" == webkit ]] || { echo 'invalid --browser-name' >&2; exit 2; }
 [[ "$browser_headless" == 0 || "$browser_headless" == 1 ]] || { echo '--browser-headless must be 0 or 1' >&2; exit 2; }
 [[ -n "$host_id" ]] || host_id="$agent_name"
 if [[ "$(id -u)" -ne 0 ]]; then
-  exec sudo -E bash "$0" "$@"
+  exec sudo -E bash "$0" "${original_args[@]}"
 fi
 if $desktop; then
   if [[ -z "$desktop_user" ]]; then desktop_user="${SUDO_USER:-}"; fi
@@ -82,7 +73,7 @@ esac
 [[ -n "$release_tag" ]] || release_tag="java-$version"
 stage="$(mktemp -d -t rcm-first-install.XXXXXX)"
 runtime="$state_dir/browser-runtime"
-playwright_browsers_path="$state_dir/playwright-browsers"
+camoufox_install_dir="$state_dir/camoufox"
 trap 'rm -rf -- "$stage"; unset REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN' EXIT
 mkdir -p "$state_dir"
 
@@ -108,9 +99,9 @@ desktop_zip=''
 browser_zip=''
 if $desktop; then desktop_zip="$(download_verified "remote-connect-mcp-desktop-$version-linux-$arch.zip")"; fi
 if $browser; then browser_zip="$(download_verified "remote-connect-mcp-browser-$version-linux-$arch.zip")"; fi
-installer="$stage/install-java-agent.sh"
+installer="$stage/install-agent.sh"
 service_file="$stage/remote-connect-mcp-agent.service"
-curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$raw_base/scripts/install-java-agent.sh" -o "$installer"
+curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$raw_base/scripts/install-agent.sh" -o "$installer"
 curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$raw_base/deploy/systemd/remote-connect-mcp-agent.service" -o "$service_file"
 chmod 0700 "$installer"
 
@@ -120,12 +111,15 @@ if $browser; then
   npm_path="$(command -v npm || true)"
   [[ -x "$node_path" && -x "$npm_path" ]] || { echo 'Browser mode requires node and npm' >&2; exit 1; }
   worker="$runtime/browser-worker.mjs"
-  mkdir -p "$runtime" "$playwright_browsers_path"
+  mkdir -p "$runtime" "$camoufox_install_dir"
   curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$raw_base/scripts/browser-worker.mjs" -o "$worker"
-  [[ -f "$runtime/package.json" ]] || printf '{"name":"rcm-browser-runtime","private":true}\n' > "$runtime/package.json"
-  export PLAYWRIGHT_BROWSERS_PATH="$playwright_browsers_path"
-  "$npm_path" install --prefix "$runtime" --no-save --ignore-scripts "playwright@$playwright_version"
-  "$node_path" "$runtime/node_modules/playwright/cli.js" install "$browser_name"
+  for name in package.json package-lock.json; do
+    curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$raw_base/scripts/browser-runtime/$name" -o "$runtime/$name"
+  done
+  [[ "$("$node_path" -p 'process.versions.node.split(".")[0]')" -ge 22 ]] || { echo 'Camoufox requires Node.js 22 or newer' >&2; exit 1; }
+  "$npm_path" ci --prefix "$runtime" --no-audit --no-fund
+  export CAMOUFOX_INSTALL_DIR="$camoufox_install_dir"
+  "$node_path" "$runtime/node_modules/camoufox-js/dist/__main__.js" fetch
   adapter="\"$node_path\" \"$worker\""
 fi
 
@@ -141,17 +135,16 @@ export REMOTE_CONNECT_MCP_AGENT_SERVICE_FILE="$service_file"
 export REMOTE_CONNECT_MCP_AGENT_CAPABILITIES="$capabilities"
 export REMOTE_CONNECT_MCP_AGENT_VERSION="$version"
 export REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD='/'
-export REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE='unrestricted'
 export REMOTE_CONNECT_MCP_AGENT_STATE_DIR="$state_dir"
 export REMOTE_CONNECT_MCP_AGENT_INSTALL_ROOT="$install_root"
 export REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED="$desktop"
 export REMOTE_CONNECT_MCP_AGENT_DESKTOP_USER="$desktop_user"
 export REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER="$adapter"
 export REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR="$state_dir/browser-profile"
-export REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE="$browser_engine"
-export REMOTE_CONNECT_MCP_AGENT_BROWSER="$browser_name"
+export REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE='camoufox'
+export REMOTE_CONNECT_MCP_AGENT_BROWSER='firefox'
 export REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS="$browser_headless"
-export REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH="$playwright_browsers_path"
+export REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR="$camoufox_install_dir"
 export REMOTE_CONNECT_MCP_AGENT_REENROLL="$re_enroll"
 if $desktop; then export REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY="$desktop_zip"; fi
 if $browser; then export REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY="$browser_zip"; fi

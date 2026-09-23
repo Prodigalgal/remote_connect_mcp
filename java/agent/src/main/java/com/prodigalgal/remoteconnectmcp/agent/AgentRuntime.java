@@ -2,7 +2,6 @@ package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
-import com.prodigalgal.remoteconnectmcp.protocol.DesktopCompanionProtocol;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -57,14 +56,6 @@ public final class AgentRuntime {
         var durableStore = new DurableTaskStore(config.stateDir());
         var identity = loadOrRegister();
         if (config.desktopEnabled()) {
-            try {
-                // Publish a non-secret machine policy for the user-session
-                // companion.  The command Agent remains the authority, while
-                // the companion adds a second cwd/expiry check before GUI I/O.
-                DesktopCompanionProtocol.writePolicy(config.stateDir(), config.scopeMode(), config.workspaceRoot());
-            } catch (IOException failure) {
-                LOG.log(Level.WARNING, "could not publish desktop companion scope policy", failure);
-            }
             // The command Agent may run as SYSTEM/root in a non-interactive
             // service session.  Starting AWT from here would create a Session 0
             // companion that cannot see the user's desktop.  Installers start

@@ -167,6 +167,10 @@ final class BrowserTaskRunner implements Runnable {
             if (playwrightBrowsersPath != null && !playwrightBrowsersPath.isBlank()) {
                 builder.environment().put("PLAYWRIGHT_BROWSERS_PATH", playwrightBrowsersPath);
             }
+            var camoufoxInstallDir = System.getenv("REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR");
+            if (camoufoxInstallDir != null && !camoufoxInstallDir.isBlank()) {
+                builder.environment().put("CAMOUFOX_INSTALL_DIR", camoufoxInstallDir);
+            }
             var timeout = Math.min(TaskLimits.timeoutSeconds(task, 300), 24 * 60 * 60);
             builder.environment().put("RCM_BROWSER_TASK_TIMEOUT_SECONDS", Integer.toString(timeout));
             outputSpool = new TaskOutputSpool(config.stateDir(), task.id(), TaskLimits.outputBytes(config, task), resourceBudget);

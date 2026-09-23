@@ -6,7 +6,7 @@
 - `center`：Spring Boot 4.x Center、异步 MCP、Bearer 鉴权、注册/HTTPS 长轮询、任务/输出/工件队列、项目与 Git worktree 编排、Admin API 和 PostgreSQL + Liquibase 适配；
 - `agent`：无 Spring 的 Java command-agent，支持虚拟线程命令执行、磁盘 spool 与异步重试、Desktop IPC 客户端、Browser 本机适配器桥接、断线重连和身份持久化；只依赖 `protocol`，Native Image 不包含 AWT 桌面实现。
 - `desktop`：独立的 `rcm-desktop-companion` Java Native Image，仅在用户会话中提供 AWT/Robot 截图与输入能力，不向 Center 注册第二个身份。
-- `browser`：独立的 `rcm-browser-agent` Java Native Image，只负责编排本机 Playwright/Patchright/Comoufox 适配器，不向 Center 注册第二个身份，也不依赖 command-agent 或 desktop。
+- `browser`：独立的 `rcm-browser-agent` Native Image，按任务启动本机 Camoufox Worker，不向 Center 注册第二个身份。
 
 Java 组件可独立进行协议验收。`--check-config` 只校验配置；`--register-once` 注册并把 Center 返回的日常身份写入 `STATE_DIR/identity.json`；`--run`（或无参数，供 Windows 启动任务/Linux systemd 使用）启动注册、心跳和异步任务循环，支持并发槽位、输出游标、超时、取消、桌面工件、Browser Worker 和 Center 控制的 canary 自升级。命令输出先落入有界本机 spool，再由独立虚拟线程上传；单任务和 Agent 级聚合输出上限同时生效，达到聚合上限时普通任务仍继续执行并仅截断后续输出；Center 暂时不可达时不会终止子进程，但 durable 日志达到上限会由看门器终止并标记失败。
 
@@ -17,7 +17,7 @@ Java 组件可独立进行协议验收。`--check-config` 只校验配置；`--r
 `scripts/smoke-java.ps1/.sh`；烟测只启动临时内存模式 Center，使用临时令牌并在结束后清理进程，
 不会触发 Gradle、Native Image 或前端构建。
 
-运行 Java Agent（PowerShell 示例，生产安装推荐使用 `scripts/install-java-agent.ps1`）：
+运行 Java Agent（PowerShell 示例，生产安装推荐使用 `scripts/install-agent.ps1`）：
 
 ```powershell
 $env:REMOTE_CONNECT_MCP_AGENT_CENTER_URL = 'https://remote-connect-mcp-agent.example.invalid'
@@ -30,7 +30,7 @@ $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY = 'C:\Program Files\Remote Connect 
 & 'C:\Program Files\Remote Connect MCP Agent\rcm-agent.exe' --run
 ```
 
-`install-java-agent.ps1` / `install-java-agent.sh` 会先用一次性 Enrollment Token 调用
+`install-agent.ps1` / `install-agent.sh` 会先用一次性 Enrollment Token 调用
 `--register-once`，确认 `identity.json` 写入成功后再创建长期运行配置，并且不把 Enrollment
 Token 写入启动任务环境；日常通信只使用 `identity.json` 中的每机 Token。Java Agent 默认使用
 25 秒 HTTP 长轮询，在任务、取消、配置、升级事件或服务端 deadline 时才返回；设置
@@ -51,7 +51,7 @@ Desktop Native 包采用“桌面能力优先”策略：桌面目标专用的 J
 私有成员未注册而失败；这些元数据和运行库只进入 `desktop-companion`，不会污染精简的 command-agent
 或 browser-agent。代价是 Desktop 包的构建时间和体积略有增加，这是桌面可用性优先于极限压缩的明确取舍。
 
-`nativeCompile` 需要 `JAVA_HOME` 指向带 `native-image` 的 GraalVM 25.x 或 Liberica NIK 25.x，但开发机和目标宿主机不执行该任务；正式构建由 GitHub Actions 在匹配 OS/CPU 架构的 runner 完成。Linux/Windows 发布的 command-agent、desktop-companion 和 browser-agent 都是各自包含 Native Image 运行库的平铺 ZIP：`remote-connect-mcp-agent-*`、`remote-connect-mcp-desktop-*`、`remote-connect-mcp-browser-*`。Browser Agent 不注册 Center 身份，由 command-agent 按 browser cap 按任务启动并在超时/取消时回收。Windows command-agent 可把 `remote-connect-mcp-agent-<version>-windows-amd64.zip` 传给 `scripts/install-java-agent.ps1 -BinaryPath`，并把 desktop/browser ZIP 分别传给对应的 companion 参数；Linux 必须把三个 ZIP 分别通过 `REMOTE_CONNECT_MCP_AGENT_BINARY`、`REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY` 和 `REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY` 交给 `scripts/install-java-agent.sh`，安装器会先校验同目录 `.sha256`（若提供）再安装完整 Native Image bundle；桌面伴侣仍需在用户会话中通过桌面环境自启动。完整 Linux tar 包同时包含三个 bundle 目录和安装脚本。安装器只接受带旁路库的正式 ZIP，不接受裸可执行文件，避免组件版本和运行库发生漂移。
+`nativeCompile` 需要 `JAVA_HOME` 指向带 `native-image` 的 GraalVM 25.x 或 Liberica NIK 25.x，但开发机和目标宿主机不执行该任务；正式构建由 GitHub Actions 在匹配 OS/CPU 架构的 runner 完成。Linux/Windows 发布的 command-agent、desktop-companion 和 browser-agent 都是各自包含 Native Image 运行库的平铺 ZIP：`remote-connect-mcp-agent-*`、`remote-connect-mcp-desktop-*`、`remote-connect-mcp-browser-*`。Browser Agent 不注册 Center 身份，由 command-agent 按 browser cap 按任务启动并在超时/取消时回收。Windows command-agent 可把 `remote-connect-mcp-agent-<version>-windows-amd64.zip` 传给 `scripts/install-agent.ps1 -BinaryPath`，并把 desktop/browser ZIP 分别传给对应的 companion 参数；Linux 必须把三个 ZIP 分别通过 `REMOTE_CONNECT_MCP_AGENT_BINARY`、`REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY` 和 `REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY` 交给 `scripts/install-agent.sh`，安装器会先校验同目录 `.sha256`（若提供）再安装完整 Native Image bundle；桌面伴侣仍需在用户会话中通过桌面环境自启动。完整 Linux tar 包同时包含三个 bundle 目录和安装脚本。安装器只接受带旁路库的正式 ZIP，不接受裸可执行文件，避免组件版本和运行库发生漂移。
 `scripts/build-java.*`、`scripts/build-native.*` 仅供 GitHub Actions 使用，
 在本机直接运行会安全退出并提示提交到 Actions；`java/Dockerfile.*.native` 与 `web/Dockerfile` 也要求
 CI 构建参数。Gradle 根配置还会拦截本机的 `build/test/compile/jar/native` 等任务；只读的
@@ -74,8 +74,7 @@ worktree 作为 cwd。项目与 worktree 记录由 Liquibase `007-projects-workt
 
 Java Center 只接受当前 PostgreSQL + Liquibase 数据模型；发布前完成备份，不提供旧状态导入入口；升级活动由当前 Center 统一创建。
 
-Browser Agent 需要在目标主机配置 `REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER`，指向受控的 Playwright/Patchright/Comoufox 本机 Worker。发布包同时提供独立的 `rcm-browser-agent` Native 二进制；command-agent 会优先启动同目录 Browser Agent（也可用 `REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY` 指定路径），由它再启动适配器。Windows 的 `deploy-java-desktop-browser.ps1` 会在 staged browser runtime 中生成一个 `.cmd` shim，再把适配器指向该 shim；Node 或 Worker 路径包含空格时不会经过多层 `cmd.exe` 引号解析而误报路径错误。每个任务会在 Agent 状态目录创建一个短生命周期 JSON 请求文件，并通过 `RCM_BROWSER_TASK_REQUEST_FILE` 环境变量传给 Worker。Worker 只回传有界 stdout；浏览器 profile、Cookie、CDP 凭据不离开主机，任务结束后请求文件立即删除。
-仓库提供一个不绑定具体浏览器包的参考 Worker：`scripts/browser-worker.mjs`。在目标机的独立目录安装所需运行时（例如 `npm install playwright`），再将适配器设置为 `node <绝对路径>/scripts/browser-worker.mjs`；通过 `RCM_BROWSER_ENGINE=playwright|patchright|comoufox` 和 `RCM_BROWSER_BROWSER=chromium|firefox|webkit` 选择实现。Worker 支持 `navigate`、`snapshot`、`click`、`hover`、`fill`、`check`、`uncheck`、`select`、`press`、`wait_for_selector`、`wait`、`reload`、`back`、`forward`、`title`、`url`、`text`、`screenshot` 和 `download`，不提供任意 `evaluate` 脚本入口，避免页面脚本把 Cookie、Profile 或其他凭据带回 Center；默认无头、单页、超时和输出有界；`snapshot` 额外返回最多 64 个 `rcm-ref-v1:*` 结构化元素引用，后续动作可用 `{"ref":"rcm-ref-v1:..."}` 复用，不需要把整棵 DOM 再发回模型。引用编码的是 role/name、test-id、placeholder 或 text 定位和有界序号，不是可泄露页面内容的句柄；页面变化后若定位失败应重新执行 `snapshot`。生产环境应为每个 Agent 使用独立的 `RCM_BROWSER_PROFILE_DIR`，不要把 Cookie、CDP 地址或代理密码写入 `command`、日志或 Center 配置。
+Browser 能力由 command-agent 启动本机 `rcm-browser-agent`，再由它启动 `scripts/browser-worker.mjs`。首次安装脚本使用 `scripts/browser-runtime/package-lock.json` 安装 Camoufox，并取得对应 Firefox；Windows 现有安装可用 `scripts/deploy-desktop-browser.ps1` 迁移。Profile、Cookie 和代理凭据留在本机。Worker 只接受限定的导航、观察、交互、截图和下载操作，不提供任意 `evaluate`。当前 Helper 自动升级只替换 Native 组件；更新已有的 Camoufox Node/Firefox 运行时需单独执行迁移脚本。
 
 启用独立的 `RCM_BROWSER_PROFILE_DIR` 后，Agent 会自动为该身份维护一个 `browser-session.json` 会话标记。Worker 只把最近页面的脱敏 origin/path 写入该文件（不保存 query、fragment、Cookie 或 CDP 凭据），下一次任务会先恢复该页面；没有 profile 或标记失效时按新页面处理。跨任务引用依赖页面仍可访问，涉及登录参数或一次性 URL 时请显式再次调用 `navigate`。
 

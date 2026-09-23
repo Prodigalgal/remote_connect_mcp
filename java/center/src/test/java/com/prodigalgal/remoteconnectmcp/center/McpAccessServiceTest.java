@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 
 class McpAccessServiceTest {
     @Test
-    void userNeedsExplicitMachineAndProjectGrants() {
+    void userNeedsExplicitMachineGrant() {
         var access = new McpAccessService();
         var origin = new TaskOrigin("user-a", "token-a", "conversation-a");
 
@@ -20,9 +20,21 @@ class McpAccessServiceTest {
         assertThrows(SecurityException.class, () -> access.authorizeMachine(origin, "machine-a", "execute"));
 
         access.grantMachine("user-a", "machine-a", Set.of("read", "execute"), null);
-        assertThrows(SecurityException.class, () -> access.authorizeExecution(origin, "machine-a", "project-a"));
-        access.grantProject("user-a", "project-a", Set.of("write"), null);
-        assertDoesNotThrow(() -> access.authorizeExecution(origin, "machine-a", "project-a"));
+        assertDoesNotThrow(() -> access.authorizeExecution(origin, "machine-a"));
+    }
+
+    @Test
+    void wildcardMachineGrantAuthorizesAnyMachine() {
+        var access = new McpAccessService();
+        var origin = new TaskOrigin("user-wildcard", "token-w", "conversation-w");
+
+        assertThrows(SecurityException.class, () -> access.authorizeExecution(origin, "machine-1"));
+        assertThrows(SecurityException.class, () -> access.authorizeExecution(origin, "machine-2"));
+
+        access.grantMachine("user-wildcard", "*", Set.of("read", "execute"), null);
+        assertDoesNotThrow(() -> access.authorizeMachine(origin, "machine-1", "read"));
+        assertDoesNotThrow(() -> access.authorizeExecution(origin, "machine-1"));
+        assertDoesNotThrow(() -> access.authorizeExecution(origin, "machine-2"));
     }
 
     @Test
@@ -32,17 +44,14 @@ class McpAccessServiceTest {
         access.grantMachine("user-b", "machine-b", Set.of("admin"), Instant.now().minusSeconds(1));
         assertThrows(SecurityException.class, () -> access.authorizeMachine(origin, "machine-b", "read"));
 
-        assertDoesNotThrow(() -> access.authorizeExecution(TaskOrigin.configured(), "machine-b", "project-b"));
+        assertDoesNotThrow(() -> access.authorizeExecution(TaskOrigin.configured(), "machine-b"));
         assertEquals(1, access.machineCount("user-b"));
-        assertEquals(0, access.projectCount("user-b"));
     }
 
     @Test
     void invalidGrantScopesFailBeforeStorage() {
         var access = new McpAccessService();
         assertThrows(IllegalArgumentException.class,
-                () -> access.grantMachine("user-c", "machine-c", Set.of("write"), null));
-        assertThrows(IllegalArgumentException.class,
-                () -> access.grantProject("user-c", "project-c", Set.of("execute"), null));
+                () -> access.grantMachine("user-c", "machine-c", Set.of("invalid_scope"), null));
     }
 }

@@ -15,11 +15,13 @@ const runtimeFiles = [
   'java/protocol/src/main/java',
   'java/center/src/main/resources/mcp',
   'web/src/artifact-viewer',
-  'scripts/install-java-agent.ps1',
-  'scripts/install-java-agent.sh',
-  'scripts/first-install-java-agent.ps1',
-  'scripts/first-install-java-agent.sh',
-  'scripts/deploy-java-desktop-browser.ps1',
+  'scripts/install-agent.ps1',
+  'scripts/install-agent.sh',
+  'scripts/first-install-agent.ps1',
+  'scripts/first-install-agent.sh',
+  'scripts/deploy-desktop-browser.ps1',
+  'scripts/browser-worker.mjs',
+  'scripts/browser-runtime',
   'scripts/smoke-java.ps1',
   'scripts/smoke-java.sh',
   'scripts/smoke-java-agent.ps1',
@@ -68,8 +70,6 @@ for (const removedPath of [
   'deploy/k8s/center',
   'scripts/build-all.ps1',
   'scripts/build-all.sh',
-  'scripts/install-agent.ps1',
-  'scripts/install-agent.sh',
   'docs/GO_RETIREMENT.md'
 ]) {
   try {

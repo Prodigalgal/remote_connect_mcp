@@ -10,10 +10,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskProgressUpdate;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
-import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicy;
-import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicyMode;
 import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.nio.charset.StandardCharsets;
@@ -312,28 +309,6 @@ public final class TaskService {
             return "system";
         }
         return normalized;
-    }
-
-    /**
-     * Project lifecycle guard.  Deleting a project while one of its tasks is
-     * still queued/running would leave an execution contract pointing at a
-     * removed identity.  Keep the query metadata-only so large output blobs
-     * are never loaded just to decide whether deletion is safe.
-     */
-    boolean hasActiveProjectTasks(String projectId) {
-        if (projectId == null || projectId.isBlank()) return false;
-        var normalized = projectId.trim();
-        if (jdbcStore != null) return jdbcStore.hasActiveProjectTasks(normalized);
-        lock.lock();
-        try {
-            return tasks.values().stream().anyMatch(task -> {
-                var contract = task.command().contract();
-                return contract != null && normalized.equals(contract.projectId())
-                        && !TaskStatus.terminal(task.status());
-            });
-        } finally {
-            lock.unlock();
-        }
     }
 
     /** Return status counters only; never materialize commands or output. */
@@ -1101,18 +1076,6 @@ public final class TaskService {
                                                     TaskCommand original, String capability,
                                                     String taskId, Instant createdAt, TaskOrigin origin) {
         var supplied = original.contract();
-        var mode = request.scopeMode() != null ? request.scopeMode()
-                : supplied != null ? supplied.scopeMode()
-                : (!request.worktreeId().isBlank() ? ScopeMode.WORKTREE
-                : !request.projectId().isBlank() ? ScopeMode.PROJECT
-                : ScopeMode.fromWireValue(machine.scopeMode()));
-        var projectId = firstNonBlank(request.projectId(), supplied == null ? null : supplied.projectId());
-        var worktreeId = firstNonBlank(request.worktreeId(), supplied == null ? null : supplied.worktreeId());
-        var scopeRoot = firstNonBlank(request.scopeRoot(), supplied == null ? null : supplied.scopeRoot());
-        if (scopeRoot == null && mode.bounded()
-                && mode != ScopeMode.PROJECT && mode != ScopeMode.WORKTREE) {
-            scopeRoot = machine.workspaceRoot();
-        }
         // The MCP transport session is the safest default correlation value.
         // A caller-supplied session_id remains useful for admin clients,
         // but it never overrides the authenticated connection owner.
@@ -1122,13 +1085,13 @@ public final class TaskService {
         if (sessionId == null && connectionId != null && !connectionId.isBlank()) {
             // Preserve the configured connection id used by internal and
             // PostgreSQL integration callers.  Authenticated MCP callers get
-            // a machine/scope fingerprint so one connection can safely span
-            // several independent execution contexts.
+            // a machine/capability fingerprint so one connection can safely
+            // span several independent execution contexts.
             if (origin == null || origin.isConfigured()) {
                 sessionId = connectionId.trim();
             } else {
                 var sessionFingerprint = connectionId + "\u0000" + machine.id() + "\u0000"
-                        + modeFingerprint(request, supplied, mode, projectId, worktreeId, scopeRoot, capability);
+                        + modeFingerprint(request, supplied, capability);
                 sessionId = "session_" + sha256(sessionFingerprint).substring(0, 32);
             }
         }
@@ -1150,38 +1113,13 @@ public final class TaskService {
         if (supplied != null && (!machine.id().equals(supplied.machineId()) || !machine.hostId().equals(supplied.hostId()))) {
             throw new SecurityException("execution contract identity does not match the selected machine");
         }
-        if (mode == ScopeMode.UNRESTRICTED && machine.scopeMode() != null
-                && ScopeMode.fromWireValue(machine.scopeMode()).bounded()) {
-            throw new SecurityException("unrestricted task exceeds the Agent's configured scope");
-        }
-        if (mode.bounded()) {
-            if (scopeRoot == null || scopeRoot.isBlank()) {
-                throw new IllegalArgumentException("bounded task scope_root is required");
-            }
-            // A project/worktree root must itself remain inside a bounded
-            // machine workspace. An unrestricted Agent may explicitly accept
-            // a narrower contract without an outer lexical restriction.
-            var machineMode = ScopeMode.fromWireValue(machine.scopeMode());
-            if (machineMode.bounded()) {
-                WorkspacePolicy.validateRemote(machineMode, machine.os(), machine.workspaceRoot(),
-                        machine.workspaceRoot(), scopeRoot);
-            }
-            WorkspacePolicy.validateRemote(mode, machine.os(), scopeRoot, scopeRoot, original.cwd());
-            if (original.desktop() != null) {
-                WorkspacePolicy.validateRemote(mode, machine.os(), scopeRoot, scopeRoot, original.desktop().cwd());
-            }
-        }
         var maximumExpiry = createdAt.plus(DEFAULT_CONTRACT_LIFETIME);
         var requestedExpiry = supplied != null && supplied.expiresAt() != null
                 ? supplied.expiresAt() : maximumExpiry;
         var expiresAt = requestedExpiry.isAfter(maximumExpiry) ? maximumExpiry : requestedExpiry;
-        var workspacePolicy = request.workspacePolicy() != null ? request.workspacePolicy()
-                : supplied != null && supplied.workspacePolicy() != null ? supplied.workspacePolicy()
-                : defaultWorkspacePolicy(mode);
         var inferredLaneMode = defaultLaneMode(original);
         if (request.readOnlyLaneHint()) {
-            if (original.kind() != TaskKind.COMMAND || request.projectId().isBlank()
-                    || (mode != ScopeMode.PROJECT && mode != ScopeMode.WORKTREE)) {
+            if (original.kind() != TaskKind.COMMAND) {
                 throw new SecurityException("read-only lane hint is not valid for this task");
             }
             inferredLaneMode = LaneMode.READ;
@@ -1197,41 +1135,20 @@ public final class TaskService {
             throw new SecurityException("task cannot be relaxed to a read-only execution lane");
         }
         var laneMode = requestedLaneMode;
-        if (workspacePolicy == WorkspacePolicyMode.HOST && mode != ScopeMode.UNRESTRICTED) {
-            throw new IllegalArgumentException("workspace_policy=host requires explicit scope_mode=unrestricted");
-        }
-        if (workspacePolicy == WorkspacePolicyMode.ISOLATED && mode == ScopeMode.UNRESTRICTED) {
-            throw new IllegalArgumentException("workspace_policy=isolated requires a bounded scope");
-        }
-        if (workspacePolicy == WorkspacePolicyMode.ISOLATED
-                && mode != ScopeMode.WORKTREE) {
-            throw new IllegalArgumentException("workspace_policy=isolated requires an explicit worktree scope");
-        }
-        var contract = new ExecutionContract(machine.id(), machine.hostId(), mode, projectId, worktreeId,
-                scopeRoot, workspacePolicy, laneMode, sessionId, capability, budget, expiresAt,
+        // The contract carries identity, scheduling and resource lifetime;
+        // authorization is the machine grant and the Agent runs full-host.
+        var contract = new ExecutionContract(machine.id(), machine.hostId(), laneMode, sessionId, capability, budget, expiresAt,
                 request.idempotencyKey(), risk, request.elevationRequired(), null);
         if (contract.expired(createdAt)) throw new IllegalArgumentException("execution contract expires before task creation");
         return contract;
     }
 
-    private static WorkspacePolicyMode defaultWorkspacePolicy(ScopeMode mode) {
-        if (mode == ScopeMode.UNRESTRICTED) return WorkspacePolicyMode.HOST;
-        if (mode == ScopeMode.WORKTREE) return WorkspacePolicyMode.ISOLATED;
-        return WorkspacePolicyMode.SHARED_SERIAL;
-    }
-
     private static String modeFingerprint(CreateTaskRequest request, ExecutionContract supplied,
-                                          ScopeMode mode, String projectId, String worktreeId,
-                                          String scopeRoot, String capability) {
-        var policy = request.workspacePolicy() != null ? request.workspacePolicy()
-                : supplied != null && supplied.workspacePolicy() != null ? supplied.workspacePolicy()
-                : defaultWorkspacePolicy(mode);
+                                          String capability) {
         var lane = request.laneMode() != null ? request.laneMode()
                 : supplied != null && supplied.laneMode() != null ? supplied.laneMode()
                 : defaultLaneMode(request.command());
-        return mode.wireValue() + "\u0000" + valueOrEmpty(projectId) + "\u0000"
-                + valueOrEmpty(worktreeId) + "\u0000" + valueOrEmpty(scopeRoot)
-                + "\u0000" + policy.wireValue() + "\u0000" + lane.wireValue()
+        return lane.wireValue()
                 + "\u0000" + valueOrEmpty(capability);
     }
 
@@ -1258,9 +1175,8 @@ public final class TaskService {
             case FILE_TRANSFER -> command.fileTransfer() != null && command.fileTransfer().agentToWeb()
                     ? LaneMode.READ : LaneMode.WRITE;
             case COMMAND -> {
-                // Arbitrary shell commands are treated as writes. Project
-                // service Git read operations opt into READ explicitly after
-                // their operation has been parsed and authorized.
+                // Arbitrary shell commands are treated as writes. Explicit
+                // read-only hints are accepted only for command tasks.
                 yield LaneMode.WRITE;
             }
         };
@@ -1318,14 +1234,13 @@ public final class TaskService {
         if (audit == null) return;
         var contract = command == null ? null : command.contract();
         audit.record(eventType, actor, machineId, taskId,
-                contract == null ? null : contract.scopeMode().wireValue(),
                 contract == null ? null : contract.risk(), outcome, detail);
     }
 
     private void audit(String eventType, String actor, String machineId, TaskView view,
                        String outcome, String detail) {
         if (audit == null || view == null) return;
-        audit.record(eventType, actor, machineId, view.id(), view.scopeMode(), view.risk(), outcome, detail);
+        audit.record(eventType, actor, machineId, view.id(), view.risk(), outcome, detail);
     }
 
     private static String firstNonBlank(String primary, String fallback) {

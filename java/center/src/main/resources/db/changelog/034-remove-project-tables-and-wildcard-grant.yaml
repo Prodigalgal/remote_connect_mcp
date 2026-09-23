@@ -1,0 +1,19 @@
+databaseChangeLog:
+  - changeSet:
+      id: 034-remove-project-tables-and-wildcard-grant
+      author: remote-connect-mcp
+      labels: projects,cleanup
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        # The wildcard machine grant is intentionally retained: it is the
+        # simple Center-side way to authorize a principal for every machine.
+        - sql:
+            sql: DROP TABLE IF EXISTS rcm_project_member CASCADE;
+        - sql:
+            sql: DROP TABLE IF EXISTS rcm_project_worktree CASCADE;
+        - sql:
+            sql: DROP TABLE IF EXISTS rcm_project CASCADE;

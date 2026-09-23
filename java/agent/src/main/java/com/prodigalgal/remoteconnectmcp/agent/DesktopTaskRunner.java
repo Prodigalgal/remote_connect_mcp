@@ -48,14 +48,13 @@ final class DesktopTaskRunner implements Runnable {
                     new TaskProgressUpdate("desktop", 0, "desktop action started", null, null, null));
             // Validate the contract before entering the user-session IPC.
             // The companion is intentionally a small loopback process and
-            // must not become a second scope authority.  In particular,
-            // launch requests cannot smuggle an arbitrary cwd through the
-            // companion JSON after the command Agent has accepted the task.
+            // must not become a second authority. Launch requests are sent
+            // with the already-resolved working-directory hint.
             var resolvedCwd = resolveCwd(action.cwd());
-            var scopedAction = withCwd(action, resolvedCwd.toString());
+            var preparedAction = withCwd(action, resolvedCwd.toString());
             var companion = DesktopCompanionClient.discover(config.stateDir());
             if (companion == null) throw new IOException("desktop user-session companion is not available");
-            completeCompanion(companion.call(scopedAction, task.contract(),
+            completeCompanion(companion.call(preparedAction, task.contract(),
                     Duration.ofSeconds(Math.min(TaskLimits.timeoutSeconds(task, 30), 300))));
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();

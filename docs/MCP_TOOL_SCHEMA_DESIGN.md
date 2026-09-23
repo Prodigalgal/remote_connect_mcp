@@ -1,4 +1,6 @@
-# MCP Tool 与 Schema 设计
+# 历史记录：MCP Tool 与 Schema 设计
+
+> 本文件保留早期工具面推演，不能作为当前实现契约。当前工具面和 schema 以 [`FULL_HOST_MODEL.md`](FULL_HOST_MODEL.md)、[`docs/mcp-tool-surface.json`](mcp-tool-surface.json) 和根目录 [`README.md`](../README.md) 为准。
 
 版本：v0.2 设计稿
 

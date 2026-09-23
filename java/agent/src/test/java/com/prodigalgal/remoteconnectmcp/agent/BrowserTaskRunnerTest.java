@@ -4,11 +4,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.ArtifactResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
+import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
@@ -32,12 +32,12 @@ class BrowserTaskRunnerTest {
                 ? "echo {\"status\":\"completed\",\"output\":\"manifest-output\",\"artifact\":{\"path\":\"artifact.txt\",\"mime_type\":\"text/plain\"}} > \"%RCM_BROWSER_RESULT_FILE%\" & echo %RCM_BROWSER_SESSION_FILE% > \"%RCM_BROWSER_SESSION_FILE%\" & echo artifact > \"%RCM_BROWSER_ARTIFACT_DIR%\\artifact.txt\" & type \"%RCM_BROWSER_TASK_REQUEST_FILE%\""
                 : "printf '%s' '{\"status\":\"completed\",\"output\":\"manifest-output\",\"artifact\":{\"path\":\"artifact.txt\",\"mime_type\":\"text/plain\"}}' > \"$RCM_BROWSER_RESULT_FILE\"; printf '%s' \"$RCM_BROWSER_SESSION_FILE\" > \"$RCM_BROWSER_SESSION_FILE\"; printf artifact > \"$RCM_BROWSER_ARTIFACT_DIR/artifact.txt\"; cat \"$RCM_BROWSER_TASK_REQUEST_FILE\"";
         var config = new AgentConfig(URI.create("http://127.0.0.1:18183"), "", "browser-agent", "browser-host",
-                stateDir.toString(), ScopeMode.UNRESTRICTED, null, List.of("browser"), false, stateDir,
+                stateDir.toString(), List.of("browser"), false, stateDir,
                 Duration.ofMillis(250), 1, 4L * 1024 * 1024, 8L * 1024 * 1024, adapter);
         var task = new TaskCommand("browser-task", TaskKind.BROWSER, "browser", "{\"action\":\"observe\"}",
                 stateDir.toString(), Map.of(), 30, null, Instant.now(),
-                new ExecutionContract("machine-browser", "browser-host", ScopeMode.UNRESTRICTED,
-                        null, null, null, "session-test", "browser", ExecutionContract.Budget.defaults(),
+                new ExecutionContract("machine-browser", "browser-host", LaneMode.WRITE,
+                        "session-test", "browser", ExecutionContract.Budget.defaults(),
                         Instant.now().plusSeconds(3600), "test-browser", "low", false, "lease-test"), 1);
         var transport = new RecordingTransport();
         var browserAgent = writeBrowserAgent(stateDir);

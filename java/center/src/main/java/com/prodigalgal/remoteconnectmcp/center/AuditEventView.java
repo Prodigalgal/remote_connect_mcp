@@ -9,7 +9,6 @@ public record AuditEventView(
         String actor,
         String agentId,
         String taskId,
-        String scopeMode,
         String risk,
         String outcome,
         String detail,

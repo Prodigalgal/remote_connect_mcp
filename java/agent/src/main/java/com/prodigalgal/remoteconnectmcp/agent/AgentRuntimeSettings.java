@@ -18,8 +18,8 @@ import java.util.logging.Logger;
 /**
  * Mutable, non-secret settings applied between heartbeats.  The file is
  * replaced atomically so a service restart never observes a partially-written
- * update.  Output limits and scope remain boot-time settings until their
- * validation and migration contract is extended explicitly.
+ * update. Output limits remain boot-time settings so the mutable hot-update
+ * path stays deliberately small and predictable.
  */
 final class AgentRuntimeSettings {
     private static final Logger LOG = Logger.getLogger(AgentRuntimeSettings.class.getName());

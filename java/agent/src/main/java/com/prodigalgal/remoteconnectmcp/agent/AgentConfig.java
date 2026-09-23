@@ -5,7 +5,6 @@ import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
 import com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor;
 import com.prodigalgal.remoteconnectmcp.protocol.ProtocolValidation;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import java.net.URI;
 import java.nio.file.Path;
 import java.nio.file.Files;
@@ -22,8 +21,6 @@ public record AgentConfig(
         String name,
         String hostId,
         String defaultCwd,
-        ScopeMode scopeMode,
-        String workspaceRoot,
         List<String> capabilities,
         boolean desktopEnabled,
         Path stateDir,
@@ -44,20 +41,18 @@ public record AgentConfig(
 
     /** Defaulted construction overload for local callers. */
     public AgentConfig(URI centerUrl, String enrollmentToken, String name, String hostId,
-                       String defaultCwd, ScopeMode scopeMode, String workspaceRoot,
-                       List<String> capabilities, boolean desktopEnabled, Path stateDir,
+                       String defaultCwd, List<String> capabilities, boolean desktopEnabled, Path stateDir,
                        Duration pollInterval, int maxConcurrency) {
-        this(centerUrl, enrollmentToken, name, hostId, defaultCwd, scopeMode, workspaceRoot,
+        this(centerUrl, enrollmentToken, name, hostId, defaultCwd,
                 capabilities, desktopEnabled, stateDir, pollInterval, maxConcurrency,
                 DEFAULT_MAX_OUTPUT_BYTES, defaultAggregateOutputBytes(DEFAULT_MAX_OUTPUT_BYTES, maxConcurrency), "");
     }
 
     /** Defaulted construction overload with an explicit per-task output limit. */
     public AgentConfig(URI centerUrl, String enrollmentToken, String name, String hostId,
-                       String defaultCwd, ScopeMode scopeMode, String workspaceRoot,
-                       List<String> capabilities, boolean desktopEnabled, Path stateDir,
+                       String defaultCwd, List<String> capabilities, boolean desktopEnabled, Path stateDir,
                        Duration pollInterval, int maxConcurrency, long maxOutputBytes) {
-        this(centerUrl, enrollmentToken, name, hostId, defaultCwd, scopeMode, workspaceRoot,
+        this(centerUrl, enrollmentToken, name, hostId, defaultCwd,
                 capabilities, desktopEnabled, stateDir, pollInterval, maxConcurrency,
                 maxOutputBytes, defaultAggregateOutputBytes(maxOutputBytes, maxConcurrency), "");
     }
@@ -74,10 +69,6 @@ public record AgentConfig(
             throw new IllegalArgumentException("Agent name and hostId are required");
         }
         capabilities = capabilities == null ? List.of() : List.copyOf(capabilities);
-        scopeMode = scopeMode == null ? ScopeMode.WORKSPACE : scopeMode;
-        if (scopeMode.bounded() && (workspaceRoot == null || workspaceRoot.isBlank())) {
-            workspaceRoot = defaultCwd;
-        }
         pollInterval = pollInterval == null ? Duration.ofSeconds(5) : pollInterval;
         if (pollInterval.isNegative() || pollInterval.isZero()) {
             throw new IllegalArgumentException("pollInterval must be positive");
@@ -109,10 +100,10 @@ public record AgentConfig(
         var runtime = new AgentRuntimeDescriptor(1, Math.max(0L, configGeneration), effectiveConcurrency,
                 Math.min(effectiveConcurrency, maxBrowserWorkers()), maxOutputBytes, maxAggregateOutputBytes,
                 maxTaskChildProcesses(), maxTotalChildProcesses(), maxTaskDurationSeconds(), maxTaskRssBytes(), maxTaskCpuSeconds(),
-                desktopEnabled, !browserAdapter.isBlank(), scopeMode,
+                desktopEnabled, !browserAdapter.isBlank(),
                 desktopSessionAvailable(), browserSessionAvailable(), resourceEnforcement());
         var metadata = new AgentMetadata(name, hostId, hostname(), operatingSystem(), architecture(),
-                currentVersion(), defaultCwd, scopeMode, workspaceRoot, capabilities, runtime);
+                currentVersion(), defaultCwd, capabilities, runtime);
         ProtocolValidation.validateMetadata(metadata);
         return metadata;
     }
@@ -173,17 +164,17 @@ public record AgentConfig(
     /** Browser adapter engine selected locally; Center never chooses it. */
     public String browserEngine() {
         var value = optional("REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE");
-        if (value.isBlank()) return "playwright";
+        if (value.isBlank()) return "camoufox";
         var normalized = value.toLowerCase(java.util.Locale.ROOT);
-        if (!List.of("playwright", "patchright", "comoufox").contains(normalized)) {
-            throw new IllegalArgumentException("REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE must be playwright, patchright, or comoufox");
+        if (!List.of("camoufox", "playwright", "patchright").contains(normalized)) {
+            throw new IllegalArgumentException("REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE is invalid");
         }
         return normalized;
     }
 
     public String browserName() {
         var value = optional("REMOTE_CONNECT_MCP_AGENT_BROWSER");
-        if (value.isBlank()) return "chromium";
+        if (value.isBlank()) return "firefox";
         var normalized = value.toLowerCase(java.util.Locale.ROOT);
         if (!List.of("chromium", "firefox", "webkit").contains(normalized)) {
             throw new IllegalArgumentException("REMOTE_CONNECT_MCP_AGENT_BROWSER must be chromium, firefox, or webkit");
@@ -283,7 +274,7 @@ public record AgentConfig(
 
     public RegisterRequest registerRequest() {
         var metadata = metadata();
-        return new RegisterRequest(metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(), metadata.defaultCwd(), metadata.scopeMode(), metadata.workspaceRoot(), metadata.capabilities(), metadata.runtime());
+        return new RegisterRequest(metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(), metadata.defaultCwd(), metadata.capabilities(), metadata.runtime());
     }
 
     public static AgentConfig fromEnvironment() {
@@ -295,9 +286,6 @@ public record AgentConfig(
         var name = env("REMOTE_CONNECT_MCP_AGENT_NAME", System.getenv().getOrDefault("COMPUTERNAME", "agent"));
         var hostId = env("REMOTE_CONNECT_MCP_AGENT_HOST_ID", name);
         var cwd = env("REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD", Path.of(".").toAbsolutePath().normalize().toString());
-        var scope = ScopeMode.fromWireValue(env("REMOTE_CONNECT_MCP_AGENT_SCOPE_MODE", "workspace"));
-        var workspace = System.getenv("REMOTE_CONNECT_MCP_AGENT_WORKSPACE_ROOT");
-        if (scope.bounded() && (workspace == null || workspace.isBlank())) workspace = cwd;
         var desktop = Boolean.parseBoolean(env("REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED", "false"));
         var capabilities = Arrays.stream(System.getenv().getOrDefault("REMOTE_CONNECT_MCP_AGENT_CAPABILITIES", "command,durable_tasks,file_transfer").split(","))
                 .map(String::trim)
@@ -319,7 +307,7 @@ public record AgentConfig(
                 1024L * 1024, 1024L * 1024 * 1024);
         var maxAggregateOutputBytes = parseLongEnv("REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES",
                 defaultAggregateOutputBytes(maxOutputBytes, maxConcurrency), maxOutputBytes, MAX_AGGREGATE_OUTPUT_BYTES);
-        return new AgentConfig(URI.create(center), token, name, hostId, cwd, scope, workspace, capabilities, desktop, state, pollInterval, maxConcurrency, maxOutputBytes, maxAggregateOutputBytes, browserAdapter);
+        return new AgentConfig(URI.create(center), token, name, hostId, cwd, capabilities, desktop, state, pollInterval, maxConcurrency, maxOutputBytes, maxAggregateOutputBytes, browserAdapter);
     }
 
     private static String required(String name) {

@@ -75,7 +75,7 @@ public final class McpPrincipalService {
                 ? principalId : value.displayName().trim();
         if (displayName.length() > 256) throw new IllegalArgumentException("display_name is too long");
         var scopes = value.scopes() == null || value.scopes().isEmpty()
-                ? Set.of("mcp:read", "mcp:execute", "mcp:project") : Set.copyOf(value.scopes());
+                ? Set.of("mcp:read", "mcp:execute") : Set.copyOf(value.scopes());
         // Validate before any database write.
         scopes = new McpPrincipal(principalId, "token", displayName, scopes, false, null).scopes();
         var ttl = value.expiresInSeconds() == null ? Duration.ofDays(30).toSeconds() : value.expiresInSeconds();

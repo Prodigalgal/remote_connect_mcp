@@ -7,8 +7,6 @@ export type Machine = {
   arch?: string
   version?: string
   defaultCwd?: string
-  scopeMode?: string
-  workspaceRoot?: string
   capabilities: string[]
   runtime?: AgentRuntimeDescriptor
   createdAt?: string
@@ -31,7 +29,6 @@ export type AgentRuntimeDescriptor = {
   desktopEnabled: boolean
   browserAdapterConfigured: boolean
   resourceEnforcement: string
-  scopeMode: string
   desktopSessionAvailable: boolean
   browserSessionAvailable: boolean
 }
@@ -42,7 +39,6 @@ export type AuditEvent = {
   actor: string
   agentId?: string
   taskId?: string
-  scopeMode?: string
   risk?: string
   outcome?: string
   detail?: string
@@ -84,11 +80,6 @@ export type Task = {
   progressTotal?: number
   progressUnit?: string
   progressUpdatedAt?: string
-  scopeMode?: string
-  projectId?: string
-  worktreeId?: string
-  scopeRoot?: string
-  workspacePolicy?: string
   laneMode?: string
   risk?: string
   contractExpiresAt?: string
@@ -176,29 +167,7 @@ export type PageResult<T> = {
   hasMore: boolean
 }
 
-export type Worktree = {
-  id: string
-  projectId: string
-  ref: string
-  path: string
-  operation: string
-  status: string
-  taskId?: string
-  createdAt?: string
-  updatedAt?: string
-}
 
-export type Project = {
-  id: string
-  machineId: string
-  name: string
-  rootPath: string
-  repositoryPath: string
-  defaultRef: string
-  createdAt?: string
-  updatedAt?: string
-  worktrees: Worktree[]
-}
 
 export class AdminApiError extends Error {
   readonly status: number
@@ -278,8 +247,6 @@ export async function listMachinesPage(token: string, offset = 0, limit = 200): 
     arch: item.arch as string | undefined,
     version: item.version as string | undefined,
     defaultCwd: item.default_cwd as string | undefined,
-    scopeMode: item.scope_mode as string | undefined,
-    workspaceRoot: item.workspace_root as string | undefined,
     capabilities: Array.isArray(item.capabilities) ? item.capabilities.map(String) : [],
     runtime: mapRuntime(item.runtime),
     createdAt: item.created_at as string | undefined,
@@ -321,7 +288,6 @@ function mapRuntime(value: unknown): AgentRuntimeDescriptor | undefined {
     desktopEnabled: Boolean(item.desktop_enabled),
     browserAdapterConfigured: Boolean(item.browser_adapter_configured),
     resourceEnforcement: String(item.resource_enforcement ?? 'process-tree'),
-    scopeMode: String(item.scope_mode ?? 'workspace'),
     desktopSessionAvailable: Boolean(item.desktop_session_available),
     browserSessionAvailable: Boolean(item.browser_session_available),
   }
@@ -341,7 +307,6 @@ export async function listAuditPage(token: string, offset = 0, limit = 200): Pro
     actor: String(item.actor ?? ''),
     agentId: item.agent_id as string | undefined,
     taskId: item.task_id as string | undefined,
-    scopeMode: item.scope_mode as string | undefined,
     risk: item.risk as string | undefined,
     outcome: item.outcome as string | undefined,
     detail: item.detail as string | undefined,
@@ -431,11 +396,6 @@ function mapTask(item: Record<string, unknown>): Task {
     progressTotal: item.progress_total == null ? undefined : Number(item.progress_total),
     progressUnit: item.progress_unit as string | undefined,
     progressUpdatedAt: item.progress_updated_at as string | undefined,
-    scopeMode: item.scope_mode as string | undefined,
-    projectId: item.project_id as string | undefined,
-    worktreeId: item.worktree_id as string | undefined,
-    scopeRoot: item.scope_root as string | undefined,
-    workspacePolicy: item.workspace_policy as string | undefined,
     laneMode: item.lane_mode as string | undefined,
     risk: item.risk as string | undefined,
     contractExpiresAt: item.contract_expires_at as string | undefined,
@@ -573,84 +533,6 @@ export async function listReleases(token: string, includePrerelease = true, refr
   }
 }
 
-function mapWorktree(item: Record<string, unknown>): Worktree {
-  return {
-    id: String(item.id ?? ''),
-    projectId: String(item.project_id ?? ''),
-    ref: String(item.ref ?? ''),
-    path: String(item.path ?? ''),
-    operation: String(item.operation ?? ''),
-    status: String(item.status ?? ''),
-    taskId: item.task_id as string | undefined,
-    createdAt: item.created_at as string | undefined,
-    updatedAt: item.updated_at as string | undefined,
-  }
-}
-
-function mapProject(item: Record<string, unknown>): Project {
-  return {
-    id: String(item.id ?? ''),
-    machineId: String(item.machine_id ?? ''),
-    name: String(item.name ?? ''),
-    rootPath: String(item.root_path ?? ''),
-    repositoryPath: String(item.repository_path ?? ''),
-    defaultRef: String(item.default_ref ?? ''),
-    createdAt: item.created_at as string | undefined,
-    updatedAt: item.updated_at as string | undefined,
-    worktrees: Array.isArray(item.worktrees) ? item.worktrees.map((value) => mapWorktree(value as Record<string, unknown>)) : [],
-  }
-}
-
-export async function listProjects(token: string, machineId = ''): Promise<Project[]> {
-  return (await listProjectsPage(token, machineId, 0, 200)).items
-}
-
-export async function listProjectsPage(token: string, machineId = '', offset = 0, limit = 200): Promise<PageResult<Project>> {
-  const suffix = machineId.trim() ? `&machine_id=${encodeURIComponent(machineId.trim())}` : ''
-  const boundedOffset = Math.max(0, Math.trunc(offset))
-  const boundedLimit = Math.min(200, Math.max(1, Math.trunc(limit)))
-  const response = await request<{ items: Array<Record<string, unknown>>; offset?: number; limit?: number; total?: number; has_more?: boolean }>(`/api/v1/admin/projects?offset=${boundedOffset}&limit=${boundedLimit}${suffix}`, token)
-  const items = (response.items ?? []).map(mapProject)
-  return pageResult(items, response, boundedOffset, boundedLimit)
-}
-
-export async function registerProject(token: string, payload: unknown): Promise<Project> {
-  const body = await request<Record<string, unknown>>('/api/v1/admin/projects', token, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return mapProject(body)
-}
-
-export async function removeProject(token: string, projectId: string): Promise<Project> {
-  const body = await request<Record<string, unknown>>(`/api/v1/admin/projects/${encodeURIComponent(projectId)}`, token, { method: 'DELETE' })
-  return mapProject(body)
-}
-
-export async function createProjectWorktree(token: string, projectId: string, payload: unknown): Promise<Worktree> {
-  const body = await request<Record<string, unknown>>(`/api/v1/admin/projects/${encodeURIComponent(projectId)}/worktrees`, token, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return mapWorktree(body)
-}
-
-export async function removeProjectWorktree(token: string, projectId: string, worktreeId: string, idempotencyKey?: string): Promise<Worktree> {
-  const suffix = idempotencyKey?.trim() ? `?idempotency_key=${encodeURIComponent(idempotencyKey.trim())}` : ''
-  const body = await request<Record<string, unknown>>(`/api/v1/admin/projects/${encodeURIComponent(projectId)}/worktrees/${encodeURIComponent(worktreeId)}${suffix}`, token, { method: 'DELETE' })
-  return mapWorktree(body)
-}
-
-export async function runProjectGit(token: string, projectId: string, operation: string, payload: unknown = {}): Promise<Task> {
-  const body = await request<Record<string, unknown>>(`/api/v1/admin/projects/${encodeURIComponent(projectId)}/git/${encodeURIComponent(operation)}`, token, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return mapTask(body)
-}
 
 export async function createUpgrade(token: string, payload: unknown): Promise<UpgradeCampaign> {
   const body = await request<Record<string, unknown>>('/api/v1/admin/upgrades', token, {
@@ -724,13 +606,6 @@ export type MachineGrant = {
   expiresAt?: string
 }
 
-export type ProjectMember = {
-  principalId: string
-  projectId: string
-  role: string
-  scopes: string[]
-  expiresAt?: string
-}
 
 export type ExecutionSession = {
   principalId: string
@@ -741,7 +616,6 @@ export type ExecutionSession = {
   lastSeenAt?: string
   expiresAt?: string
   capability?: string
-  workspacePolicy?: string
   laneMode?: string
 }
 
@@ -835,15 +709,11 @@ export async function revokeMcpToken(token: string, tokenId: string): Promise<vo
 }
 
 function mapMachineGrant(item: Record<string, unknown>): MachineGrant { return { principalId: String(item.principal_id ?? ''), machineId: String(item.machine_id ?? item.agent_id ?? ''), scopes: Array.isArray(item.scopes) ? item.scopes.map(String) : [], expiresAt: item.expires_at as string | undefined } }
-function mapProjectMember(item: Record<string, unknown>): ProjectMember { return { principalId: String(item.principal_id ?? ''), projectId: String(item.project_id ?? ''), role: String(item.role ?? ''), scopes: Array.isArray(item.scopes) ? item.scopes.map(String) : [], expiresAt: item.expires_at as string | undefined } }
-function mapSession(item: Record<string, unknown>): ExecutionSession { return { principalId: String(item.principal_id ?? ''), sessionId: String(item.session_id ?? ''), conversationId: String(item.conversation_id ?? ''), machineId: String(item.machine_id ?? ''), status: String(item.status ?? ''), lastSeenAt: item.last_seen_at as string | undefined, expiresAt: item.expires_at as string | undefined, capability: item.capability as string | undefined, workspacePolicy: item.workspace_policy as string | undefined, laneMode: item.lane_mode as string | undefined } }
+function mapSession(item: Record<string, unknown>): ExecutionSession { return { principalId: String(item.principal_id ?? ''), sessionId: String(item.session_id ?? ''), conversationId: String(item.conversation_id ?? ''), machineId: String(item.machine_id ?? ''), status: String(item.status ?? ''), lastSeenAt: item.last_seen_at as string | undefined, expiresAt: item.expires_at as string | undefined, capability: item.capability as string | undefined, laneMode: item.lane_mode as string | undefined } }
 
 export async function listMachineGrants(token: string, principalId = ''): Promise<MachineGrant[]> { const suffix = principalId.trim() ? `&principalId=${encodeURIComponent(principalId.trim())}` : ''; const body = await request<{ items?: Array<Record<string, unknown>> }>(`/api/v1/admin/access/machines?offset=0&limit=200${suffix}`, token); return (body.items ?? []).map(mapMachineGrant) }
-export async function listProjectMembers(token: string, principalId = ''): Promise<ProjectMember[]> { const suffix = principalId.trim() ? `&principalId=${encodeURIComponent(principalId.trim())}` : ''; const body = await request<{ items?: Array<Record<string, unknown>> }>(`/api/v1/admin/access/projects?offset=0&limit=200${suffix}`, token); return (body.items ?? []).map(mapProjectMember) }
 export async function grantMachine(token: string, payload: unknown): Promise<MachineGrant> { return mapMachineGrant(await request<Record<string, unknown>>('/api/v1/admin/access/machines', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })) }
-export async function grantProject(token: string, payload: unknown): Promise<ProjectMember> { return mapProjectMember(await request<Record<string, unknown>>('/api/v1/admin/access/projects', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })) }
 export async function revokeMachine(token: string, payload: unknown): Promise<void> { await request('/api/v1/admin/access/machines', token, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
-export async function revokeProject(token: string, payload: unknown): Promise<void> { await request('/api/v1/admin/access/projects', token, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
 export async function listExecutionSessions(token: string, principalId = ''): Promise<ExecutionSession[]> { const suffix = principalId.trim() ? `&principalId=${encodeURIComponent(principalId.trim())}` : ''; const body = await request<{ items?: Array<Record<string, unknown>> }>(`/api/v1/admin/execution-sessions?offset=0&limit=200${suffix}`, token); return (body.items ?? []).map(mapSession) }
 export async function closeExecutionSession(token: string, principalId: string, sessionId: string): Promise<void> { await request('/api/v1/admin/execution-sessions/close', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ principal_id: principalId, session_id: sessionId }) }) }
 export async function getQuota(token: string, principalId: string): Promise<Quota> { const body = await request<Record<string, unknown>>(`/api/v1/admin/quotas/${encodeURIComponent(principalId)}`, token); return { principalId: String(body.principal_id ?? principalId), activeTasks: Number(body.active_tasks ?? 0), maxActiveTasks: Number(body.max_active_tasks ?? 0), queuedTasks: Number(body.queued_tasks ?? 0), maxQueuedTasks: Number(body.max_queued_tasks ?? 0), activeSessions: Number(body.active_sessions ?? 0), maxSessions: Number(body.max_sessions ?? 0), transferBytes: Number(body.transfer_bytes ?? body.reserved_transfer_bytes ?? 0), maxTransferBytes: Number(body.max_transfer_bytes ?? 0), reservedTransferBytes: Number(body.reserved_transfer_bytes ?? body.transfer_bytes ?? 0), transferredTransferBytes: Number(body.transferred_transfer_bytes ?? 0) } }

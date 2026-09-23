@@ -1,4 +1,6 @@
-# M:M 用户、对话与 MCP 模型
+# 历史记录：M:M 用户、对话与 MCP 模型
+
+> 本文件保留早期多主体/项目模型推演，不能作为当前实现契约。当前只保留 Principal → Connection → ExecutionSession → Task，并通过机器授权隔离主体；Agent 始终拥有宿主机全权限。请以 [`FULL_HOST_MODEL.md`](FULL_HOST_MODEL.md) 为准。
 
 版本：0.1
 

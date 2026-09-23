@@ -89,11 +89,11 @@ REMOTE_CONNECT_MCP_AGENT_MODE="${mode}"
   const releaseTag = selectedRelease?.tag || `java-${version}`
 
   const psCommand = issued && version.trim() && name.trim()
-    ? `$p=Join-Path $env:TEMP 'rcm-first-install.ps1'; Invoke-WebRequest -UseBasicParsing -Uri ${psLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-java-agent.ps1`)} -OutFile $p; & $p -CenterUrl ${psLiteral(centerUrl.trim())} -AgentName ${psLiteral(name.trim())} -Version ${psLiteral(version.trim())} -ReleaseTag ${psLiteral(releaseTag)} -EnrollmentToken ${psLiteral(issued.token)} -Mode ${psLiteral(mode)}`
+    ? `$p=Join-Path $env:TEMP 'rcm-first-install.ps1'; try { Invoke-WebRequest -UseBasicParsing -Uri ${psLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-agent.ps1`)} -OutFile $p -ErrorAction Stop } catch { Invoke-WebRequest -UseBasicParsing -Uri ${psLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-java-agent.ps1`)} -OutFile $p -ErrorAction Stop }; & $p -CenterUrl ${psLiteral(centerUrl.trim())} -AgentName ${psLiteral(name.trim())} -Version ${psLiteral(version.trim())} -ReleaseTag ${psLiteral(releaseTag)} -EnrollmentToken ${psLiteral(issued.token)} -Mode ${psLiteral(mode)}`
     : ''
 
   const shCommand = issued && version.trim() && name.trim()
-    ? `$p=/tmp/rcm-first-install-java-agent.sh; curl -fsSL ${shLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-java-agent.sh`)} -o "$p"; chmod 700 "$p"; sudo "$p" --center-url ${shLiteral(centerUrl.trim())} --agent-name ${shLiteral(name.trim())} --version ${shLiteral(version.trim())} --release-tag ${shLiteral(releaseTag)} --enrollment-token ${shLiteral(issued.token)} --mode ${shLiteral(mode)}`
+    ? `$p=/tmp/rcm-first-install-agent.sh; (curl -fsSL ${shLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-agent.sh`)} -o "$p" || curl -fsSL ${shLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-java-agent.sh`)} -o "$p") && chmod 700 "$p" && sudo "$p" --center-url ${shLiteral(centerUrl.trim())} --agent-name ${shLiteral(name.trim())} --version ${shLiteral(version.trim())} --release-tag ${shLiteral(releaseTag)} --enrollment-token ${shLiteral(issued.token)} --mode ${shLiteral(mode)}`
     : ''
 
   return (
@@ -101,7 +101,7 @@ REMOTE_CONNECT_MCP_AGENT_MODE="${mode}"
       {/* Header */}
       <div style={{ marginBottom: '24px' }}>
         <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 800, color: '#fff', letterSpacing: '-0.02em' }}>
-          Agent 注册令牌与首次安装 (First Install)
+          添加机器
         </h2>
         <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
           为新终端签发与名称绑定的一次性接入凭证，生成全自动首次安装脚本，支持轻量与完整模式。
@@ -327,7 +327,7 @@ REMOTE_CONNECT_MCP_AGENT_MODE="${mode}"
               </div>
 
               <div style={{ marginTop: '16px', padding: '12px', borderRadius: 'var(--radius-sm)', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-subtle)', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                💡 <strong>提示：</strong>安装脚本会自动使用 <code>{releaseTag}</code> 发行分支的 <code>first-install-java-agent</code> 引导程序，自动拉取对应平台的 native 二进制文件，并在系统级别配置持久化守护进程。
+                💡 <strong>提示：</strong>安装脚本会自动使用 <code>{releaseTag}</code> 发行分支的 <code>first-install-agent</code> 引导程序，自动拉取对应平台的 native 二进制文件，并在系统级别配置持久化守护进程。
               </div>
             </div>
           ) : (

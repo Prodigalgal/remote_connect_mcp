@@ -5,12 +5,12 @@
     "command",
     "desktop",
     "browser",
-    "project",
     "artifact",
     "task_read",
     "task_cancel"
   ],
   "must_not_register": [
+    "project",
     "machines_list",
     "machine_info",
     "command_start",
@@ -21,5 +21,7 @@
     "artifact_read"
   ],
   "max_mcp_json_chars": 196608,
-  "max_inline_image_bytes": 524288
+  "max_inline_image_bytes": 5242880,
+  "execution_model": "full-host",
+  "cwd_semantics": "working-directory-hint-only"
 }

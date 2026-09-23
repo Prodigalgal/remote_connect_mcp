@@ -282,8 +282,7 @@ final class JdbcTaskStore {
                                        COALESCE(t.execution_contract ->> 'host_id', '') <> ''
                                        AND COALESCE(t.execution_contract ->> 'host_id', '') = COALESCE(active.execution_contract ->> 'host_id', '')
                                        AND (
-                                           COALESCE(t.execution_contract ->> 'workspace_policy', '') = 'host'
-                                           OR (COALESCE(t.execution_contract ->> 'lane_mode', '') = 'exclusive'
+                                           (COALESCE(t.execution_contract ->> 'lane_mode', '') = 'exclusive'
                                                AND t.required_capability = 'desktop')
                                            OR t.required_capability = 'browser'
                                        )
@@ -336,21 +335,6 @@ final class JdbcTaskStore {
             response = response == null ? new PollResponse(null, List.of(), null, null) : response;
             recoveredTaskIds = recoveredTaskIds == null ? List.of() : List.copyOf(recoveredTaskIds);
         }
-    }
-
-    boolean hasActiveProjectTasks(String projectId) {
-        return Boolean.TRUE.equals(jdbc.query("""
-                SELECT EXISTS (
-                    SELECT 1 FROM rcm_task
-                     WHERE execution_contract ->> 'project_id' = ?
-                       AND status NOT IN (?, ?, ?)
-                )
-                """, ps -> {
-            ps.setString(1, projectId);
-            ps.setString(2, TaskStatus.COMPLETED);
-            ps.setString(3, TaskStatus.FAILED);
-            ps.setString(4, TaskStatus.CANCELED);
-        }, rs -> rs.next() && rs.getBoolean(1)));
     }
 
     TaskView updateState(String machineId, String taskId, TaskUpdateRequest update, Integer attempt) {

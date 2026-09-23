@@ -19,7 +19,6 @@ import {
   readTaskArtifact,
   readTaskOutput,
   type Machine,
-  type Project,
   type Task,
 } from '../api'
 import { usePagedTail, usePagination } from '../utils'
@@ -27,7 +26,6 @@ import { usePagedTail, usePagination } from '../utils'
 interface TasksViewProps {
   rows: Task[] | null
   machines: Machine[]
-  projects: Project[]
   adminToken: string
   onRefresh: () => void
   query: string
@@ -36,7 +34,6 @@ interface TasksViewProps {
 export function TasksView({
   rows,
   machines,
-  projects,
   adminToken,
   onRefresh,
   query,
@@ -137,7 +134,6 @@ export function TasksView({
       {showComposer && (
         <TaskComposer
           machines={machines}
-          projects={projects}
           token={adminToken}
           onCreated={() => {
             setShowComposer(false)
@@ -189,12 +185,10 @@ export function TasksView({
 
 function TaskComposer({
   machines,
-  projects,
   token,
   onCreated,
 }: {
   machines: Machine[]
-  projects: Project[]
   token: string
   onCreated: () => void
 }) {
@@ -212,15 +206,6 @@ function TaskComposer({
   const [command, setCommand] = useState('')
   const [cwd, setCwd] = useState('')
   const [timeout, setTimeoutValue] = useState('120')
-  const [projectId, setProjectId] = useState('')
-  const [worktreeId, setWorktreeId] = useState('')
-  const [scopeMode, setScopeMode] = useState('auto')
-  const [scopeRoot, setScopeRoot] = useState('')
-  const [workspacePolicy, setWorkspacePolicy] = useState('auto')
-  const [laneMode, setLaneMode] = useState('auto')
-  const [risk, setRisk] = useState('low')
-  const [sessionId, setSessionId] = useState('')
-  const [elevation, setElevation] = useState(false)
   const [idempotencyKey, setIdempotencyKey] = useState(`console-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
 
   // Desktop specific parameters
@@ -237,35 +222,6 @@ function TaskComposer({
 
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState('')
-
-  const selectedMachine = machines.find((m) => m.id === machineId)
-  const projectOptions = projects.filter((project) => project.machineId === machineId)
-  const selectedProject = projectOptions.find((p) => p.id === projectId)
-  const effectiveScope = worktreeId ? 'worktree' : projectId ? 'project' : (scopeMode === 'auto' ? (selectedMachine?.scopeMode || 'workspace') : scopeMode)
-
-  useEffect(() => {
-    // Reset scope options when machine changes
-    setScopeMode('auto')
-    setScopeRoot('')
-    setWorkspacePolicy('auto')
-    setLaneMode('auto')
-    setProjectId('')
-    setWorktreeId('')
-  }, [machineId])
-
-  // Reactive constraint: isolated workspace policy requires worktreeId
-  useEffect(() => {
-    if (workspacePolicy === 'isolated' && !worktreeId) {
-      setWorkspacePolicy('auto')
-    }
-  }, [workspacePolicy, worktreeId])
-
-  // Reactive constraint: host workspace policy requires effectiveScope === 'unrestricted'
-  useEffect(() => {
-    if (workspacePolicy === 'host' && effectiveScope !== 'unrestricted') {
-      setWorkspacePolicy('auto')
-    }
-  }, [workspacePolicy, effectiveScope])
 
   const parseNumber = (val: string) => (val !== '' && !isNaN(Number(val)) ? Number(val) : undefined)
 
@@ -309,23 +265,6 @@ function TaskComposer({
         return
       }
     }
-    if (!projectId && !worktreeId && scopeMode === 'auto' && effectiveScope === 'unrestricted') {
-      setMessage('该 Agent 仅提供 unrestricted 范围；请在“执行范围”中选择“Unrestricted (显式完全控制)”后再提交')
-      return
-    }
-    if (workspacePolicy === 'host' && effectiveScope !== 'unrestricted') {
-      setMessage('host 工作区策略必须同时选择 Unrestricted（显式）范围')
-      return
-    }
-    if (workspacePolicy === 'isolated' && !worktreeId) {
-      setMessage('isolated 工作区策略需要先选择项目 Worktree')
-      return
-    }
-    if (effectiveScope === 'path' && !scopeRoot.trim()) {
-      setMessage('path 范围需要填写绝对 scope root 路径')
-      return
-    }
-
     setSubmitting(true)
     setMessage('')
     try {
@@ -341,15 +280,6 @@ function TaskComposer({
         cwd: cwd.trim() || undefined,
         env: {},
         timeout_seconds: Number(timeout) || (kind === 'browser' ? 300 : 0),
-        project_id: projectId || undefined,
-        worktree_id: worktreeId || undefined,
-        scope_mode: effectiveScope === 'auto' ? undefined : effectiveScope,
-        scope_root: effectiveScope === 'path' ? scopeRoot.trim() || undefined : undefined,
-        workspace_policy: workspacePolicy === 'auto' ? undefined : workspacePolicy,
-        lane_mode: laneMode === 'auto' ? undefined : laneMode,
-        risk,
-        session_id: sessionId.trim() || undefined,
-        elevation_required: elevation || undefined,
         idempotency_key: idempotencyKey.trim() || undefined,
       }
 
@@ -392,7 +322,7 @@ function TaskComposer({
             创建后台异步任务 (Async Dispatch)
           </h3>
           <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-            提交后写入 Center 队列，Agent 将按项目、Worktree 或指定路径执行并回传有界输出与工件
+            提交后写入 Center 队列，Agent 将在目标工作目录下执行并回传有界输出与工件
           </span>
         </div>
       </div>
@@ -429,8 +359,6 @@ function TaskComposer({
               value={machineId}
               onChange={(e) => {
                 setMachineId(e.target.value)
-                setProjectId('')
-                setWorktreeId('')
               }}
               required
             >
@@ -440,99 +368,6 @@ function TaskComposer({
                   {m.name} · {m.os ?? 'unknown'} · 在线
                 </option>
               ))}
-            </select>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">代码项目 (可选)</label>
-            <select
-              className="form-select"
-              value={projectId}
-              onChange={(e) => {
-                setProjectId(e.target.value)
-                setWorktreeId('')
-              }}
-              disabled={!machineId}
-            >
-              <option value="">Agent 默认目录</option>
-              {projectOptions.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Worktree (可选)</label>
-            <select
-              className="form-select"
-              value={worktreeId}
-              onChange={(e) => setWorktreeId(e.target.value)}
-              disabled={!projectId}
-            >
-              <option value="">项目默认目录</option>
-              {selectedProject?.worktrees?.filter((w) => w.status === 'ready').map((w) => (
-                <option key={w.id} value={w.id}>{w.ref} ({w.path})</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">执行范围</label>
-            <select
-              className="form-select"
-              value={scopeMode}
-              onChange={(e) => setScopeMode(e.target.value)}
-              disabled={Boolean(projectId)}
-            >
-              <option value="auto">Agent 默认范围</option>
-              <option value="workspace">Workspace</option>
-              <option value="path">Path</option>
-              <option value="unrestricted">Unrestricted (显式完全控制)</option>
-            </select>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">工作区隔离策略</label>
-            <select
-              className="form-select"
-              value={workspacePolicy}
-              onChange={(e) => setWorkspacePolicy(e.target.value)}
-            >
-              <option value="auto">自动 (Auto)</option>
-              <option value="isolated" disabled={!worktreeId}>
-                隔离 Worktree {!worktreeId ? '(需先选择 Worktree)' : ''}
-              </option>
-              <option value="shared_serial">共享并串行</option>
-              <option value="host" disabled={effectiveScope !== 'unrestricted'}>
-                整机 Host {effectiveScope !== 'unrestricted' ? '(需选择 Unrestricted 范围)' : ''}
-              </option>
-            </select>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">执行车道 (Lane Mode)</label>
-            <select
-              className="form-select"
-              value={laneMode}
-              onChange={(e) => setLaneMode(e.target.value)}
-            >
-              <option value="auto">自动</option>
-              <option value="read">READ · 只读</option>
-              <option value="write">WRITE · 写入</option>
-              <option value="exclusive">EXCLUSIVE · 独占排他</option>
-            </select>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">风险评级</label>
-            <select
-              className="form-select"
-              value={risk}
-              onChange={(e) => setRisk(e.target.value)}
-            >
-              <option value="low">低风险 (常规操作)</option>
-              <option value="high">高风险 (文件修改)</option>
-              <option value="critical">严重风险 (破坏性命令)</option>
             </select>
           </div>
 
@@ -547,57 +382,18 @@ function TaskComposer({
             />
           </div>
 
-          <div className="form-group">
-            <label className="form-label">复用会话 ID (可选)</label>
-            <input
-              type="text"
-              className="form-input font-mono"
-              placeholder="桌面/浏览器复用上下文"
-              value={sessionId}
-              onChange={(e) => setSessionId(e.target.value)}
-            />
-          </div>
         </div>
 
         <div className="form-group">
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: '#fff' }}>
-            <input
-              type="checkbox"
-              checked={elevation}
-              onChange={(e) => setElevation(e.target.checked)}
-              style={{ accentColor: 'var(--accent-primary)' }}
-            />
-            <span>显式请求系统提权执行 (elevation_required)</span>
-          </label>
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">相对工作目录 (CWD · 可选)</label>
+          <label className="form-label">工作目录 (CWD · 可选)</label>
           <input
             type="text"
             className="form-input font-mono"
-            placeholder="项目/Worktree 内的相对子目录；留空使用根目录"
+            placeholder="例如 /opt/app 或 C:\apps；留空使用 Agent 默认目录"
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
           />
         </div>
-
-        {(effectiveScope === 'path' || scopeMode === 'path') && (
-          <div className="form-group">
-            <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>Scope Root 绝对路径</span>
-              <span style={{ color: 'var(--accent-rose)', fontSize: '11px' }}>* 必填</span>
-            </label>
-            <input
-              type="text"
-              className="form-input font-mono"
-              placeholder="例如 /var/data/workspace 或 C:\workspace"
-              value={scopeRoot}
-              onChange={(e) => setScopeRoot(e.target.value)}
-              required
-            />
-          </div>
-        )}
 
         {/* Desktop Controls */}
         {kind === 'desktop' ? (
@@ -900,7 +696,7 @@ function TaskItem({
               </span>
               <span className="tag-badge">{task.kind}</span>
               <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                {task.machineId} · {task.scopeMode || 'workspace'} · {task.workspacePolicy || 'shared_serial'} · {task.laneMode || 'write'}
+                {task.machineId} · {task.laneMode || 'write'}
               </span>
             </div>
 

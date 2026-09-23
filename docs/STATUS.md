@@ -1,4 +1,6 @@
-# RCM 当前状态
+# RCM 历史状态快照
+
+> 本文件是旧版本状态快照，不能作为当前运行时事实。当前底层以 [`FULL_HOST_MODEL.md`](FULL_HOST_MODEL.md) 和根目录 [`README.md`](../README.md) 为准；生产状态必须以 GitHub Actions 与现场验收证据为准。
 
 更新时间：2026-09-20（Asia/Shanghai）
 

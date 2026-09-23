@@ -247,12 +247,6 @@ print(json.dumps({
     "cwd": sys.argv[2],
     "env": {},
     "timeout_seconds": 30,
-    # A native smoke agent is registered with the safe workspace default.
-    # Keep the scope explicit here: Admin task creation intentionally rejects
-    # omitted scope metadata for an unrestricted machine so that a test (or a
-    # real caller) cannot gain full-host authority by omitting the scope.
-    "scope_mode": "workspace",
-    "scope_root": sys.argv[2],
 }, separators=(",", ":")))
 PY
 )

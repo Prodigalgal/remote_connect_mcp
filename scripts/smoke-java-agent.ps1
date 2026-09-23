@@ -213,22 +213,6 @@ try {
         throw "Agent did not become online within the smoke timeout: agent=$runtimeStderr$runtimeStdout center=$centerStderr$centerStdout"
     }
 
-    # Exercise the Native/AOT admin DTO and project registry route as well as
-    # the current flat task payload below. Registration is metadata-only; the
-    # smoke directory does not need to be a Git checkout.
-    $project = Invoke-Json 'POST' '/api/v1/admin/projects' $adminToken @{
-        machine_id = [string]$identity.machine_id
-        name = 'native-smoke-project'
-        root_path = $root
-        repository_path = $root
-        default_ref = 'HEAD'
-    }
-    if ([string]::IsNullOrWhiteSpace([string]$project.id)) { throw 'Center did not return a project id' }
-    $projectList = Invoke-Json 'GET' '/api/v1/admin/projects?offset=0&limit=50' $adminToken
-    if (-not (@($projectList.items) | Where-Object { [string]$_.id -eq [string]$project.id })) {
-        throw 'project registry did not return the registered project'
-    }
-
     $payload = @{
         machine_id = [string]$identity.machine_id
         idempotency_key = 'native-agent-smoke-1'
@@ -236,8 +220,6 @@ try {
         cwd = $root
         env = @{}
         timeout_seconds = 30
-        scope_mode = 'workspace'
-        scope_root = $root
     }
     $created = Invoke-Json 'POST' '/api/v1/admin/tasks' $adminToken $payload
     $taskId = [string]$created.id

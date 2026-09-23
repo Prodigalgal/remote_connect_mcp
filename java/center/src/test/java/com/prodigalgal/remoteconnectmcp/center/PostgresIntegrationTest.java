@@ -10,7 +10,6 @@ import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.AgentMetadata;
 import com.prodigalgal.remoteconnectmcp.protocol.AgentRuntimeDescriptor;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
@@ -101,8 +100,6 @@ class PostgresIntegrationTest {
                 "amd64",
                 "integration",
                 "/tmp",
-                ScopeMode.UNRESTRICTED,
-                null,
                 List.of("command", "durable_tasks", "file_transfer"));
         var registration = registry.register(request, "integration-enrollment");
         agentId = registration.machineId();
@@ -119,7 +116,7 @@ class PostgresIntegrationTest {
                 32L * 1024 * 1024, 96L * 1024 * 1024, 12, 900, 0, 0, false, true);
         var heartbeat = new AgentMetadata(request.name(), request.hostId(),
                 "postgres-it-host", "linux", "amd64", "integration-2", "/tmp",
-                ScopeMode.UNRESTRICTED, null, List.of("command", "browser", "file_transfer"), runtime);
+                List.of("command", "browser", "file_transfer"), runtime);
         registry.poll(agentId, registration.token(), new PollRequest(List.of(), 1,
                 List.of("command", "browser"), heartbeat));
         var persistedRuntime = restartedRegistry.findMachine(agentId, Instant.now()).orElseThrow().runtime();
@@ -127,19 +124,11 @@ class PostgresIntegrationTest {
         assertEquals(2, persistedRuntime.maxConcurrency());
         assertTrue(persistedRuntime.browserAdapterConfigured());
 
-        // Project/worktree rows use the same Agent-local task contract.  The
-        // Center never opens the repository; completion of the generated Git
-        // task is the only transition that makes a worktree selectable as a
-        // task cwd.
         var sessions = new ExecutionSessionService(jdbc, transactions);
-        var projectTasks = new TaskService(registry, jdbc, transactions, sessions);
-        var projectService = new ProjectService(registry, projectTasks, jdbc, transactions);
-        var project = projectService.register(new ProjectRegistrationRequest(agentId, "integration-project", "/tmp/rcm-it-project", null, "main"));
+        var taskService = new TaskService(registry, jdbc, transactions, sessions);
 
         // ACL rows are explicit: a user Token can see/use this machine only
-        // after the Admin grants it, and project execution additionally
-        // requires project membership.  This verifies the 018 schema and the
-        // fail-closed authorization path against real PostgreSQL.
+        // after the Admin grants it. Supports explicit machine grants and wildcard '*' grants.
         aclPrincipalId = "acl_it_" + UUID.randomUUID().toString().replace("-", "");
         jdbc.update("""
                 INSERT INTO rcm_principal(principal_id, kind, display_name, status, created_at, updated_at)
@@ -150,28 +139,19 @@ class PostgresIntegrationTest {
         org.junit.jupiter.api.Assertions.assertThrows(SecurityException.class,
                 () -> access.authorizeMachine(aclOrigin, agentId, "read"));
         access.grantMachine(aclPrincipalId, agentId, java.util.Set.of("read", "execute"), null);
-        access.grantProject(aclPrincipalId, project.id(), java.util.Set.of("write"), null);
-        access.authorizeExecution(aclOrigin, agentId, project.id());
+        access.authorizeExecution(aclOrigin, agentId);
         org.junit.jupiter.api.Assertions.assertEquals(1, access.machineCount(aclPrincipalId));
-        org.junit.jupiter.api.Assertions.assertEquals(1, access.projectCount(aclPrincipalId));
 
-        var worktree = projectService.createWorktree(project.id(), new ProjectWorktreeRequest("feature/integration", "project-worktree-1"));
-        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM rcm_execution_session WHERE principal_id = ? AND session_id = ?",
-                Integer.class, TaskOrigin.CONFIGURED_PRINCIPAL, "internal"));
-        assertNotNull(worktree.taskId());
-        var worktreeTask = projectTasks.poll(agentId, new PollRequest(List.of(), 1, List.of("command"))).task();
-        assertEquals(worktree.taskId(), worktreeTask.id());
-        assertEquals("project", worktreeTask.contract().scopeMode().wireValue());
-        assertEquals(project.id(), worktreeTask.contract().projectId());
-        assertEquals(project.rootPath(), worktreeTask.contract().scopeRoot());
-        projectTasks.updateState(agentId, worktreeTask.id(),
-                new TaskUpdateRequest("running", null, null, Instant.now(), null, false), worktreeTask.attempt());
-        projectTasks.updateState(agentId, worktreeTask.id(),
-                new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false), worktreeTask.attempt());
-        var readyWorktree = projectService.find(project.id()).worktrees().stream()
-                .filter(value -> value.id().equals(worktree.id())).findFirst().orElseThrow();
-        assertEquals("ready", readyWorktree.status());
-        assertEquals(readyWorktree.path(), projectService.resolveCwd(agentId, project.id(), worktree.id(), null));
+        // Test wildcard machine grant
+        var wildcardPrincipal = "acl_wc_" + UUID.randomUUID().toString().replace("-", "");
+        jdbc.update("""
+                INSERT INTO rcm_principal(principal_id, kind, display_name, status, created_at, updated_at)
+                VALUES (?, 'user', ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, wildcardPrincipal, "Wildcard integration user");
+        access.grantMachine(wildcardPrincipal, "*", java.util.Set.of("read", "execute"), null);
+        var wildcardOrigin = new TaskOrigin(wildcardPrincipal, "wc-token", "wc-conv");
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> access.authorizeMachine(wildcardOrigin, agentId, "read"));
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> access.authorizeExecution(wildcardOrigin, agentId));
 
         var store = new JdbcTaskStore(jdbc, transactions);
         var taskId = "task_it_" + UUID.randomUUID().toString().replace("-", "");
@@ -186,7 +166,7 @@ class PostgresIntegrationTest {
 
         var poll = store.poll(agentId, new PollRequest(List.of(), 1, List.of("command"),
                 new AgentMetadata(request.name(), request.hostId(), request.hostname(), request.os(), request.arch(),
-                        request.version(), request.defaultCwd(), request.scopeMode(), request.workspaceRoot(), request.capabilities())));
+                        request.version(), request.defaultCwd(), request.capabilities())));
         assertNotNull(poll.task());
         assertEquals(taskId, poll.task().id());
         assertEquals(1, store.find(taskId).orElseThrow().attempt(), "first lease claim must be attempt 1");
@@ -227,16 +207,16 @@ class PostgresIntegrationTest {
                 return "postgres-transfer-test-secret";
             }
         };
-        var transfers = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
+        var transfers = new ArtifactTransferService(jdbc, transactions, transferStore, taskService, transferTokens);
         // Use the built-in shared principal so transfer-only rows do not make
         // the ACL fixture's principal undeletable during @AfterAll cleanup.
         var transferOrigin = TaskOrigin.configured();
         var transferRequest = new CreateTaskRequest(agentId,
                 new TaskCommand("", TaskKind.COMMAND, "command", "printf transfer", "/tmp", Map.of(), 0, null, Instant.now()),
-                "transfer-v2-key", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, transferOrigin);
+                "transfer-v2-key", null, "", "low", false, transferOrigin);
         var transfer = transfers.createAgentToWeb(transferOrigin, transferRequest, "/tmp/transfer-report.txt",
                 "transfer-report.txt", "text/plain");
-        var transferLease = projectTasks.poll(agentId, new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        var transferLease = taskService.poll(agentId, new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
         assertNotNull(transferLease);
         var transferData = "postgres transfer".getBytes(StandardCharsets.UTF_8);
         var transferHash = sha256(transferData);
@@ -252,24 +232,24 @@ class PostgresIntegrationTest {
                 new ByteArrayInputStream(transferData), transferData.length, transferHash,
                 "transfer-report.txt", "text/plain", transferLease.attempt());
         assertEquals(delivered.status(), transferReplay.status());
-        var restartedTransfers = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
+        var restartedTransfers = new ArtifactTransferService(jdbc, transactions, transferStore, taskService, transferTokens);
         assertEquals("delivered", restartedTransfers.findByTransfer(transfer.transfer().transferId(), transferOrigin).orElseThrow().status());
 
         var resumable = transfers.createAgentToWeb(transferOrigin,
                 new CreateTaskRequest(agentId,
                         new TaskCommand("", TaskKind.COMMAND, "command", "printf resumable", "/tmp", Map.of(), 0, null, Instant.now()),
-                        "transfer-v2-resume-key", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, transferOrigin),
+                        "transfer-v2-resume-key", null, "", "low", false, transferOrigin),
                 "/tmp/transfer-resumable.txt", "transfer-resumable.txt", "text/plain");
         var resumableData = "postgres resumable transfer".getBytes(StandardCharsets.UTF_8);
         var resumableHash = sha256(resumableData);
-        var resumableLease = projectTasks.poll(agentId, new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        var resumableLease = taskService.poll(agentId, new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
         assertNotNull(resumableLease);
         var split = 9;
         var partial = transfers.receiveFromAgentChunk(agentId, resumable.transfer().transferId(),
                 new ByteArrayInputStream(java.util.Arrays.copyOfRange(resumableData, 0, split)), split, 0,
                 resumableData.length, resumableHash, "transfer-resumable.txt", "text/plain", resumableLease.attempt());
         assertEquals("delivering", partial.status());
-        var restartedResumable = new ArtifactTransferService(jdbc, transactions, transferStore, projectTasks, transferTokens);
+        var restartedResumable = new ArtifactTransferService(jdbc, transactions, transferStore, taskService, transferTokens);
         assertEquals(split, restartedResumable.resumeFromAgent(agentId, resumable.transfer().transferId(), resumableLease.attempt()).offset());
         var resumed = restartedResumable.receiveFromAgentChunk(agentId, resumable.transfer().transferId(),
                 new ByteArrayInputStream(java.util.Arrays.copyOfRange(resumableData, split, resumableData.length)),
@@ -307,14 +287,12 @@ class PostgresIntegrationTest {
         // queued rows at the same time.  The row lock/SKIP LOCKED contract is
         // what permits multiple Center replicas without double dispatch.
         var claimIds = IntStream.range(0, 2).mapToObj(index -> {
-            // Explicit path roots produce two independent execution lanes;
-            // using the implicit host lane here would correctly serialize the
-            // claims and make the SKIP LOCKED assertion nondeterministic.
+            // The test uses independent session lanes so the SKIP LOCKED
+            // assertion remains deterministic without a path policy.
             var claimCommand = new TaskCommand("", TaskKind.COMMAND, "command", "printf claim-" + index, "/tmp/claim-" + index,
                     Map.of(), 30, null, Instant.now());
-            return projectTasks.create(new CreateTaskRequest(agentId, claimCommand, "claim-key-" + index,
-                    "", "", ScopeMode.PATH, "/tmp/claim-" + index,
-                    "claim-session-" + index, "low", false)).id();
+            return taskService.create(new CreateTaskRequest(agentId, claimCommand, "claim-key-" + index,
+                    null, "claim-session-" + index, "low", false, TaskOrigin.configured())).id();
         }).toList();
         var claimStart = new CountDownLatch(1);
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {

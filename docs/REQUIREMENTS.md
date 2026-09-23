@@ -1,4 +1,6 @@
-# Remote Connect MCP 需求基线
+# 历史记录：Remote Connect MCP 需求基线
+
+> 本文件保留早期需求基线。项目/工作区/路径限制已经取消，当前底层只保留全机 Agent、机器授权、异步任务和紧凑 MCP 工具面；当前有效要求以 [`FULL_HOST_MODEL.md`](FULL_HOST_MODEL.md) 和根目录 [`README.md`](../README.md) 为准。
 
 版本：1.1
 

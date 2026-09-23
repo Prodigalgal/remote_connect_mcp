@@ -16,27 +16,20 @@ class ProtocolValidationTest {
                 2L * 1024 * 1024, 8L * 1024 * 1024, 8, 60, 0, 0,
                 false, true);
         var request = new RegisterRequest("agent", "host", "node", "linux", "amd64", "v1",
-                "/srv", ScopeMode.WORKSPACE, "/srv", List.of("command", "browser"), runtime);
+                "/srv", List.of("command", "browser"), runtime);
         assertEquals(runtime, request.metadata().runtime());
     }
 
     @Test
-    void validatesExplicitWorktreeExecutionContract() {
-        var contract = new ExecutionContract("machine-1", "host-1", ScopeMode.WORKTREE,
-                "project-1", "worktree-1", "/srv/project/.rcm-worktrees/wt-1", "session-1",
+    void validatesExplicitWorkspaceExecutionContract() {
+        var contract = new ExecutionContract("machine-1", "host-1", LaneMode.WRITE,
+                "session-1",
                 "command", new ExecutionContract.Budget(300, 64L * 1024 * 1024, 8L * 1024 * 1024, 32),
                 Instant.now().plusSeconds(300), "retry-1", "low", false, null);
         var task = new TaskCommand("task-contract", TaskKind.COMMAND, "command", "echo ok",
                 "/srv/project/.rcm-worktrees/wt-1", Map.of(), 30, null, Instant.now(), contract);
 
         assertDoesNotThrow(() -> ProtocolValidation.validateTask(task));
-    }
-
-    @Test
-    void rejectsUnrestrictedContractWithAPathRoot() {
-        assertThrows(IllegalArgumentException.class, () -> new ExecutionContract("machine-1", "host-1",
-                ScopeMode.UNRESTRICTED, null, null, "/srv/project", "session-1", "command",
-                ExecutionContract.Budget.defaults(), Instant.now().plusSeconds(60), "", "low", false, null));
     }
 
     @Test
@@ -49,19 +42,6 @@ class ProtocolValidationTest {
     void rejectsInvalidEnvironmentKey() {
         var task = new TaskCommand("task-1", TaskKind.COMMAND, "command", "echo ok", null, Map.of("BAD-KEY", "x"), 0, null, Instant.now());
         assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateTask(task));
-    }
-
-    @Test
-    void rejectsWorkspaceMetadataWithoutRoot() {
-        var metadata = new AgentMetadata("agent", "host", "host", "linux", "amd64", "dev", "/tmp", ScopeMode.WORKSPACE, null, java.util.List.of("command"));
-        assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateMetadata(metadata));
-    }
-
-    @Test
-    void rejectsWorkspaceMetadataWithDefaultOutsideRoot() {
-        var metadata = new AgentMetadata("agent", "host", "host", "linux", "amd64", "dev",
-                "/srv/other", ScopeMode.WORKSPACE, "/srv/project", java.util.List.of("command"));
-        assertThrows(IllegalArgumentException.class, () -> ProtocolValidation.validateMetadata(metadata));
     }
 
     @Test

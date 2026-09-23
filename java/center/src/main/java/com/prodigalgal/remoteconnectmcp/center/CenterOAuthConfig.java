@@ -18,7 +18,7 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public final class CenterOAuthConfig {
-    private static final Set<String> DEFAULT_SCOPES = Set.of("mcp:read", "mcp:execute", "mcp:project");
+    private static final Set<String> DEFAULT_SCOPES = Set.of("mcp:read", "mcp:execute");
 
     private final boolean enabled;
     private final boolean allowStaticTokenBootstrap;

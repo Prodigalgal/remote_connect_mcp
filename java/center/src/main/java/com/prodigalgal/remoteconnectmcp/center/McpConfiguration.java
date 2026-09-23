@@ -22,13 +22,10 @@ import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
-import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
-import com.prodigalgal.remoteconnectmcp.protocol.WorkspacePolicyMode;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeArtifact;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
@@ -57,12 +54,9 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
 /** Streamable HTTP MCP endpoint with a deliberately bounded tool surface. */
 @Configuration
 @RegisterReflectionForBinding({McpConfiguration.MachinesCoreArgs.class, McpConfiguration.MachineInfoCoreArgs.class,
-        McpConfiguration.ProjectCoreArgs.class,
         McpConfiguration.CommandCoreArgs.class, McpConfiguration.DesktopCoreArgs.class,
         McpConfiguration.BrowserCoreArgs.class, McpConfiguration.TaskWaitCoreArgs.class,
         McpConfiguration.TaskOutputCoreArgs.class, McpConfiguration.TaskCancelCoreArgs.class,
-        // The MCP SDK models are records.  The JVM mapper can discover record
-        // components reflectively, while Native Image needs the component
         // accessors declared up front (otherwise initialize returns HTTP 500).
         McpSchema.JSONRPCRequest.class, McpSchema.JSONRPCResponse.class,
         McpSchema.JSONRPCResponse.JSONRPCError.class, McpSchema.JSONRPCNotification.class,
@@ -83,7 +77,6 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         ArtifactRequest.class, ArtifactResponse.class, AgentMetadata.class, AgentRuntimeDescriptor.class,
         com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract.class,
         com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract.Budget.class,
-        LaneMode.class, WorkspacePolicyMode.class,
         AgentConfigUpdate.class,
         OutputRequest.class, OutputResponse.class, PollRequest.class, PollResponse.class,
         RegisterRequest.class, RegisterResponse.class, TaskCommand.class,
@@ -99,15 +92,13 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         MachineView.class, TaskView.class, UpgradeCampaignView.class,
         UpgradeTargetView.class, AgentConfigUpdateRequest.class,
         CreateTaskRequest.class, AdminCreateTaskRequest.class, CreateUpgradeCampaignRequest.class,
-        ProjectRegistrationRequest.class, ProjectWorktreeRequest.class,
-        ProjectGitOperationRequest.class, ProjectView.class, WorktreeView.class,
         AuditEventView.class,
         AdminController.IssueEnrollmentRequest.class, AdminController.IssueMcpTokenRequest.class,
-        AdminController.MachineGrantRequest.class, AdminController.ProjectMemberRequest.class,
+        AdminController.MachineGrantRequest.class,
         AdminController.SessionCloseRequest.class,
         McpPrincipalService.IssueRequest.class, McpPrincipalService.IssuedToken.class,
         McpTokenView.class, McpAccessService.MachineGrantView.class,
-        McpAccessService.ProjectMemberView.class, ExecutionSessionService.SessionView.class,
+        ExecutionSessionService.SessionView.class,
         McpQuotaService.QuotaView.class,
         ArtifactTransferService.TransferCreated.class, ArtifactTransferService.TransferDescriptor.class,
         ArtifactTransferService.AgentDownload.class, ArtifactTransferService.PublicArtifact.class,
@@ -123,10 +114,7 @@ public class McpConfiguration {
     // pages.  The model normally only needs an identifier and a few routing
     // hints; detailed runtime data is an explicit machines(detail) follow-up.
     private static final int MAX_MACHINE_PAGE = 25;
-    private static final int MAX_PROJECT_PAGE = 25;
-    private static final int MAX_WORKTREE_PAGE = 10;
     private static final int MAX_OUTPUT_PAGE = 64 * 1024;
-    private static final int MAX_INLINE_WORKTREE_SUMMARIES = 10;
     private static final int MAX_MCP_JSON_CHARS = 192 * 1024;
     // Keep ordinary screenshots/camera images useful in the ChatGPT
     // conversation without allowing a single result to consume the whole MCP
@@ -182,16 +170,15 @@ public class McpConfiguration {
         return registration;
     }
 
-    @Bean(destroyMethod = "close")
+    @Bean
     public ExecutorService mcpVirtualThreadExecutor() {
-        return Executors.newVirtualThreadPerTaskExecutor();
+        return Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("mcp-vt-", 1).factory());
     }
 
     @Bean
     public McpAsyncServer mcpServer(HttpServletStreamableServerTransportProvider transport,
                                     AgentRegistry agents,
                                     TaskService tasks,
-                                    ProjectService projects,
                                     McpAccessService access,
                                     ArtifactTransferService transfers,
                                     McpConversationService conversations,
@@ -200,12 +187,12 @@ public class McpConfiguration {
                                     @Value("${rcm.version:dev}") String version) {
         var server = McpServer.async(transport)
                 .serverInfo("remote-connect-mcp-center", version)
-                .instructions("Use machines first to choose a machine by stable id, then command, desktop, browser, project or artifact as needed. Tools are asynchronous: once a task_id is returned, do not resubmit the operation; use task_read with the same task_id and change_seq, and reuse the same idempotency_key only when a transport retry is necessary. Keep MCP results compact; detailed logs, screenshots and documents are artifact references fetched on demand. For artifact get, use delivery_mode=inline only when the user explicitly asks to see the content immediately; use delivery_mode=async for long or unattended transfers; auto is the default. Inline is bounded and returns native MCP Content when ready, while async returns a file handle that the Viewer can render after delivery. Use an explicit scope object for project/worktree/path/workspace; unrestricted access must be explicit. The Center enforces principal, session, scope, lane and quota contracts regardless of model hints.")
+                .instructions("Use machines first to choose a machine by stable id, then command, desktop, browser, or artifact as needed. Tools are asynchronous: once a task_id is returned, do not resubmit the operation; use task_read with the same task_id and change_seq, and reuse the same idempotency_key only when a transport retry is necessary. Keep MCP results compact; detailed logs, screenshots and documents are artifact references fetched on demand. For artifact get, use delivery_mode=inline only when the user explicitly asks to see the content immediately; use delivery_mode=async for long or unattended transfers; auto is the default. Inline is bounded and returns native MCP Content when ready, while async returns a file handle that the Viewer can render after delivery. An optional cwd is only a working-directory hint; every registered Agent intentionally has full-host authority. The Center enforces principal, session, lane and quota contracts regardless of model hints.")
                 .strictToolNameValidation(true)
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
                 .resources(artifactViewerResource(transfers))
-                .tools(modelToolSpecs(agents, tasks, projects, access, transfers, conversations,
+                .tools(modelToolSpecs(agents, tasks, access, transfers, conversations,
                         mcpVirtualThreadExecutor, oauth))
                 .build();
         return server;
@@ -247,11 +234,6 @@ public class McpConfiguration {
                                 .mimeType("text/html;profile=mcp-app").meta(contentMeta).build())).build()));
     }
 
-    /**
-     * Keep the Viewer as a separately editable frontend resource. Every
-     * release must package the classpath artifact; a missing resource is a
-     * startup/configuration error.
-     */
     private static String artifactViewerHtml() {
         try (var stream = McpConfiguration.class.getResourceAsStream("/mcp/artifact-viewer-v1.html")) {
             if (stream == null) throw new IllegalStateException("artifact viewer resource is missing from the Center image");
@@ -261,12 +243,15 @@ public class McpConfiguration {
         }
     }
 
-    private static List<String> viewerDomains(String baseUrl) {
-        if (baseUrl == null || baseUrl.isBlank()) return List.of();
+    private static List<String> viewerDomains(String rawPublicUrl) {
+        if (rawPublicUrl == null || rawPublicUrl.isBlank()) return List.of();
         try {
-            var uri = URI.create(baseUrl);
-            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null) return List.of();
-            return List.of(uri.getScheme().toLowerCase(java.util.Locale.ROOT) + "://" + uri.getAuthority());
+            var uri = URI.create(rawPublicUrl.trim());
+            var host = uri.getHost();
+            if (host == null || host.isBlank()) return List.of();
+            var port = uri.getPort();
+            var origin = uri.getScheme() + "://" + host + (port > 0 ? ":" + port : "");
+            return List.of(origin);
         } catch (IllegalArgumentException ignored) {
             return List.of();
         }
@@ -278,7 +263,6 @@ public class McpConfiguration {
      * semantic envelopes instead of implementation-level scheduling fields.
      */
     private static List<McpServerFeatures.AsyncToolSpecification> modelToolSpecs(AgentRegistry agents, TaskService tasks,
-                                                                                    ProjectService projects,
                                                                                     McpAccessService access,
                                                                                     ArtifactTransferService transfers,
                                                                                     McpConversationService conversations,
@@ -302,21 +286,18 @@ public class McpConfiguration {
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesModel(agents, access, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("command", "Queue one shell command on a selected machine and return a durable task handle immediately.",
                         commandModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler, oauth),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandModel(agents, tasks, access, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("desktop", "Control an explicitly desktop-capable user session with semantic screenshot, window, input and launch operations.",
                         desktopModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktopModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler, oauth),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktopModel(agents, tasks, access, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("browser", "Run one structured browser navigation, observation or interaction request on a browser-capable machine.",
                         browserModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browserModel(agents, tasks, projects, access, origin(exchange, conversations), request); }, scheduler, oauth),
-                tool("project", "Inspect or mutate a registered project/worktree through one explicit operation. Paths are opt-in and responses are paged.",
-                        projectModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:project"); return projectModel(projects, access, origin(exchange, conversations), request); }, scheduler, oauth),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browserModel(agents, tasks, access, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("artifact", "Transfer a ChatGPT file to a machine, retrieve a machine file, or read a compact artifact handle.",
                         artifactModelSchema(), artifactMeta,
                         (exchange, request) -> { requireScope(exchange,
                                 "read".equalsIgnoreCase(asString(modelArguments(request).get("operation"))) ? "mcp:read" : "mcp:execute");
-                            return artifactModel(agents, tasks, projects, access, transfers, origin(exchange, conversations), request); }, scheduler, oauth),
+                            return artifactModel(agents, tasks, access, transfers, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("task_read", "Read one durable task state and one bounded output page; optionally wait briefly for a change.",
                         taskReadModelSchema(),
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, origin(exchange, conversations), request); }, scheduler, oauth),
@@ -341,8 +322,8 @@ public class McpConfiguration {
                 .readOnlyHint(name.equals("machines") || name.equals("task_read"))
                 .idempotentHint(name.equals("machines") || name.equals("task_read") || name.equals("task_cancel"))
                 .destructiveHint(name.equals("command") || name.equals("desktop") || name.equals("browser")
-                        || name.equals("task_cancel") || name.equals("project") || name.equals("artifact"))
-                .openWorldHint(name.equals("command") || name.equals("browser") || name.equals("project")
+                        || name.equals("task_cancel") || name.equals("artifact"))
+                .openWorldHint(name.equals("command") || name.equals("browser")
                         || name.equals("artifact"))
                 .build();
         var toolMeta = new LinkedHashMap<String, Object>();
@@ -362,7 +343,7 @@ public class McpConfiguration {
                 .inputSchema(schema)
                 .annotations(annotations)
                 .meta(toolMeta);
-        if (Set.of("machines", "command", "desktop", "browser", "project", "artifact", "task_read", "task_cancel").contains(name)) {
+        if (Set.of("machines", "command", "desktop", "browser", "artifact", "task_read", "task_cancel").contains(name)) {
             toolBuilder.outputSchema(modelOutputSchema());
         }
         var tool = toolBuilder.build();
@@ -435,7 +416,7 @@ public class McpConfiguration {
     private static Map<String, Object> modelNextActionSchema() {
         return modelNullableObject("bounded next operation; omit when no follow-up is needed", Map.ofEntries(
                 Map.entry("tool", modelEnum("one of the public MCP tools", List.of(
-                        "machines", "command", "desktop", "browser", "project", "artifact", "task_read", "task_cancel"))),
+                        "machines", "command", "desktop", "browser", "artifact", "task_read", "task_cancel"))),
                 Map.entry("operation", modelString("tool operation", 0, 64)),
                 Map.entry("task_id", modelString("existing task identifier", 1, 180)),
                 Map.entry("artifact_id", modelString("artifact identifier", 1, 180)),
@@ -458,16 +439,6 @@ public class McpConfiguration {
 
     private static Map<String, Object> modelBoolean(String description) {
         return Map.of("type", "boolean", "description", description);
-    }
-
-    private static Map<String, Object> modelScopeSchema() {
-        return modelSchema(Map.ofEntries(
-                Map.entry("mode", modelEnum("bounded execution scope; unrestricted must be explicit",
-                        List.of("auto", "project", "worktree", "path", "workspace", "unrestricted"))),
-                Map.entry("project_id", modelString("registered project identifier", 1, 180)),
-                Map.entry("worktree_id", modelString("registered worktree identifier", 1, 180)),
-                Map.entry("root", modelString("path scope root; only required for path mode", 1, 4096)),
-                Map.entry("cwd", modelString("working directory inside the selected scope", 1, 4096))), List.of());
     }
 
     private static Map<String, Object> modelBrowserRequestSchema() {
@@ -507,7 +478,7 @@ public class McpConfiguration {
         return modelSchema(Map.ofEntries(
                 Map.entry("machine_id", modelString("target machine identifier", 1, 180)),
                 Map.entry("command", modelString("shell command", 1, 65536)),
-                Map.entry("scope", modelScopeSchema()),
+                Map.entry("cwd", modelString("working directory on target machine", 1, 4096)),
                 Map.entry("env", Map.of("type", "object", "description", "optional non-secret environment map", "additionalProperties", modelString("environment value", 0, 8192))),
                 Map.entry("timeout_seconds", modelInteger("0 means Agent default", 0, 86400)),
                 Map.entry("idempotency_key", Map.of("type", "string", "description", "optional stable retry key", "minLength", 8, "maxLength", 128, "pattern", "^[A-Za-z0-9._:-]+$"))),
@@ -519,7 +490,7 @@ public class McpConfiguration {
         properties.put("operation", modelEnum("semantic desktop operation", List.of("screenshot", "screenshot_region", "screens", "windows", "launch", "click", "double_click", "right_click", "move", "drag", "shortcut", "type", "clipboard_read", "clipboard_write", "focus", "result")));
         properties.put("machine_id", modelString("desktop-capable machine identifier", 1, 180));
         properties.put("task_id", modelString("existing desktop task for result", 1, 180));
-        properties.put("scope", modelScopeSchema());
+        properties.put("cwd", modelString("working directory on target machine", 1, 4096));
         properties.put("executable", modelString("literal application for launch", 1, 4096));
         properties.put("args", Map.of("type", "array", "description", "literal launch arguments", "items", modelString("argument", 0, 4096), "maxItems", 128));
         properties.put("text", modelString("text for type or clipboard", 0, 65536));
@@ -542,31 +513,11 @@ public class McpConfiguration {
         return modelSchema(Map.ofEntries(
                 Map.entry("machine_id", modelString("browser-capable machine identifier", 1, 180)),
                 Map.entry("request", modelBrowserRequestSchema()),
-                Map.entry("scope", modelScopeSchema()),
+                Map.entry("cwd", modelString("working directory on target machine", 1, 4096)),
                 Map.entry("timeout_seconds", modelInteger("task timeout", 1, 86400)),
                 Map.entry("wait_ms", modelInteger("bounded synchronous wait", 0, 15000)),
                 Map.entry("idempotency_key", Map.of("type", "string", "description", "optional stable retry key", "minLength", 8, "maxLength", 128, "pattern", "^[A-Za-z0-9._:-]+$"))),
                 List.of("machine_id", "request"));
-    }
-
-    private static Map<String, Object> projectModelSchema() {
-        return modelSchema(Map.ofEntries(
-                Map.entry("operation", modelEnum("project operation", List.of("list", "detail", "register", "remove", "worktree_create", "worktree_remove", "git_status", "git_diff", "git_log", "git_commit", "git_merge", "git_merge_abort"))),
-                Map.entry("machine_id", modelString("target machine identifier", 1, 180)),
-                Map.entry("project_id", modelString("registered project identifier", 1, 180)),
-                Map.entry("worktree_id", modelString("registered worktree identifier", 1, 180)),
-                Map.entry("name", modelString("project display name", 1, 256)),
-                Map.entry("root_path", modelString("absolute project root; registration only", 1, 4096)),
-                Map.entry("repository_path", modelString("optional repository path", 1, 4096)),
-                Map.entry("default_ref", modelString("default Git ref", 1, 512)),
-                Map.entry("ref", modelString("Git ref", 1, 512)),
-                Map.entry("message", modelString("single-line commit message", 1, 4096)),
-                Map.entry("mode", modelEnum("git diff mode", List.of("stat", "patch"))),
-                Map.entry("offset", modelInteger("page offset", 0, 1000000)),
-                Map.entry("limit", modelInteger("page size", 1, MAX_PROJECT_PAGE)),
-                Map.entry("include_paths", modelBoolean("explicitly include local paths")),
-                Map.entry("idempotency_key", Map.of("type", "string", "description", "optional stable retry key", "minLength", 8, "maxLength", 128, "pattern", "^[A-Za-z0-9._:-]+$"))),
-                List.of("operation"));
     }
 
     private static Map<String, Object> artifactModelSchema() {
@@ -578,14 +529,14 @@ public class McpConfiguration {
                 Map.entry("file", modelFileObjectSchema()),
                 Map.entry("artifact_id", modelString("artifact identifier", 1, 180)),
                 Map.entry("transfer_id", modelString("transfer identifier", 1, 180)),
-                Map.entry("destination_path", modelString("complete target path or relative path inside scope", 1, 4096)),
-                Map.entry("source_path", modelString("complete source path inside scope", 1, 4096)),
+                 Map.entry("destination_path", modelString("complete target path or relative path on the target machine", 1, 4096)),
+                 Map.entry("source_path", modelString("complete source path on the target machine", 1, 4096)),
                 Map.entry("file_name", modelString("display file name", 1, 512)),
                 Map.entry("mime_type", modelString("MIME type", 1, 256)),
                 Map.entry("expected_bytes", modelInteger("expected byte size", 0L, 4L * 1024 * 1024 * 1024)),
                 Map.entry("expected_sha256", Map.of("type", "string", "description", "expected SHA-256", "pattern", "^[A-Fa-f0-9]{64}$")),
                 Map.entry("overwrite", modelBoolean("replace an existing target")),
-                Map.entry("scope", modelScopeSchema()),
+                Map.entry("cwd", modelString("working directory on target machine", 1, 4096)),
                 Map.entry("idempotency_key", Map.of("type", "string", "description", "optional stable retry key", "minLength", 8, "maxLength", 128, "pattern", "^[A-Za-z0-9._:-]+$"))),
                 List.of("operation"));
     }
@@ -631,7 +582,7 @@ public class McpConfiguration {
         taskProperties.put("next_action", modelNextActionSchema());
         var task = modelSchema(taskProperties, List.of("id", "machine_id", "kind", "status"));
         // Task projections intentionally grow as capabilities are added (for
-        // example execution_scope, result_channel and contract timestamps).
+        // example result_channel and contract timestamps).
         // Keep the core fields discoverable without making a new harmless
         // projection field invalidate the whole MCP result.
         task.put("additionalProperties", true);
@@ -645,18 +596,18 @@ public class McpConfiguration {
                 Map.entry("message", modelString("safe error message", 1, 2048)),
                 Map.entry("retryable", modelBoolean("whether retry is safe"))), List.of("code", "message", "retryable"));
         // Different compact tools use different top-level projections
-        // (machines, projects, task, artifact and transfer).  The declared
+        // (machines, task, artifact and transfer).  The declared
         // fields above document the common envelope; unknown projection
         // fields remain valid so clients do not reject a correct response
         // merely because a capability added a bounded metadata field.
         var result = modelSchema(Map.ofEntries(
-                Map.entry("kind", modelEnum("result kind", List.of("task", "machines", "machine", "project", "artifact", "output", "error"))),
+                Map.entry("kind", modelEnum("result kind", List.of("task", "machines", "machine", "artifact", "output", "error"))),
                 Map.entry("task", task),
                 Map.entry("output", output),
                 Map.entry("machines", Map.of("type", "array", "items", modelSchema(Map.ofEntries(
                         Map.entry("id", modelString("machine identifier", 1, 180)), Map.entry("name", modelString("machine name", 0, 256)),
                         Map.entry("os", modelString("operating system", 0, 64)), Map.entry("arch", modelString("architecture", 0, 64)),
-                        Map.entry("version", modelString("agent version", 0, 128)), Map.entry("scope_mode", modelString("scope mode", 0, 64)),
+                        Map.entry("version", modelString("agent version", 0, 128)),
                         Map.entry("capabilities", Map.of("type", "array", "items", modelString("capability", 1, 64))),
                         Map.entry("capabilities_truncated", modelBoolean("capability list truncated")), Map.entry("online", modelBoolean("online state"))),
                         List.of("id", "online")), "maxItems", MAX_MACHINE_PAGE)),
@@ -665,7 +616,6 @@ public class McpConfiguration {
                 Map.entry("offset", modelInteger("zero-based page offset", 0, Integer.MAX_VALUE)),
                 Map.entry("limit", modelInteger("page size", 1, MAX_OUTPUT_PAGE)),
                 Map.entry("total", modelInteger("total visible records", 0, Integer.MAX_VALUE)),
-                Map.entry("total_worktrees", modelInteger("total worktrees", 0, Integer.MAX_VALUE)),
                 Map.entry("has_more", modelBoolean("more records are available")),
                 Map.entry("next_action", modelNextActionSchema()),
                 Map.entry("error", error)), List.of());
@@ -692,7 +642,7 @@ public class McpConfiguration {
     }
 
     private static McpSchema.CallToolResult commandModel(AgentRegistry agents, TaskService tasks,
-                                                         ProjectService projects, McpAccessService access,
+                                                         McpAccessService access,
                                                          TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var arguments = modelArguments(request);
@@ -702,15 +652,15 @@ public class McpConfiguration {
             copyIfPresent(arguments, normalized, "env");
             copyIfPresent(arguments, normalized, "timeout_seconds");
             normalized.put("idempotency_key", ensureModelIdempotency(arguments, origin, "command"));
-            addScopeFields(arguments, normalized);
-            return commandCore(agents, tasks, projects, access, origin, modelRequest("command", normalized));
+            copyIfPresent(arguments, normalized, "cwd");
+            return commandCore(agents, tasks, access, origin, modelRequest("command", normalized));
         } catch (Exception exception) {
             return error(exception);
         }
     }
 
     private static McpSchema.CallToolResult desktopModel(AgentRegistry agents, TaskService tasks,
-                                                         ProjectService projects, McpAccessService access,
+                                                         McpAccessService access,
                                                          TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var arguments = modelArguments(request);
@@ -730,15 +680,15 @@ public class McpConfiguration {
                 copyIfPresent(arguments, normalized, "key");
             }
             normalized.put("idempotency_key", ensureModelIdempotency(arguments, origin, "desktop"));
-            addScopeFields(arguments, normalized);
-            return desktopCore(agents, tasks, projects, access, origin, modelRequest("desktop", normalized));
+            copyIfPresent(arguments, normalized, "cwd");
+            return desktopCore(agents, tasks, access, origin, modelRequest("desktop", normalized));
         } catch (Exception exception) {
             return error(exception);
         }
     }
 
     private static McpSchema.CallToolResult browserModel(AgentRegistry agents, TaskService tasks,
-                                                         ProjectService projects, McpAccessService access,
+                                                         McpAccessService access,
                                                          TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var arguments = modelArguments(request);
@@ -754,29 +704,14 @@ public class McpConfiguration {
             copyIfPresent(arguments, normalized, "timeout_seconds");
             copyIfPresent(arguments, normalized, "wait_ms");
             normalized.put("idempotency_key", ensureModelIdempotency(arguments, origin, "browser"));
-            addScopeFields(arguments, normalized);
-            return browserCore(agents, tasks, projects, access, origin, modelRequest("browser", normalized));
+            copyIfPresent(arguments, normalized, "cwd");
+            return browserCore(agents, tasks, access, origin, modelRequest("browser", normalized));
         } catch (Exception exception) {
             return error(exception);
         }
     }
 
-    private static McpSchema.CallToolResult projectModel(ProjectService projects, McpAccessService access,
-                                                         TaskOrigin origin, McpSchema.CallToolRequest request) {
-        try {
-            var arguments = modelArguments(request);
-            var normalized = new LinkedHashMap<>(arguments);
-            var operation = requiredModelString(arguments, "operation");
-            if (Set.of("worktree_create", "worktree_remove", "git_commit", "git_merge", "git_merge_abort").contains(operation)) {
-                normalized.put("idempotency_key", ensureModelIdempotency(arguments, origin, "project"));
-            }
-            return projectCore(projects, access, origin, modelRequest("project", normalized));
-        } catch (Exception exception) {
-            return error(exception);
-        }
-    }
-
-    private static McpSchema.CallToolResult artifactModel(AgentRegistry agents, TaskService tasks, ProjectService projects,
+    private static McpSchema.CallToolResult artifactModel(AgentRegistry agents, TaskService tasks,
                                                           McpAccessService access, ArtifactTransferService transfers,
                                                           TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
@@ -799,14 +734,14 @@ public class McpConfiguration {
                 for (var key : List.of("file_name", "mime_type", "expected_bytes", "expected_sha256", "overwrite")) {
                     copyIfPresent(arguments, normalized, key);
                 }
-                addScopeFields(arguments, normalized);
-                return artifactPutCore(agents, projects, access, transfers, origin, modelRequest("artifact", normalized));
+                copyIfPresent(arguments, normalized, "cwd");
+                return artifactPutCore(agents, access, transfers, origin, modelRequest("artifact", normalized));
             }
             if (!"get".equals(operation)) throw new IllegalArgumentException("operation must be put, get, or read");
             normalized.put("source_path", requiredModelString(arguments, "source_path"));
             for (var key : List.of("file_name", "mime_type", "delivery_mode", "wait_ms")) copyIfPresent(arguments, normalized, key);
-            addScopeFields(arguments, normalized);
-            return artifactGetCore(agents, tasks, projects, access, transfers, origin, modelRequest("artifact", normalized));
+            copyIfPresent(arguments, normalized, "cwd");
+            return artifactGetCore(agents, tasks, access, transfers, origin, modelRequest("artifact", normalized));
         } catch (Exception exception) {
             return error(exception);
         }
@@ -895,17 +830,6 @@ public class McpConfiguration {
         }).toList();
     }
 
-    private static void addScopeFields(Map<String, Object> source, Map<String, Object> target) {
-        var scope = source.get("scope") instanceof Map<?, ?> ? requiredModelMap(source, "scope") : Map.<String, Object>of();
-        copyIfPresent(scope, target, "project_id");
-        copyIfPresent(scope, target, "worktree_id");
-        copyIfPresent(scope, target, "root");
-        copyIfPresent(scope, target, "cwd");
-        var mode = asString(scope.get("mode"));
-        if (mode != null && !mode.isBlank() && !"auto".equalsIgnoreCase(mode)) target.put("scope_mode", mode);
-        else target.remove("scope_mode");
-    }
-
     private static String ensureModelIdempotency(Map<String, Object> values, TaskOrigin origin, String tool) {
         var explicit = asString(values.get("idempotency_key"));
         if (explicit != null && !explicit.isBlank()) return explicit.trim();
@@ -927,19 +851,17 @@ public class McpConfiguration {
         return new McpSchema.CallToolRequest(name, arguments, Map.of());
     }
 
-    private static McpSchema.CallToolResult artifactPutCore(AgentRegistry agents, ProjectService projects,
+    private static McpSchema.CallToolResult artifactPutCore(AgentRegistry agents,
                                                         McpAccessService access, ArtifactTransferService transfers,
                                                         TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, ArtifactPutCoreArgs.class);
             if (args.file() == null) throw new IllegalArgumentException("file is required");
-            access.authorizeExecution(origin, args.machineId(), args.projectId());
-            var scope = resolveScope(agents, projects, args.machineId(), args.projectId(), args.worktreeId(),
-                    args.scopeMode(), args.scopeRoot(), args.cwd());
-            var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, scope.cwd(), Map.of(), 0, null, Instant.now(), null, 0, null);
-            var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(), args.projectId(), args.worktreeId(),
-                    scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(), args.sessionId(), args.risk(),
-                    Boolean.TRUE.equals(args.elevationRequired()), origin);
+            access.authorizeExecution(origin, args.machineId());
+            var cwd = resolveCwd(agents, args.machineId(), args.cwd());
+            var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, cwd, Map.of(), 0, null, Instant.now(), null, 0, null);
+            var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
+                    null, "", "low", false, origin);
             var file = args.file();
             var name = firstNonBlank(args.fileName(), file.fileName());
             var mime = firstNonBlank(args.mimeType(), file.mimeType());
@@ -957,18 +879,16 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult artifactGetCore(AgentRegistry agents, TaskService tasks, ProjectService projects,
+    private static McpSchema.CallToolResult artifactGetCore(AgentRegistry agents, TaskService tasks,
                                                          McpAccessService access, ArtifactTransferService transfers,
                                                         TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, ArtifactGetCoreArgs.class);
-            access.authorizeExecution(origin, args.machineId(), args.projectId());
-            var scope = resolveScope(agents, projects, args.machineId(), args.projectId(), args.worktreeId(),
-                    args.scopeMode(), args.scopeRoot(), args.cwd());
-            var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, scope.cwd(), Map.of(), 0, null, Instant.now(), null, 0, null);
-            var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(), args.projectId(), args.worktreeId(),
-                    scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(), args.sessionId(), args.risk(),
-                    Boolean.TRUE.equals(args.elevationRequired()), origin);
+            access.authorizeExecution(origin, args.machineId());
+            var cwd = resolveCwd(agents, args.machineId(), args.cwd());
+            var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, cwd, Map.of(), 0, null, Instant.now(), null, 0, null);
+            var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
+                    null, "", "low", false, origin);
             var result = transfers.createAgentToWeb(origin, create, args.sourcePath(), args.fileName(), args.mimeType());
             var deliveryMode = normalizeDeliveryMode(args.deliveryMode());
             var waitMs = artifactWaitMs(deliveryMode, args.waitMs());
@@ -1198,131 +1118,19 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult projectCore(ProjectService projects, McpAccessService access, TaskOrigin origin,
-                                                    McpSchema.CallToolRequest request) {
-        try {
-            var args = args(request, ProjectCoreArgs.class);
-            var operation = args.operation() == null ? "" : args.operation().trim().toLowerCase(java.util.Locale.ROOT);
-            return switch (operation) {
-                case "list" -> {
-                    var offset = args.offset() == null ? 0 : args.offset();
-                    var limit = args.limit() == null ? 25 : args.limit();
-                    if (offset < 0 || limit < 1 || limit > MAX_PROJECT_PAGE) {
-                        throw new IllegalArgumentException("project list offset must be non-negative and limit must be between 1 and " + MAX_PROJECT_PAGE);
-                    }
-                    var values = projects.listAll(args.machineId()).stream()
-                            .filter(value -> access.canReadMachine(origin, value.machineId()))
-                            .filter(value -> access.canReadProject(origin, value.id()))
-                            .toList();
-                    var total = values.size();
-                    values = offset >= total ? List.of() : values.subList(offset, Math.min(total, offset + limit));
-                    var summaries = values.stream().map(McpConfiguration::projectSummary).toList();
-                    var payload = new LinkedHashMap<String, Object>();
-                    payload.put("projects", summaries);
-                    payload.put("offset", offset);
-                    payload.put("limit", limit);
-                    payload.put("total", total);
-                    var hasMore = offset + values.size() < total;
-                    payload.put("has_more", hasMore);
-                    payload.put("next_action", nextAction("project", "list", null, null, null,
-                            null, hasMore ? "read_next_page" : "no_more_pages", hasMore ? offset + values.size() : null, limit));
-                    yield json(payload);
-                }
-                case "detail" -> {
-                    var project = projects.find(args.projectId());
-                    access.authorizeMachine(origin, project.machineId(), "read");
-                    access.authorizeProject(origin, project.id(), "read");
-                    var offset = args.offset() == null ? 0 : args.offset();
-                    var limit = args.limit() == null ? MAX_WORKTREE_PAGE : args.limit();
-                    if (offset < 0 || limit < 1 || limit > MAX_WORKTREE_PAGE) {
-                        throw new IllegalArgumentException("project detail offset must be non-negative and limit must be between 1 and " + MAX_WORKTREE_PAGE);
-                    }
-                    yield json(projectDetail(project, offset, limit, Boolean.TRUE.equals(args.includePaths())));
-                }
-                case "register" -> {
-                    access.authorizeMachine(origin, args.machineId(), "admin");
-                    var created = projects.register(new ProjectRegistrationRequest(
-                            args.machineId(), args.name(), args.rootPath(), args.repositoryPath(), args.defaultRef()));
-                    if (!origin.isConfigured()) {
-                        // The principal that explicitly registered a project
-                        // becomes its first admin member.  Shared system
-                        // identity does not
-                        // create durable ACL rows.
-                        access.grantProject(origin.principalId(), created.id(), Set.of("admin"), null);
-                    }
-                    var payload = new LinkedHashMap<String, Object>();
-                    payload.put("project", projectSummary(created));
-                    payload.put("next_action", nextAction("project", "detail", null, null, null,
-                            null, "read_project_detail"));
-                    yield json(payload);
-                }
-                case "remove" -> {
-                    var project = projects.find(args.projectId());
-                    access.authorizeMachine(origin, project.machineId(), "admin");
-                    access.authorizeProject(origin, project.id(), "admin");
-                    yield json(Map.of("project", projectSummary(projects.remove(args.projectId()))));
-                }
-                case "worktree_create" -> {
-                    var project = projects.find(args.projectId());
-                    access.authorizeMachine(origin, project.machineId(), "execute");
-                    access.authorizeProject(origin, project.id(), "write");
-                    var value = projects.createWorktree(args.projectId(), new ProjectWorktreeRequest(args.ref(), args.idempotencyKey()), origin);
-                    var payload = new LinkedHashMap<String, Object>();
-                    payload.put("worktree", worktreeSummary(value));
-                    payload.put("next_action", nextAction("task_read", "wait", value.taskId(), 0L, null,
-                            20000, "wait_for_worktree"));
-                    yield json(payload);
-                }
-                case "worktree_remove" -> {
-                    var project = projects.find(args.projectId());
-                    access.authorizeMachine(origin, project.machineId(), "execute");
-                    access.authorizeProject(origin, project.id(), "write");
-                    var value = projects.removeWorktree(args.projectId(), args.worktreeId(), args.idempotencyKey(), origin);
-                    var payload = new LinkedHashMap<String, Object>();
-                    payload.put("worktree", worktreeSummary(value));
-                    payload.put("next_action", nextAction("task_read", "wait", value.taskId(), 0L, null,
-                            20000, "wait_for_worktree"));
-                    yield json(payload);
-                }
-                case "git_status", "git_diff", "git_log", "git_commit", "git_merge", "git_merge_abort" -> {
-                    var project = projects.find(args.projectId());
-                    access.authorizeMachine(origin, project.machineId(), "execute");
-                    var gitAction = switch (operation) {
-                        case "git_status", "git_diff", "git_log" -> "read";
-                        default -> "write";
-                    };
-                    access.authorizeProject(origin, project.id(), gitAction);
-                    var gitOperation = operation.substring("git_".length());
-                    var value = projects.gitOperation(args.projectId(), gitOperation,
-                            new ProjectGitOperationRequest(args.worktreeId(), args.ref(), args.message(), args.mode(), args.idempotencyKey()), origin);
-                    var payload = new LinkedHashMap<String, Object>();
-                    payload.put("task", taskMap(value));
-                    payload.put("next_action", nextAction("task_read", "wait", value.id(), 0L,
-                            value.changeSequence(), 20000, "wait_for_git_operation"));
-                    yield json(payload);
-                }
-                default -> throw new IllegalArgumentException("operation must be list, detail, register, remove, worktree_create, worktree_remove, or git_* operation");
-            };
-        } catch (Exception exception) {
-            return error(exception);
-        }
-    }
-
     private static McpSchema.CallToolResult commandCore(AgentRegistry agents, TaskService tasks,
-                                                         ProjectService projects, McpAccessService access,
+                                                         McpAccessService access,
                                                          TaskOrigin origin,
                                                          McpSchema.CallToolRequest request) {
         try {
             var args = args(request, CommandCoreArgs.class);
-            access.authorizeExecution(origin, args.machineId(), args.projectId());
+            access.authorizeExecution(origin, args.machineId());
             var timeout = args.timeoutSeconds() == null ? 0 : args.timeoutSeconds();
-            var scope = resolveScope(agents, projects, args.machineId(), args.projectId(), args.worktreeId(),
-                    args.scopeMode(), args.scopeRoot(), args.cwd());
+            var cwd = resolveCwd(agents, args.machineId(), args.cwd());
             var command = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand("", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND,
-                    null, args.command(), scope.cwd(), args.env(), timeout, null, Instant.now(), null, 0, null);
+                    null, args.command(), cwd, args.env(), timeout, null, Instant.now(), null, 0, null);
             var task = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
-                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(),
-                    args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
+                    null, "", "low", false, origin), "mcp", origin);
             var payload = new LinkedHashMap<String, Object>();
             payload.put("task", taskMap(task));
             payload.put("next_action", nextAction("task_read", "wait", task.id(), 0L,
@@ -1334,22 +1142,20 @@ public class McpConfiguration {
     }
 
     private static McpSchema.CallToolResult browserCore(AgentRegistry agents, TaskService tasks,
-                                                    ProjectService projects, McpAccessService access,
+                                                    McpAccessService access,
                                                     TaskOrigin origin,
                                                     McpSchema.CallToolRequest request) {
         try {
             var args = args(request, BrowserCoreArgs.class);
-            access.authorizeExecution(origin, args.machineId(), args.projectId());
+            access.authorizeExecution(origin, args.machineId());
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             if (!machine.capabilities().contains("browser")) throw new IllegalArgumentException("machine does not advertise browser capability");
             var timeout = args.timeoutSeconds() == null ? 300 : args.timeoutSeconds();
-            var scope = resolveScope(agents, projects, args.machineId(), args.projectId(), args.worktreeId(),
-                    args.scopeMode(), args.scopeRoot(), args.cwd());
+            var cwd = resolveCwd(agents, args.machineId(), args.cwd());
             var command = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand("", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.BROWSER,
-                    "browser", args.command(), scope.cwd(), Map.of(), timeout, null, Instant.now(), null, 0, null);
+                    "browser", args.command(), cwd, Map.of(), timeout, null, Instant.now(), null, 0, null);
             var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
-                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(),
-                    args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
+                    null, "", "low", false, origin), "mcp", origin);
             var waitMs = args.waitMs() == null ? 0 : args.waitMs();
             if (waitMs < 0 || waitMs > 15000) throw new IllegalArgumentException("wait_ms must be between 0 and 15000");
             if (waitMs > 0) return taskResult(tasks, origin,
@@ -1368,7 +1174,7 @@ public class McpConfiguration {
     }
 
     private static McpSchema.CallToolResult desktopCore(AgentRegistry agents, TaskService tasks,
-                                                    ProjectService projects, McpAccessService access,
+                                                    McpAccessService access,
                                                     TaskOrigin origin,
                                                     McpSchema.CallToolRequest request) {
         try {
@@ -1395,20 +1201,18 @@ public class McpConfiguration {
                     && !"clipboard_write".equals(operation) && !"focus".equals(operation)) {
                 throw new IllegalArgumentException("operation must be screenshot, screenshot_region, screens, windows, launch, click, double_click, right_click, move, drag, key, type, clipboard_read, clipboard_write, focus, or result");
             }
-            access.authorizeExecution(origin, args.machineId(), args.projectId());
+            access.authorizeExecution(origin, args.machineId());
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             if (!machine.capabilities().contains("desktop")) throw new IllegalArgumentException("machine does not advertise desktop capability");
             var timeout = args.timeoutSeconds() == null ? 30 : args.timeoutSeconds();
-            var scope = resolveScope(agents, projects, args.machineId(), args.projectId(), args.worktreeId(),
-                    args.scopeMode(), args.scopeRoot(), args.cwd());
+            var cwd = resolveCwd(agents, args.machineId(), args.cwd());
             var action = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand.DesktopAction(operation,
-                    args.executable(), args.args(), scope.cwd(), args.text(), args.x(), args.y(), args.key(),
+                    args.executable(), args.args(), cwd, args.text(), args.x(), args.y(), args.key(),
                     args.x2(), args.y2(), args.durationMs(), args.screen(), args.windowTitle());
             var command = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand("", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.DESKTOP,
-                    "desktop", null, scope.cwd(), Map.of(), timeout, action, Instant.now(), null, 0, null);
+                    "desktop", null, cwd, Map.of(), timeout, action, Instant.now(), null, 0, null);
             var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
-                    args.projectId(), args.worktreeId(), scope.mode(), scope.root(), args.workspacePolicy(), args.laneMode(),
-                    args.sessionId(), args.risk(), Boolean.TRUE.equals(args.elevationRequired()), origin), "mcp", origin);
+                    null, "", "low", false, origin), "mcp", origin);
             if (waitMs > 0) {
                 var completed = tasks.waitForTerminal(origin, created.id(), Duration.ofMillis(waitMs));
                 return desktopResult(tasks, origin, completed);
@@ -1567,7 +1371,7 @@ public class McpConfiguration {
         // Browser and desktop tasks can finish with a screenshot or another
         // bounded artifact.  Keep task_read useful for those capabilities as
         // well as command tasks: return metadata for every artifact, and
-        // inline only small image bytes (the Center MCP threshold is 512 KiB;
+        // inline only small image bytes (the Center MCP threshold is 5 MiB;
         // the authenticated artifact endpoint has its separate bounded
         // storage contract). Non-image downloads remain
         // available through the authenticated console artifact endpoint
@@ -1615,7 +1419,6 @@ public class McpConfiguration {
     private static List<String> oauthScopesForTool(String name) {
         return switch (name) {
             case "machines", "task_read" -> List.of("mcp:read");
-            case "project" -> List.of("mcp:project");
             case "artifact" -> List.of("mcp:read", "mcp:execute");
             default -> List.of("mcp:execute");
         };
@@ -1650,93 +1453,11 @@ public class McpConfiguration {
         value.put("os", machine.os());
         value.put("arch", machine.arch());
         value.put("version", textOrEmpty(machine.version()));
-        value.put("scope_mode", textOrEmpty(machine.scopeMode()));
         var capabilities = machine.capabilities() == null ? List.<String>of() : machine.capabilities();
         var visibleCapabilities = capabilities.stream().limit(16).toList();
         value.put("capabilities", visibleCapabilities);
         value.put("capabilities_truncated", capabilities.size() > visibleCapabilities.size());
         value.put("online", machine.online());
-        return value;
-    }
-
-    /**
-     * Project discovery deliberately excludes root/repository/worktree paths.
-     * Paths can be long and are often private; an explicit project operation
-     * or the Console is the detail channel.  Worktree summaries are capped so
-     * a project with many historical worktrees cannot flood MCP context.
-     */
-    private static Map<String, Object> projectSummary(ProjectView project) {
-        var value = new LinkedHashMap<String, Object>();
-        value.put("id", project.id());
-        value.put("machine_id", project.machineId());
-        value.put("name", project.name());
-        value.put("default_ref", textOrEmpty(project.defaultRef()));
-        var worktrees = project.worktrees() == null ? List.<WorktreeView>of() : project.worktrees();
-        var summaries = worktrees.stream()
-                .limit(MAX_INLINE_WORKTREE_SUMMARIES)
-                .map(McpConfiguration::worktreeSummary)
-                .toList();
-        value.put("worktree_count", worktrees.size());
-        value.put("worktrees", summaries);
-        value.put("worktrees_truncated", worktrees.size() > summaries.size());
-        return value;
-    }
-
-    /**
-     * Explicit project details are still paged.  A caller must opt in to
-     * local paths because they are rarely needed for routing and can be noisy
-     * or private.  Worktree metadata is returned in a small page rather than
-     * copying the complete project history into one MCP response.
-     */
-    private static Map<String, Object> projectDetail(ProjectView project, int offset, int limit,
-                                                     boolean includePaths) {
-        var value = new LinkedHashMap<String, Object>();
-        value.put("id", project.id());
-        value.put("machine_id", project.machineId());
-        value.put("name", project.name());
-        value.put("default_ref", textOrEmpty(project.defaultRef()));
-        value.put("created_at", project.createdAt());
-        value.put("updated_at", project.updatedAt());
-        value.put("paths_included", includePaths);
-        if (includePaths) {
-            value.put("root_path", textOrEmpty(project.rootPath()));
-            value.put("repository_path", textOrEmpty(project.repositoryPath()));
-        }
-        var worktrees = project.worktrees() == null ? List.<WorktreeView>of() : project.worktrees();
-        var page = offset >= worktrees.size() ? List.<WorktreeView>of()
-                : worktrees.subList(offset, Math.min(worktrees.size(), offset + limit));
-        value.put("worktrees", page.stream().map(worktree -> worktreeDetail(worktree, includePaths)).toList());
-        value.put("offset", offset);
-        value.put("limit", limit);
-        value.put("total_worktrees", worktrees.size());
-        value.put("has_more", offset + page.size() < worktrees.size());
-        var hasMore = offset + page.size() < worktrees.size();
-        value.put("next_action", nextAction("project", "detail", null, null, null, null,
-                hasMore ? "read_next_worktree_page" : "no_more_worktrees",
-                hasMore ? offset + page.size() : null, limit));
-        return value;
-    }
-
-    private static Map<String, Object> worktreeDetail(WorktreeView worktree, boolean includePath) {
-        var value = new LinkedHashMap<String, Object>();
-        value.put("id", worktree.id());
-        value.put("project_id", worktree.projectId());
-        value.put("ref", textOrEmpty(worktree.ref()));
-        value.put("operation", textOrEmpty(worktree.operation()));
-        value.put("status", textOrEmpty(worktree.status()));
-        value.put("task_id", textOrEmpty(worktree.taskId()));
-        value.put("created_at", worktree.createdAt());
-        value.put("updated_at", worktree.updatedAt());
-        if (includePath) value.put("path", textOrEmpty(worktree.path()));
-        return value;
-    }
-
-    private static Map<String, Object> worktreeSummary(WorktreeView worktree) {
-        var value = new LinkedHashMap<String, Object>();
-        value.put("id", worktree.id());
-        value.put("ref", textOrEmpty(worktree.ref()));
-        value.put("status", textOrEmpty(worktree.status()));
-        value.put("task_id", textOrEmpty(worktree.taskId()));
         return value;
     }
 
@@ -1754,8 +1475,6 @@ public class McpConfiguration {
         value.put("arch", machine.arch());
         value.put("version", machine.version());
         value.put("default_cwd", machine.defaultCwd());
-        value.put("scope_mode", machine.scopeMode());
-        value.put("workspace_root", machine.workspaceRoot());
         value.put("capabilities", machine.capabilities());
         // Runtime self-description is a fixed-size, non-secret projection.
         // Keep it on the machine record rather than exposing raw process or
@@ -1776,7 +1495,6 @@ public class McpConfiguration {
                 Map.entry("desktop_enabled", runtime.desktopEnabled()),
                 Map.entry("browser_adapter_configured", runtime.browserAdapterConfigured()),
                 Map.entry("resource_enforcement", runtime.resourceEnforcement()),
-                Map.entry("scope_mode", runtime.scopeMode().wireValue()),
                 Map.entry("desktop_session_available", runtime.desktopSessionAvailable()),
                 Map.entry("browser_session_available", runtime.browserSessionAvailable())));
         value.put("created_at", machine.createdAt());
@@ -1829,18 +1547,6 @@ public class McpConfiguration {
         // the original Bearer token or broadcasting output to a whole session.
         value.put("execution_session_id", task.executionSessionId());
         value.put("result_channel", task.resultChannel());
-        if (task.scopeMode() != null) {
-            var scope = new LinkedHashMap<String, Object>();
-            scope.put("mode", task.scopeMode());
-            scope.put("project_id", task.projectId());
-            scope.put("worktree_id", task.worktreeId());
-            scope.put("root", compact(task.scopeRoot(), 1024));
-            scope.put("workspace_policy", task.workspacePolicy() == null ? "shared_serial" : task.workspacePolicy().wireValue());
-            scope.put("lane_mode", task.laneMode() == null ? "write" : task.laneMode().wireValue());
-            scope.put("risk", task.risk());
-            scope.put("expires_at", task.contractExpiresAt());
-            value.put("execution_scope", scope);
-        }
         return value;
     }
 
@@ -1861,67 +1567,36 @@ public class McpConfiguration {
                                                    Long cursor, Long changeSequence, Integer waitMs,
                                                    String reason, Integer offset, Integer limit) {
         var value = new LinkedHashMap<String, Object>();
-        putNonBlank(value, "tool", tool);
-        putNonBlank(value, "operation", operation);
-        putNonBlank(value, "task_id", taskId);
-        if (cursor != null) value.put("cursor", cursor);
+        copyCompact(value, "tool", tool);
+        copyCompact(value, "operation", operation);
+        copyCompact(value, "task_id", taskId);
+        if (cursor != null && cursor >= 0) value.put("cursor", cursor);
         if (changeSequence != null && changeSequence >= 0) value.put("change_seq", changeSequence);
-        if (waitMs != null) value.put("wait_ms", waitMs);
-        if (offset != null) value.put("offset", offset);
-        if (limit != null) value.put("limit", limit);
-        putNonBlank(value, "reason", reason);
+        if (waitMs != null && waitMs > 0) value.put("wait_ms", waitMs);
+        copyCompact(value, "reason", reason);
+        if (offset != null && offset >= 0) value.put("offset", offset);
+        if (limit != null && limit > 0) value.put("limit", limit);
         return value;
     }
 
-    private static void putNonBlank(Map<String, Object> target, String key, String value) {
+    private static void copyCompact(Map<String, Object> target, String key, String value) {
         if (value == null || value.isBlank()) return;
         var max = switch (key) {
-            case "task_id", "artifact_id", "transfer_id" -> 180;
+            case "reason" -> 128;
             case "operation" -> 64;
             default -> 128;
         };
         target.put(key, compact(value, max));
     }
 
-    private static ResolvedScope resolveScope(AgentRegistry agents, ProjectService projects, String machineId,
-                                              String projectId, String worktreeId, String rawMode,
-                                              String requestedRoot, String requestedCwd) {
+    private static String resolveCwd(AgentRegistry agents, String machineId, String requestedCwd) {
         var machine = agents.findMachine(machineId, Instant.now())
                 .orElseThrow(() -> new IllegalArgumentException("machine not found"));
-        var normalizedProject = projectId == null ? "" : projectId.trim();
-        var normalizedWorktree = worktreeId == null ? "" : worktreeId.trim();
-        var mode = rawMode == null || rawMode.isBlank() ? null : ScopeMode.fromWireValue(rawMode);
-        if (mode == null) {
-            mode = !normalizedWorktree.isBlank() ? ScopeMode.WORKTREE
-                    : !normalizedProject.isBlank() ? ScopeMode.PROJECT
-                    : ScopeMode.fromWireValue(machine.scopeMode());
-            if (mode == ScopeMode.UNRESTRICTED) {
-                throw new IllegalArgumentException("scope_mode=unrestricted must be explicit");
-            }
-        }
-        if (mode == ScopeMode.PROJECT || mode == ScopeMode.WORKTREE) {
-            if (projects == null) throw new IllegalStateException("project service is unavailable");
-            if (normalizedProject.isBlank()) throw new IllegalArgumentException("project_id is required for project/worktree scope");
-            if (mode == ScopeMode.PROJECT && !normalizedWorktree.isBlank()) {
-                throw new IllegalArgumentException("worktree_id requires worktree scope");
-            }
-            if (mode == ScopeMode.WORKTREE && normalizedWorktree.isBlank()) {
-                throw new IllegalArgumentException("worktree_id is required for worktree scope");
-            }
-            var cwd = projects.resolveCwd(machineId, normalizedProject,
-                    normalizedWorktree, requestedCwd);
-            var root = projects.resolveScopeRoot(machineId, normalizedProject, normalizedWorktree);
-            return new ResolvedScope(cwd, root, mode);
-        }
-        if (!normalizedProject.isBlank() || !normalizedWorktree.isBlank()) {
-            throw new IllegalArgumentException("project_id/worktree_id require project or worktree scope");
-        }
-        if (mode == ScopeMode.PATH && (requestedRoot == null || requestedRoot.isBlank())) {
-            throw new IllegalArgumentException("scope_root is required for path scope");
-        }
-        var root = requestedRoot == null || requestedRoot.isBlank() ? machine.workspaceRoot() : requestedRoot.trim();
-        if (mode == ScopeMode.UNRESTRICTED) root = null;
-        return new ResolvedScope(requestedCwd == null || requestedCwd.isBlank() ? null : requestedCwd.trim(), root, mode);
+        var defaultCwd = machine.defaultCwd() == null ? "" : machine.defaultCwd().trim();
+        var cwd = requestedCwd == null || requestedCwd.isBlank()
+                ? (defaultCwd.isBlank() ? null : defaultCwd)
+                : requestedCwd.trim();
+        return cwd;
     }
 
     private static TaskOrigin origin(McpAsyncServerExchange exchange, McpConversationService conversations) {
@@ -2019,87 +1694,46 @@ public class McpConfiguration {
     record MachineInfoCoreArgs(@JsonProperty("machine_id") String machineId) {
     }
 
-    record ProjectCoreArgs(String operation,
-                       @JsonProperty("machine_id") String machineId,
-                       @JsonProperty("project_id") String projectId,
-                       @JsonProperty("worktree_id") String worktreeId,
-                       String name,
-                       @JsonProperty("root_path") String rootPath,
-                       @JsonProperty("repository_path") String repositoryPath,
-                       @JsonProperty("default_ref") String defaultRef,
-                       String ref,
-                       String message,
-                       String mode,
-                       Integer offset,
-                       Integer limit,
-                       @JsonProperty("include_paths") Boolean includePaths,
-                       @JsonProperty("idempotency_key") String idempotencyKey) {
-    }
-
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     record CommandCoreArgs(@JsonProperty("machine_id") String machineId,
-                               String command,
-                               String cwd,
-                               Map<String, String> env,
-                               @JsonProperty("timeout_seconds") Integer timeoutSeconds,
-                               @JsonProperty("idempotency_key") String idempotencyKey,
-                               @JsonProperty("project_id") String projectId,
-                               @JsonProperty("worktree_id") String worktreeId,
-                               @JsonProperty("scope_mode") String scopeMode,
-                               @JsonProperty("scope_root") String scopeRoot,
-                               @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
-                               @JsonProperty("lane_mode") LaneMode laneMode,
-                               @JsonProperty("session_id") String sessionId,
-                               String risk,
-                               @JsonProperty("elevation_required") Boolean elevationRequired) {
+                           String command,
+                           String cwd,
+                           Map<String, String> env,
+                           @JsonProperty("timeout_seconds") Integer timeoutSeconds,
+                           @JsonProperty("idempotency_key") String idempotencyKey) {
     }
 
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     record DesktopCoreArgs(String operation,
-                               @JsonProperty("machine_id") String machineId,
-                               @JsonProperty("task_id") String taskId,
-                               String executable,
-                               List<String> args,
-                               String cwd,
-                               String text,
-                               Integer x,
-                               Integer y,
-                               String key,
-                               Integer x2,
-                               Integer y2,
-                               @JsonProperty("duration_ms") Integer durationMs,
-                               Integer screen,
-                               @JsonProperty("window_title") String windowTitle,
-                               @JsonProperty("timeout_seconds") Integer timeoutSeconds,
-                               @JsonProperty("wait_ms") Integer waitMs,
-                               @JsonProperty("idempotency_key") String idempotencyKey,
-                               @JsonProperty("project_id") String projectId,
-                               @JsonProperty("worktree_id") String worktreeId,
-                               @JsonProperty("scope_mode") String scopeMode,
-                               @JsonProperty("scope_root") String scopeRoot,
-                               @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
-                               @JsonProperty("lane_mode") LaneMode laneMode,
-                               @JsonProperty("session_id") String sessionId,
-                               String risk,
-                               @JsonProperty("elevation_required") Boolean elevationRequired) {
+                           @JsonProperty("machine_id") String machineId,
+                           @JsonProperty("task_id") String taskId,
+                           String executable,
+                           List<String> args,
+                           String cwd,
+                           String text,
+                           Integer x,
+                           Integer y,
+                           String key,
+                           Integer x2,
+                           Integer y2,
+                           @JsonProperty("duration_ms") Integer durationMs,
+                           Integer screen,
+                           @JsonProperty("window_title") String windowTitle,
+                           @JsonProperty("timeout_seconds") Integer timeoutSeconds,
+                           @JsonProperty("wait_ms") Integer waitMs,
+                           @JsonProperty("idempotency_key") String idempotencyKey) {
         DesktopCoreArgs {
             args = args == null ? List.of() : List.copyOf(args);
         }
     }
 
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     record BrowserCoreArgs(@JsonProperty("machine_id") String machineId,
-                               String command,
-                               String cwd,
-                               @JsonProperty("timeout_seconds") Integer timeoutSeconds,
-                               @JsonProperty("wait_ms") Integer waitMs,
-                               @JsonProperty("idempotency_key") String idempotencyKey,
-                               @JsonProperty("project_id") String projectId,
-                               @JsonProperty("worktree_id") String worktreeId,
-                               @JsonProperty("scope_mode") String scopeMode,
-                               @JsonProperty("scope_root") String scopeRoot,
-                               @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
-                               @JsonProperty("lane_mode") LaneMode laneMode,
-                               @JsonProperty("session_id") String sessionId,
-                               String risk,
-                               @JsonProperty("elevation_required") Boolean elevationRequired) {
+                           String command,
+                           String cwd,
+                           @JsonProperty("timeout_seconds") Integer timeoutSeconds,
+                           @JsonProperty("wait_ms") Integer waitMs,
+                           @JsonProperty("idempotency_key") String idempotencyKey) {
     }
 
     record TaskWaitCoreArgs(@JsonProperty("task_id") String taskId,
@@ -2122,6 +1756,7 @@ public class McpConfiguration {
                         String sha256) {
     }
 
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     record ArtifactPutCoreArgs(@JsonProperty("machine_id") String machineId,
                            ArtifactFileCore file,
                            @JsonProperty("destination_path") String destinationPath,
@@ -2131,18 +1766,10 @@ public class McpConfiguration {
                            @JsonProperty("expected_sha256") String expectedSha256,
                            Boolean overwrite,
                            String cwd,
-                           @JsonProperty("idempotency_key") String idempotencyKey,
-                           @JsonProperty("project_id") String projectId,
-                           @JsonProperty("worktree_id") String worktreeId,
-                           @JsonProperty("scope_mode") String scopeMode,
-                           @JsonProperty("scope_root") String scopeRoot,
-                           @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
-                           @JsonProperty("lane_mode") LaneMode laneMode,
-                           @JsonProperty("session_id") String sessionId,
-                           String risk,
-                           @JsonProperty("elevation_required") Boolean elevationRequired) {
+                           @JsonProperty("idempotency_key") String idempotencyKey) {
     }
 
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     record ArtifactGetCoreArgs(@JsonProperty("machine_id") String machineId,
                            @JsonProperty("source_path") String sourcePath,
                            @JsonProperty("file_name") String fileName,
@@ -2150,25 +1777,13 @@ public class McpConfiguration {
                            @JsonProperty("delivery_mode") String deliveryMode,
                            @JsonProperty("wait_ms") Integer waitMs,
                            String cwd,
-                           @JsonProperty("idempotency_key") String idempotencyKey,
-                           @JsonProperty("project_id") String projectId,
-                           @JsonProperty("worktree_id") String worktreeId,
-                           @JsonProperty("scope_mode") String scopeMode,
-                           @JsonProperty("scope_root") String scopeRoot,
-                           @JsonProperty("workspace_policy") WorkspacePolicyMode workspacePolicy,
-                           @JsonProperty("lane_mode") LaneMode laneMode,
-                           @JsonProperty("session_id") String sessionId,
-                           String risk,
-                           @JsonProperty("elevation_required") Boolean elevationRequired) {
+                           @JsonProperty("idempotency_key") String idempotencyKey) {
     }
 
     record ArtifactReadCoreArgs(@JsonProperty("artifact_id") String artifactId,
                             @JsonProperty("transfer_id") String transferId,
                             @JsonProperty("delivery_mode") String deliveryMode,
                             @JsonProperty("wait_ms") Integer waitMs) {
-    }
-
-    private record ResolvedScope(String cwd, String root, ScopeMode mode) {
     }
 
     private static String firstNonBlank(String primary, String fallback) {

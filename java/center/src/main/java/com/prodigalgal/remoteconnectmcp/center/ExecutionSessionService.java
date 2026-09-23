@@ -155,7 +155,6 @@ public final class ExecutionSessionService {
                             THEN 'expired' ELSE status END AS status,
                        last_seen_at, expires_at, created_at, updated_at,
                        contract_json ->> 'capability' AS capability,
-                       contract_json ->> 'workspace_policy' AS workspace_policy,
                        contract_json ->> 'lane_mode' AS lane_mode
                   FROM rcm_execution_session %s
                  ORDER BY last_seen_at DESC, session_id OFFSET ? LIMIT ?
@@ -169,7 +168,7 @@ public final class ExecutionSessionService {
                 rs.getString("conversation_id"), rs.getString("machine_id"), rs.getString("status"),
                 instant(rs.getTimestamp("last_seen_at")), instant(rs.getTimestamp("expires_at")),
                         instant(rs.getTimestamp("created_at")), instant(rs.getTimestamp("updated_at")),
-                 rs.getString("capability"), rs.getString("workspace_policy"), rs.getString("lane_mode")));
+                 rs.getString("capability"), rs.getString("lane_mode")));
     }
 
     public int count(String principalId) {
@@ -222,8 +221,6 @@ public final class ExecutionSessionService {
         return new SessionView(value.principalId(), value.sessionId(), value.conversationId(), value.machineId(),
                 value.status(), value.lastSeenAt(), value.expiresAt(), value.createdAt(), value.updatedAt(),
                 value.contract() == null ? null : value.contract().capability(),
-                value.contract() == null || value.contract().workspacePolicy() == null
-                        ? null : value.contract().workspacePolicy().wireValue(),
                 value.contract() == null || value.contract().laneMode() == null
                         ? null : value.contract().laneMode().wireValue());
     }
@@ -321,11 +318,6 @@ public final class ExecutionSessionService {
     private static void assertContractMatch(ExecutionContract existing, ExecutionContract requested) {
         if (existing == null || requested == null) return;
         if (!java.util.Objects.equals(existing.machineId(), requested.machineId())
-                || existing.scopeMode() != requested.scopeMode()
-                || !java.util.Objects.equals(existing.projectId(), requested.projectId())
-                || !java.util.Objects.equals(existing.worktreeId(), requested.worktreeId())
-                || !java.util.Objects.equals(existing.scopeRoot(), requested.scopeRoot())
-                || existing.workspacePolicy() != requested.workspacePolicy()
                 || existing.laneMode() != requested.laneMode()
                 || !java.util.Objects.equals(existing.capability(), requested.capability())) {
             throw new SecurityException("execution session contract cannot change while active");
@@ -351,7 +343,6 @@ public final class ExecutionSessionService {
                               @JsonProperty("created_at") Instant createdAt,
                               @JsonProperty("updated_at") Instant updatedAt,
                               String capability,
-                              @JsonProperty("workspace_policy") String workspacePolicy,
                               @JsonProperty("lane_mode") String laneMode) {
     }
 

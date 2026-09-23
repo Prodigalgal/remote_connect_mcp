@@ -1,0 +1,20 @@
+databaseChangeLog:
+  - changeSet:
+      id: 037-remove-audit-scope-column
+      author: remote-connect-mcp
+      preConditions:
+        - onFail: MARK_RAN
+          columnExists:
+            tableName: rcm_audit_event
+            columnName: scope_mode
+      changes:
+        - dropColumn:
+            tableName: rcm_audit_event
+            columnName: scope_mode
+      rollback:
+        - addColumn:
+            tableName: rcm_audit_event
+            columns:
+              - column:
+                  name: scope_mode
+                  type: VARCHAR(32)

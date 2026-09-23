@@ -2,7 +2,6 @@ package com.prodigalgal.remoteconnectmcp.center;
 
 import com.prodigalgal.remoteconnectmcp.protocol.FileTransferAction;
 import com.prodigalgal.remoteconnectmcp.protocol.FileTransferResponse;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
@@ -1457,8 +1456,7 @@ public final class ArtifactTransferService {
         var source = request.command();
         var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null,
                 source.cwd(), Map.of(), 0, null, Instant.now(), null, 0, action);
-        return new CreateTaskRequest(request.machineId(), command, request.idempotencyKey(), request.projectId(),
-                request.worktreeId(), request.scopeMode(), request.scopeRoot(), request.workspacePolicy(),
+        return new CreateTaskRequest(request.machineId(), command, request.idempotencyKey(),
                 request.laneMode(), request.sessionId(), request.risk(), request.elevationRequired(), request.origin());
     }
 

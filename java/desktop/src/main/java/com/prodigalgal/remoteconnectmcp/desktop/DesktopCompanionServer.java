@@ -2,7 +2,6 @@ package com.prodigalgal.remoteconnectmcp.desktop;
 
 import com.prodigalgal.remoteconnectmcp.protocol.DesktopCompanionProtocol;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.awt.AWTException;
 import java.awt.GraphicsConfiguration;
@@ -76,7 +75,6 @@ public final class DesktopCompanionServer {
     private final int maxConnections;
     private final int maxLaunchedProcesses;
     private final java.time.Duration launchLifetime;
-    private final DesktopCompanionProtocol.Policy policy;
     private final Semaphore connectionSlots;
     private final Semaphore launchSlots;
     /** One input/screen controller at a time per logged-in OS desktop. */
@@ -91,12 +89,6 @@ public final class DesktopCompanionServer {
 
     DesktopCompanionServer(Path stateDir, String token, int requestedPort,
                            int maxConnections, int maxLaunchedProcesses) {
-        this(stateDir, token, requestedPort, maxConnections, maxLaunchedProcesses,
-                new DesktopCompanionProtocol.Policy(ScopeMode.UNRESTRICTED, null));
-    }
-
-    DesktopCompanionServer(Path stateDir, String token, int requestedPort,
-                           int maxConnections, int maxLaunchedProcesses, DesktopCompanionProtocol.Policy policy) {
         this.stateDir = stateDir.toAbsolutePath().normalize();
         this.token = normalizeToken(token);
         this.requestedPort = requestedPort;
@@ -107,7 +99,6 @@ public final class DesktopCompanionServer {
                 java.time.Duration.ofHours(8), java.time.Duration.ofMinutes(1), java.time.Duration.ofDays(30));
         this.connectionSlots = new Semaphore(this.maxConnections);
         this.launchSlots = new Semaphore(this.maxLaunchedProcesses);
-        this.policy = policy == null ? new DesktopCompanionProtocol.Policy(ScopeMode.UNRESTRICTED, null) : policy;
     }
 
     public static void run(Path stateDir) throws IOException {
@@ -120,8 +111,7 @@ public final class DesktopCompanionServer {
                 DEFAULT_MAX_LAUNCHED_PROCESSES, 1, MAX_ALLOWED_LAUNCHED_PROCESSES,
                 "REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES");
         token = normalizeToken(token);
-        new DesktopCompanionServer(stateDir, token, port, maxConnections, maxLaunchedProcesses,
-                loadPolicy(stateDir)).serve();
+        new DesktopCompanionServer(stateDir, token, port, maxConnections, maxLaunchedProcesses).serve();
     }
 
     private void serve() throws IOException {
@@ -252,7 +242,7 @@ public final class DesktopCompanionServer {
     private DesktopCompanionProtocol.Response execute(DesktopCompanionProtocol.Request request) throws Exception {
         var operation = request.operation() == null ? "" : request.operation().trim().toLowerCase(Locale.ROOT);
         validate(request, operation);
-        validateScope(request);
+        validateRequest(request);
         var sessionId = request.sessionId() == null ? "" : request.sessionId().trim();
         if (sessionId.isBlank()) throw new IllegalArgumentException("desktop session id is required");
         if (sessionId.length() > 256 || sessionId.indexOf('\u0000') >= 0
@@ -624,57 +614,11 @@ public final class DesktopCompanionServer {
         if (!operation.equals("launch") && request.executable() != null && !request.executable().isBlank()) throw new IllegalArgumentException("executable is allowed only for launch");
     }
 
-    /** Re-check the Center contract before executing any user-session action. */
-    private void validateScope(DesktopCompanionProtocol.Request request) throws IOException {
-        validateScope(policy, request);
-    }
-
-    /**
-     * Validate a task contract against the machine policy.  An unrestricted
-     * command Agent may still receive a narrower per-task contract; the
-     * companion must enforce that contract even though its machine policy has
-     * no fixed workspace root.  The previous implementation treated that
-     * valid combination as if the machine root were missing and rejected all
-     * companion input actions on unrestricted Agents.
-     */
-    static void validateScope(DesktopCompanionProtocol.Policy policy, DesktopCompanionProtocol.Request request) throws IOException {
+    /** Validate the short-lived contract without imposing a path boundary. */
+    static void validateRequest(DesktopCompanionProtocol.Request request) throws IOException {
         if (request == null) throw new IOException("desktop request is missing");
-        var effectivePolicy = policy == null ? new DesktopCompanionProtocol.Policy(ScopeMode.WORKSPACE, null) : policy;
-        var machineMode = effectivePolicy.scopeMode() == null ? ScopeMode.WORKSPACE : effectivePolicy.scopeMode();
-        var requestedMode = request.scopeMode() == null || request.scopeMode().isBlank()
-                ? machineMode : ScopeMode.fromWireValue(request.scopeMode());
-        if (machineMode.bounded() && !requestedMode.bounded()) {
-            throw new IOException("desktop request exceeds the machine workspace policy");
-        }
         if (request.contractExpiresAt() != null && !Instant.now().isBefore(request.contractExpiresAt())) {
             throw new IOException("desktop execution contract has expired");
-        }
-        if (!requestedMode.bounded()) {
-            if (request.scopeRoot() != null && !request.scopeRoot().isBlank()) {
-                throw new IOException("unrestricted desktop request cannot carry scope_root");
-            }
-            return;
-        }
-        Path machineReal = null;
-        if (machineMode.bounded()) {
-            var machineRoot = effectivePolicy.workspaceRoot();
-            if (machineRoot == null || machineRoot.isBlank()) {
-                throw new IOException("desktop workspace policy has no root");
-            }
-            machineReal = resolveThroughExistingParents(Path.of(machineRoot));
-        }
-        var contractRoot = request.scopeRoot() == null || request.scopeRoot().isBlank()
-                ? machineReal : resolveThroughExistingParents(Path.of(request.scopeRoot()));
-        if (contractRoot == null) {
-            throw new IOException("bounded desktop request requires scope_root");
-        }
-        if (machineReal != null && !within(machineReal, contractRoot)) {
-            throw new IOException("desktop contract root is outside the machine workspace");
-        }
-        var requestedCwd = request.cwd() == null || request.cwd().isBlank()
-                ? contractRoot : resolveThroughExistingParents(Path.of(request.cwd()));
-        if (!within(contractRoot, requestedCwd)) {
-            throw new IOException("desktop cwd is outside the execution contract scope");
         }
     }
 
@@ -691,12 +635,6 @@ public final class DesktopCompanionServer {
         var resolved = existing.toRealPath();
         for (var name : missing) resolved = resolved.resolve(name);
         return resolved.normalize();
-    }
-
-    private static boolean within(Path root, Path candidate) {
-        var normalizedRoot = root.toAbsolutePath().normalize();
-        var normalizedCandidate = candidate.toAbsolutePath().normalize();
-        return normalizedCandidate.equals(normalizedRoot) || normalizedCandidate.startsWith(normalizedRoot);
     }
 
     private static void ensureDisplay() {
@@ -913,23 +851,6 @@ public final class DesktopCompanionServer {
             }
             restrictOwner(target);
         } finally { Files.deleteIfExists(temp); }
-    }
-
-    /**
-     * Load the policy published by the command Agent.  The companion is a
-     * user-session helper. New Agent installations publish a valid policy
-     * before the companion is used. A missing or malformed policy fails closed
-     * to the Agent state directory rather than widening a user-session process
-     * to whole-host access. The production environment loader never treats an
-     * absent policy as unrestricted authority.
-     */
-    private static DesktopCompanionProtocol.Policy loadPolicy(Path stateDir) {
-        try {
-            return DesktopCompanionProtocol.readPolicy(stateDir);
-        } catch (Exception failure) {
-            LOG.log(Level.WARNING, "could not load desktop companion scope policy; using a fail-closed local policy", failure);
-            return new DesktopCompanionProtocol.Policy(ScopeMode.PATH, stateDir.toAbsolutePath().normalize().toString());
-        }
     }
 
     /** Keep local IPC material private where the host filesystem supports it. */

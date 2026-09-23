@@ -18,7 +18,6 @@ final class StructuredLog {
         put(value, "actor", event.actor());
         put(value, "agent_id", event.agentId());
         put(value, "task_id", event.taskId());
-        put(value, "scope_mode", event.scopeMode());
         put(value, "risk", event.risk());
         put(value, "outcome", event.outcome());
         put(value, "detail", event.detail());

@@ -10,11 +10,8 @@ param(
     [switch]$Desktop,
     [switch]$Browser,
     [ValidatePattern("^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")][string]$DesktopUser = "",
-    [ValidateSet("playwright", "patchright", "comoufox")][string]$BrowserEngine = "playwright",
-    [ValidateSet("chromium", "firefox", "webkit")][string]$BrowserName = "chromium",
     [ValidateSet("0", "1")][string]$BrowserHeadless = "1",
     [string]$NodePath = "",
-    [string]$PlaywrightVersion = "1.63.0",
     [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
     [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent",
     [switch]$ReEnroll,
@@ -66,12 +63,11 @@ function Invoke-ElevatedPowerShell7 {
     $forward = @{
         CenterUrl = $CenterUrl; EnrollmentToken = $EnrollmentToken; AgentName = $AgentName
         HostId = $HostId; Version = $Version; ReleaseTag = $ReleaseTag; Mode = $Mode
-        DesktopUser = $DesktopUser; BrowserEngine = $BrowserEngine; BrowserName = $BrowserName
-        BrowserHeadless = $BrowserHeadless; NodePath = $NodePath; PlaywrightVersion = $PlaywrightVersion
+        DesktopUser = $DesktopUser; BrowserHeadless = $BrowserHeadless; NodePath = $NodePath
         InstallRoot = $InstallRoot; StateDir = $StateDir
     }
     foreach ($entry in $forward.GetEnumerator()) {
-        if ([string]::IsNullOrWhiteSpace([string]$entry.Value) -and $entry.Key -notin @('Mode', 'BrowserEngine', 'BrowserName', 'BrowserHeadless', 'PlaywrightVersion', 'InstallRoot', 'StateDir')) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.Value) -and $entry.Key -notin @('Mode', 'BrowserHeadless', 'InstallRoot', 'StateDir')) { continue }
         [void]$arguments.Add((ConvertTo-CliArgument ('-{0}' -f $entry.Key)))
         [void]$arguments.Add((ConvertTo-CliArgument ([string]$entry.Value)))
     }
@@ -110,7 +106,7 @@ if ($Desktop -and [string]::IsNullOrWhiteSpace($DesktopUser)) {
 $identity = Join-Path $StateDir 'identity.json'
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('rcm-first-install-' + [Guid]::NewGuid().ToString('N'))
 $runtime = Join-Path $StateDir 'browser-runtime'
-$playwrightBrowsersPath = Join-Path $StateDir 'playwright-browsers'
+$camoufoxInstallDir = Join-Path $StateDir 'camoufox'
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
 
@@ -136,8 +132,8 @@ try {
     $browserZip = $null
     if ($Desktop) { $desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-$arch.zip" }
     if ($Browser) { $browserZip = Download-Verified "remote-connect-mcp-browser-$Version-$arch.zip" }
-    $installer = Join-Path $stage 'install-java-agent.ps1'
-    Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-java-agent.ps1" -OutFile $installer -TimeoutSec 30
+    $installer = Join-Path $stage 'install-agent.ps1'
+    Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-agent.ps1" -OutFile $installer -TimeoutSec 30
 
     $adapter = ''
     if ($Browser) {
@@ -145,23 +141,25 @@ try {
         $NodePath = (Resolve-Path -LiteralPath $NodePath -ErrorAction Stop).Path
         $nodeDirectory = Split-Path -Parent $NodePath
         $npm = @(
+            (Join-Path $nodeDirectory 'npm.cmd'),
             (Get-Command npm.cmd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
-            (Get-Command npm.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
-            (Join-Path $nodeDirectory 'npm.cmd')
+            (Get-Command npm.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
         ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
         if (-not $npm) { throw 'Browser mode requires npm.cmd beside node.exe.' }
         $worker = Join-Path $runtime 'browser-worker.mjs'
-        New-Item -ItemType Directory -Path $runtime, $playwrightBrowsersPath -Force | Out-Null
+        New-Item -ItemType Directory -Path $runtime, $camoufoxInstallDir -Force | Out-Null
         Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/browser-worker.mjs" -OutFile $worker -TimeoutSec 30
-        $packageJson = Join-Path $runtime 'package.json'
-        if (-not (Test-Path -LiteralPath $packageJson)) { Set-Content -LiteralPath $packageJson -Value '{"name":"rcm-browser-runtime","private":true}' -Encoding UTF8 }
-        $env:PLAYWRIGHT_BROWSERS_PATH = $playwrightBrowsersPath
-        & $npm install --prefix $runtime --no-save --ignore-scripts "playwright@$PlaywrightVersion"
-        if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit $LASTEXITCODE" }
-        $playwrightCli = Join-Path $runtime 'node_modules\playwright\cli.js'
-        if (-not (Test-Path -LiteralPath $playwrightCli -PathType Leaf)) { throw 'Playwright CLI was not installed.' }
-        & $NodePath $playwrightCli install $BrowserName
-        if ($LASTEXITCODE -ne 0) { throw "Playwright browser install failed with exit $LASTEXITCODE" }
+        foreach ($name in @('package.json', 'package-lock.json')) {
+            Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/browser-runtime/$name" -OutFile (Join-Path $runtime $name) -TimeoutSec 30
+        }
+        $nodeMajor = [int](& $NodePath -p 'process.versions.node.split(".")[0]')
+        if ($nodeMajor -lt 22) { throw 'Camoufox requires Node.js 22 or newer.' }
+        & $npm ci --prefix $runtime --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { throw "Camoufox npm install failed with exit $LASTEXITCODE" }
+        $env:CAMOUFOX_INSTALL_DIR = $camoufoxInstallDir
+        & $NodePath (Join-Path $runtime 'node_modules\camoufox-js\dist\__main__.js') fetch
+        if ($LASTEXITCODE -ne 0) { throw "Camoufox browser install failed with exit $LASTEXITCODE" }
+        $env:REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR = $camoufoxInstallDir
         $adapter = Join-Path $runtime 'browser-adapter.cmd'
         Set-Content -LiteralPath $adapter -Value "@echo off`r`n`"$NodePath`" `"$worker`"`r`n" -Encoding ASCII -Force
     }
@@ -175,13 +173,13 @@ try {
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $installer,
         '-BinaryPath', $agentZip, '-AgentName', $AgentName, '-HostId', $HostId,
         '-CenterUrl', $CenterUrl, '-EnrollmentToken', $EnrollmentToken,
-        '-DefaultCwd', 'C:\', '-ScopeMode', 'unrestricted', '-Capabilities', $capabilities,
+        '-DefaultCwd', 'C:\', '-Capabilities', $capabilities,
         '-Version', $Version, '-InstallRoot', $InstallRoot, '-StateDir', $StateDir,
         '-MaxConcurrency', '1', '-MaxBrowserWorkers', '1', '-MaxChildProcesses', '32',
         '-MaxTotalChildProcesses', '32'
     )
     if ($Desktop) { $arguments += @('-DesktopEnabled', '-DesktopBinaryPath', $desktopZip) }
-    if ($Browser) { $arguments += @('-BrowserBinaryPath', $browserZip, '-BrowserAdapter', $adapter, '-BrowserEngine', $BrowserEngine, '-BrowserName', $BrowserName, '-BrowserHeadless', $BrowserHeadless, '-PlaywrightBrowsersPath', $playwrightBrowsersPath, '-BrowserProfileDir', (Join-Path $StateDir 'browser-profile')) }
+    if ($Browser) { $arguments += @('-BrowserBinaryPath', $browserZip, '-BrowserAdapter', $adapter, '-BrowserEngine', 'camoufox', '-BrowserName', 'firefox', '-BrowserHeadless', $BrowserHeadless, '-BrowserProfileDir', (Join-Path $StateDir 'browser-profile')) }
     if ($ReEnroll) { $arguments += '-ReEnroll' }
     & $env:REMOTE_CONNECT_MCP_PWSH_PATH @arguments
     if ($LASTEXITCODE -ne 0) { throw "Java Agent installation failed with exit $LASTEXITCODE" }

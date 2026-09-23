@@ -92,6 +92,10 @@ spec:
               value: 0.1.0
             - name: RCM_CENTER_AGENT_UPGRADES_ENABLED
               value: "true"
+            - name: RCM_CENTER_AGENT_AUTO_UPGRADE_ENABLED
+              value: "true"
+            - name: RCM_CENTER_AGENT_AUTO_UPGRADE_INCLUDE_PRERELEASE
+              value: "true"
             - name: RCM_CENTER_RELEASE_BASE_URL
               value: https://github.com/Prodigalgal/remote_connect_mcp/releases/download
             - name: RCM_CENTER_RELEASES_API_URL

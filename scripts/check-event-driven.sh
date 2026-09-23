@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 # Static gate for event-driven production paths. Retry/backoff and request
-# deadlines remain valid; only fleet-wide fixed-rate loops are rejected.
+# deadlines remain valid; only fleet-wide fixed-rate loops are rejected. The
+# Center's single GitHub Release metadata check does not poll individual Agents.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
@@ -29,4 +30,4 @@ if (( failed != 0 )); then
   exit 1
 fi
 
-echo 'event-driven gate passed (no fixed-interval production scheduler or non-blocking PG listener found)'
+echo 'event-driven gate passed (no fleet-wide fixed-rate loop or non-blocking PG listener found)'

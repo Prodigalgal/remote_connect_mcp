@@ -219,11 +219,11 @@ public final class AgentRegistry {
         var runtime = new String(JsonCodec.write(metadata.runtime()), StandardCharsets.UTF_8);
         jdbc.update("""
                 UPDATE rcm_agent SET hostname = ?, os = ?, arch = ?, version = ?,
-                    default_cwd = ?, scope_mode = ?, workspace_root = ?, capabilities = CAST(? AS jsonb),
+                    default_cwd = ?, capabilities = CAST(? AS jsonb),
                     runtime_descriptor = CAST(? AS jsonb),
                     updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?
                 """, metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
-                metadata.defaultCwd(), metadata.scopeMode().wireValue(), metadata.workspaceRoot(), capabilities, runtime, machineId);
+                metadata.defaultCwd(), capabilities, runtime, machineId);
     }
 
     public boolean acceptsAgent(String machineId, String agentToken) {
@@ -248,7 +248,7 @@ public final class AgentRegistry {
         }
         var rows = jdbc.query("""
                 SELECT agent_id, machine_name, host_id, hostname, os, arch, version,
-                       default_cwd, scope_mode, workspace_root, capabilities, runtime_descriptor,
+                       default_cwd, capabilities, runtime_descriptor,
                        created_at, last_seen_at
                   FROM rcm_agent WHERE agent_id = ?
                 """, ps -> ps.setString(1, machineId), (rs, rowNum) -> machineView(rs, now));
@@ -273,7 +273,7 @@ public final class AgentRegistry {
         }
         return List.copyOf(jdbc.query("""
                 SELECT agent_id, machine_name, host_id, hostname, os, arch, version,
-                       default_cwd, scope_mode, workspace_root, capabilities, runtime_descriptor,
+                       default_cwd, capabilities, runtime_descriptor,
                        created_at, last_seen_at
                   FROM rcm_agent ORDER BY machine_name, agent_id OFFSET ? LIMIT ?
                 """, ps -> {
@@ -338,7 +338,7 @@ public final class AgentRegistry {
         return new MachineView(
                 rs.getString("agent_id"), rs.getString("machine_name"), rs.getString("host_id"),
                 rs.getString("hostname"), rs.getString("os"), rs.getString("arch"), rs.getString("version"),
-                rs.getString("default_cwd"), rs.getString("scope_mode"), rs.getString("workspace_root"),
+                rs.getString("default_cwd"),
                 capabilities, created == null ? null : created.toInstant(), last,
                 last != null && now.minusSeconds(45).isBefore(last), runtime);
     }
@@ -377,9 +377,9 @@ public final class AgentRegistry {
         jdbc.update("""
                 INSERT INTO rcm_agent (
                     agent_id, machine_name, host_id, hostname, os, arch, version,
-                    default_cwd, scope_mode, workspace_root, capabilities, runtime_descriptor, token_hash,
+                    default_cwd, capabilities, runtime_descriptor, token_hash,
                     last_seen_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?)
                 """,
                 machineId,
                 metadata.name(),
@@ -389,8 +389,6 @@ public final class AgentRegistry {
                 metadata.arch(),
                 metadata.version(),
                 metadata.defaultCwd(),
-                metadata.scopeMode().wireValue(),
-                metadata.workspaceRoot(),
                 capabilities,
                 runtime,
                 hexHash(tokenHash),
@@ -404,11 +402,11 @@ public final class AgentRegistry {
         var runtime = new String(JsonCodec.write(metadata.runtime()), StandardCharsets.UTF_8);
         jdbc.update("""
                 UPDATE rcm_agent SET machine_name = ?, host_id = ?, hostname = ?, os = ?, arch = ?, version = ?,
-                    default_cwd = ?, scope_mode = ?, workspace_root = ?, capabilities = CAST(? AS jsonb),
+                    default_cwd = ?, capabilities = CAST(? AS jsonb),
                     runtime_descriptor = CAST(? AS jsonb), token_hash = ?,
                     last_seen_at = ?, updated_at = ? WHERE agent_id = ?
                 """, metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
-                metadata.defaultCwd(), metadata.scopeMode().wireValue(), metadata.workspaceRoot(), capabilities, runtime, hexHash(tokenHash),
+                metadata.defaultCwd(), capabilities, runtime, hexHash(tokenHash),
                 java.sql.Timestamp.from(now), java.sql.Timestamp.from(now), machineId);
     }
 
@@ -476,7 +474,7 @@ public final class AgentRegistry {
 
         private MachineView view(String id, Instant now) {
             return new MachineView(id, metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
-                    metadata.defaultCwd(), metadata.scopeMode().wireValue(), metadata.workspaceRoot(), metadata.capabilities(), lastSeen, lastSeen,
+                    metadata.defaultCwd(), metadata.capabilities(), lastSeen, lastSeen,
                     lastSeen != null && now.minusSeconds(45).isBefore(lastSeen), metadata.runtime());
         }
     }

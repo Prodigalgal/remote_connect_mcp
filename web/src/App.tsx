@@ -3,14 +3,12 @@ import {
   AdminApiError,
   listAudit,
   listMachines,
-  listProjects,
   listReleases,
   listTasks,
   listUpgrades,
   waitForAdminChange,
   type AuditEvent,
   type Machine,
-  type Project,
   type ReleaseCatalog,
   type Task,
   type UpgradeCampaign,
@@ -20,7 +18,6 @@ import { Topbar } from './components/Topbar'
 import { AuthGate } from './components/AuthGate'
 import { OverviewView } from './views/OverviewView'
 import { MachinesView } from './views/MachinesView'
-import { ProjectsView } from './views/ProjectsView'
 import { TasksView } from './views/TasksView'
 import { ArtifactsView } from './views/ArtifactsView'
 import { AuditView } from './views/AuditView'
@@ -37,7 +34,6 @@ export default function App() {
   const [authenticated, setAuthenticated] = useState(false)
   const [centerReachable, setCenterReachable] = useState(false)
   const [liveMachines, setLiveMachines] = useState<Machine[] | null>(null)
-  const [liveProjects, setLiveProjects] = useState<Project[] | null>(null)
   const [liveTasks, setLiveTasks] = useState<Task[] | null>(null)
   const [liveAudit, setLiveAudit] = useState<AuditEvent[] | null>(null)
   const [liveUpgrades, setLiveUpgrades] = useState<UpgradeCampaign[] | null>(null)
@@ -90,7 +86,6 @@ export default function App() {
           markAuthenticated(false)
           setCenterReachable(false)
           setLiveMachines(null)
-          setLiveProjects(null)
           setLiveTasks(null)
           setLiveAudit(null)
           setLiveUpgrades(null)
@@ -102,9 +97,8 @@ export default function App() {
         setLoading(true)
         setApiMessage('')
         try {
-          const [machines, projects, tasks, upgrades, releases, audit] = await Promise.all([
+          const [machines, tasks, upgrades, releases, audit] = await Promise.all([
             listMachines(normalizedToken),
-            listProjects(normalizedToken).catch(() => []),
             listTasks(normalizedToken),
             listUpgrades(normalizedToken),
             listReleases(normalizedToken, true, forceReleases).catch(
@@ -118,7 +112,6 @@ export default function App() {
             listAudit(normalizedToken).catch(() => []),
           ])
           setLiveMachines(machines)
-          setLiveProjects(projects)
           setLiveTasks(tasks)
           setLiveUpgrades(upgrades)
           setLiveReleases(releases)
@@ -133,7 +126,6 @@ export default function App() {
           if (authRejected || !authenticatedRef.current) {
             markAuthenticated(false)
             setLiveMachines(null)
-            setLiveProjects(null)
             setLiveTasks(null)
             setLiveUpgrades(null)
             setLiveReleases(null)
@@ -161,7 +153,6 @@ export default function App() {
       markAuthenticated(false)
       setCenterReachable(false)
       setLiveMachines(null)
-      setLiveProjects(null)
       setLiveTasks(null)
       setLiveAudit(null)
       setLiveUpgrades(null)
@@ -286,21 +277,10 @@ export default function App() {
             />
           )}
 
-          {page === 'projects' && (
-            <ProjectsView
-              rows={liveProjects}
-              machines={liveMachines ?? []}
-              token={adminToken}
-              onRefresh={() => void refresh()}
-              query={search}
-            />
-          )}
-
           {page === 'tasks' && (
             <TasksView
               rows={liveTasks}
               machines={liveMachines ?? []}
-              projects={liveProjects ?? []}
               adminToken={adminToken}
               onRefresh={() => void refresh()}
               query={search}
@@ -336,7 +316,6 @@ export default function App() {
             <AccessControlView
               token={adminToken}
               machines={liveMachines ?? []}
-              projects={liveProjects ?? []}
             />
           )}
 

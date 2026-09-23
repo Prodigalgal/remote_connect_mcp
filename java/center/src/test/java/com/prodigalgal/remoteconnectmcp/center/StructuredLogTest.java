@@ -9,7 +9,7 @@ class StructuredLogTest {
     @Test
     void rendersAStableLowCardinalityAuditJsonLine() {
         var event = new AuditEventView("audit_1", "task.state", "agent", "machine_1", "task_1",
-                "workspace", "normal", "completed", "attempt=1", Instant.parse("2026-09-15T00:00:00Z"));
+                "normal", "completed", "attempt=1", Instant.parse("2026-09-15T00:00:00Z"));
 
         var json = StructuredLog.audit(event);
 

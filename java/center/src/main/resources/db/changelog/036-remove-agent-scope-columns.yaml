@@ -1,0 +1,17 @@
+databaseChangeLog:
+  - changeSet:
+      id: 036-remove-agent-scope-columns
+      author: remote-connect-mcp
+      labels: agents,full-host,cleanup
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - dropColumn:
+            tableName: rcm_agent
+            columnName: workspace_root
+        - dropColumn:
+            tableName: rcm_agent
+            columnName: scope_mode

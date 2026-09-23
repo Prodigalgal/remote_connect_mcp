@@ -1,4 +1,6 @@
-# Remote Connect MCP 目标架构
+# 历史记录：Remote Connect MCP 目标架构
+
+> 本文件保留早期架构推演，不能作为当前实现契约。当前底层严格采用全机 Agent、无 project/worktree/workspace/path 栅栏的极简模型，请以 [`FULL_HOST_MODEL.md`](FULL_HOST_MODEL.md) 和根目录 [`README.md`](../README.md) 为准。
 
 本文档定义 RCM 的长期架构边界和演进顺序。上游需求基线见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)；M:M 用户、对话、连接和执行关系见 [`docs/MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)；本文只说明组件如何实现这些需求。当前运行路径统一为 Java 25 Center/Agent 与独立 React 控制台。文档中的“规划中”能力不会在没有协议、权限和安全评估时自动暴露给 MCP。Java/React 的具体技术选型见 [`docs/TECH_STACK.md`](TECH_STACK.md)。
 

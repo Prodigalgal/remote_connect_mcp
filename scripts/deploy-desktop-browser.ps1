@@ -4,23 +4,17 @@ param(
     [string]$AgentName,
     [string]$HostId = "",
     [string]$CenterUrl = "",
-    [string]$Version = "v0.1.28",
+    [Parameter(Mandatory = $true)][string]$Version,
     [string]$ReleaseTag = "",
     [string]$StageRoot = "",
     [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
     [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent",
     [string]$NodePath = "",
-    [string]$PlaywrightBrowsersPath = "",
     [ValidatePattern("^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")]
     [string]$DesktopUser = "",
     [string]$BrowserProfileDir = "",
-    [ValidateSet("playwright", "patchright", "comoufox")]
-    [string]$BrowserEngine = "playwright",
-    [ValidateSet("chromium", "firefox", "webkit")]
-    [string]$BrowserName = "chromium",
     [ValidateSet("0", "1")]
-    [string]$BrowserHeadless = "1",
-    [string]$PlaywrightVersion = "1.63.0"
+    [string]$BrowserHeadless = "1"
 )
 
 Set-StrictMode -Version Latest
@@ -67,10 +61,8 @@ if ([string]::IsNullOrWhiteSpace($StageRoot)) {
 if ([string]::IsNullOrWhiteSpace($BrowserProfileDir)) {
     $BrowserProfileDir = Join-Path $StateDir "browser-profile"
 }
-if ([string]::IsNullOrWhiteSpace($PlaywrightBrowsersPath)) {
-    $PlaywrightBrowsersPath = Join-Path $StateDir "playwright-browsers"
-}
-New-Item -ItemType Directory -Path $PlaywrightBrowsersPath -Force | Out-Null
+$camoufoxInstallDir = Join-Path $StateDir 'camoufox'
+New-Item -ItemType Directory -Path $camoufoxInstallDir -Force | Out-Null
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -103,51 +95,50 @@ function Download-Verified {
 $agentZip = Download-Verified "remote-connect-mcp-agent-$Version-windows-amd64.zip"
 $desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-windows-amd64.zip"
 $browserZip = Download-Verified "remote-connect-mcp-browser-$Version-windows-amd64.zip"
-$installer = Join-Path $StageRoot "install-java-agent.ps1"
+$installer = Join-Path $StageRoot "install-agent.ps1"
 # Prefer the checked-out installer when this script is run from the repository;
 # this keeps local recovery aligned with the current PowerShell/MSIX fixes. A
 # downloaded tagged copy remains the fallback for standalone deployments.
-$localInstaller = Join-Path $PSScriptRoot 'install-java-agent.ps1'
+$localInstaller = Join-Path $PSScriptRoot 'install-agent.ps1'
 if (Test-Path -LiteralPath $localInstaller -PathType Leaf) {
     Copy-Item -LiteralPath $localInstaller -Destination $installer -Force
 } else {
-    Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-java-agent.ps1" -OutFile $installer -TimeoutSec 30
+    Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-agent.ps1" -OutFile $installer -TimeoutSec 30
 }
 
 $runtime = Join-Path $StageRoot "browser-runtime"
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
 $worker = Join-Path $runtime "browser-worker.mjs"
 Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/browser-worker.mjs" -OutFile $worker -TimeoutSec 30
-$packageJson = Join-Path $runtime "package.json"
-if (-not (Test-Path -LiteralPath $packageJson)) {
-    Set-Content -LiteralPath $packageJson -Value '{"name":"rcm-browser-runtime","private":true}' -Encoding UTF8
+foreach ($name in @('package.json', 'package-lock.json')) {
+    Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/browser-runtime/$name" -OutFile (Join-Path $runtime $name) -TimeoutSec 30
 }
 $node = if ([string]::IsNullOrWhiteSpace($NodePath)) {
     (Get-Command node.exe -ErrorAction Stop).Source
 } else {
     (Resolve-Path -LiteralPath $NodePath -ErrorAction Stop).Path
 }
-$env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightBrowsersPath
+$nodeMajor = [int](& $node -p 'process.versions.node.split(".")[0]')
+if ($nodeMajor -lt 22) { throw 'Camoufox requires Node.js 22 or newer.' }
+$env:CAMOUFOX_INSTALL_DIR = $camoufoxInstallDir
 $nodeDirectory = Split-Path -Parent $node
 $npm = @(
+    (Join-Path $nodeDirectory "npm.cmd"),
     (Get-Command npm.cmd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
-    (Get-Command npm.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
-    (Join-Path $nodeDirectory "npm.cmd")
+    (Get-Command npm.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
 ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
 if ($npm) {
-    & $npm install --prefix $runtime --no-save --ignore-scripts "playwright@$PlaywrightVersion"
+    & $npm ci --prefix $runtime --no-audit --no-fund
 } else {
     $npmCli = Join-Path $nodeDirectory "node_modules\npm\bin\npm-cli.js"
     if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
         throw "npm.cmd and npm-cli.js were not found beside node.exe"
     }
-    & $node $npmCli install --prefix $runtime --no-save --ignore-scripts "playwright@$PlaywrightVersion"
+    & $node $npmCli ci --prefix $runtime --no-audit --no-fund
 }
-if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit $LASTEXITCODE" }
-$playwrightCli = Join-Path $runtime "node_modules\playwright\cli.js"
-if (-not (Test-Path -LiteralPath $playwrightCli)) { throw "Playwright CLI was not installed" }
-& $node $playwrightCli install chromium
-if ($LASTEXITCODE -ne 0) { throw "Playwright Chromium install failed with exit $LASTEXITCODE" }
+if ($LASTEXITCODE -ne 0) { throw "Camoufox npm install failed with exit $LASTEXITCODE" }
+& $node (Join-Path $runtime 'node_modules\camoufox-js\dist\__main__.js') fetch
+if ($LASTEXITCODE -ne 0) { throw "Camoufox browser install failed with exit $LASTEXITCODE" }
 
 function ConvertTo-PSLiteral {
     param([AllowEmptyString()][string]$Value)
@@ -173,11 +164,9 @@ $applyLines = @(
     ('$installRoot = {0}' -f (ConvertTo-PSLiteral $InstallRoot)),
     ('$stateDir = {0}' -f (ConvertTo-PSLiteral $StateDir)),
     ('$nodePath = {0}' -f (ConvertTo-PSLiteral $node)),
-    ('$playwrightBrowsersPath = {0}' -f (ConvertTo-PSLiteral $PlaywrightBrowsersPath)),
+    ('$camoufoxInstallDir = {0}' -f (ConvertTo-PSLiteral $camoufoxInstallDir)),
     ('$desktopUser = {0}' -f (ConvertTo-PSLiteral $DesktopUser)),
     ('$browserProfileDir = {0}' -f (ConvertTo-PSLiteral $BrowserProfileDir)),
-    ('$browserEngine = {0}' -f (ConvertTo-PSLiteral $BrowserEngine)),
-    ('$browserName = {0}' -f (ConvertTo-PSLiteral $BrowserName)),
     ('$browserHeadless = {0}' -f (ConvertTo-PSLiteral $BrowserHeadless)),
     'try {',
     '  $u = (Get-CimInstance Win32_ComputerSystem).UserName',
@@ -196,16 +185,16 @@ $applyLines = @(
     '  $adapterContent = "@echo off`r`n`"$node`" `"$worker`"`r`n"',
     '  Set-Content -LiteralPath $adapterWrapper -Value $adapterContent -Encoding ASCII -Force',
     '  $adapter = $adapterWrapper',
-    '  $installer = Join-Path $stage "install-java-agent.ps1"',
+    '  $installer = Join-Path $stage "install-agent.ps1"',
     ('  $agent = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $agentZip))),
     ('  $desktop = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $desktopZip))),
     ('  $browser = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $browserZip))),
-    ('  & {0} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -BinaryPath $agent -AgentName $agentName -HostId $hostId -CenterUrl $centerUrl -DefaultCwd "C:\" -ScopeMode unrestricted -Capabilities "command,durable_tasks,desktop,browser,file_transfer" -Version $version -DesktopEnabled -DesktopBinaryPath $desktop -BrowserBinaryPath $browser -BrowserAdapter $adapter -BrowserEngine $browserEngine -BrowserName $browserName -BrowserHeadless $browserHeadless -PlaywrightBrowsersPath $playwrightBrowsersPath -BrowserProfileDir $browserProfileDir -MaxConcurrency 1 -MaxBrowserWorkers 1 -DesktopMaxLaunchedProcesses 16 -MaxChildProcesses 32 -MaxTotalChildProcesses 32' -f (ConvertTo-PSLiteral $pwsh)),
+    ('  & {0} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -BinaryPath $agent -AgentName $agentName -HostId $hostId -CenterUrl $centerUrl -DefaultCwd "C:\" -Capabilities "command,durable_tasks,desktop,browser,file_transfer" -Version $version -DesktopEnabled -DesktopBinaryPath $desktop -BrowserBinaryPath $browser -BrowserAdapter $adapter -BrowserEngine camoufox -BrowserName firefox -BrowserHeadless $browserHeadless -CamoufoxInstallDir $camoufoxInstallDir -BrowserProfileDir $browserProfileDir -MaxConcurrency 1 -MaxBrowserWorkers 1 -DesktopMaxLaunchedProcesses 16 -MaxChildProcesses 32 -MaxTotalChildProcesses 32' -f (ConvertTo-PSLiteral $pwsh)),
     '  if ($LASTEXITCODE -ne 0) { throw "agent installer failed with exit $LASTEXITCODE" }',
     '  try { Start-ScheduledTask -TaskName "RemoteConnectMCPDesktopCompanion" -ErrorAction Stop } catch { }',
     '  Start-Sleep -Seconds 3',
     '  $desktopState = (Get-ScheduledTask -TaskName "RemoteConnectMCPDesktopCompanion" -ErrorAction SilentlyContinue).State',
-    '  [ordered]@{ status = "completed"; desktop_task_state = [string]$desktopState; browser_runtime = "playwright-' + $PlaywrightVersion + '"; finished_at = (Get-Date).ToUniversalTime().ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $statusFile -Encoding UTF8',
+    '  [ordered]@{ status = "completed"; desktop_task_state = [string]$desktopState; browser_runtime = "camoufox"; finished_at = (Get-Date).ToUniversalTime().ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $statusFile -Encoding UTF8',
     '} catch {',
     '  [ordered]@{ status = "failed"; error = $_.Exception.Message; finished_at = (Get-Date).ToUniversalTime().ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $statusFile -Encoding UTF8',
     '  exit 1',
@@ -227,7 +216,7 @@ Start-ScheduledTask -TaskName $applyTaskName
     scheduled_task = $applyTaskName
     desktop_sha256_verified = $true
     browser_sha256_verified = $true
-    browser_runtime = "playwright-$PlaywrightVersion"
+    browser_runtime = 'camoufox'
     scheduled_at = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $StageRoot "stage-status.json") -Encoding UTF8
 Write-Output "RCM_DESKTOP_BROWSER_STAGE_OK"

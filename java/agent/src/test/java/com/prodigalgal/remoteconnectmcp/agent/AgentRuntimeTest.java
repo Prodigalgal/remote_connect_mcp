@@ -9,8 +9,8 @@ import com.prodigalgal.remoteconnectmcp.protocol.PollResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.OutputResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.ArtifactResponse;
 import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
+import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterResponse;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import java.io.IOException;
 import java.net.URI;
@@ -75,7 +75,7 @@ class AgentRuntimeTest {
         store.save(new AgentIdentity("machine_existing", "daily-existing"));
         transport.pollFailure = new InterruptedException("stop test");
         var config = new AgentConfig(URI.create("https://center.invalid"), "", "agent", "host", tempDir.toString(),
-                ScopeMode.UNRESTRICTED, null, List.of("command"), false, tempDir, Duration.ofMillis(1), 1);
+                List.of("command"), false, tempDir, Duration.ofMillis(1), 1);
 
         assertThrows(InterruptedException.class, () -> new AgentRuntime(config, transport, store).run());
         assertEquals(0, transport.registerCalls.get());
@@ -91,7 +91,7 @@ class AgentRuntimeTest {
         var existing = new AgentIdentity("machine_existing", "daily-existing");
         store.save(existing);
         var config = new AgentConfig(URI.create("https://center.invalid"), "", "agent", "host", tempDir.toString(),
-                ScopeMode.UNRESTRICTED, null, List.of("command"), false, tempDir, Duration.ofMillis(1), 1);
+                List.of("command"), false, tempDir, Duration.ofMillis(1), 1);
 
         assertThrows(InterruptedException.class, () -> new AgentRuntime(config, transport, store).run());
 
@@ -105,7 +105,7 @@ class AgentRuntimeTest {
         var transport = new HotConfigTransport();
         var store = new AgentIdentityStore(tempDir);
         var base = new AgentConfig(URI.create("https://center.invalid"), "enrollment", "agent", "host",
-                tempDir.toString(), ScopeMode.UNRESTRICTED, null, List.of("command"), false,
+                tempDir.toString(), List.of("command"), false,
                 tempDir, Duration.ofSeconds(5), 1);
         var started = System.nanoTime();
 
@@ -238,14 +238,14 @@ class AgentRuntimeTest {
     }
 
     private static ExecutionContract testContract(String machineId, String hostId, String capability) {
-        return new ExecutionContract(machineId, hostId, ScopeMode.UNRESTRICTED,
-                null, null, null, "session-test", capability, ExecutionContract.Budget.defaults(),
+        return new ExecutionContract(machineId, hostId, LaneMode.WRITE,
+                "session-test", capability, ExecutionContract.Budget.defaults(),
                 java.time.Instant.now().plusSeconds(3600), "test-" + capability, "low", false, "lease-test");
     }
 
     private static AgentConfig config(Path stateDir, long maxOutputBytes) {
         return new AgentConfig(URI.create("https://center.invalid"), "enrollment", "agent", "host", stateDir.toString(),
-                ScopeMode.UNRESTRICTED, null, List.of("command"), false, stateDir, Duration.ofMillis(1), 1, maxOutputBytes);
+                List.of("command"), false, stateDir, Duration.ofMillis(1), 1, maxOutputBytes);
     }
 
     private static final class ScriptedTransport implements AgentTransport {

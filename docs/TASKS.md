@@ -1,8 +1,19 @@
-# RCM 生产任务清单
+# RCM 历史生产任务清单
+
+> 这是旧版本的任务快照。凡涉及 project、worktree、workspace、path fence 或旧工具面的条目均已被全机底层设计取代；新开发只按 [`FULL_HOST_MODEL.md`](FULL_HOST_MODEL.md) 和根目录 [`README.md`](../README.md) 执行。
 
 更新时间：2026-09-20（Asia/Shanghai）
 
 本文是 Remote Connect MCP 的可持续任务清单。第一列只表示代码交付状态：实现和自动化检查完成即可勾选；生产验收单独记录在 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)，不再阻止代码任务勾选。这样可以明确区分“代码没做完”和“代码已完成但尚未在目标环境验收”。
+
+## 当前有效底层清单
+
+- [x] 删除运行时 project、worktree、workspace 和 path scope 模型。
+- [x] Agent/desktop/browser 统一使用全机权限；`cwd` 仅作为工作目录提示。
+- [x] Center 仅保留机器 ACL、会话、任务、工件和资源稳定性边界。
+- [x] MCP 固定为 7 个紧凑 Tool；不暴露底层操作碎片。
+- [x] 清理协议层范围兼容构造器及 `ScopeMode`/`WorkspacePolicy` 运行时代码。
+- [ ] 通过 GitHub Actions 完成组件构建、镜像发布和生产验收。
 
 需求基线：[`REQUIREMENTS.md`](REQUIREMENTS.md)；当前实现证据：[`STATUS.md`](STATUS.md)；架构约束：[`ARCHITECTURE.md`](ARCHITECTURE.md)；异步契约：[`ASYNC_CONTRACT.md`](ASYNC_CONTRACT.md)；M:M 用户/对话/MCP 设计：[`MULTI_USER_MODEL.md`](MULTI_USER_MODEL.md)；组件级升级合同：[`COMPONENT_UPGRADES.md`](COMPONENT_UPGRADES.md)。
 
@@ -167,7 +178,7 @@
 | [x] | P1-UP-03 | Windows/Linux companion 重启适配 | Windows Task/SCM、Linux systemd 和 Browser Worker service restart 均按组件处理，不重置 identity/profile |
 | [x] | P1-UP-04 | Console 组件版本与 canary | Console 显示组件计划/目标状态，并提供自动、仅 command-agent、按组件选择三种 campaign 入口；沿用 machine canary/retry |
 | [x] | P1-UP-05 | Browser runtime 独立生命周期 | Native browser-agent 作为独立组件升级，Profile/Cookie/cache 不触碰；Playwright/Patchright/Comoufox runtime 由安装脚本和独立 worker 生命周期管理 |
-| [x] | P1-UP-06 | 首次安装统一入口 | Windows/Linux 单命令入口自动识别运行时/权限、下载并校验对应 command/desktop/browser bundle，注册一次性 Token 后不保留 Bootstrap；控制台生成可复制命令 | `first-install-java-agent.ps1`、`first-install-java-agent.sh`；PowerShell/Bash 静态解析，构建交给 GitHub Actions |
+| [x] | P1-UP-06 | 首次安装统一入口 | Windows/Linux 单命令入口自动识别运行时/权限、下载并校验对应 command/desktop/browser bundle，注册一次性 Token 后不保留 Bootstrap；控制台生成可复制命令 | `first-install-agent.ps1`、`first-install-agent.sh`；PowerShell/Bash 静态解析，构建交给 GitHub Actions |
 
 ## P1：核心生产体验
 
@@ -260,7 +271,7 @@
 | [x] | P1-TM-13 | 12→8 逻辑 Tool 硬切换 | 旧 Tool 注册、别名、旧参数和开关已删除；唯一公开列表固定为 8 个逻辑 Tool | `check-mcp-tool-surface.mjs` |
 | [x] | P1-TM-14 | 模型导向集成测试与黄金对话 | 已建立自然语言场景覆盖清单和结构化输出门禁；真实 ChatGPT Web 对话仍属生产验收 | Actions/生产验收表 |
 | [x] | P1-TM-15 | 上下文、选择、审批可观测性 | 已接入低基数 Schema/结果/校验/重复任务/stale ref/范围拒绝指标，不记录原始命令、Token、文件内容 | Metrics/Audit 实现 |
-| [x] | P1-TM-16 | GitHub Actions 唯一构建与验证入口 | Java/Native/React/Node schema、协议、集成和浏览器门禁统一由 Actions 执行；本机不生成正式产物 | `.github/workflows/java-react.yml` |
+| [x] | P1-TM-16 | GitHub Actions 唯一构建与验证入口 | Java/Native/React/Node schema、协议、集成和浏览器门禁统一由 Actions 执行；本机不生成正式产物 | `.github/workflows/change-checks.yml` |
 | [ ] | P1-TM-17 | ChatGPT Web 连接器真实 E2E | 固定现有 `/mcp` URL、Token 和稳定 Viewer URI；完成一次工具声明刷新后验证 8 Tool 可发现、可调用、结果/图片/文档可展示；后续版本保持稳定 schema/URI，不要求重复录入 | 真实 ChatGPT Web；附件、桌面、浏览器、长任务流程 |
 | [ ] | P1-TM-19 | OAuth/直接 Bearer 双客户端矩阵 | ChatGPT Web 完成 OAuth 授权页输入成员 RCM Token、短期 access/refresh token、撤销/过期重授权；Codex/CLI 使用原 RCM Bearer；两条路径均不能跨主体读取任务 | 真实 Web/CLI 双路径；不在本机构建 |
 | [ ] | P1-TM-18 | 新模型面发布与生产收口 | 按连接/主体/机器观测错误率和重复率；异常时回滚到上一套 Java 构建，不恢复旧 MCP Tool 面，也不回滚已应用数据库迁移；通过生产验收后更新 `STATUS.md` 与 `PRODUCTION_ACCEPTANCE.md` | Release/rollback 演练；旧 Go 路径和旧 Tool 面不重新上线 |

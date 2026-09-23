@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.AgentConfigUpdate;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,7 +17,7 @@ class AgentRuntimeSettingsTest {
     @Test
     void appliesOnlyNewGenerationsAndPersistsAcrossRestart(@TempDir Path stateDir) throws Exception {
         var base = new AgentConfig(URI.create("https://center.invalid"), "enrollment", "agent", "host",
-                stateDir.toString(), ScopeMode.UNRESTRICTED, null, List.of("command"), false,
+                stateDir.toString(), List.of("command"), false,
                 stateDir, Duration.ofSeconds(5), 1);
         var settings = new AgentRuntimeSettings(base);
         var update = new AgentConfigUpdate(3, 1500, 3);

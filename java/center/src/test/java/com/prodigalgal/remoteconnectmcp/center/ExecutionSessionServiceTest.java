@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.ExecutionContract;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
@@ -31,7 +30,7 @@ class ExecutionSessionServiceTest {
     }
 
     private static ExecutionContract contract(String machineId, String sessionId) {
-        return new ExecutionContract(machineId, "host-1", ScopeMode.WORKSPACE, null, null, "/workspace",
+        return new ExecutionContract(machineId, "host-1", com.prodigalgal.remoteconnectmcp.protocol.LaneMode.WRITE,
                 sessionId, "command", ExecutionContract.Budget.defaults(), Instant.now().plusSeconds(3600),
                 "idempotency", "low", false, null);
     }

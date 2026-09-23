@@ -8,7 +8,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
-import com.prodigalgal.remoteconnectmcp.protocol.ScopeMode;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskKind;
 import java.io.ByteArrayInputStream;
@@ -28,7 +27,7 @@ class ArtifactTransferServiceTest {
     void readsSmallImageInlineForMcpRendering(@TempDir Path root) throws Exception {
         var registry = AgentRegistry.forTest("enrollment");
         var registration = registry.register(new RegisterRequest("command-agent", "host-image", "host-image", "linux", "amd64",
-                "dev", root.toString(), ScopeMode.UNRESTRICTED, null, List.of("command", "file_transfer")), "enrollment");
+                "dev", root.toString(), List.of("command", "file_transfer")), "enrollment");
         var tasks = new TaskService(registry);
         var store = new FileSystemArtifactStore(root.resolve("objects"));
         var tokens = new CenterTokenConfig() {
@@ -41,7 +40,7 @@ class ArtifactTransferServiceTest {
         var origin = new TaskOrigin("principal-image", "token-image", "connection-image");
         var request = new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "ignored", root.toString(), Map.of(), 0, null, Instant.now()),
-                "image-transfer", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
+                 "image-transfer", null, "", "low", false, origin);
         var image = new byte[]{(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a};
         var sha = sha256(image);
         var created = service.createAgentToWeb(origin, request, root.resolve("camera.jpg").toString(), "camera.jpg", "image/jpeg");
@@ -56,8 +55,8 @@ class ArtifactTransferServiceTest {
         assertArrayEquals(image, inline.data());
         assertTrue(service.readInline(created.transfer().artifactId(), origin, 1).isEmpty());
 
-        var textRequest = new CreateTaskRequest(registration.machineId(), request.command(), "text-transfer", "", "",
-                ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
+        var textRequest = new CreateTaskRequest(registration.machineId(), request.command(), "text-transfer", null,
+                "", "low", false, origin);
         var text = "inline text payload".getBytes(StandardCharsets.UTF_8);
         var textCreated = service.createAgentToWeb(origin, textRequest, root.resolve("note.txt").toString(), "note.txt", "text/plain");
         var textLeased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
@@ -73,7 +72,7 @@ class ArtifactTransferServiceTest {
     void streamsAgentFileToAnOwnerBoundSignedArtifact(@TempDir Path root) throws Exception {
         var registry = AgentRegistry.forTest("enrollment");
         var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64",
-                "dev", root.toString(), ScopeMode.UNRESTRICTED, null, List.of("command", "file_transfer")), "enrollment");
+                "dev", root.toString(), List.of("command", "file_transfer")), "enrollment");
         var tasks = new TaskService(registry);
         var store = new FileSystemArtifactStore(root.resolve("objects"));
         var tokens = new CenterTokenConfig() {
@@ -85,8 +84,8 @@ class ArtifactTransferServiceTest {
         var service = new ArtifactTransferService(null, null, store, tasks, tokens);
         var origin = new TaskOrigin("principal-a", "token-a", "connection-a");
         var command = new TaskCommand("", TaskKind.COMMAND, "command", "ignored", root.toString(), Map.of(), 0, null, Instant.now());
-        var request = new CreateTaskRequest(registration.machineId(), command, "transfer-1", "", "",
-                ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
+        var request = new CreateTaskRequest(registration.machineId(), command, "transfer-1", null,
+                "", "low", false, origin);
 
         var created = service.createAgentToWeb(origin, request, root.resolve("report.txt").toString(), "report.txt", "text/plain");
         var retried = service.createAgentToWeb(origin, request, root.resolve("report.txt").toString(), "report.txt", "text/plain");
@@ -111,8 +110,8 @@ class ArtifactTransferServiceTest {
         }
         assertThrows(SecurityException.class, () -> service.openPublic(token.substring(0, token.length() - 1) + "x"));
 
-        var failedRequest = new CreateTaskRequest(registration.machineId(), command, "transfer-failure", "", "",
-                ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
+        var failedRequest = new CreateTaskRequest(registration.machineId(), command, "transfer-failure", null,
+                "", "low", false, origin);
         var failed = service.createAgentToWeb(origin, failedRequest, root.resolve("failed.txt").toString(), "failed.txt", "text/plain");
         var failedLease = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
         assertNotNull(failedLease);
@@ -130,7 +129,7 @@ class ArtifactTransferServiceTest {
     void resumesAgentUploadByAcknowledgedOffset(@TempDir Path root) throws Exception {
         var registry = AgentRegistry.forTest("enrollment");
         var registration = registry.register(new RegisterRequest("command-agent", "host-resume", "host-resume", "linux", "amd64",
-                "dev", root.toString(), ScopeMode.UNRESTRICTED, null, List.of("command", "file_transfer")), "enrollment");
+                "dev", root.toString(), List.of("command", "file_transfer")), "enrollment");
         var tasks = new TaskService(registry);
         var store = new FileSystemArtifactStore(root.resolve("objects"));
         var tokens = new CenterTokenConfig() {
@@ -143,7 +142,7 @@ class ArtifactTransferServiceTest {
         var origin = new TaskOrigin("principal-resume", "token-resume", "connection-resume");
         var request = new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "ignored", root.toString(), Map.of(), 0, null, Instant.now()),
-                "resume-transfer", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
+                 "resume-transfer", null, "", "low", false, origin);
         var data = "resumable payload".getBytes(StandardCharsets.UTF_8);
         var sha = sha256(data);
         var transfer = service.createAgentToWeb(origin, request, root.resolve("resume.txt").toString(), "resume.txt", "text/plain");
@@ -176,7 +175,7 @@ class ArtifactTransferServiceTest {
     void keepsPartialSpoolWhenAChunkEndsBeforeItsDeclaredLength(@TempDir Path root) throws Exception {
         var registry = AgentRegistry.forTest("enrollment");
         var registration = registry.register(new RegisterRequest("command-agent", "host-stall", "host-stall", "linux", "amd64",
-                "dev", root.toString(), ScopeMode.UNRESTRICTED, null, List.of("command", "file_transfer")), "enrollment");
+                "dev", root.toString(), List.of("command", "file_transfer")), "enrollment");
         var tasks = new TaskService(registry);
         var store = new FileSystemArtifactStore(root.resolve("objects"));
         var tokens = new CenterTokenConfig() {
@@ -190,7 +189,7 @@ class ArtifactTransferServiceTest {
         var data = "partial payload".getBytes(StandardCharsets.UTF_8);
         var request = new CreateTaskRequest(registration.machineId(),
                 new TaskCommand("", TaskKind.COMMAND, "command", "ignored", root.toString(), Map.of(), 0, null, Instant.now()),
-                "stall-transfer", "", "", ScopeMode.UNRESTRICTED, "", "", "low", false, origin);
+                 "stall-transfer", null, "", "low", false, origin);
         var transfer = service.createAgentToWeb(origin, request, root.resolve("stall.txt").toString(), "stall.txt", "text/plain");
         var leased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
         assertNotNull(leased);

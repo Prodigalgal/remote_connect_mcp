@@ -17,7 +17,6 @@ public record AgentRuntimeDescriptor(
         @JsonProperty("max_cpu_seconds") long maxCpuSeconds,
         @JsonProperty("desktop_enabled") boolean desktopEnabled,
         @JsonProperty("browser_adapter_configured") boolean browserAdapterConfigured,
-        @JsonProperty("scope_mode") ScopeMode scopeMode,
         @JsonProperty("desktop_session_available") boolean desktopSessionAvailable,
         @JsonProperty("browser_session_available") boolean browserSessionAvailable,
         @JsonProperty("resource_enforcement") String resourceEnforcement) {
@@ -33,7 +32,7 @@ public record AgentRuntimeDescriptor(
         this(schemaVersion, configGeneration, maxConcurrency, maxBrowserWorkers, maxOutputBytes,
                 maxAggregateOutputBytes, maxChildProcesses, Math.min(256, Math.max(32, Math.max(1, maxConcurrency) * 32)),
                 maxTaskDurationSeconds, maxRssBytes, maxCpuSeconds, desktopEnabled, browserAdapterConfigured,
-                ScopeMode.WORKSPACE, false, false, "process-tree");
+                false, false, "process-tree");
     }
 
     public AgentRuntimeDescriptor {
@@ -41,7 +40,6 @@ public record AgentRuntimeDescriptor(
             throw new IllegalArgumentException("unsupported Agent runtime schema version: " + schemaVersion);
         }
         if (configGeneration < 0) throw new IllegalArgumentException("runtime config generation must be non-negative");
-        if (scopeMode == null) throw new IllegalArgumentException("runtime scope mode is required");
         if (resourceEnforcement == null || resourceEnforcement.isBlank()) {
             throw new IllegalArgumentException("runtime resource enforcement is required");
         }
@@ -65,7 +63,7 @@ public record AgentRuntimeDescriptor(
     public static AgentRuntimeDescriptor defaults() {
         return new AgentRuntimeDescriptor(1, 0, 1, 1, 64L * 1024 * 1024,
                 64L * 1024 * 1024, 32, 32, 0, 0, 0, false, false,
-                ScopeMode.WORKSPACE, false, false, "process-tree");
+                false, false, "process-tree");
     }
 
 }

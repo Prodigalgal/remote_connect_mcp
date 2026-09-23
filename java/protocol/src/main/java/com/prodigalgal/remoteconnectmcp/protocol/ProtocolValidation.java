@@ -26,14 +26,6 @@ public final class ProtocolValidation {
         requireText(metadata.arch(), "arch", 64);
         requireText(metadata.version(), "version", 128);
         requireText(metadata.defaultCwd(), "defaultCwd", MAX_CWD_BYTES);
-        if (metadata.scopeMode() != null && metadata.scopeMode().bounded()) {
-            requireText(metadata.workspaceRoot(), "workspaceRoot", MAX_CWD_BYTES);
-            // Reject an invalid machine policy at registration time.  Tasks
-            // still receive a separate contract, but a bounded Agent must
-            // never advertise a default cwd outside its own outer root.
-            WorkspacePolicy.validateRemote(metadata.scopeMode(), metadata.os(),
-                    metadata.workspaceRoot(), metadata.defaultCwd(), null);
-        }
         if (metadata.capabilities().size() > 64) {
             throw new IllegalArgumentException("too many capabilities");
         }
@@ -214,21 +206,6 @@ public final class ProtocolValidation {
         if (contract.budget().maxDurationSeconds() > 0
                 && task.timeoutSeconds() > contract.budget().maxDurationSeconds()) {
             throw new IllegalArgumentException("task timeout exceeds execution contract budget");
-        }
-        if (contract.scopeMode() == ScopeMode.PROJECT && contract.worktreeId() != null) {
-            throw new IllegalArgumentException("project contract cannot carry worktreeId");
-        }
-        if (contract.workspacePolicy() == WorkspacePolicyMode.HOST
-                && contract.scopeMode() != ScopeMode.UNRESTRICTED) {
-            throw new IllegalArgumentException("host workspace policy requires unrestricted scope");
-        }
-        if (contract.workspacePolicy() == WorkspacePolicyMode.ISOLATED
-                && contract.scopeMode() == ScopeMode.UNRESTRICTED) {
-            throw new IllegalArgumentException("isolated workspace policy requires bounded scope");
-        }
-        if (contract.workspacePolicy() == WorkspacePolicyMode.ISOLATED
-                && contract.scopeMode() != ScopeMode.WORKTREE) {
-            throw new IllegalArgumentException("isolated workspace policy requires worktree scope");
         }
         if (contract.laneMode() == null) {
             throw new IllegalArgumentException("lane mode is required");

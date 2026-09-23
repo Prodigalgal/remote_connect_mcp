@@ -53,7 +53,7 @@ jobs:
             exit 0
           fi
           if [[ -z "${BEFORE}" || "${BEFORE}" =~ ^0+$ ]]; then files="$(git ls-files)"; else files="$(git diff --name-only "${BEFORE}" "${SHA}")"; fi
-          if printf '%s\n' "${files}" | grep -Eq '^(web/|\.github/workflows/react-console-release.yml$)'; then
+          if printf '%s\n' "${files}" | grep -Eq '^(web/|\.github/workflows/console-release.yml$)'; then
             echo 'changed=true' >> "${GITHUB_OUTPUT}"
           else
             echo 'changed=false' >> "${GITHUB_OUTPUT}"
