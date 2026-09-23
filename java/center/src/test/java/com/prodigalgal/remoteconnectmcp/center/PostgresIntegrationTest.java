@@ -287,12 +287,12 @@ class PostgresIntegrationTest {
         // queued rows at the same time.  The row lock/SKIP LOCKED contract is
         // what permits multiple Center replicas without double dispatch.
         var claimIds = IntStream.range(0, 2).mapToObj(index -> {
-            // The test uses independent session lanes so the SKIP LOCKED
-            // assertion remains deterministic without a path policy.
+            // The test uses read-only commands so both can share the same
+            // machine lane while the Center replicas exercise SKIP LOCKED.
             var claimCommand = new TaskCommand("", TaskKind.COMMAND, "command", "printf claim-" + index, "/tmp/claim-" + index,
                     Map.of(), 30, null, Instant.now());
             return taskService.create(new CreateTaskRequest(agentId, claimCommand, "claim-key-" + index,
-                    null, "claim-session-" + index, "low", false, TaskOrigin.configured())).id();
+                    null, "claim-session-" + index, "low", false, TaskOrigin.configured(), true)).id();
         }).toList();
         var claimStart = new CountDownLatch(1);
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
