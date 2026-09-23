@@ -1,0 +1,14 @@
+databaseChangeLog:
+  - changeSet:
+      id: 038-allow-wildcard-machine-grants
+      author: remote-connect-mcp
+      labels: acl,cleanup
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        # '*' represents an explicit grant for every current and future machine.
+        - sql:
+            sql: ALTER TABLE rcm_machine_grant DROP CONSTRAINT IF EXISTS fk_rcm_machine_grant_agent
