@@ -224,6 +224,10 @@ class PostgresIntegrationTest {
                 new ByteArrayInputStream(transferData), transferData.length, transferHash,
                 "transfer-report.txt", "text/plain", transferLease.attempt());
         assertEquals("delivered", delivered.status());
+        store.updateState(agentId, transferLease.id(),
+                new TaskUpdateRequest("running", null, null, Instant.now(), null, false), transferLease.attempt());
+        store.updateState(agentId, transferLease.id(),
+                new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false), transferLease.attempt());
         assertEquals("delivered", jdbc.queryForObject("SELECT status FROM rcm_file_transfer WHERE transfer_id = ?", String.class,
                 transfer.transfer().transferId()));
         assertEquals(transferData.length, jdbc.queryForObject("SELECT bytes_transferred FROM rcm_file_transfer WHERE transfer_id = ?", Long.class,
@@ -256,6 +260,10 @@ class PostgresIntegrationTest {
                 resumableData.length - split, split, resumableData.length, resumableHash,
                 "transfer-resumable.txt", "text/plain", resumableLease.attempt());
         assertEquals("delivered", resumed.status());
+        store.updateState(agentId, resumableLease.id(),
+                new TaskUpdateRequest("running", null, null, Instant.now(), null, false), resumableLease.attempt());
+        store.updateState(agentId, resumableLease.id(),
+                new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false), resumableLease.attempt());
         assertEquals(resumableData.length, jdbc.queryForObject("SELECT bytes_transferred FROM rcm_file_transfer WHERE transfer_id = ?", Long.class,
                 resumable.transfer().transferId()));
 
