@@ -923,7 +923,7 @@ public final class TaskService {
         }
     }
 
-    /** Waits only for a terminal result, used by short-lived desktop actions. */
+    /** Waits briefly for an execution tool's terminal result without changing the durable task. */
     public TaskView waitForTerminal(String taskId, Duration timeout) throws InterruptedException {
         var deadline = System.nanoTime() + timeout.toNanos();
         while (true) {

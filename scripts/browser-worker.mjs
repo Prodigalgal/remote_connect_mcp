@@ -70,7 +70,6 @@ async function staleReferenceObservation(message) {
     const snapshot = await snapshotPage(page);
     const elements = await elementReferences(page);
     return limitText(JSON.stringify({
-      next_action: "snapshot",
       reason: "stale_reference",
       url: safeEventUrl(page.url()),
       title: safePageTitle(await page.title()),

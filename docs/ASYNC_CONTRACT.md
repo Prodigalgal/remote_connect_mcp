@@ -1,6 +1,6 @@
 # RCM 异步执行契约
 
-RCM 的“异步”是端到端契约，不只是把命令丢到一个线程池：请求、排队、派发、执行、输出上传和状态收口都有独立生命周期。任何一次 HTTP 超时或客户端重试都不能隐式再执行一遍命令。产品目标和非目标见 [`docs/REQUIREMENTS.md`](REQUIREMENTS.md)。
+RCM 的“异步”是端到端契约，不只是把命令丢到一个线程池：请求、排队、派发、执行、输出上传和状态收口都有独立生命周期。任何一次 HTTP 超时或客户端重试都不能隐式再执行一遍命令。当前权限与工具入口以 [`FULL_HOST_MODEL.md`](FULL_HOST_MODEL.md) 为准。
 
 ## 心跳配置热更新
 
@@ -12,32 +12,30 @@ Agent 的 `/agent/v1/poll` 响应可以携带可选 `config` 对象：
 
 `generation` 由 Center 单调递增，Agent 只接受更高版本，并把不含密钥的配置
 原子写入 `STATE_DIR/runtime-config.json`；当前进程立即使用新的心跳间隔和并发槽位，
-重启后继续沿用最后一次成功配置。输出上限、Agent 工作区范围和 Token 仍是启动时配置，
+重启后继续沿用最后一次成功配置。输出上限和 Token 仍是启动时配置，
 不会通过热更新绕过本机安全边界。管理端接口为
 `GET/PUT /api/v1/admin/machines/{machineId}/config`。
 
-每个新任务还携带 Center 签发的 execution contract，其中包含 machine/host 身份、project/worktree/path
-范围、所需能力、预算、过期时间、风险和幂等意图。Agent 在真正启动子进程前再次校验该合同；合同缺失、过期、
-身份不匹配或范围扩大时直接 fail-closed。合同预算只能收紧 Agent 启动时的输出、工件和操作时长上限，
+每个新任务还携带 Center 签发的 execution contract，其中包含 machine/host 身份、所需能力、预算、过期时间、风险和幂等意图。Agent 在真正启动子进程前再次校验该合同；合同缺失、过期或身份不匹配时直接 fail-closed。合同预算只能收紧 Agent 启动时的输出、工件和操作时长上限，
 不会通过任务请求放大宿主机资源额度；Center 会把请求预算进一步收窄到最近一次 Agent runtime
 descriptor 宣告的输出、子进程、CPU/RSS 和时长上限。runtime descriptor 使用版本号，当前只接受
 schema 1；runtime descriptor 缺失或字段不完整时直接拒绝，不猜测新字段的语义。
 
 ## 调用方语义
 
-- `command`、`desktop`、`browser` 只负责校验并创建任务，成功后立即返回 `task_id`；默认不等待子进程。
-- 项目/worktree 注册与 `git worktree add/remove` 同样只创建异步任务；创建完成前不能把 worktree 当作任务 cwd，重复请求应使用同一个 `idempotency_key`。
+- `command`、`desktop`、`browser` 和 `artifact(put/get)` 先创建持久任务。`wait_ms=0` 立即返回任务；正数只在 MCP 请求内短等结果，等待到期不会取消任务。`artifact(get)` 的 `auto` 默认短等，`async` 立即返回文件句柄。
 - `task_read` 的 `wait_ms` 仅允许显式的 0–20 秒短等待，用于减少一次往返；超时返回当前快照，不表示任务失败。
 - `task_read` 可以携带上次返回的 `change_seq`；Center 只在任务的持久化版本、输出游标或终态发生变化时返回，模型拿到 `task_id` 后不得重新提交同一操作。
-- 每个可继续的结果最多返回一个结构化 `next_action` 对象（`tool`、`operation`、任务/工件句柄、cursor/change_seq、短等待和 machine-readable reason）；它是可复制的导航提示，不是授权字段。没有后续动作时省略或返回仅含 reason 的对象。
+- 所有执行类任务的后续状态和结果统一由 `task_read` 读取。结果直接携带任务句柄、状态、`change_seq`、输出游标和错误；不再返回 `next_action` 决策对象。
 - Agent 进度是受 Attempt 栅栏保护的有限快照（phase、percent、message、current、total、unit），属于提示性元数据；进度上报失败不能阻塞命令执行，任务状态和输出仍是恢复事实来源。
 - 命令可选择在任务环境设置 `RCM_PROGRESS_FILE`。Agent 只在已解析的任务 cwd 下注册 `WatchService`，读取不超过 64 KiB 的 JSON `TaskProgressUpdate`，按 250 ms 最小间隔节流并在任务结束时关闭；路径越界、符号链接、解析失败和进度上传失败都只记录为受限诊断，不影响命令本身。
 - PostgreSQL 模式下，Center 会在读取任务行前捕获该任务的变更序号，并挂起等待
   `LISTEN rcm_task_change`/`NOTIFY`；不同任务不会互相唤醒并查询，不会按固定间隔持续查询。通知丢失或监听器故障时，
   等待在调用方的截止时间返回当前快照；下一次显式 `task_read` 再读取权威任务行。内存模式
   使用本地条件变量。任务行始终是唯一事实来源。
-- `task_read` 使用字节 cursor 分页，单页最多 64 KiB；调用方必须保存 `next_cursor`，不能把整段输出塞回 MCP 上下文。
+- `task_read` 使用字节 cursor 分页，单页最多 64 KiB；cursor 可以直接跳到已知字节偏移。`tail_bytes` 可从当前输出末尾读取有界字节，与 cursor/limit 互斥。顺序读取时调用方保存 `next_cursor`，不能把整段输出塞回 MCP 上下文。
 - `idempotency_key` 在同一 Agent 上绑定命令参数；重试得到原任务视图，参数变化会被拒绝。
+- `wait_ms` 和制品 `delivery_mode` 只影响本次结果呈现，不参与服务端自动幂等键的参数指纹；切换等待方式不会变成另一项任务。
 - `task_cancel` 是幂等的：排队任务立即取消，已派发任务先进入 `cancel_requested`，由 Agent 杀掉进程并上报终态。
 
 ## Center

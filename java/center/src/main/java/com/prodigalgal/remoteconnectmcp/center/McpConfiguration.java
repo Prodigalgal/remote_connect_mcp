@@ -187,7 +187,7 @@ public class McpConfiguration {
                                     @Value("${rcm.version:dev}") String version) {
         var server = McpServer.async(transport)
                 .serverInfo("remote-connect-mcp-center", version)
-                .instructions("Use machines first to choose a machine by stable id, then command, desktop, browser, or artifact as needed. Tools are asynchronous: once a task_id is returned, do not resubmit the operation; use task_read with the same task_id and change_seq, and reuse the same idempotency_key only when a transport retry is necessary. Keep MCP results compact; detailed logs, screenshots and documents are artifact references fetched on demand. For artifact get, use delivery_mode=inline only when the user explicitly asks to see the content immediately; use delivery_mode=async for long or unattended transfers; auto is the default. Inline is bounded and returns native MCP Content when ready, while async returns a file handle that the Viewer can render after delivery. An optional cwd is only a working-directory hint; every registered Agent intentionally has full-host authority. The Center enforces principal, session, lane and quota contracts regardless of model hints.")
+                .instructions("Use machines first to choose a machine by stable id, then command, desktop, browser, or artifact as needed. Execution tools create durable tasks: wait_ms=0 returns a task immediately, while a positive wait_ms waits briefly and returns a result if ready. A wait deadline never cancels the task. Once a task_id is returned, do not resubmit the operation; use task_read with the same task_id and change_seq, and reuse the same idempotency_key only when a transport retry is necessary. For failed commands with long output, task_read can request tail_bytes instead of paging from the start. Keep MCP results compact; detailed logs, screenshots and documents are fetched on demand. For artifact get, use delivery_mode=inline only when the user explicitly asks to see the content immediately; use delivery_mode=async for long or unattended transfers; auto is the default. An optional cwd is only a working-directory hint; every registered Agent intentionally has full-host authority. The Center enforces principal, session, lane and quota contracts regardless of model hints.")
                 .strictToolNameValidation(true)
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
@@ -284,21 +284,21 @@ public class McpConfiguration {
                 tool("machines", "Discover registered machines or fetch one bounded machine detail. Returns stable IDs and compact capability summaries.",
                         machinesModelSchema(),
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesModel(agents, access, origin(exchange, conversations), request); }, scheduler, oauth),
-                tool("command", "Queue one shell command on a selected machine and return a durable task handle immediately.",
+                tool("command", "Run one shell command on a selected machine. wait_ms=0 returns its durable task immediately; a positive wait_ms returns bounded output if it finishes in time.",
                         commandModelSchema(),
                         (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandModel(agents, tasks, access, origin(exchange, conversations), request); }, scheduler, oauth),
-                tool("desktop", "Control an explicitly desktop-capable user session with semantic screenshot, window, input and launch operations.",
+                tool("desktop", "Control a desktop-capable user session. wait_ms=0 returns a task immediately; a positive wait_ms returns a bounded result if ready. Use task_read to continue.",
                         desktopModelSchema(),
                         (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktopModel(agents, tasks, access, origin(exchange, conversations), request); }, scheduler, oauth),
-                tool("browser", "Run one structured browser navigation, observation or interaction request on a browser-capable machine.",
+                tool("browser", "Run one structured browser action. wait_ms=0 returns a task immediately; a positive wait_ms returns a bounded result if ready. Use task_read to continue.",
                         browserModelSchema(),
                         (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browserModel(agents, tasks, access, origin(exchange, conversations), request); }, scheduler, oauth),
-                tool("artifact", "Transfer a ChatGPT file to a machine, retrieve a machine file, or read a compact artifact handle.",
+                tool("artifact", "put requires machine_id, file and destination_path; get requires machine_id and source_path; read requires exactly one artifact_id or transfer_id. put/get can wait briefly; read inspects an existing file handle.",
                         artifactModelSchema(), artifactMeta,
                         (exchange, request) -> { requireScope(exchange,
                                 "read".equalsIgnoreCase(asString(modelArguments(request).get("operation"))) ? "mcp:read" : "mcp:execute");
                             return artifactModel(agents, tasks, access, transfers, origin(exchange, conversations), request); }, scheduler, oauth),
-                tool("task_read", "Read one durable task state and one bounded output page; optionally wait briefly for a change.",
+                tool("task_read", "Read one durable task and bounded output. Use cursor for a byte offset or tail_bytes for the latest bytes; wait_ms optionally waits for a change.",
                         taskReadModelSchema(),
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("task_cancel", "Cancel one queued or running task owned by the current principal and session.",
@@ -401,34 +401,6 @@ public class McpConfiguration {
                 modelInteger(description, min, max), Map.of("type", "null")));
     }
 
-    private static Map<String, Object> modelNullableObject(String description, Map<String, Object> properties) {
-        var object = modelSchema(properties, List.of());
-        object.put("description", description);
-        return Map.of("description", description, "anyOf", List.of(object, Map.of("type", "null")));
-    }
-
-    /**
-     * A compact, executable hint for the next bounded action.  It is an
-     * object instead of prose so a model can copy the stable identifiers and
-     * cursors without trying to parse English text.  All fields are optional
-     * because pagination and validation errors do not always have a task.
-     */
-    private static Map<String, Object> modelNextActionSchema() {
-        return modelNullableObject("bounded next operation; omit when no follow-up is needed", Map.ofEntries(
-                Map.entry("tool", modelEnum("one of the public MCP tools", List.of(
-                        "machines", "command", "desktop", "browser", "artifact", "task_read", "task_cancel"))),
-                Map.entry("operation", modelString("tool operation", 0, 64)),
-                Map.entry("task_id", modelString("existing task identifier", 1, 180)),
-                Map.entry("artifact_id", modelString("artifact identifier", 1, 180)),
-                Map.entry("transfer_id", modelString("transfer identifier", 1, 180)),
-                Map.entry("cursor", modelInteger("output byte cursor", 0, Integer.MAX_VALUE)),
-                Map.entry("change_seq", modelInteger("task change sequence", 0, Long.MAX_VALUE)),
-                Map.entry("offset", modelInteger("next page offset", 0, Integer.MAX_VALUE)),
-                Map.entry("limit", modelInteger("next page size", 1, MAX_OUTPUT_PAGE)),
-                Map.entry("wait_ms", modelInteger("bounded wait in milliseconds", 0, 20000)),
-                Map.entry("reason", modelString("short machine-readable reason", 0, 128))));
-    }
-
     private static Map<String, Object> modelEnum(String description, List<String> values) {
         return Map.of("type", "string", "description", description, "enum", values);
     }
@@ -481,15 +453,15 @@ public class McpConfiguration {
                 Map.entry("cwd", modelString("working directory on target machine", 1, 4096)),
                 Map.entry("env", Map.of("type", "object", "description", "optional non-secret environment map", "additionalProperties", modelString("environment value", 0, 8192))),
                 Map.entry("timeout_seconds", modelInteger("0 means Agent default", 0, 86400)),
+                Map.entry("wait_ms", modelInteger("0 returns a task immediately; a positive value waits briefly for bounded output without canceling the task", 0, 15000)),
                 Map.entry("idempotency_key", Map.of("type", "string", "description", "optional stable retry key", "minLength", 8, "maxLength", 128, "pattern", "^[A-Za-z0-9._:-]+$"))),
                 List.of("machine_id", "command"));
     }
 
     private static Map<String, Object> desktopModelSchema() {
         var properties = new LinkedHashMap<String, Object>();
-        properties.put("operation", modelEnum("semantic desktop operation", List.of("screenshot", "screenshot_region", "screens", "windows", "launch", "click", "double_click", "right_click", "move", "drag", "shortcut", "type", "clipboard_read", "clipboard_write", "focus", "result")));
+        properties.put("operation", modelEnum("semantic desktop operation", List.of("screenshot", "screenshot_region", "screens", "windows", "launch", "click", "double_click", "right_click", "move", "drag", "shortcut", "type", "clipboard_read", "clipboard_write", "focus")));
         properties.put("machine_id", modelString("desktop-capable machine identifier", 1, 180));
-        properties.put("task_id", modelString("existing desktop task for result", 1, 180));
         properties.put("cwd", modelString("working directory on target machine", 1, 4096));
         properties.put("executable", modelString("literal application for launch", 1, 4096));
         properties.put("args", Map.of("type", "array", "description", "literal launch arguments", "items", modelString("argument", 0, 4096), "maxItems", 128));
@@ -521,16 +493,18 @@ public class McpConfiguration {
     }
 
     private static Map<String, Object> artifactModelSchema() {
-        return modelSchema(Map.ofEntries(
-                Map.entry("operation", modelEnum("artifact operation", List.of("put", "get", "read"))),
-                Map.entry("delivery_mode", modelEnum("artifact delivery: auto chooses the compact path, inline waits for native MCP Content when explicitly requested, async returns a durable file handle immediately", List.of("auto", "inline", "async"))),
-                Map.entry("wait_ms", modelInteger("bounded wait for inline delivery; ignored for async", 0, 60000)),
-                Map.entry("machine_id", modelString("target/source machine identifier", 1, 180)),
-                Map.entry("file", modelFileObjectSchema()),
-                Map.entry("artifact_id", modelString("artifact identifier", 1, 180)),
-                Map.entry("transfer_id", modelString("transfer identifier", 1, 180)),
-                 Map.entry("destination_path", modelString("complete target path or relative path on the target machine", 1, 4096)),
-                 Map.entry("source_path", modelString("complete source path on the target machine", 1, 4096)),
+        var file = modelFileObjectSchema();
+        file.put("description", "put only: ChatGPT file object injected into the top-level file parameter");
+        var result = modelSchema(Map.ofEntries(
+                Map.entry("operation", modelEnum("put uploads, get retrieves, read inspects an existing artifact", List.of("put", "get", "read"))),
+                Map.entry("delivery_mode", modelEnum("get/read only: auto returns compact content, inline requests native MCP content, async returns a file handle", List.of("auto", "inline", "async"))),
+                Map.entry("wait_ms", modelInteger("put/get only: bounded wait; 0 returns the task immediately and never cancels it", 0, 25000)),
+                Map.entry("machine_id", modelString("put/get only: target or source machine identifier", 1, 180)),
+                Map.entry("file", file),
+                Map.entry("artifact_id", modelString("read only: existing artifact identifier", 1, 180)),
+                Map.entry("transfer_id", modelString("read only: existing transfer identifier", 1, 180)),
+                Map.entry("destination_path", modelString("put only: target path on the machine", 1, 4096)),
+                Map.entry("source_path", modelString("get only: source path on the machine", 1, 4096)),
                 Map.entry("file_name", modelString("display file name", 1, 512)),
                 Map.entry("mime_type", modelString("MIME type", 1, 256)),
                 Map.entry("expected_bytes", modelInteger("expected byte size", 0L, 4L * 1024 * 1024 * 1024)),
@@ -539,16 +513,45 @@ public class McpConfiguration {
                 Map.entry("cwd", modelString("working directory on target machine", 1, 4096)),
                 Map.entry("idempotency_key", Map.of("type", "string", "description", "optional stable retry key", "minLength", 8, "maxLength", 128, "pattern", "^[A-Za-z0-9._:-]+$"))),
                 List.of("operation"));
+        result.put("oneOf", List.of(
+                artifactOperationBranch("put", List.of("operation", "machine_id", "file", "destination_path"),
+                        List.of("source_path", "artifact_id", "transfer_id", "delivery_mode")),
+                artifactOperationBranch("get", List.of("operation", "machine_id", "source_path"),
+                        List.of("file", "destination_path", "artifact_id", "transfer_id",
+                                "expected_bytes", "expected_sha256", "overwrite")),
+                artifactOperationBranch("read", List.of("operation", "artifact_id"),
+                        List.of("transfer_id", "machine_id", "file", "destination_path", "source_path",
+                                "file_name", "mime_type", "expected_bytes", "expected_sha256", "overwrite",
+                                "cwd", "idempotency_key", "wait_ms")),
+                artifactOperationBranch("read", List.of("operation", "transfer_id"),
+                        List.of("artifact_id", "machine_id", "file", "destination_path", "source_path",
+                                "file_name", "mime_type", "expected_bytes", "expected_sha256", "overwrite",
+                                "cwd", "idempotency_key", "wait_ms"))));
+        return result;
+    }
+
+    private static Map<String, Object> artifactOperationBranch(String operation, List<String> required,
+                                                                List<String> forbidden) {
+        var branch = new LinkedHashMap<String, Object>();
+        branch.put("properties", Map.of("operation", Map.of("const", operation)));
+        branch.put("required", required);
+        branch.put("not", Map.of("anyOf", forbidden.stream()
+                .map(field -> Map.of("required", List.of(field))).toList()));
+        return branch;
     }
 
     private static Map<String, Object> taskReadModelSchema() {
-        return modelSchema(Map.ofEntries(
-                Map.entry("operation", modelEnum("task read mode", List.of("wait", "output", "read_output"))),
+        var result = modelSchema(Map.ofEntries(
                 Map.entry("task_id", modelString("task identifier", 1, 180)),
-                Map.entry("cursor", modelInteger("output byte cursor", 0, Integer.MAX_VALUE)),
+                Map.entry("cursor", modelInteger("output byte offset; may jump directly near the end", 0, Integer.MAX_VALUE)),
+                Map.entry("tail_bytes", modelInteger("latest stored output bytes; use instead of cursor and limit; capped output may omit the process's true end", 1, MAX_OUTPUT_PAGE)),
                 Map.entry("wait_ms", modelInteger("bounded wait", 0, 20000)),
                 Map.entry("change_seq", modelInteger("return when task change sequence advances", 0, Long.MAX_VALUE)),
                 Map.entry("limit", modelInteger("output page size", 1, MAX_OUTPUT_PAGE))), List.of("task_id"));
+        result.put("not", Map.of("anyOf", List.of(
+                Map.of("required", List.of("tail_bytes", "cursor")),
+                Map.of("required", List.of("tail_bytes", "limit")))));
+        return result;
     }
 
     private static Map<String, Object> taskCancelModelSchema() {
@@ -579,7 +582,6 @@ public class McpConfiguration {
         taskProperties.put("output_expires_at", modelNullableString("task output expiry", 0, 64));
         taskProperties.put("pinned", modelBoolean("task retention is pinned"));
         taskProperties.put("archived_at", modelNullableString("task archive timestamp", 0, 64));
-        taskProperties.put("next_action", modelNextActionSchema());
         var task = modelSchema(taskProperties, List.of("id", "machine_id", "kind", "status"));
         // Task projections intentionally grow as capabilities are added (for
         // example result_channel and contract timestamps).
@@ -617,7 +619,6 @@ public class McpConfiguration {
                 Map.entry("limit", modelInteger("page size", 1, MAX_OUTPUT_PAGE)),
                 Map.entry("total", modelInteger("total visible records", 0, Integer.MAX_VALUE)),
                 Map.entry("has_more", modelBoolean("more records are available")),
-                Map.entry("next_action", modelNextActionSchema()),
                 Map.entry("error", error)), List.of());
         result.put("additionalProperties", true);
         return result;
@@ -651,6 +652,7 @@ public class McpConfiguration {
             normalized.put("command", requiredModelString(arguments, "command"));
             copyIfPresent(arguments, normalized, "env");
             copyIfPresent(arguments, normalized, "timeout_seconds");
+            copyIfPresent(arguments, normalized, "wait_ms");
             normalized.put("idempotency_key", ensureModelIdempotency(arguments, origin, "command"));
             copyIfPresent(arguments, normalized, "cwd");
             return commandCore(agents, tasks, access, origin, modelRequest("command", normalized));
@@ -669,7 +671,7 @@ public class McpConfiguration {
                     asString(arguments.get("operation")).toLowerCase(java.util.Locale.ROOT))
                     ? "key" : requiredModelString(arguments, "operation"));
             normalized.put("machine_id", requiredModelString(arguments, "machine_id"));
-            for (var key : List.of("task_id", "executable", "args", "text", "x", "y", "x2", "y2",
+            for (var key : List.of("executable", "args", "text", "x", "y", "x2", "y2",
                     "duration_ms", "screen", "window_title", "timeout_seconds", "wait_ms")) {
                 copyIfPresent(arguments, normalized, key);
             }
@@ -718,26 +720,40 @@ public class McpConfiguration {
             var arguments = modelArguments(request);
             var operation = requiredModelString(arguments, "operation");
             if ("read".equals(operation)) {
+                rejectModelFields(arguments, operation, "machine_id", "file", "destination_path", "source_path",
+                        "file_name", "mime_type", "expected_bytes", "expected_sha256", "overwrite",
+                        "cwd", "idempotency_key", "wait_ms");
+                var artifactId = asString(arguments.get("artifact_id"));
+                var transferId = asString(arguments.get("transfer_id"));
+                var hasArtifactId = artifactId != null && !artifactId.isBlank();
+                var hasTransferId = transferId != null && !transferId.isBlank();
+                if (hasArtifactId == hasTransferId) {
+                    throw new IllegalArgumentException("read requires exactly one artifact_id or transfer_id");
+                }
                 var normalized = new LinkedHashMap<String, Object>();
                 copyIfPresent(arguments, normalized, "artifact_id");
                 copyIfPresent(arguments, normalized, "transfer_id");
                 copyIfPresent(arguments, normalized, "delivery_mode");
-                copyIfPresent(arguments, normalized, "wait_ms");
                 return artifactReadCore(transfers, origin, modelRequest("artifact", normalized));
+            }
+            if (!"put".equals(operation) && !"get".equals(operation)) {
+                throw new IllegalArgumentException("operation must be put, get, or read");
             }
             var normalized = new LinkedHashMap<String, Object>();
             normalized.put("machine_id", requiredModelString(arguments, "machine_id"));
             normalized.put("idempotency_key", ensureModelIdempotency(arguments, origin, "artifact:" + operation));
             if ("put".equals(operation)) {
+                rejectModelFields(arguments, operation, "source_path", "artifact_id", "transfer_id", "delivery_mode");
                 normalized.put("file", requiredModelMap(arguments, "file"));
                 normalized.put("destination_path", requiredModelString(arguments, "destination_path"));
-                for (var key : List.of("file_name", "mime_type", "expected_bytes", "expected_sha256", "overwrite")) {
+                for (var key : List.of("file_name", "mime_type", "expected_bytes", "expected_sha256", "overwrite", "wait_ms")) {
                     copyIfPresent(arguments, normalized, key);
                 }
                 copyIfPresent(arguments, normalized, "cwd");
-                return artifactPutCore(agents, access, transfers, origin, modelRequest("artifact", normalized));
+                return artifactPutCore(agents, tasks, access, transfers, origin, modelRequest("artifact", normalized));
             }
-            if (!"get".equals(operation)) throw new IllegalArgumentException("operation must be put, get, or read");
+            rejectModelFields(arguments, operation, "file", "destination_path", "artifact_id", "transfer_id",
+                    "expected_bytes", "expected_sha256", "overwrite");
             normalized.put("source_path", requiredModelString(arguments, "source_path"));
             for (var key : List.of("file_name", "mime_type", "delivery_mode", "wait_ms")) copyIfPresent(arguments, normalized, key);
             copyIfPresent(arguments, normalized, "cwd");
@@ -748,18 +764,24 @@ public class McpConfiguration {
     }
 
     private static McpSchema.CallToolResult taskReadModel(TaskService tasks, TaskOrigin origin,
-                                                          McpSchema.CallToolRequest request) {
+                                                           McpSchema.CallToolRequest request) {
         try {
             var arguments = modelArguments(request);
             var taskId = requiredModelString(arguments, "task_id");
+            var tailBytes = optionalModelInt(arguments, "tail_bytes", 1, MAX_OUTPUT_PAGE, 0);
+            if (tailBytes > 0 && (arguments.containsKey("cursor") || arguments.containsKey("limit"))) {
+                throw new IllegalArgumentException("tail_bytes cannot be combined with cursor or limit");
+            }
             var cursor = optionalModelInt(arguments, "cursor", 0, Integer.MAX_VALUE, 0);
             var waitMs = optionalModelInt(arguments, "wait_ms", 0, 20000, 0);
             var changeSequence = optionalModelLong(arguments, "change_seq", 0L, Long.MAX_VALUE, -1L);
             var limit = optionalModelInt(arguments, "limit", 1, MAX_OUTPUT_PAGE, 16 * 1024);
             var current = tasks.findFor(origin, taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
+            var waitCursor = tailBytes > 0 ? current.outputBytes() : cursor;
             var view = waitMs == 0 ? new TaskView(current)
-                    : tasks.waitForChange(origin, taskId, cursor, changeSequence, Duration.ofMillis(waitMs));
-            return taskResult(tasks, origin, view, cursor, limit);
+                    : tasks.waitForChange(origin, taskId, waitCursor, changeSequence, Duration.ofMillis(waitMs));
+            var outputCursor = tailBytes > 0 ? Math.max(0L, view.outputBytes() - tailBytes) : cursor;
+            return taskResult(tasks, origin, view, outputCursor, tailBytes > 0 ? tailBytes : limit);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return error(exception);
@@ -802,6 +824,14 @@ public class McpConfiguration {
         if (source.containsKey(key) && source.get(key) != null) target.put(key, source.get(key));
     }
 
+    private static void rejectModelFields(Map<String, Object> arguments, String operation, String... fields) {
+        for (var field : fields) {
+            if (arguments.get(field) != null) {
+                throw new IllegalArgumentException(field + " is not valid for artifact " + operation);
+            }
+        }
+    }
+
     private static int optionalModelInt(Map<String, Object> values, String key, int min, int max, int fallback) {
         var value = values.get(key);
         if (value == null) return fallback;
@@ -835,6 +865,11 @@ public class McpConfiguration {
         if (explicit != null && !explicit.isBlank()) return explicit.trim();
         var copy = new LinkedHashMap<>(values);
         copy.remove("idempotency_key");
+        // Observation choices do not change the work being scheduled. A retry
+        // may choose a different wait or file presentation without creating a
+        // second task in the same deduplication window.
+        copy.remove("wait_ms");
+        copy.remove("delivery_mode");
         var window = Instant.now().getEpochSecond() / 60;
         try {
             var canonical = McpJsonDefaults.getMapper().writeValueAsString(copy);
@@ -851,12 +886,13 @@ public class McpConfiguration {
         return new McpSchema.CallToolRequest(name, arguments, Map.of());
     }
 
-    private static McpSchema.CallToolResult artifactPutCore(AgentRegistry agents,
+    private static McpSchema.CallToolResult artifactPutCore(AgentRegistry agents, TaskService tasks,
                                                         McpAccessService access, ArtifactTransferService transfers,
                                                         TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, ArtifactPutCoreArgs.class);
             if (args.file() == null) throw new IllegalArgumentException("file is required");
+            var waitMs = executionWaitMs(args.waitMs(), 25000);
             access.authorizeExecution(origin, args.machineId());
             var cwd = resolveCwd(agents, args.machineId(), args.cwd());
             var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, cwd, Map.of(), 0, null, Instant.now(), null, 0, null);
@@ -868,12 +904,17 @@ public class McpConfiguration {
             var result = transfers.createWebToAgent(origin, create, file.fileId(), args.destinationPath(), name, mime,
                     URI.create(file.downloadUrl()), args.expectedBytes() == null ? file.bytes() : args.expectedBytes(),
                     firstNonBlank(args.expectedSha256(), file.sha256()), Boolean.TRUE.equals(args.overwrite()));
+            var finalTask = waitMs == 0 ? result.task()
+                    : tasks.waitForTerminal(origin, result.task().id(), Duration.ofMillis(waitMs));
+            var finalTransfer = waitMs == 0 ? result.transfer()
+                    : transfers.findByTransfer(result.transfer().transferId(), origin).orElse(result.transfer());
             var payload = new LinkedHashMap<String, Object>();
-            payload.put("task", taskMap(result.task()));
-            payload.put("transfer", transferMap(result.transfer()));
-            payload.put("next_action", nextAction("task_read", "wait", result.task().id(), 0L,
-                    result.task().changeSequence(), 20000, "wait_for_transfer"));
+            payload.put("task", taskMap(finalTask));
+            payload.put("transfer", transferMap(finalTransfer));
             return structuredJson(payload);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return error(exception);
         } catch (Exception exception) {
             return error(exception);
         }
@@ -884,14 +925,14 @@ public class McpConfiguration {
                                                         TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, ArtifactGetCoreArgs.class);
+            var deliveryMode = normalizeDeliveryMode(args.deliveryMode());
+            var waitMs = artifactWaitMs(deliveryMode, args.waitMs());
             access.authorizeExecution(origin, args.machineId());
             var cwd = resolveCwd(agents, args.machineId(), args.cwd());
             var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, cwd, Map.of(), 0, null, Instant.now(), null, 0, null);
             var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     null, "", "low", false, origin);
             var result = transfers.createAgentToWeb(origin, create, args.sourcePath(), args.fileName(), args.mimeType());
-            var deliveryMode = normalizeDeliveryMode(args.deliveryMode());
-            var waitMs = artifactWaitMs(deliveryMode, args.waitMs());
             var finalTask = waitMs == 0
                     ? result.task()
                     : tasks.waitForTerminal(origin, result.task().id(), Duration.ofMillis(waitMs));
@@ -910,9 +951,10 @@ public class McpConfiguration {
             if (!Set.of("failed", "canceled").contains(finalTransfer.status())) {
                 payload.put("file", artifactFileMap(finalTransfer, transfers, origin));
             }
-            payload.put("next_action", nextAction("task_read", "wait", finalTask.id(), 0L,
-                    finalTask.changeSequence(), 20000, "wait_for_transfer"));
             return structuredJson(payload);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return error(exception);
         } catch (Exception exception) {
             return error(exception);
         }
@@ -1019,13 +1061,30 @@ public class McpConfiguration {
     }
 
     private static int artifactWaitMs(String deliveryMode, Integer requested) {
-        if ("async".equals(deliveryMode)) return 0;
+        if ("async".equals(deliveryMode)) {
+            if (requested != null && requested != 0) {
+                throw new IllegalArgumentException("async delivery requires wait_ms=0");
+            }
+            return 0;
+        }
         var bounded = requested == null ? ("inline".equals(deliveryMode)
                 ? DEFAULT_EXPLICIT_INLINE_WAIT_MS : DEFAULT_INLINE_ARTIFACT_WAIT_MS) : requested;
-        if (bounded < 0 || bounded > 60000) throw new IllegalArgumentException("wait_ms must be between 0 and 60000");
+        if (bounded < 0 || bounded > 25000) throw new IllegalArgumentException("wait_ms must be between 0 and 25000");
         // MCP request timeout is 30 seconds; keep the synchronous branch below
         // that transport ceiling so a caller receives a structured fallback.
-        return Math.min(25000, bounded);
+        return bounded;
+    }
+
+    private static int executionWaitMs(Integer requested) {
+        return executionWaitMs(requested, 15000);
+    }
+
+    private static int executionWaitMs(Integer requested, int maxWaitMs) {
+        var waitMs = requested == null ? 0 : requested;
+        if (waitMs < 0 || waitMs > maxWaitMs) {
+            throw new IllegalArgumentException("wait_ms must be between 0 and " + maxWaitMs);
+        }
+        return waitMs;
     }
 
     private static Map<String, Object> artifactFileMap(ArtifactTransferService.TransferDescriptor descriptor,
@@ -1098,8 +1157,6 @@ public class McpConfiguration {
             payload.put("total", total);
             var hasMore = offset + values.size() < total;
             payload.put("has_more", hasMore);
-            payload.put("next_action", nextAction("machines", "list", null, null, null,
-                    null, hasMore ? "read_next_page" : "no_more_pages", hasMore ? offset + values.size() : null, limit));
             return json(payload);
         } catch (Exception exception) {
             return error(exception);
@@ -1124,6 +1181,7 @@ public class McpConfiguration {
                                                          McpSchema.CallToolRequest request) {
         try {
             var args = args(request, CommandCoreArgs.class);
+            var waitMs = executionWaitMs(args.waitMs());
             access.authorizeExecution(origin, args.machineId());
             var timeout = args.timeoutSeconds() == null ? 0 : args.timeoutSeconds();
             var cwd = resolveCwd(agents, args.machineId(), args.cwd());
@@ -1131,11 +1189,12 @@ public class McpConfiguration {
                     null, args.command(), cwd, args.env(), timeout, null, Instant.now(), null, 0, null);
             var task = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     null, "", "low", false, origin), "mcp", origin);
-            var payload = new LinkedHashMap<String, Object>();
-            payload.put("task", taskMap(task));
-            payload.put("next_action", nextAction("task_read", "wait", task.id(), 0L,
-                    task.changeSequence(), 20000, "wait_for_change"));
-            return json(payload);
+            if (waitMs > 0) return taskResult(tasks, origin,
+                    tasks.waitForTerminal(origin, task.id(), Duration.ofMillis(waitMs)), 0, 16 * 1024);
+            return json(Map.of("task", taskMap(task)));
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return error(exception);
         } catch (Exception exception) {
             return error(exception);
         }
@@ -1147,6 +1206,7 @@ public class McpConfiguration {
                                                     McpSchema.CallToolRequest request) {
         try {
             var args = args(request, BrowserCoreArgs.class);
+            var waitMs = executionWaitMs(args.waitMs());
             access.authorizeExecution(origin, args.machineId());
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             if (!machine.capabilities().contains("browser")) throw new IllegalArgumentException("machine does not advertise browser capability");
@@ -1156,15 +1216,9 @@ public class McpConfiguration {
                     "browser", args.command(), cwd, Map.of(), timeout, null, Instant.now(), null, 0, null);
             var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     null, "", "low", false, origin), "mcp", origin);
-            var waitMs = args.waitMs() == null ? 0 : args.waitMs();
-            if (waitMs < 0 || waitMs > 15000) throw new IllegalArgumentException("wait_ms must be between 0 and 15000");
             if (waitMs > 0) return taskResult(tasks, origin,
                     tasks.waitForTerminal(origin, created.id(), Duration.ofMillis(waitMs)), 0, 16 * 1024);
-            var payload = new LinkedHashMap<String, Object>();
-            payload.put("task", taskMap(created));
-            payload.put("next_action", nextAction("task_read", "wait", created.id(), 0L,
-                    created.changeSequence(), 20000, "wait_for_change"));
-            return json(payload);
+            return json(Map.of("task", taskMap(created)));
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return error(exception);
@@ -1180,26 +1234,13 @@ public class McpConfiguration {
         try {
             var args = args(request, DesktopCoreArgs.class);
             var operation = args.operation() == null ? "" : args.operation().trim().toLowerCase();
-            // All desktop operations are queued by default.  A caller may opt
-            // into a short bounded wait explicitly, but a screenshot must not
-            // pin the MCP request simply because it is the default action.
-            var waitMs = args.waitMs() == null ? 0 : args.waitMs();
-            if (waitMs < 0 || waitMs > 15000) throw new IllegalArgumentException("wait_ms must be between 0 and 15000");
-            if ("result".equals(operation)) {
-                var taskState = tasks.findFor(origin, args.taskId()).orElseThrow(() -> new IllegalArgumentException("task not found"));
-                if (!"desktop".equals(taskState.command().kind().wireValue())) throw new IllegalArgumentException("task is not a desktop task");
-                var task = new TaskView(taskState);
-                if (waitMs > 0 && !TaskStatus.terminal(task.status())) {
-                    task = tasks.waitForTerminal(origin, task.id(), Duration.ofMillis(waitMs));
-                }
-                return desktopResult(tasks, origin, task);
-            }
+            var waitMs = executionWaitMs(args.waitMs());
             if (!"screenshot".equals(operation) && !"screenshot_region".equals(operation) && !"screens".equals(operation) && !"windows".equals(operation) && !"launch".equals(operation)
                     && !"click".equals(operation) && !"double_click".equals(operation) && !"right_click".equals(operation)
                     && !"move".equals(operation) && !"drag".equals(operation) && !"key".equals(operation)
                     && !"type".equals(operation) && !"clipboard_read".equals(operation)
                     && !"clipboard_write".equals(operation) && !"focus".equals(operation)) {
-                throw new IllegalArgumentException("operation must be screenshot, screenshot_region, screens, windows, launch, click, double_click, right_click, move, drag, key, type, clipboard_read, clipboard_write, focus, or result");
+                throw new IllegalArgumentException("unsupported desktop operation");
             }
             access.authorizeExecution(origin, args.machineId());
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
@@ -1213,91 +1254,15 @@ public class McpConfiguration {
                     "desktop", null, cwd, Map.of(), timeout, action, Instant.now(), null, 0, null);
             var created = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     null, "", "low", false, origin), "mcp", origin);
-            if (waitMs > 0) {
-                var completed = tasks.waitForTerminal(origin, created.id(), Duration.ofMillis(waitMs));
-                return desktopResult(tasks, origin, completed);
-            }
-            var payload = new LinkedHashMap<String, Object>();
-            payload.put("task", taskMap(created));
-            payload.put("next_action", nextAction("desktop", "result", created.id(), 0L,
-                    created.changeSequence(), 15000, "wait_for_desktop_result"));
-            return json(payload);
+            if (waitMs > 0) return taskResult(tasks, origin,
+                    tasks.waitForTerminal(origin, created.id(), Duration.ofMillis(waitMs)), 0, 16 * 1024);
+            return json(Map.of("task", taskMap(created)));
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return error(exception);
         } catch (Exception exception) {
             return error(exception);
         }
-    }
-
-    private static McpSchema.CallToolResult desktopResult(TaskService tasks, TaskOrigin origin, TaskView task) {
-        if (!TaskStatus.terminal(task.status())) {
-            var payload = new LinkedHashMap<String, Object>();
-            payload.put("task", taskMap(task));
-            payload.put("next_action", nextAction("desktop", "result", task.id(), 0L,
-                    task.changeSequence(), 15000, "wait_for_desktop_result"));
-            return json(payload);
-        }
-        var page = tasks.readOutput(origin, task.id(), 0, 16 * 1024);
-        var output = new LinkedHashMap<String, Object>();
-        output.put("text", new String(page.data(), StandardCharsets.UTF_8));
-        output.put("cursor", page.cursor());
-        output.put("next_cursor", page.nextCursor());
-        output.put("more", page.more());
-        if (!TaskStatus.COMPLETED.equals(task.status())) {
-            var payload = new LinkedHashMap<String, Object>();
-            payload.put("task", taskMap(task));
-            payload.put("output", output);
-            payload.put("next_action", nextAction(null, null, null, null, null, null,
-                    "inspect_task_error"));
-            return json(payload);
-        }
-        if (task.artifactBytes() <= 0) {
-            var payload = new LinkedHashMap<String, Object>();
-            payload.put("task", taskMap(task));
-            payload.put("output", output);
-            var action = taskOutputNextAction(task, page);
-            if (action != null) payload.put("next_action", action);
-            return json(payload);
-        }
-        var artifactMetadata = new LinkedHashMap<String, Object>();
-        artifactMetadata.put("sha256", task.artifactSha256());
-        artifactMetadata.put("bytes", task.artifactBytes());
-        artifactMetadata.put("mime_type", task.artifactMime());
-        var inlineImage = isInlineImage(task.artifactMime(), task.artifactBytes());
-        artifactMetadata.put("inline", inlineImage);
-        var resultPayload = new LinkedHashMap<String, Object>();
-        resultPayload.put("task", taskMap(task));
-        resultPayload.put("output", output);
-        resultPayload.put("artifact", artifactMetadata);
-        var next = taskOutputNextAction(task, page);
-        if (next != null) resultPayload.put("next_action", next);
-        if (!inlineImage) return json(resultPayload);
-        // Only load bytes when the bounded MCP response can actually inline
-        // them. Large downloads and non-image artifacts remain metadata-only;
-        // the authenticated Console endpoint performs the full read on demand.
-        var artifact = tasks.readArtifact(origin, task.id());
-        if (artifact.isEmpty()) return json(resultPayload);
-        var value = artifact.get();
-        artifactMetadata.put("sha256", value.sha256());
-        artifactMetadata.put("bytes", value.data().length);
-        artifactMetadata.put("mime_type", value.mimeType());
-        if (!isInlineImage(value.mimeType(), value.data().length)) {
-            artifactMetadata.put("inline", false);
-            return json(resultPayload);
-        }
-        var result = McpSchema.CallToolResult.builder()
-                .structuredContent(resultPayload)
-                .addTextContent(jsonText(resultPayload))
-                .build();
-        if (inlineImage) {
-            result = McpSchema.CallToolResult.builder()
-                    .structuredContent(resultPayload)
-                    .addTextContent(jsonText(resultPayload))
-                    .addContent(McpSchema.ImageContent.builder(java.util.Base64.getEncoder().encodeToString(value.data()), value.mimeType()).build())
-                    .build();
-        }
-        return result;
     }
 
     private static String jsonText(Object value) {
@@ -1305,44 +1270,6 @@ public class McpConfiguration {
             return boundedJsonText(value);
         } catch (IOException exception) {
             return "{\"message\":\"response omitted; use task_read cursor or the Console detail endpoint\"}";
-        }
-    }
-
-    private static McpSchema.CallToolResult taskWaitCore(TaskService tasks, TaskOrigin origin,
-                                                     McpSchema.CallToolRequest request) {
-        try {
-            var args = args(request, TaskWaitCoreArgs.class);
-            var cursor = args.cursor() == null ? 0 : args.cursor();
-            var changeSequence = args.changeSeq() == null ? -1L : args.changeSeq();
-            var waitMs = args.waitMs() == null ? 0 : args.waitMs();
-            if (waitMs < 0 || waitMs > 20000) {
-                throw new IllegalArgumentException("wait_ms must be between 0 and 20000");
-            }
-            var task = tasks.findFor(origin, args.taskId()).orElseThrow(() -> new IllegalArgumentException("task not found"));
-            var view = waitMs == 0 ? new TaskView(task)
-                    : tasks.waitForChange(origin, args.taskId(), cursor, changeSequence, Duration.ofMillis(waitMs));
-            return taskResult(tasks, origin, view, cursor, 16 * 1024);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            return error(exception);
-        } catch (Exception exception) {
-            return error(exception);
-        }
-    }
-
-    private static McpSchema.CallToolResult taskOutputCore(TaskService tasks, TaskOrigin origin,
-                                                       McpSchema.CallToolRequest request) {
-        try {
-            var args = args(request, TaskOutputCoreArgs.class);
-            var cursor = args.cursor() == null ? 0 : args.cursor();
-            var limit = args.limit() == null ? 16 * 1024 : args.limit();
-            if (limit < 1 || limit > MAX_OUTPUT_PAGE) {
-                throw new IllegalArgumentException("limit must be between 1 and " + MAX_OUTPUT_PAGE);
-            }
-            var task = tasks.findFor(origin, args.taskId()).orElseThrow(() -> new IllegalArgumentException("task not found"));
-            return taskResult(tasks, origin, new TaskView(task), cursor, limit);
-        } catch (Exception exception) {
-            return error(exception);
         }
     }
 
@@ -1380,8 +1307,6 @@ public class McpConfiguration {
             var payload = new LinkedHashMap<String, Object>();
             payload.put("task", taskMap(view));
             payload.put("output", output);
-            var next = taskOutputNextAction(view, page);
-            if (next != null) payload.put("next_action", next);
             return json(payload);
         }
         var metadata = new LinkedHashMap<String, Object>();
@@ -1394,8 +1319,6 @@ public class McpConfiguration {
         payload.put("task", taskMap(view));
         payload.put("output", output);
         payload.put("artifact", metadata);
-        var action = taskOutputNextAction(view, page);
-        if (action != null) payload.put("next_action", action);
         if (!inlineImage) return json(payload);
         var artifact = tasks.readArtifact(origin, view.id());
         if (artifact.isEmpty()) return json(payload);
@@ -1422,18 +1345,6 @@ public class McpConfiguration {
             case "artifact" -> List.of("mcp:read", "mcp:execute");
             default -> List.of("mcp:execute");
         };
-    }
-
-    private static Map<String, Object> taskOutputNextAction(TaskView task, OutputPage page) {
-        if (!TaskStatus.terminal(task.status())) {
-            return nextAction("task_read", "wait", task.id(), page.nextCursor(), task.changeSequence(),
-                    20000, "wait_for_change");
-        }
-        if (page.more()) {
-            return nextAction("task_read", "read_output", task.id(), page.nextCursor(), task.changeSequence(),
-                    0, "read_more_output");
-        }
-        return null;
     }
 
     private static boolean isInlineImage(String mimeType, long bytes) {
@@ -1557,38 +1468,6 @@ public class McpConfiguration {
         return SensitiveValueRedactor.redact(value.substring(0, max));
     }
 
-    private static Map<String, Object> nextAction(String tool, String operation, String taskId,
-                                                   Long cursor, Long changeSequence, Integer waitMs,
-                                                   String reason) {
-        return nextAction(tool, operation, taskId, cursor, changeSequence, waitMs, reason, null, null);
-    }
-
-    private static Map<String, Object> nextAction(String tool, String operation, String taskId,
-                                                   Long cursor, Long changeSequence, Integer waitMs,
-                                                   String reason, Integer offset, Integer limit) {
-        var value = new LinkedHashMap<String, Object>();
-        copyCompact(value, "tool", tool);
-        copyCompact(value, "operation", operation);
-        copyCompact(value, "task_id", taskId);
-        if (cursor != null && cursor >= 0) value.put("cursor", cursor);
-        if (changeSequence != null && changeSequence >= 0) value.put("change_seq", changeSequence);
-        if (waitMs != null && waitMs > 0) value.put("wait_ms", waitMs);
-        copyCompact(value, "reason", reason);
-        if (offset != null && offset >= 0) value.put("offset", offset);
-        if (limit != null && limit > 0) value.put("limit", limit);
-        return value;
-    }
-
-    private static void copyCompact(Map<String, Object> target, String key, String value) {
-        if (value == null || value.isBlank()) return;
-        var max = switch (key) {
-            case "reason" -> 128;
-            case "operation" -> 64;
-            default -> 128;
-        };
-        target.put(key, compact(value, max));
-    }
-
     private static String resolveCwd(AgentRegistry agents, String machineId, String requestedCwd) {
         var machine = agents.findMachine(machineId, Instant.now())
                 .orElseThrow(() -> new IllegalArgumentException("machine not found"));
@@ -1665,8 +1544,6 @@ public class McpConfiguration {
         payload.put("kind", "error");
         payload.put("error", Map.of("code", errorCode(exception), "message", compact(message, 2048),
                 "retryable", isRetryable(exception)));
-        payload.put("next_action", nextAction(null, null, null, null, null, null,
-                isRetryable(exception) ? "retry_same_idempotency_key" : "fix_request"));
         return McpSchema.CallToolResult.builder().isError(true)
                 .structuredContent(payload).addTextContent(jsonText(payload)).build();
     }
@@ -1700,13 +1577,13 @@ public class McpConfiguration {
                            String cwd,
                            Map<String, String> env,
                            @JsonProperty("timeout_seconds") Integer timeoutSeconds,
+                           @JsonProperty("wait_ms") Integer waitMs,
                            @JsonProperty("idempotency_key") String idempotencyKey) {
     }
 
     @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     record DesktopCoreArgs(String operation,
                            @JsonProperty("machine_id") String machineId,
-                           @JsonProperty("task_id") String taskId,
                            String executable,
                            List<String> args,
                            String cwd,
@@ -1736,15 +1613,6 @@ public class McpConfiguration {
                            @JsonProperty("idempotency_key") String idempotencyKey) {
     }
 
-    record TaskWaitCoreArgs(@JsonProperty("task_id") String taskId,
-                                Long cursor,
-                                @JsonProperty("wait_ms") Integer waitMs,
-                                @JsonProperty("change_seq") Long changeSeq) {
-    }
-
-    record TaskOutputCoreArgs(@JsonProperty("task_id") String taskId, Long cursor, Integer limit) {
-    }
-
     record TaskCancelCoreArgs(@JsonProperty("task_id") String taskId) {
     }
 
@@ -1758,14 +1626,15 @@ public class McpConfiguration {
 
     @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     record ArtifactPutCoreArgs(@JsonProperty("machine_id") String machineId,
-                           ArtifactFileCore file,
+                            ArtifactFileCore file,
                            @JsonProperty("destination_path") String destinationPath,
                            @JsonProperty("file_name") String fileName,
                            @JsonProperty("mime_type") String mimeType,
                            @JsonProperty("expected_bytes") Long expectedBytes,
-                           @JsonProperty("expected_sha256") String expectedSha256,
-                           Boolean overwrite,
-                           String cwd,
+                            @JsonProperty("expected_sha256") String expectedSha256,
+                            Boolean overwrite,
+                            @JsonProperty("wait_ms") Integer waitMs,
+                            String cwd,
                            @JsonProperty("idempotency_key") String idempotencyKey) {
     }
 
@@ -1781,9 +1650,8 @@ public class McpConfiguration {
     }
 
     record ArtifactReadCoreArgs(@JsonProperty("artifact_id") String artifactId,
-                            @JsonProperty("transfer_id") String transferId,
-                            @JsonProperty("delivery_mode") String deliveryMode,
-                            @JsonProperty("wait_ms") Integer waitMs) {
+                             @JsonProperty("transfer_id") String transferId,
+                             @JsonProperty("delivery_mode") String deliveryMode) {
     }
 
     private static String firstNonBlank(String primary, String fallback) {

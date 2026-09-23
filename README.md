@@ -10,6 +10,8 @@ MCP 地址是 `https://<center-domain>/mcp`。当前公开 7 个工具：`machin
 2. 在“连接凭证”为自己的 MCP 客户端创建凭证。页面会同时授权该账户访问全部机器；Center 仍逐次验证身份和机器权限。
 3. 让客户端先用 `machines` 选择机器，再调用所需能力。长任务使用返回的任务 ID 继续读取，不重复提交。
 
+`command`、`desktop`、`browser` 和 `artifact(put/get)` 都创建持久任务。需要立即继续做别的事时传 `wait_ms=0`；预计很快完成时传正数，让同一次调用短等有界结果。等待到期不会取消任务，后续统一调用 `task_read(task_id)`。`artifact(get)` 的默认 `auto` 会短等，显式 `async` 立即返回文件句柄。查看长日志末尾可用 `task_read(tail_bytes=8192)`，不必从开头逐页读取。
+
 Agent 默认使用事件唤醒的 HTTPS 长轮询：任务或升级出现时 Center 立即唤醒等待中的连接；空闲时没有固定频率的业务查询。Browser 使用 [Camoufox](https://github.com/apify/camoufox-js)，需要目标机安装 Node.js 22 及 npm；浏览器只在收到任务时启动，Profile 保留在目标机器。
 
 ## 更新

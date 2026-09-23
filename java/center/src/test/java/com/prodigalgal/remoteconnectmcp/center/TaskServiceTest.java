@@ -3,6 +3,7 @@ package com.prodigalgal.remoteconnectmcp.center;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -74,6 +75,33 @@ class TaskServiceTest {
         assertEquals(5, page.nextCursor());
         assertEquals(TaskStatus.COMPLETED, tasks.find(created.id()).orElseThrow().status());
         assertEquals(registration.machineId(), tasks.find(created.id()).orElseThrow().command().contract().machineId());
+    }
+
+    @Test
+    void boundedWaitKeepsTheTaskRunningAndOutputCanBeReadFromTheTail() throws Exception {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var created = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "build", "/srv", Map.of(), 0, null, null), "bounded-wait"));
+        var leased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+
+        var before = tasks.waitForTerminal(created.id(), java.time.Duration.ofMillis(5));
+        assertFalse(TaskStatus.terminal(before.status()));
+        assertEquals(before.status(), tasks.find(created.id()).orElseThrow().status());
+
+        tasks.updateState(registration.machineId(), created.id(),
+                new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), leased.attempt());
+        var output = ("noise\n".repeat(18000) + "fatal error\n").getBytes(StandardCharsets.UTF_8);
+        tasks.appendOutput(registration.machineId(), created.id(), 0, output, leased.attempt());
+        tasks.updateState(registration.machineId(), created.id(),
+                new TaskUpdateRequest(TaskStatus.FAILED, 1, "command exited with code 1", null, null, false), leased.attempt());
+
+        var after = tasks.waitForTerminal(created.id(), java.time.Duration.ofMillis(5));
+        assertEquals(TaskStatus.FAILED, after.status());
+        var tail = tasks.readOutput(created.id(), after.outputBytes() - 12, 12);
+        assertEquals("fatal error\n", new String(tail.data(), StandardCharsets.UTF_8));
+        assertFalse(tail.more());
     }
 
     @Test

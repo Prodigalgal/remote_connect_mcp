@@ -37,7 +37,7 @@ Agent 不再解析或执行任何 `scope_mode`、`scope_root`、`workspace_polic
 
 只发布：`machines`、`command`、`desktop`、`browser`、`artifact`、`task_read`、`task_cancel`。
 
-Tool schema 只保留模型需要的意图：机器句柄、操作枚举、命令/浏览器请求、文件对象和任务句柄。会话、车道、风险、预算、主体和租约由 Center 派生，输出只返回紧凑投影与 `next_action`。
+Tool schema 只保留模型需要的意图：机器句柄、操作枚举、命令/浏览器请求、文件对象和任务句柄。会话、车道、风险、预算、主体和租约由 Center 派生。执行类工具先创建持久任务；`wait_ms=0` 立即返回任务，正数短等有界结果，等待到期不取消任务。之后的状态、输出和截图统一由 `task_read` 读取；`tail_bytes` 可直接查看长日志末尾。结果使用任务状态、游标和错误字段，不再提供 `next_action` 决策对象。
 
 ## Desktop / Browser
 
