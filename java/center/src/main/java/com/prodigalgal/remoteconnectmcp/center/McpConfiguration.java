@@ -55,8 +55,9 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
 @Configuration
 @RegisterReflectionForBinding({McpConfiguration.MachinesCoreArgs.class, McpConfiguration.MachineInfoCoreArgs.class,
         McpConfiguration.CommandCoreArgs.class, McpConfiguration.DesktopCoreArgs.class,
-        McpConfiguration.BrowserCoreArgs.class, McpConfiguration.TaskWaitCoreArgs.class,
-        McpConfiguration.TaskOutputCoreArgs.class, McpConfiguration.TaskCancelCoreArgs.class,
+        McpConfiguration.BrowserCoreArgs.class, McpConfiguration.TaskCancelCoreArgs.class,
+        McpConfiguration.ArtifactFileCore.class, McpConfiguration.ArtifactPutCoreArgs.class,
+        McpConfiguration.ArtifactGetCoreArgs.class, McpConfiguration.ArtifactReadCoreArgs.class,
         // accessors declared up front (otherwise initialize returns HTTP 500).
         McpSchema.JSONRPCRequest.class, McpSchema.JSONRPCResponse.class,
         McpSchema.JSONRPCResponse.JSONRPCError.class, McpSchema.JSONRPCNotification.class,
