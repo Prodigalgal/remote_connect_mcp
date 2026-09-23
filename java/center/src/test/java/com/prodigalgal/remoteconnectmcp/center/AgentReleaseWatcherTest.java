@@ -27,6 +27,16 @@ class AgentReleaseWatcherTest {
         assertEquals(List.of("old"), AgentReleaseWatcher.selectTargets(machines, release));
     }
 
+    @Test
+    void offlineTargetsFollowOnlineBatches() {
+        var machines = List.of(machine("offline", "linux", "amd64", "v0.1.9", false),
+                machine("online-a", "linux", "arm64", "v0.1.9", true),
+                machine("online-b", "windows", "amd64", "v0.1.9", true));
+
+        assertEquals(List.of("online-a", "online-b", "offline"),
+                AgentReleaseWatcher.selectTargets(machines, release("v0.2.0", false)));
+    }
+
     private static ReleaseCatalogService.ReleaseView release(String version, boolean prerelease) {
         return new ReleaseCatalogService.ReleaseView(version, "java-" + version, "Agent", Instant.now(),
                 prerelease, List.of(new ReleaseCatalogService.ReleaseAssetView("linux", "amd64", "agent.zip", true, true),
@@ -35,7 +45,11 @@ class AgentReleaseWatcherTest {
     }
 
     private static MachineView machine(String id, String os, String arch, String version) {
+        return machine(id, os, arch, version, false);
+    }
+
+    private static MachineView machine(String id, String os, String arch, String version, boolean online) {
         return new MachineView(id, id, id, id, os, arch, version, "/", List.of("command"),
-                Instant.now(), Instant.now(), false);
+                Instant.now(), Instant.now(), online);
     }
 }

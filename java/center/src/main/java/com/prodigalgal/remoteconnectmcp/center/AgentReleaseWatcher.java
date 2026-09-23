@@ -55,7 +55,10 @@ public final class AgentReleaseWatcher {
 
     static List<String> selectTargets(List<MachineView> machines, ReleaseCatalogService.ReleaseView release) {
         var result = new ArrayList<String>();
-        for (var machine : machines) {
+        // Keep offline machines in the campaign, but let online machines finish
+        // the canary and batches before an offline target can hold a wave open.
+        for (var machine : machines.stream()
+                .sorted(java.util.Comparator.comparing(MachineView::online).reversed()).toList()) {
             var os = machine.os() == null ? "" : machine.os().toLowerCase(Locale.ROOT);
             var arch = machine.arch() == null ? "" : machine.arch().toLowerCase(Locale.ROOT);
             if (release.assets().stream().noneMatch(asset -> asset.os().equals(os) && asset.arch().equals(arch)
