@@ -128,15 +128,17 @@ $npm = @(
     (Get-Command npm.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
 ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
 if ($npm) {
-    & $npm ci --prefix $runtime --no-audit --no-fund
+    & $npm ci --prefix $runtime --no-audit --no-fund --ignore-scripts
 } else {
     $npmCli = Join-Path $nodeDirectory "node_modules\npm\bin\npm-cli.js"
     if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
         throw "npm.cmd and npm-cli.js were not found beside node.exe"
     }
-    & $node $npmCli ci --prefix $runtime --no-audit --no-fund
+    & $node $npmCli ci --prefix $runtime --no-audit --no-fund --ignore-scripts
 }
 if ($LASTEXITCODE -ne 0) { throw "Camoufox npm install failed with exit $LASTEXITCODE" }
+& $node -e "require('better-sqlite3')"
+if ($LASTEXITCODE -ne 0) { throw 'Camoufox runtime SQLite dependency could not be loaded.' }
 & $node (Join-Path $runtime 'node_modules\camoufox-js\dist\__main__.js') fetch
 if ($LASTEXITCODE -ne 0) { throw "Camoufox browser install failed with exit $LASTEXITCODE" }
 

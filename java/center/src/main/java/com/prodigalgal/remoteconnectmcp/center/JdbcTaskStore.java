@@ -794,13 +794,14 @@ final class JdbcTaskStore {
                  WHERE agent_id = ?
                    AND lease_until IS NOT NULL
                    AND lease_until <= CURRENT_TIMESTAMP
-                   AND status IN (?, ?)
+                   AND status IN (?, ?, ?)
                  ORDER BY task_id
                  FOR UPDATE
                 """, ps -> {
             ps.setString(1, machineId);
             ps.setString(2, TaskStatus.DISPATCHING);
             ps.setString(3, TaskStatus.RUNNING);
+            ps.setString(4, TaskStatus.CANCEL_REQUESTED);
         }, (rs, rowNum) -> rs.getString("task_id"));
         if (expired.isEmpty()) return List.of();
         jdbc.update("""
@@ -818,6 +819,12 @@ final class JdbcTaskStore {
                  WHERE agent_id = ? AND status = ? AND timeout_seconds > 0
                    AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
                 """, TaskStatus.FAILED, "agent lease expired before timed command completed", machineId, TaskStatus.RUNNING);
+        jdbc.update("""
+                UPDATE rcm_task SET status = ?, finished_at = CURRENT_TIMESTAMP,
+                       lease_until = NULL, updated_at = CURRENT_TIMESTAMP
+                 WHERE agent_id = ? AND status = ?
+                   AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
+                """, TaskStatus.CANCELED, machineId, TaskStatus.CANCEL_REQUESTED);
         return List.copyOf(expired);
     }
 

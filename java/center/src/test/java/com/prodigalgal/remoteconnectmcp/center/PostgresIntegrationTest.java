@@ -384,6 +384,23 @@ class PostgresIntegrationTest {
         jdbc.update("UPDATE rcm_task SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE task_id = ?", timedLeaseId);
         store.poll(agentId, new PollRequest(List.of(durableLeaseId), 1, List.of("command")));
         assertEquals(TaskStatus.FAILED, store.find(timedLeaseId).orElseThrow().status());
+
+        var cancelLeaseId = "task_it_cancel_" + UUID.randomUUID().toString().replace("-", "");
+        var cancelCommand = new TaskCommand(cancelLeaseId, TaskKind.COMMAND, "command", "printf cancel", "/tmp",
+                Map.of(), 0, null, Instant.now());
+        store.create(cancelLeaseId, agentId, cancelCommand, "cancel-lease-key", cancelCommand.createdAt());
+        assertEquals(cancelLeaseId, store.poll(agentId, new PollRequest(List.of(), 1, List.of("command"))).task().id());
+        store.updateState(agentId, cancelLeaseId, new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
+        var afterCancelId = "task_it_after_cancel_" + UUID.randomUUID().toString().replace("-", "");
+        var afterCancelCommand = new TaskCommand(afterCancelId, TaskKind.COMMAND, "command", "printf next", "/tmp",
+                Map.of(), 0, null, Instant.now());
+        store.create(afterCancelId, agentId, afterCancelCommand, "after-cancel-lease-key", afterCancelCommand.createdAt());
+        store.cancel(cancelLeaseId);
+        jdbc.update("UPDATE rcm_task SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE task_id = ?", cancelLeaseId);
+        var recoveredCancel = store.poll(agentId, new PollRequest(List.of(), 1, List.of("command")));
+        assertEquals(TaskStatus.CANCELED, store.find(cancelLeaseId).orElseThrow().status());
+        assertTrue(recoveredCancel.cancelTaskIds().isEmpty(), "a recovered cancel request must no longer be sent to the Agent");
+        assertEquals(afterCancelId, recoveredCancel.task().id(), "expired cancellation must release the execution lane");
     }
 
     private static byte[] concat(byte[] first, byte[] second) {

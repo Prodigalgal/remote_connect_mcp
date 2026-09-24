@@ -1295,6 +1295,15 @@ public final class TaskService {
                     }
                     changed.add(task.id());
                 });
+        tasks.values().stream()
+                .filter(task -> TaskStatus.CANCEL_REQUESTED.equals(task.status()) && task.leaseUntil() != null && !now.isBefore(task.leaseUntil()))
+                .forEach(task -> {
+                    task.status(TaskStatus.CANCELED);
+                    task.leaseUntil(null);
+                    task.finishedAt(now);
+                    releaseQuota(task);
+                    changed.add(task.id());
+                });
         return List.copyOf(changed);
     }
 

@@ -213,6 +213,29 @@ class TaskServiceTest {
     }
 
     @Test
+    void expiredCancelRequestBecomesTerminalAndReleasesExecutionLane() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var canceled = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "sleep 10", "/srv", Map.of(), 0, null, null), "expired-cancel"));
+        var waiting = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "printf next", "/srv", Map.of(), 0, null, null), "after-cancel"));
+
+        var firstLease = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        assertEquals(canceled.id(), firstLease.id());
+        tasks.updateState(registration.machineId(), canceled.id(),
+                new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), firstLease.attempt());
+        tasks.cancel(canceled.id());
+        tasks.find(canceled.id()).orElseThrow().leaseUntil(java.time.Instant.now().minusSeconds(1));
+
+        var nextLease = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+
+        assertEquals(TaskStatus.CANCELED, tasks.find(canceled.id()).orElseThrow().status());
+        assertEquals(waiting.id(), nextLease.id());
+    }
+
+    @Test
     void rejectsOversizedOutputChunkBeforeTouchingTaskState() {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");
