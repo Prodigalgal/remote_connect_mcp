@@ -30,6 +30,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.stereotype.Service;
 
@@ -487,6 +488,31 @@ public final class TaskService {
                 }
             }
             return new PollResponse(task, cancelIds, null, null);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Repair leases without requiring an offline Agent to reconnect first. */
+    @Scheduled(initialDelay = 60_000, fixedDelay = 60_000)
+    public void reconcileExpiredTasks() {
+        reconcileExpiredTasks(Instant.now());
+    }
+
+    void reconcileExpiredTasks(Instant now) {
+        if (jdbcStore != null) {
+            // The existing (agent_id, status, lease_until) index keeps each
+            // repair scoped to one machine. Online Agents already repair on
+            // poll; this pass handles machines that stopped polling entirely.
+            for (var machine : agents.listAllMachines(now)) {
+                if (machine.online()) continue;
+                jdbcStore.recoverExpiredLeasesForMachine(machine.id()).forEach(this::signalChanged);
+            }
+            return;
+        }
+        lock.lock();
+        try {
+            recoverExpiredLeases(now).forEach(this::signalChanged);
         } finally {
             lock.unlock();
         }

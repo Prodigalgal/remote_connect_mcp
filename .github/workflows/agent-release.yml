@@ -415,3 +415,10 @@ jobs:
           args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --title "Agent ${RELEASE_VERSION}" --generate-notes)
           if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then args+=(--prerelease); fi
           gh release create "${args[@]}"
+          {
+            echo "### Agent ${RELEASE_VERSION}"
+            echo "Source: \`${GITHUB_SHA}\`"
+            echo "Published tag: \`${RELEASE_TAG}\`"
+            echo "Manifest SHA-256: \`$(sha256sum "release/remote-connect-mcp-manifest-${RELEASE_VERSION}.json" | cut -d' ' -f1)\`"
+            echo 'Release assets are published; fleet completion requires Center campaign and machine-version verification.'
+          } >> "${GITHUB_STEP_SUMMARY}"

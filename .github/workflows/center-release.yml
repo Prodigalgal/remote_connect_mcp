@@ -339,6 +339,7 @@ jobs:
       GITOPS_REPOSITORY: ${{ secrets.RCM_GITOPS_REPOSITORY }}
       GITOPS_SSH_KEY: ${{ secrets.RCM_GITOPS_SSH_KEY }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure GitHub-only GitOps deploy key
         shell: bash
         run: |
@@ -407,6 +408,8 @@ jobs:
           PY
           git -C gitops diff --check
           git -C gitops diff -- "${overlay}/center.yaml" "${overlay}/migration-job.yaml"
+          python3 scripts/verify-release.py center "${RELEASE_VERSION}" \
+            --manifest "gitops/${overlay}/center.yaml" --digest "${CENTER_DIGEST}"
       - name: Commit and push Center promotion
         shell: bash
         run: |
@@ -418,3 +421,16 @@ jobs:
           if git -C gitops diff --cached --quiet; then echo 'Center overlay already points at this release.'; exit 0; fi
           git -C gitops commit -m "chore(remote-connect-mcp): promote center ${RELEASE_VERSION}"
           git -C gitops push origin HEAD:main
+      - name: Record Center promotion evidence
+        env:
+          CENTER_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Center ${RELEASE_VERSION}"
+            echo "Source: \`${GITHUB_SHA}\`"
+            echo "Image: \`${CENTER_DIGEST}\`"
+            echo "GitOps commit: \`$(git -C gitops rev-parse HEAD)\`"
+            echo 'GitOps pin verified; runtime readiness and version require a live check.'
+          } >> "${GITHUB_STEP_SUMMARY}"

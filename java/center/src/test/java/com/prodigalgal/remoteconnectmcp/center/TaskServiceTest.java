@@ -521,4 +521,27 @@ class TaskServiceTest {
         assertEquals(TaskStatus.FAILED, waiter.get(1, TimeUnit.SECONDS).status(),
                 "lease expiry failure must wake task_wait subscribers");
     }
+
+    @Test
+    void expiredTaskSettlesWithoutAnotherAgentPoll() {
+        var registry = AgentRegistry.forTest("enroll-test");
+        var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64",
+                "dev", "/srv", List.of("command")), "enroll-test");
+        var tasks = new TaskService(registry);
+        var created = tasks.create(new CreateTaskRequest(registration.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "sleep 10", "/srv", Map.of(), 30, null, null),
+                "offline-lease"));
+        var leased = tasks.poll(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        tasks.updateState(registration.machineId(), created.id(),
+                new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), leased.attempt());
+        var before = tasks.find(created.id()).orElseThrow().changeSequence();
+        tasks.find(created.id()).orElseThrow().leaseUntil(java.time.Instant.now().minusSeconds(1));
+
+        tasks.reconcileExpiredTasks(java.time.Instant.now());
+
+        var settled = tasks.find(created.id()).orElseThrow();
+        assertEquals(TaskStatus.FAILED, settled.status());
+        assertTrue(settled.changeSequence() > before);
+        assertTrue(settled.error().contains("lease expired"));
+    }
 }

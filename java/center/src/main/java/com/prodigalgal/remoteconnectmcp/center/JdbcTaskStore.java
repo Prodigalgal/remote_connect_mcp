@@ -232,6 +232,10 @@ final class JdbcTaskStore {
         return pollWithRecovery(machineId, request).response();
     }
 
+    List<String> recoverExpiredLeasesForMachine(String machineId) {
+        return transactions.execute(status -> recoverExpiredLeases(machineId));
+    }
+
     PollResult pollWithRecovery(String machineId, PollRequest request) {
         var availableSlots = request == null || request.availableSlots() == null ? 0 : request.availableSlots();
         var capabilities = request == null || request.availableCapabilities() == null ? List.<String>of() : request.availableCapabilities();

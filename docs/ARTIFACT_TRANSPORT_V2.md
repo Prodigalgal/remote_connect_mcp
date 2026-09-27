@@ -63,11 +63,10 @@ MCP 只返回以下内容：
 
 React Artifact Viewer 按需读取文件：图片/PDF/媒体尝试预览，Office/压缩包/未知二进制提供下载。小型图片可以按需返回 MCP `ImageContent`，但不把它作为网页附件显示的唯一机制。
 
-`artifact` 的 `put/get/read` 操作同时返回 MCP `structuredContent` 与一段
-有界文本摘要。`structuredContent.file` 使用 ChatGPT 文件对象的
-`download_url`、`file_id`、`mime_type`、`file_name` 形状；文本摘要只保留句柄、大小、哈希和
-下一步动作，绝不复制二进制。这样支持文件 Host/Widget 的机器读取，也不会把文件内容灌入
-模型上下文。
+`artifact` 的 `put/get/read` 操作同时返回 MCP `structuredContent` 与兼容旧客户端的有界 JSON 文本。
+传输状态只带句柄、状态、必要的进度或错误；文件元数据只放在 `structuredContent.file`，
+其中 `download_url`、`file_id`、`mime_type`、`file_name` 遵循 ChatGPT 文件对象形状。
+文件内容只在明确请求内联，或 `auto` 模式遇到符合限制的小图片时返回，不复制到 JSON 结果中。
 
 ## 实体模型
 
@@ -118,7 +117,6 @@ ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation
 | --- | --- | --- |
 | `artifact(operation=put)` | Web 文件写入终端 | transfer_id、任务状态和摘要 |
 | `artifact(operation=get)` | 终端文件回传 Web | artifact_id、文件元数据 |
-| `artifact(operation=read)` | 按需读取元数据和短期文件对象 | `structuredContent.file`（仅句柄）和有界摘要 |
 | `artifact(operation=read)` | 按需读取元数据和短期文件对象 | `structuredContent.file` + `ui://remote-connect-mcp/artifact-viewer-v1.html` Viewer |
 
 现有 `command`、`desktop`、`browser`、`task_read` 工具只引用 Artifact，不复制文件传输逻辑。

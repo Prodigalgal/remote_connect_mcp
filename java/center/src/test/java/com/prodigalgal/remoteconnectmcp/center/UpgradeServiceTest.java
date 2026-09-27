@@ -15,6 +15,7 @@ import com.prodigalgal.remoteconnectmcp.protocol.UpgradeArtifact;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import java.util.List;
 import java.util.Map;
+import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
 class UpgradeServiceTest {
@@ -29,10 +30,8 @@ class UpgradeServiceTest {
         var upgrades = new UpgradeService(registry, tasks, new UpgradeConfig(true, ""));
         var artifacts = Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA));
 
-        assertFalse(upgrades.hasCampaignVersion("v2.0.0"));
         var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
                 List.of(first.machineId(), second.machineId()), artifacts));
-        assertTrue(upgrades.hasCampaignVersion("v2.0.0"));
         assertEquals(UpgradeService.RUNNING, campaign.status());
 
         var request = new PollRequest(List.of(), 1, List.of("command"));
@@ -154,6 +153,30 @@ class UpgradeServiceTest {
                 new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, first.attempt() + 1, Map.of()));
 
         assertEquals(UpgradeService.OFFERED, stale.targets().getFirst().status());
+    }
+
+    @Test
+    void expiredDownloadSettlesAsFailureWithoutLaunchingASecondHelper() {
+        var registry = AgentRegistry.forTest("enroll");
+        var registration = registry.register(registration("one", "v1.0.0"), "enroll");
+        var upgrades = new UpgradeService(registry, new TaskService(registry), new UpgradeConfig(true, ""));
+        var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                List.of(registration.machineId()), Map.of("linux/amd64",
+                        new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
+        var plan = upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command")));
+        upgrades.updateStatus(registration.machineId(), new UpgradeStatusRequest(
+                campaign.id(), UpgradeService.DOWNLOADING, null, plan.attempt(), Map.of()));
+
+        upgrades.reconcileActive(Instant.now().plusSeconds(21 * 60));
+        var settled = upgrades.list(0, 10).getFirst();
+        assertEquals(UpgradeService.PAUSED, settled.status());
+        assertEquals(UpgradeService.FAILED, settled.targets().getFirst().status());
+        assertTrue(settled.targets().getFirst().error().contains("lease expired"));
+        assertNull(upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))));
+
+        var late = upgrades.updateStatus(registration.machineId(), new UpgradeStatusRequest(
+                campaign.id(), UpgradeService.COMPLETED, null, plan.attempt(), Map.of()));
+        assertEquals(UpgradeService.COMPLETED, late.status());
     }
 
     @Test

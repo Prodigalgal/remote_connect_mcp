@@ -3,7 +3,7 @@ package com.prodigalgal.remoteconnectmcp.center;
 import com.prodigalgal.remoteconnectmcp.protocol.LaneMode;
 import java.time.Instant;
 
-/** Compact, non-secret task projection used by the console and MCP. */
+/** Non-secret task detail for Center services and the console; MCP returns a smaller projection. */
 public record TaskView(
         String id,
         String machineId,

@@ -45,6 +45,7 @@ schema 1；runtime descriptor 缺失或字段不完整时直接拒绝，不猜�
 - PostgreSQL 写入以单事务完成状态、租约、游标和工件更新；数据库断线不会创建第二个任务。任务创建/取消/状态变更会 best-effort 发布 `pg_notify`：一条通道唤醒 Agent，另一条通道唤醒 `task_read`。高频输出/工件增量使用带任务摘要的 task-local 通知，不把每个 chunk 广播到所有 Admin/Agent；通知丢失时由长轮询截止时间和下一次显式读取补偿，不启动固定查询循环。
 - `queued -> dispatching` 使用租约和 `SKIP LOCKED`；新任务、取消和升级会按机器发送唤醒提示，租约过期后由下一次正常派发请求按机器范围修复：无超时任务重新排队并允许原 Agent 带任务 ID 恢复，定时任务转为明确失败。修复产生的任务 ID 在事务提交后精准唤醒 `task_wait`，不运行 Center 侧定时扫描。
 - Center 每次派发都会递增并把 `attempt` 放入任务响应；Agent 在状态、输出和工件请求中携带 `X-Task-Attempt`，Center 对已回收的旧 attempt fail-closed；缺少 attempt 的请求一律拒绝。
+- Agent 轮询时按机器修复过期任务租约；Center 还每分钟检查离线机器，不让 `running`/`cancel_requested` 因机器不再轮询而无限悬挂。可恢复的持久任务回到队列，无法安全重放的限时命令以明确错误结束，取消中的任务收敛为已取消；原任务 ID、输出和 attempt 栅栏保持不变。
 
 ## Agent
 
