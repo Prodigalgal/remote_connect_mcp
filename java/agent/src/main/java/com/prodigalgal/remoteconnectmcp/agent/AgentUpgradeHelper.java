@@ -46,7 +46,7 @@ final class AgentUpgradeHelper {
             for (var component : config.components()) {
                 try {
                     if (!"manual".equalsIgnoreCase(component.restartPolicy())) {
-                        stopComponentService(component.serviceName(), Path.of(component.target()).toAbsolutePath().normalize());
+                        stopService(component.serviceName(), Path.of(component.target()).toAbsolutePath().normalize());
                     }
                     applyComponentArchive(component);
                     if (!"manual".equalsIgnoreCase(component.restartPolicy())) {
@@ -573,7 +573,7 @@ final class AgentUpgradeHelper {
         if (isWindows()) {
             if (windowsTaskExists(service)) {
                 runServiceCommand(List.of("schtasks.exe", "/Run", "/TN", service), true);
-                waitWindowsTaskRunning(service);
+                waitWindowsProcessRunning(Path.of(component.target()).toAbsolutePath().normalize(), ProcessHandle.current().pid());
             } else {
                 throw new IOException("Windows component task is missing: " + service);
             }
@@ -581,20 +581,6 @@ final class AgentUpgradeHelper {
             runServiceCommand(List.of("systemctl", "start", service), true);
             waitUnixServiceState(service, "active");
         }
-    }
-
-    private static void stopComponentService(String service, Path target) throws IOException, InterruptedException {
-        if (service == null || service.isBlank()) return;
-        if (isWindows()) {
-            if (!windowsTaskExists(service)) throw new IOException("Windows component task is missing: " + service);
-            // Unlike the Agent task, this task did not launch the upgrade helper.
-            // End its wrapper, then stop the detached executable it supervises.
-            runServiceCommand(List.of("schtasks.exe", "/End", "/TN", service), false);
-            stopWindowsProcess(target, ProcessHandle.current().pid());
-            return;
-        }
-        runServiceCommand(List.of("systemctl", "stop", service), false);
-        waitUnixServiceState(service, "inactive");
     }
 
     private static void runServiceCommand(List<String> command, boolean mustSucceed) throws IOException, InterruptedException {
@@ -617,48 +603,11 @@ final class AgentUpgradeHelper {
         return process.exitValue() == 0;
     }
 
-    private static boolean windowsTaskRunning(String task) throws IOException, InterruptedException {
-        var command = new ProcessBuilder("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
-                "$scheduledTask = Get-ScheduledTask -TaskName $env:RCM_UPGRADE_TASK_NAME -ErrorAction Stop; "
-                        + "if ($scheduledTask.State.ToString() -eq 'Running') { exit 0 } else { exit 1 }")
-                .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD);
-        command.environment().put("RCM_UPGRADE_TASK_NAME", task);
-        var process = command.start();
-        if (!process.waitFor(10, TimeUnit.SECONDS)) {
-            process.destroyForcibly();
-            process.waitFor(5, TimeUnit.SECONDS);
-            return false;
-        }
-        return process.exitValue() == 0;
-    }
-
-    private static void waitWindowsTaskRunning(String task) throws IOException, InterruptedException {
-        var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
-        while (true) {
-            if (windowsTaskRunning(task)) return;
-            if (System.nanoTime() >= deadline) throw new IOException("Windows component task did not become running: " + task);
-            Thread.sleep(250L);
-        }
-    }
-
-    private static void stopWindowsProcess(Path target, long ignoredPid) throws IOException, InterruptedException {
-        var processes = windowsProcesses(target, ignoredPid);
-        processes.forEach(ProcessHandle::destroy);
-        var gracefulDeadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
-        while (windowsProcessRunning(target, ignoredPid) && System.nanoTime() < gracefulDeadline) {
-            Thread.sleep(250L);
-        }
-        if (windowsProcessRunning(target, ignoredPid)) {
-            windowsProcesses(target, ignoredPid).forEach(ProcessHandle::destroyForcibly);
-        }
-        waitWindowsProcessStopped(target, ignoredPid);
-    }
-
     private static void waitWindowsProcessStopped(Path target, long ignoredPid) throws IOException, InterruptedException {
         var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
         while (true) {
             if (!windowsProcessRunning(target, ignoredPid)) return;
-            if (System.nanoTime() >= deadline) throw new IOException("Windows process did not become stopped: " + target.getFileName());
+            if (System.nanoTime() >= deadline) throw new IOException("Agent process did not become stopped");
             Thread.sleep(250L);
         }
     }
@@ -667,23 +616,19 @@ final class AgentUpgradeHelper {
         var deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
         while (true) {
             if (windowsProcessRunning(target, ignoredPid)) return;
-            if (System.nanoTime() >= deadline) throw new IOException("Windows process did not become running: " + target.getFileName());
+            if (System.nanoTime() >= deadline) throw new IOException("Agent process did not become running");
             Thread.sleep(250L);
         }
     }
 
     private static boolean windowsProcessRunning(Path target, long ignoredPid) {
-        return !windowsProcesses(target, ignoredPid).isEmpty();
-    }
-
-    private static java.util.List<ProcessHandle> windowsProcesses(Path target, long ignoredPid) {
         var expected = normalizeExecutablePath(target);
         try {
-            return ProcessHandle.allProcesses().filter(process -> process.pid() != ignoredPid
+            return ProcessHandle.allProcesses().anyMatch(process -> process.pid() != ignoredPid
                     && process.info().command().map(command -> expected.equalsIgnoreCase(normalizeExecutablePath(Path.of(command))))
-                    .orElse(false)).toList();
+                    .orElse(false));
         } catch (RuntimeException ignored) {
-            return java.util.List.of();
+            return false;
         }
     }
 
