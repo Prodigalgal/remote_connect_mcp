@@ -47,7 +47,8 @@ env:
                 verify.verify_runtime("console", "v1.2.3", "https://console.example", "def", None, False)
 
     def test_agent_component_plan_requires_completed_target_and_component(self):
-        machines = [{"id": "one", "os": "linux", "arch": "amd64", "version": "v2.0.0", "online": True}]
+        machines = [{"id": "one", "os": "linux", "arch": "amd64", "version": "v2.0.0", "online": True,
+                     "capabilities": ["command", "browser"]}]
         campaigns = [{"id": "upgrade-2", "version": "v2.0.0", "status": "paused",
                       "component_plans": {"linux/amd64": [{"component": "browser-agent"}]},
                       "targets": [{"machine_id": "one", "status": "failed",
@@ -56,6 +57,33 @@ env:
             result = verify.verify_runtime("agent", "v2.0.0", "https://center.example", None, "token", False)
         self.assertFalse(result["verified"])
         self.assertEqual("browser-agent", result["components_unverified"][0]["component"])
+
+    def test_command_only_machine_does_not_require_optional_component_status(self):
+        machines = [{"id": "one", "os": "linux", "arch": "amd64", "version": "v2.0.0", "online": True,
+                     "capabilities": ["command"]}]
+        campaigns = [{"id": "upgrade-3", "version": "v2.0.0", "status": "completed",
+                      "component_plans": {"linux/amd64": [{"component": "browser-agent"}]},
+                      "targets": [{"machine_id": "one", "status": "completed", "component_statuses": {}}]}]
+        with patch.object(verify, "pages", side_effect=[machines, campaigns]):
+            result = verify.verify_runtime("agent", "v2.0.0", "https://center.example", None, "token", False)
+        self.assertTrue(result["verified"])
+        self.assertEqual([], result["components_unverified"])
+
+    def test_browser_runtime_requires_explicit_native_only_scope(self):
+        machines = [{"id": "browser-host", "os": "windows", "arch": "amd64", "version": "v2.0.0",
+                     "online": True, "capabilities": ["command", "browser"]}]
+        campaigns = [{"id": "upgrade-4", "version": "v2.0.0", "status": "completed",
+                      "component_plans": {"windows/amd64": [{"component": "browser-agent"}]},
+                      "targets": [{"machine_id": "browser-host", "status": "completed",
+                                   "component_statuses": {"browser-agent": "completed"}}]}]
+        with patch.object(verify, "pages", side_effect=[machines, campaigns]):
+            complete = verify.verify_runtime("agent", "v2.0.0", "https://center.example", None, "token", False)
+        self.assertFalse(complete["verified"])
+        self.assertEqual(["browser-host"], complete["browser_runtime"]["machines"])
+        with patch.object(verify, "pages", side_effect=[machines, campaigns]):
+            native = verify.verify_runtime("agent", "v2.0.0", "https://center.example", None, "token", False, True)
+        self.assertTrue(native["verified"])
+        self.assertEqual("all_registered_live_native_only", native["coverage"])
 
 
 if __name__ == "__main__":

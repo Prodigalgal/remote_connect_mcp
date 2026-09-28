@@ -133,8 +133,7 @@ public final class UpgradeService {
                 RUNNING, canary, batch, Math.min(canary, selected.size()), artifacts, componentPlans,
                 new ArrayList<>(), now, now, null);
         for (var machine : selected) {
-            var machinePlatform = platform(machine.os(), machine.arch());
-            var hasComponentWork = !componentPlans.getOrDefault(machinePlatform, List.of()).isEmpty();
+            var hasComponentWork = !componentsForMachine(componentPlans, machine).isEmpty();
             var status = version.equals(machine.version()) && !hasComponentWork ? COMPLETED : PENDING;
             var finished = COMPLETED.equals(status) ? now : null;
             campaign.targets.add(new Target(machine.id(), status, "", 0, now, finished, null));
@@ -415,8 +414,7 @@ public final class UpgradeService {
         var target = target(campaign, machine.id());
         if (target == null) return null;
         if (COMPLETED.equals(target.status)) return null;
-        var componentWork = campaign.componentPlans.getOrDefault(
-                platform(machine.os(), machine.arch()), List.of());
+        var componentWork = componentsForMachine(campaign.componentPlans, machine);
         if (machine.version() != null && machine.version().equals(campaign.version)
                 && componentWork.isEmpty()) {
             applyStatus(campaign, target, COMPLETED, "", now);
@@ -454,7 +452,7 @@ public final class UpgradeService {
         target.updatedAt = now;
         target.leaseUntil = now.plus(OFFER_LEASE);
         campaign.updatedAt = now;
-        var components = campaign.componentPlans.getOrDefault(platform(machine.os(), machine.arch()), List.of());
+        var components = componentsForMachine(campaign.componentPlans, machine);
         return new UpgradePlan(campaign.id, campaign.version, artifact.url(), artifact.sha256(), target.attempts, components);
     }
 
@@ -750,7 +748,7 @@ public final class UpgradeService {
         for (var target : campaign.targets) {
             var machine = machines.get(target.machineId);
             var componentWork = machine == null ? List.<UpgradeComponentPlan>of()
-                    : campaign.componentPlans.getOrDefault(platform(machine.os(), machine.arch()), List.of());
+                    : componentsForMachine(campaign.componentPlans, machine);
             if (machine != null && campaign.version.equals(machine.version()) && componentWork.isEmpty()
                     && !COMPLETED.equals(target.status)) {
                 target.status = COMPLETED; target.error = ""; target.leaseUntil = null; target.updatedAt = now; target.finishedAt = now;
@@ -877,6 +875,17 @@ public final class UpgradeService {
             throw new IllegalArgumentException("unsupported Agent platform: " + normalizedOs + "/" + normalizedArch);
         }
         return normalizedOs + "/" + normalizedArch;
+    }
+
+    /** Optional companions follow the machine's installed capabilities, not just its platform. */
+    static List<UpgradeComponentPlan> componentsForMachine(
+            Map<String, List<UpgradeComponentPlan>> plans, MachineView machine) {
+        return plans.getOrDefault(platform(machine.os(), machine.arch()), List.of()).stream()
+                .filter(plan -> switch (plan.component()) {
+                    case "desktop-companion", "desktop" -> machine.capabilities().contains("desktop");
+                    case "browser-agent", "browser" -> machine.capabilities().contains("browser");
+                    default -> true;
+                }).toList();
     }
 
     private static Map<String, MachineView> machinesById(List<MachineView> values) {

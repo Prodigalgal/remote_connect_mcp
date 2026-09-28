@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Select component checks from a Git diff or its last published release."""
+
+import argparse
+import subprocess
+
+
+RELEASE_TAGS = {"center": "center-published-*", "agent": "agent-published-*",
+                "console": "console-published-*"}
+JAVA_SHARED = {"java/build.gradle.kts", "java/settings.gradle.kts", "java/gradle.properties",
+               "java/gradlew", "java/gradlew.bat"}
+
+
+def matches(component: str, path: str) -> bool:
+    common = path in JAVA_SHARED or path.startswith("java/gradle/")
+    protocol = path.startswith("java/protocol/")
+    if component == "contract":
+        return common or protocol
+    if component == "center":
+        return (common or protocol or path.startswith("java/center/")
+                or path.startswith("java/Dockerfile.center")
+                or path.startswith("web/src/artifact-viewer/")
+                or path.startswith("scripts/sync-artifact-viewer")
+                or path.startswith("scripts/verify-native-bundle")
+                or path == ".github/workflows/center-release.yml")
+    if component == "agent":
+        return (common or protocol or path.startswith(("java/agent/", "java/desktop/", "java/browser/"))
+                or path.startswith(("java/Dockerfile.agent", "java/Dockerfile.desktop", "java/Dockerfile.browser"))
+                or path.startswith(("scripts/install-agent", "scripts/first-install-agent",
+                                    "scripts/deploy-desktop-browser", "scripts/browser-worker",
+                                    "scripts/smoke-browser-runtime", "scripts/normalize-native-isa",
+                                    "scripts/verify-native-bundle", "scripts/browser-runtime/", "deploy/systemd/"))
+                or path == ".github/workflows/agent-release.yml")
+    if component == "console":
+        return path.startswith("web/") or path == ".github/workflows/console-release.yml"
+    raise ValueError(f"unknown component: {component}")
+
+
+def git(*args: str) -> str:
+    return subprocess.check_output(["git", *args], text=True, encoding="utf-8").strip()
+
+
+def changed_files(head: str, base: str | None) -> list[str]:
+    if base:
+        return git("diff", "--name-only", base, head).splitlines()
+    return git("ls-tree", "-r", "--name-only", head).splitlines()
+
+
+def last_release(component: str, head: str) -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "describe", "--tags", "--first-parent", "--match", RELEASE_TAGS[component],
+             "--abbrev=0", head],
+            text=True, encoding="utf-8", stderr=subprocess.DEVNULL).strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("component", choices=(*RELEASE_TAGS, "contract"))
+    parser.add_argument("--head", required=True)
+    baseline = parser.add_mutually_exclusive_group(required=True)
+    baseline.add_argument("--base", help="explicit PR comparison commit")
+    baseline.add_argument("--since-release", action="store_true",
+                          help="compare with the last published component tag")
+    args = parser.parse_args()
+    base = last_release(args.component, args.head) if args.since_release else args.base
+    print("true" if any(matches(args.component, path) for path in changed_files(args.head, base)) else "false")
+
+
+if __name__ == "__main__":
+    main()

@@ -62,8 +62,17 @@ def pages(url: str, resource: str, token: str, limit: int) -> list[dict]:
     raise VerificationError(f"{resource} exceeds the verification page limit")
 
 
+def component_expected(machine: dict, component: str) -> bool:
+    capabilities = machine.get("capabilities") or []
+    if component in ("desktop-companion", "desktop"):
+        return "desktop" in capabilities
+    if component in ("browser-agent", "browser"):
+        return "browser" in capabilities
+    return True
+
+
 def verify_runtime(component: str, version: str, url: str, source_sha: str | None,
-                   token: str | None, online_only: bool) -> dict:
+                   token: str | None, online_only: bool, native_only: bool = False) -> dict:
     base = url.rstrip("/")
     if component == "center":
         identity = fetch_json(base + "/api/v1/version")
@@ -113,17 +122,24 @@ def verify_runtime(component: str, version: str, url: str, source_sha: str | Non
         statuses = target.get("component_statuses") or {}
         for plan in plans:
             component = plan.get("component")
-            if statuses.get(component) != "completed":
+            if component_expected(machine, component) and statuses.get(component) != "completed":
                 components_unverified.append({"machine": name, "component": component,
                                               "status": statuses.get(component)})
+    browser_machines = [str(item.get("name") or item.get("id")) for item in machines
+                        if "browser" in (item.get("capabilities") or [])
+                        and (not online_only or item.get("online") is True)]
     result = {"registered": len(machines), "online": len(online), "current": len(current),
               "current_online": len(current_online), "offline": offline, "not_current": missing,
               "unfinished_targets": unfinished, "components_unverified": components_unverified,
+              "browser_runtime": {"verified": not browser_machines, "machines": browser_machines,
+                                  "reason": "Camoufox Node package and browser binary are outside Native upgrade"
+                                  if browser_machines else "no browser-capable machines in coverage"},
               "campaigns": [{"id": item.get("id"), "status": item.get("status")}
                             for item in campaigns], "verified": False}
     result["verified"] = not (missing or unfinished or components_unverified) and (
-        online_only and bool(online) or not online_only and not offline)
-    result["coverage"] = "online_only" if online_only else "all_registered_live"
+        online_only and bool(online) or not online_only and not offline) and (native_only or not browser_machines)
+    result["coverage"] = ("online_only" if online_only else "all_registered_live") + (
+        "_native_only" if native_only else "")
     return result
 
 
@@ -136,6 +152,8 @@ def main() -> int:
     parser.add_argument("--url", help="live Center or Console base URL")
     parser.add_argument("--source-sha", help="expected Console source commit")
     parser.add_argument("--online-only", action="store_true", help="Agent: verify reachable machines only")
+    parser.add_argument("--native-only", action="store_true",
+                        help="Agent: explicitly accept Native components without Camoufox runtime verification")
     args = parser.parse_args()
     if (args.manifest is None) != (args.digest is None):
         parser.error("--manifest and --digest must be supplied together")
@@ -143,6 +161,8 @@ def main() -> int:
         parser.error("Agent verification requires --url pointing to Center")
     if args.component == "agent" and args.manifest:
         parser.error("Agent releases do not use a GitOps image manifest")
+    if args.component != "agent" and args.native_only:
+        parser.error("--native-only applies only to Agent verification")
     if not args.manifest and not args.url:
         parser.error("provide a GitOps manifest or a runtime URL")
     result: dict = {"component": args.component, "version": args.version,
@@ -154,7 +174,7 @@ def main() -> int:
         if args.url:
             result["runtime"] = verify_runtime(args.component, args.version, args.url,
                                                args.source_sha, os.environ.get("RCM_VERIFY_ADMIN_TOKEN"),
-                                               args.online_only)
+                                               args.online_only, args.native_only)
     except (OSError, ValueError, VerificationError) as error:
         result["error"] = str(error)
         print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -1315,7 +1315,7 @@ public final class TaskService {
                         // Timed processes are attached to the old Agent and
                         // cannot be safely replayed after its lease expires.
                         task.status(TaskStatus.FAILED);
-                        task.error("agent lease expired before timed command completed");
+                        task.error("agent lease expired; command outcome unknown; inspect machine before retry");
                         task.finishedAt(now);
                         releaseQuota(task);
                     }

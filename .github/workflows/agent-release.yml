@@ -25,7 +25,7 @@ permissions:
 
 concurrency:
   group: rcm-agent-release-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+  cancel-in-progress: false
 
 jobs:
   changes:
@@ -42,7 +42,6 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
-          BEFORE: ${{ github.event.before }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -50,12 +49,8 @@ jobs:
             echo 'changed=true' >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-          if [[ -z "${BEFORE}" || "${BEFORE}" =~ ^0+$ ]]; then files="$(git ls-files)"; else files="$(git diff --name-only "${BEFORE}" "${SHA}")"; fi
-          if printf '%s\n' "${files}" | grep -Eq '^(java/(agent|desktop|browser|protocol)/|java/(build.gradle.kts|settings.gradle.kts|gradle.properties)$|java/gradle/|java/gradlew(\.bat)?$|java/Dockerfile\.(agent|desktop|browser)|scripts/(install-agent|first-install-agent|deploy-desktop-browser|browser-worker|smoke-browser-runtime|normalize-native-isa|verify-native-bundle)|scripts/browser-runtime/|deploy/systemd/|\.github/workflows/agent-release.yml$)'; then
-            echo 'changed=true' >> "${GITHUB_OUTPUT}"
-          else
-            echo 'changed=false' >> "${GITHUB_OUTPUT}"
-          fi
+          changed="$(python3 scripts/detect-component-changes.py agent --head "${SHA}" --since-release)"
+          echo "changed=${changed}" >> "${GITHUB_OUTPUT}"
 
   prepare:
     needs: changes
@@ -378,15 +373,30 @@ jobs:
           repo = os.environ['RELEASE_REPOSITORY']
           components = []
           pattern = re.compile(r'^remote-connect-mcp-(desktop|browser)-' + re.escape(version) + r'-(linux|windows)-(amd64|arm64)\.zip$')
+          expected = {(kind, os_name, arch) for kind in ('desktop', 'browser')
+                      for os_name, arch in (('linux', 'amd64'), ('linux', 'arm64'), ('windows', 'amd64'))}
+          found = set()
           for path in sorted(root.glob('remote-connect-mcp-*.zip')):
               match = pattern.match(path.name)
               if not match: continue
               kind, os_name, arch = match.groups()
+              found.add((kind, os_name, arch))
+              checksum = path.with_name(path.name + '.sha256')
+              actual_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+              if not checksum.is_file() or checksum.read_text(encoding='utf-8').split()[0].lower() != actual_sha:
+                  raise SystemExit(f'missing or mismatched checksum: {checksum.name}')
               component = 'desktop-companion' if kind == 'desktop' else 'browser-agent'
               components.append({'component': component, 'version': version, 'os': os_name, 'arch': arch,
                   'url': f'https://github.com/{repo}/releases/download/{tag}/{path.name}',
-                  'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'bytes': path.stat().st_size,
+                  'sha256': actual_sha, 'bytes': path.stat().st_size,
                   'restart_policy': 'drain-and-restart'})
+          if found != expected:
+              raise SystemExit(f'component bundle matrix incomplete: missing={sorted(expected - found)}, unexpected={sorted(found - expected)}')
+          for os_name, arch in (('linux', 'amd64'), ('linux', 'arm64'), ('windows', 'amd64')):
+              archive = root / f'remote-connect-mcp-agent-{version}-{os_name}-{arch}.zip'
+              checksum = archive.with_name(archive.name + '.sha256')
+              if not archive.is_file() or not checksum.is_file() or checksum.read_text(encoding='utf-8').split()[0].lower() != hashlib.sha256(archive.read_bytes()).hexdigest():
+                  raise SystemExit(f'missing or mismatched command-agent bundle: {archive.name}')
           target = root / f'remote-connect-mcp-manifest-{version}.json'
           target.write_text(json.dumps({'version': version, 'components': components}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
           PY
@@ -412,9 +422,12 @@ jobs:
           set -euo pipefail
           mapfile -d '' assets < <(find release -maxdepth 1 -type f \( -name '*.zip' -o -name '*.zip.sha256' -o -name '*.tar.gz' -o -name '*.tar.gz.sha256' -o -name '*.spdx.json' -o -name '*.sigstore.json' -o -name 'remote-connect-mcp-manifest-*.json' \) -print0 | sort -z)
           ((${#assets[@]} > 0))
-          args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --title "Agent ${RELEASE_VERSION}" --generate-notes)
+          args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "Agent ${RELEASE_VERSION}" --generate-notes)
           if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then args+=(--prerelease); fi
           gh release create "${args[@]}"
+          marker="agent-published-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/tags/${marker}" -f "sha=${GITHUB_SHA}" >/dev/null
           {
             echo "### Agent ${RELEASE_VERSION}"
             echo "Source: \`${GITHUB_SHA}\`"

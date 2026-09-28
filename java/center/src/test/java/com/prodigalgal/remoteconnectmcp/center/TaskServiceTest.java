@@ -518,6 +518,7 @@ class TaskServiceTest {
         Thread.sleep(100);
         tasks.poll(registration.machineId(), new PollRequest(List.of(durable.id()), 1, List.of("command")));
         assertEquals(TaskStatus.FAILED, tasks.find(timed.id()).orElseThrow().status());
+        assertTrue(tasks.find(timed.id()).orElseThrow().error().contains("outcome unknown"));
         assertEquals(TaskStatus.FAILED, waiter.get(1, TimeUnit.SECONDS).status(),
                 "lease expiry failure must wake task_wait subscribers");
     }
@@ -542,6 +543,6 @@ class TaskServiceTest {
         var settled = tasks.find(created.id()).orElseThrow();
         assertEquals(TaskStatus.FAILED, settled.status());
         assertTrue(settled.changeSequence() > before);
-        assertTrue(settled.error().contains("lease expired"));
+        assertTrue(settled.error().contains("outcome unknown"));
     }
 }

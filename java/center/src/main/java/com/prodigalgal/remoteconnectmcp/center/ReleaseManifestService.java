@@ -19,7 +19,7 @@ import org.springframework.stereotype.Service;
 /**
  * Reads the immutable component manifest published beside a GitHub release.
  * Every release is component-addressable; a missing or invalid manifest
- * produces no upgrade offer instead of falling back to an older artifact shape.
+ * blocks upgrade creation instead of silently falling back to core-only.
  */
 @Service
 public final class ReleaseManifestService {
@@ -40,7 +40,7 @@ public final class ReleaseManifestService {
         this.config = config;
     }
 
-    /** Return component plans for one platform; no manifest means no offer. */
+    /** Return component plans for one platform; a missing manifest cannot silently mean core-only. */
     public List<UpgradeComponentPlan> components(String version, String os, String arch) {
         var normalizedVersion = version == null ? "" : version.trim();
         var platform = (os == null ? "" : os.trim().toLowerCase(java.util.Locale.ROOT)) + "/"
@@ -50,7 +50,7 @@ public final class ReleaseManifestService {
             return List.of();
         }
         var manifest = fetchCached(normalizedVersion);
-        if (manifest == null || manifest.components() == null) return List.of();
+        if (manifest == null) throw new IllegalArgumentException("component manifest is unavailable for " + normalizedVersion);
         return manifest.components().stream()
                 .filter(plan -> plan != null && platform.equals(plan.os() + "/" + plan.arch()))
                 .toList();
@@ -66,7 +66,7 @@ public final class ReleaseManifestService {
         var normalizedVersion = version == null ? "" : version.trim();
         if (!VERSION.matcher(normalizedVersion).matches()) return Map.of();
         var manifest = fetchCached(normalizedVersion);
-        if (manifest == null || manifest.components() == null) return Map.of();
+        if (manifest == null) throw new IllegalArgumentException("component manifest is unavailable for " + normalizedVersion);
         var result = new LinkedHashMap<String, List<UpgradeComponentPlan>>();
         for (var plan : manifest.components()) {
             if (plan == null) continue;
@@ -118,34 +118,38 @@ public final class ReleaseManifestService {
         var cached = cache.get(version);
         if (cached != null && cached.expiresAt().isAfter(now)) return cached.manifest();
         var fetched = fetch(version);
-        var value = fetched == null ? new Manifest(version, List.of()) : fetched;
         if (cache.size() >= 16) cache.clear();
-        cache.put(version, new CachedManifest(value, now.plus(CACHE_TTL)));
-        return value;
+        cache.put(version, new CachedManifest(fetched, now.plus(CACHE_TTL)));
+        return fetched;
     }
 
     private static Manifest normalize(ManifestWire raw, String requestedVersion) {
+        var components = normalizeComponents(raw, requestedVersion);
+        return components == null ? null : new Manifest(requestedVersion, components);
+    }
+
+    static List<UpgradeComponentPlan> normalizeComponents(ManifestWire raw, String requestedVersion) {
         if (raw == null || raw.components() == null || !requestedVersion.equals(raw.version())) {
-            return new Manifest(raw == null ? "" : raw.version(), List.of());
+            return null;
         }
         var result = new java.util.ArrayList<UpgradeComponentPlan>();
         for (var plan : raw.components()) {
-            if (plan == null || plan.component() == null || !COMPONENT.matcher(plan.component()).matches()) continue;
-            if (plan.version() == null || plan.version().isBlank() || !VERSION.matcher(plan.version()).matches()) continue;
-            if (!("linux".equals(plan.os()) || "windows".equals(plan.os()))) continue;
-            if (!("amd64".equals(plan.arch()) || "arm64".equals(plan.arch()))) continue;
-            if (plan.url() == null || plan.url().isBlank() || !SHA256.matcher(plan.sha256()).matches()) continue;
+            if (plan == null || plan.component() == null || !COMPONENT.matcher(plan.component()).matches()) return null;
+            if (plan.version() == null || plan.version().isBlank() || !VERSION.matcher(plan.version()).matches()) return null;
+            if (!("linux".equals(plan.os()) || "windows".equals(plan.os()))) return null;
+            if (!("amd64".equals(plan.arch()) || "arm64".equals(plan.arch()))) return null;
+            if (plan.url() == null || plan.url().isBlank() || plan.sha256() == null
+                    || !SHA256.matcher(plan.sha256()).matches()) return null;
             try {
                 var url = URI.create(plan.url());
                 if (!"https".equalsIgnoreCase(url.getScheme()) || url.getHost() == null
-                        || url.getUserInfo() != null || url.getFragment() != null) continue;
+                    || url.getUserInfo() != null || url.getFragment() != null) return null;
                 result.add(plan);
-            } catch (IllegalArgumentException ignored) {
-                // Ignore one malformed optional component; command-agent can
-                // still upgrade and the operator sees the missing component.
+            } catch (IllegalArgumentException invalid) {
+                return null;
             }
         }
-        return new Manifest(raw.version() == null ? "" : raw.version(), List.copyOf(result));
+        return List.copyOf(result);
     }
 
     private static boolean trustedResponseHost(URI requested, URI response) {
