@@ -31,6 +31,7 @@ import java.util.regex.Pattern;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -64,7 +65,7 @@ public final class UpgradeService {
     // slow disk/network restart; a failed target can still be resumed from the
     // console after the lease expires.
     private static final Duration OFFER_LEASE = Duration.ofMinutes(5);
-    private static final Duration STATUS_LEASE = Duration.ofMinutes(15);
+    private static final Duration STATUS_LEASE = Duration.ofMinutes(20);
     private static final Duration DOWNLOAD_TIMEOUT = Duration.ofSeconds(30);
 
     private final AgentRegistry agents;
@@ -132,8 +133,7 @@ public final class UpgradeService {
                 RUNNING, canary, batch, Math.min(canary, selected.size()), artifacts, componentPlans,
                 new ArrayList<>(), now, now, null);
         for (var machine : selected) {
-            var machinePlatform = platform(machine.os(), machine.arch());
-            var hasComponentWork = !componentPlans.getOrDefault(machinePlatform, List.of()).isEmpty();
+            var hasComponentWork = !componentsForMachine(componentPlans, machine).isEmpty();
             var status = version.equals(machine.version()) && !hasComponentWork ? COMPLETED : PENDING;
             var finished = COMPLETED.equals(status) ? now : null;
             campaign.targets.add(new Target(machine.id(), status, "", 0, now, finished, null));
@@ -389,6 +389,7 @@ public final class UpgradeService {
             for (var campaign : memory.values().stream().sorted(Comparator.comparing((Campaign value) -> value.createdAt)).toList()) {
                 if (!RUNNING.equals(campaign.status)) continue;
                 reconcile(campaign, byId, now);
+                if (!RUNNING.equals(campaign.status)) continue;
                 var plan = offerFromCampaign(campaign, machine, now);
                 if (plan != null) {
                     signalChange();
@@ -409,11 +410,11 @@ public final class UpgradeService {
         var campaign = loadActiveJdbc(true);
         if (campaign == null) return null;
         reconcileJdbc(campaign, now);
+        if (!RUNNING.equals(campaign.status)) return null;
         var target = target(campaign, machine.id());
         if (target == null) return null;
         if (COMPLETED.equals(target.status)) return null;
-        var componentWork = campaign.componentPlans.getOrDefault(
-                platform(machine.os(), machine.arch()), List.of());
+        var componentWork = componentsForMachine(campaign.componentPlans, machine);
         if (machine.version() != null && machine.version().equals(campaign.version)
                 && componentWork.isEmpty()) {
             applyStatus(campaign, target, COMPLETED, "", now);
@@ -451,7 +452,7 @@ public final class UpgradeService {
         target.updatedAt = now;
         target.leaseUntil = now.plus(OFFER_LEASE);
         campaign.updatedAt = now;
-        var components = campaign.componentPlans.getOrDefault(platform(machine.os(), machine.arch()), List.of());
+        var components = componentsForMachine(campaign.componentPlans, machine);
         return new UpgradePlan(campaign.id, campaign.version, artifact.url(), artifact.sha256(), target.attempts, components);
     }
 
@@ -631,21 +632,65 @@ public final class UpgradeService {
         }
     }
 
-    private void applyStatus(Campaign campaign, Target target, String status, String error, Instant now) {
-        applyStatus(campaign, target, status, error, now, Map.of());
-    }
-
-    /** Prevent a discovered release from starting a second fleet campaign after restart. */
-    public boolean hasCampaignVersion(String version) {
+    public boolean hasActiveCampaign() {
         if (jdbc != null) {
-            var count = jdbc.queryForObject("SELECT COUNT(*) FROM rcm_upgrade_campaign WHERE version = ?", Long.class, version);
+            var count = jdbc.queryForObject("SELECT COUNT(*) FROM rcm_upgrade_campaign WHERE status IN (?, ?)",
+                    Long.class, RUNNING, PAUSED);
             return count != null && count > 0;
         }
         memoryLock.lock();
         try {
-            return memory.values().stream().anyMatch(campaign -> campaign.version.equals(version));
+            return memory.values().stream().anyMatch(value -> RUNNING.equals(value.status) || PAUSED.equals(value.status));
         } finally {
             memoryLock.unlock();
+        }
+    }
+
+    private void applyStatus(Campaign campaign, Target target, String status, String error, Instant now) {
+        applyStatus(campaign, target, status, error, now, Map.of());
+    }
+
+    /** Settle expired offers even when the target no longer polls the Center. */
+    @Scheduled(initialDelay = 60_000, fixedDelay = 60_000)
+    public void reconcileActive() {
+        reconcileActive(Instant.now());
+    }
+
+    void reconcileActive(Instant now) {
+        if (!config.enabled()) return;
+        UpgradeCampaignView changed;
+        if (jdbc != null) {
+            changed = transactions.execute(tx -> {
+                var ids = jdbc.query("SELECT campaign_id FROM rcm_upgrade_campaign WHERE status IN (?, ?) ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED",
+                        ps -> { ps.setString(1, RUNNING); ps.setString(2, PAUSED); },
+                        (rs, row) -> rs.getString(1));
+                if (ids.isEmpty()) return null;
+                var campaign = loadJdbc(ids.getFirst(), true);
+                var before = view(campaign);
+                reconcile(campaign, machinesById(agents.listAllMachines(now)), now);
+                if (before.equals(view(campaign))) return null;
+                for (var target : campaign.targets) updateTargetJdbc(campaign.id, target);
+                updateCampaignJdbc(campaign);
+                return view(campaign);
+            });
+        } else {
+            memoryLock.lock();
+            try {
+                changed = null;
+                for (var campaign : memory.values().stream()
+                        .filter(value -> RUNNING.equals(value.status) || PAUSED.equals(value.status))
+                        .sorted(Comparator.comparing(value -> value.createdAt)).toList()) {
+                    var before = view(campaign);
+                    reconcile(campaign, machinesById(agents.listAllMachines(now)), now);
+                    if (!before.equals(view(campaign))) changed = view(campaign);
+                }
+            } finally {
+                memoryLock.unlock();
+            }
+        }
+        if (changed != null) {
+            signalChange();
+            signalTargets(changed.targets());
         }
     }
 
@@ -683,7 +728,8 @@ public final class UpgradeService {
     private static boolean statusMayAdvance(Target target, String status, Instant now) {
         if (target == null || status == null || now == null) return false;
         if (COMPLETED.equals(target.status)) return COMPLETED.equals(status);
-        if (FAILED.equals(target.status)) return FAILED.equals(status);
+        if (FAILED.equals(target.status)) return FAILED.equals(status)
+                || (target.error.startsWith("upgrade status lease expired") && COMPLETED.equals(status));
         if (target.leaseUntil != null && !now.isBefore(target.leaseUntil)) return false;
         if (Objects.equals(target.status, status)) return true;
         return switch (target.status) {
@@ -702,16 +748,29 @@ public final class UpgradeService {
         for (var target : campaign.targets) {
             var machine = machines.get(target.machineId);
             var componentWork = machine == null ? List.<UpgradeComponentPlan>of()
-                    : campaign.componentPlans.getOrDefault(platform(machine.os(), machine.arch()), List.of());
+                    : componentsForMachine(campaign.componentPlans, machine);
             if (machine != null && campaign.version.equals(machine.version()) && componentWork.isEmpty()
                     && !COMPLETED.equals(target.status)) {
                 target.status = COMPLETED; target.error = ""; target.leaseUntil = null; target.updatedAt = now; target.finishedAt = now;
+            }
+            if ((OFFERED.equals(target.status) || DOWNLOADING.equals(target.status) || INSTALLING.equals(target.status))
+                    && target.leaseUntil != null && !now.isBefore(target.leaseUntil)) {
+                target.error = "upgrade status lease expired during " + target.status
+                        + "; check machine state before retry";
+                target.status = FAILED;
+                target.leaseUntil = null;
+                target.updatedAt = now;
+                target.finishedAt = now;
             }
             if (FAILED.equals(target.status)) campaign.status = PAUSED;
             if (!COMPLETED.equals(target.status)) allCompleted = false;
         }
         if (allCompleted) {
             campaign.status = COMPLETED; campaign.activeLimit = campaign.targets.size(); campaign.finishedAt = now; campaign.updatedAt = now; return;
+        }
+        if (PAUSED.equals(campaign.status) && campaign.targets.stream().noneMatch(value -> FAILED.equals(value.status))) {
+            campaign.status = RUNNING;
+            campaign.updatedAt = now;
         }
         if (!RUNNING.equals(campaign.status)) return;
         while (campaign.activeLimit < campaign.targets.size()) {
@@ -791,6 +850,7 @@ public final class UpgradeService {
             if (id.isBlank()) continue;
             var machine = byId.get(id);
             if (machine == null) throw new IllegalArgumentException("machine not found: " + id);
+            if (!includeOffline && !machine.online()) continue;
             if (result.stream().noneMatch(value -> value.id().equals(id))) result.add(machine);
         }
         return result;
@@ -815,6 +875,17 @@ public final class UpgradeService {
             throw new IllegalArgumentException("unsupported Agent platform: " + normalizedOs + "/" + normalizedArch);
         }
         return normalizedOs + "/" + normalizedArch;
+    }
+
+    /** Optional companions follow the machine's installed capabilities, not just its platform. */
+    static List<UpgradeComponentPlan> componentsForMachine(
+            Map<String, List<UpgradeComponentPlan>> plans, MachineView machine) {
+        return plans.getOrDefault(platform(machine.os(), machine.arch()), List.of()).stream()
+                .filter(plan -> switch (plan.component()) {
+                    case "desktop-companion", "desktop" -> machine.capabilities().contains("desktop");
+                    case "browser-agent", "browser" -> machine.capabilities().contains("browser");
+                    default -> true;
+                }).toList();
     }
 
     private static Map<String, MachineView> machinesById(List<MachineView> values) {

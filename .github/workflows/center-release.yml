@@ -30,7 +30,7 @@ permissions:
 
 concurrency:
   group: rcm-center-release-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+  cancel-in-progress: false
 
 jobs:
   changes:
@@ -47,7 +47,6 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
-          BEFORE: ${{ github.event.before }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -55,16 +54,8 @@ jobs:
             echo 'changed=true' >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-          if [[ -z "${BEFORE}" || "${BEFORE}" =~ ^0+$ ]]; then
-            files="$(git ls-files)"
-          else
-            files="$(git diff --name-only "${BEFORE}" "${SHA}")"
-          fi
-          if printf '%s\n' "${files}" | grep -Eq '^(java/center/|java/protocol/|java/(build.gradle.kts|settings.gradle.kts|gradle.properties)$|java/gradle/|java/gradlew(\.bat)?$|java/Dockerfile.center|scripts/(sync-artifact-viewer|verify-native-bundle)|web/src/artifact-viewer/|\.github/workflows/center-release.yml$)'; then
-            echo 'changed=true' >> "${GITHUB_OUTPUT}"
-          else
-            echo 'changed=false' >> "${GITHUB_OUTPUT}"
-          fi
+          changed="$(python3 scripts/detect-component-changes.py center --head "${SHA}" --since-release)"
+          echo "changed=${changed}" >> "${GITHUB_OUTPUT}"
 
   prepare:
     needs: changes
@@ -321,9 +312,12 @@ jobs:
           set -euo pipefail
           mapfile -d '' assets < <(find release -maxdepth 1 -type f \( -name '*.zip' -o -name '*.zip.sha256' -o -name '*.spdx.json' -o -name '*.sigstore.json' \) -print0 | sort -z)
           ((${#assets[@]} > 0))
-          args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --title "Center ${RELEASE_VERSION}" --generate-notes)
+          args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "Center ${RELEASE_VERSION}" --generate-notes)
           if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then args+=(--prerelease); fi
           gh release create "${args[@]}"
+          marker="center-published-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/tags/${marker}" -f "sha=${GITHUB_SHA}" >/dev/null
 
   gitops-deploy:
     name: Promote Center through GitOps
@@ -339,6 +333,7 @@ jobs:
       GITOPS_REPOSITORY: ${{ secrets.RCM_GITOPS_REPOSITORY }}
       GITOPS_SSH_KEY: ${{ secrets.RCM_GITOPS_SSH_KEY }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure GitHub-only GitOps deploy key
         shell: bash
         run: |
@@ -407,6 +402,8 @@ jobs:
           PY
           git -C gitops diff --check
           git -C gitops diff -- "${overlay}/center.yaml" "${overlay}/migration-job.yaml"
+          python3 scripts/verify-release.py center "${RELEASE_VERSION}" \
+            --manifest "gitops/${overlay}/center.yaml" --digest "${CENTER_DIGEST}"
       - name: Commit and push Center promotion
         shell: bash
         run: |
@@ -417,4 +414,17 @@ jobs:
           git -C gitops add "${overlay}/center.yaml" "${overlay}/migration-job.yaml"
           if git -C gitops diff --cached --quiet; then echo 'Center overlay already points at this release.'; exit 0; fi
           git -C gitops commit -m "chore(remote-connect-mcp): promote center ${RELEASE_VERSION}"
-          git -C gitops push origin HEAD:main
+          python3 scripts/push-gitops-component.py gitops
+      - name: Record Center promotion evidence
+        env:
+          CENTER_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Center ${RELEASE_VERSION}"
+            echo "Source: \`${GITHUB_SHA}\`"
+            echo "Image: \`${CENTER_DIGEST}\`"
+            echo "GitOps commit: \`$(git -C gitops rev-parse HEAD)\`"
+            echo 'GitOps pin verified; runtime readiness and version require a live check.'
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -12,13 +12,42 @@ import com.prodigalgal.remoteconnectmcp.protocol.RegisterRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskCommand;
 import com.prodigalgal.remoteconnectmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeArtifact;
+import com.prodigalgal.remoteconnectmcp.protocol.UpgradeComponentPlan;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import java.util.List;
 import java.util.Map;
+import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
 class UpgradeServiceTest {
     private static final String SHA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    @Test
+    void companionBundlesAreOfferedOnlyToMachinesThatUseThem() {
+        var registry = AgentRegistry.forTest("enroll");
+        var commandOnly = registry.register(registration("command-only", "v1.0.0"), "enroll");
+        var full = registry.register(new RegisterRequest("full", "full", "full", "linux", "amd64",
+                "v1.0.0", "/", List.of("command", "durable_tasks", "desktop", "browser")), "enroll");
+        var upgrades = new UpgradeService(registry, new TaskService(registry), new UpgradeConfig(true, ""));
+        var desktop = new UpgradeComponentPlan("desktop-companion", "v2.0.0", "linux", "amd64",
+                "https://example.test/desktop.zip", SHA, 100L, "drain-and-restart");
+        var browser = new UpgradeComponentPlan("browser-agent", "v2.0.0", "linux", "amd64",
+                "https://example.test/browser.zip", SHA, 100L, "drain-and-restart");
+        var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                List.of(commandOnly.machineId(), full.machineId()),
+                Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent.zip", SHA)),
+                false, Map.of("linux/amd64", List.of(desktop, browser))));
+
+        var poll = new PollRequest(List.of(), 1, List.of("command"));
+        var commandPlan = upgrades.offer(commandOnly.machineId(), poll);
+        assertNotNull(commandPlan);
+        assertTrue(commandPlan.components().isEmpty());
+        upgrades.updateStatus(commandOnly.machineId(), new UpgradeStatusRequest(
+                campaign.id(), UpgradeService.COMPLETED, null, commandPlan.attempt(), Map.of()));
+        var fullPlan = upgrades.offer(full.machineId(), poll);
+        assertNotNull(fullPlan);
+        assertEquals(List.of(desktop, browser), fullPlan.components());
+    }
 
     @Test
     void offersCanaryThenAdvancesBatchAfterSuccessfulAgentReport() {
@@ -29,10 +58,8 @@ class UpgradeServiceTest {
         var upgrades = new UpgradeService(registry, tasks, new UpgradeConfig(true, ""));
         var artifacts = Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA));
 
-        assertFalse(upgrades.hasCampaignVersion("v2.0.0"));
         var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
                 List.of(first.machineId(), second.machineId()), artifacts));
-        assertTrue(upgrades.hasCampaignVersion("v2.0.0"));
         assertEquals(UpgradeService.RUNNING, campaign.status());
 
         var request = new PollRequest(List.of(), 1, List.of("command"));
@@ -154,6 +181,30 @@ class UpgradeServiceTest {
                 new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, first.attempt() + 1, Map.of()));
 
         assertEquals(UpgradeService.OFFERED, stale.targets().getFirst().status());
+    }
+
+    @Test
+    void expiredDownloadSettlesAsFailureWithoutLaunchingASecondHelper() {
+        var registry = AgentRegistry.forTest("enroll");
+        var registration = registry.register(registration("one", "v1.0.0"), "enroll");
+        var upgrades = new UpgradeService(registry, new TaskService(registry), new UpgradeConfig(true, ""));
+        var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                List.of(registration.machineId()), Map.of("linux/amd64",
+                        new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
+        var plan = upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command")));
+        upgrades.updateStatus(registration.machineId(), new UpgradeStatusRequest(
+                campaign.id(), UpgradeService.DOWNLOADING, null, plan.attempt(), Map.of()));
+
+        upgrades.reconcileActive(Instant.now().plusSeconds(21 * 60));
+        var settled = upgrades.list(0, 10).getFirst();
+        assertEquals(UpgradeService.PAUSED, settled.status());
+        assertEquals(UpgradeService.FAILED, settled.targets().getFirst().status());
+        assertTrue(settled.targets().getFirst().error().contains("lease expired"));
+        assertNull(upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))));
+
+        var late = upgrades.updateStatus(registration.machineId(), new UpgradeStatusRequest(
+                campaign.id(), UpgradeService.COMPLETED, null, plan.attempt(), Map.of()));
+        assertEquals(UpgradeService.COMPLETED, late.status());
     }
 
     @Test

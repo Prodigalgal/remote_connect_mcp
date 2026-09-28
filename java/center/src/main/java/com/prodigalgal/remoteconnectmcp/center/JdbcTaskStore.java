@@ -232,6 +232,10 @@ final class JdbcTaskStore {
         return pollWithRecovery(machineId, request).response();
     }
 
+    List<String> recoverExpiredLeasesForMachine(String machineId) {
+        return transactions.execute(status -> recoverExpiredLeases(machineId));
+    }
+
     PollResult pollWithRecovery(String machineId, PollRequest request) {
         var availableSlots = request == null || request.availableSlots() == null ? 0 : request.availableSlots();
         var capabilities = request == null || request.availableCapabilities() == null ? List.<String>of() : request.availableCapabilities();
@@ -814,11 +818,12 @@ final class JdbcTaskStore {
                    AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
                 """, TaskStatus.QUEUED, machineId, TaskStatus.RUNNING);
         jdbc.update("""
-                UPDATE rcm_task SET status = ?, error_text = COALESCE(error_text, ?),
+                UPDATE rcm_task SET status = ?, error_text = ?,
                        finished_at = CURRENT_TIMESTAMP, lease_until = NULL, updated_at = CURRENT_TIMESTAMP
                  WHERE agent_id = ? AND status = ? AND timeout_seconds > 0
                    AND lease_until IS NOT NULL AND lease_until <= CURRENT_TIMESTAMP
-                """, TaskStatus.FAILED, "agent lease expired before timed command completed", machineId, TaskStatus.RUNNING);
+                """, TaskStatus.FAILED, "agent lease expired; command outcome unknown; inspect machine before retry",
+                machineId, TaskStatus.RUNNING);
         jdbc.update("""
                 UPDATE rcm_task SET status = ?, finished_at = CURRENT_TIMESTAMP,
                        lease_until = NULL, updated_at = CURRENT_TIMESTAMP

@@ -27,7 +27,7 @@ permissions:
 
 concurrency:
   group: rcm-console-release-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+  cancel-in-progress: false
 
 jobs:
   changes:
@@ -44,7 +44,6 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
-          BEFORE: ${{ github.event.before }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -52,12 +51,8 @@ jobs:
             echo 'changed=true' >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-          if [[ -z "${BEFORE}" || "${BEFORE}" =~ ^0+$ ]]; then files="$(git ls-files)"; else files="$(git diff --name-only "${BEFORE}" "${SHA}")"; fi
-          if printf '%s\n' "${files}" | grep -Eq '^(web/|\.github/workflows/console-release.yml$)'; then
-            echo 'changed=true' >> "${GITHUB_OUTPUT}"
-          else
-            echo 'changed=false' >> "${GITHUB_OUTPUT}"
-          fi
+          changed="$(python3 scripts/detect-component-changes.py console --head "${SHA}" --since-release)"
+          echo "changed=${changed}" >> "${GITHUB_OUTPUT}"
 
   prepare:
     needs: changes
@@ -150,6 +145,7 @@ jobs:
           tags=(--tag "ghcr.io/${owner}/remote-connect-mcp-console:${tag}")
           if [[ "${RELEASE_PRERELEASE}" != 'true' ]]; then tags+=(--tag "ghcr.io/${owner}/remote-connect-mcp-console:latest"); fi
           docker buildx build --platform linux/amd64,linux/arm64 --build-arg RCM_CI_BUILD=true \
+            --build-arg "RCM_RELEASE_VERSION=${RELEASE_VERSION}" --build-arg "RCM_SOURCE_SHA=${GITHUB_SHA}" \
             --file web/Dockerfile "${tags[@]}" --provenance=true --sbom=true --push web
 
   gitops-deploy:
@@ -166,6 +162,7 @@ jobs:
       GITOPS_REPOSITORY: ${{ secrets.RCM_GITOPS_REPOSITORY }}
       GITOPS_SSH_KEY: ${{ secrets.RCM_GITOPS_SSH_KEY }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure GitHub-only GitOps deploy key
         shell: bash
         run: |
@@ -221,6 +218,8 @@ jobs:
           PY
           git -C gitops diff --check
           git -C gitops diff -- "${overlay}/console.yaml"
+          python3 scripts/verify-release.py console "${RELEASE_VERSION}" \
+            --manifest "${path}" --digest "${CONSOLE_DIGEST}"
       - name: Commit and push Console promotion
         shell: bash
         run: |
@@ -231,4 +230,34 @@ jobs:
           git -C gitops add "${overlay}/console.yaml"
           if git -C gitops diff --cached --quiet; then echo 'Console overlay already points at this release.'; exit 0; fi
           git -C gitops commit -m "chore(remote-connect-mcp): promote console ${RELEASE_VERSION}"
-          git -C gitops push origin HEAD:main
+          python3 scripts/push-gitops-component.py gitops
+      - name: Record Console promotion evidence
+        env:
+          CONSOLE_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Console ${RELEASE_VERSION}"
+            echo "Source: \`${GITHUB_SHA}\`"
+            echo "Image: \`${CONSOLE_DIGEST}\`"
+            echo "GitOps commit: \`$(git -C gitops rev-parse HEAD)\`"
+            echo 'GitOps pin verified; live /release.json requires a runtime check.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  record-published-source:
+    name: Record published Console source
+    needs: [image, gitops-deploy]
+    if: always() && needs.image.result == 'success' && (needs.gitops-deploy.result == 'success' || needs.gitops-deploy.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tag the exact source that was published
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="console-published-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git tag "${tag}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${tag}"

@@ -6,7 +6,6 @@ import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -43,6 +42,7 @@ final class AgentUpgradeRunner implements Runnable {
     // uncompressed bundle ceiling.
     private static final long MAX_ARTIFACT_BYTES = 256L * 1024 * 1024;
     private static final Duration DOWNLOAD_TIMEOUT = Duration.ofMinutes(15);
+    private static final Duration DOWNLOAD_STALL_TIMEOUT = Duration.ofMinutes(2);
     private static final int MAX_DOWNLOAD_ATTEMPTS = 3;
     private static final Duration DOWNLOAD_RETRY_DELAY = Duration.ofSeconds(2);
     private static final int COPY_BUFFER = 64 * 1024;
@@ -97,6 +97,7 @@ final class AgentUpgradeRunner implements Runnable {
                 if (componentSuffix == null) throw new IOException("component upgrade URL must reference a Native Image ZIP bundle");
                 var componentStaged = directory.resolve(safeComponent(component.component()) + "-" + safeComponent(component.version())
                         + ".new" + componentSuffix);
+                report("downloading", null);
                 downloadVerified(component.url(), component.sha256(), componentStaged);
                 componentConfigs.add(new AgentUpgradeHelper.ComponentConfig(component.component(), component.version(),
                         componentStaged.toString(), componentTarget.toString(), config.stateDir().toAbsolutePath().normalize().toString(),
@@ -138,6 +139,7 @@ final class AgentUpgradeRunner implements Runnable {
         IOException last = null;
         for (int attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt++) {
             try {
+                if (attempt > 1) report("downloading", null);
                 downloadVerifiedOnce(rawUrl, expected, destination);
                 return;
             } catch (IOException exception) {
@@ -153,6 +155,7 @@ final class AgentUpgradeRunner implements Runnable {
 
     private void downloadVerifiedOnce(String rawUrl, String expected, Path destination)
             throws IOException, InterruptedException {
+        var deadlineNanos = System.nanoTime() + DOWNLOAD_TIMEOUT.toNanos();
         var request = HttpRequest.newBuilder(URI.create(rawUrl.trim()))
                 .timeout(DOWNLOAD_TIMEOUT)
                 .header("Accept", "application/octet-stream")
@@ -171,11 +174,11 @@ final class AgentUpgradeRunner implements Runnable {
             throw new IOException("Agent upgrade download failed", cause == null ? exception : cause);
         }
         if (response.statusCode() != 200) {
-            try (var body = response.body()) { body.transferTo(OutputStream.nullOutputStream()); }
+            response.body().close();
             throw new IOException("Agent upgrade endpoint returned HTTP " + response.statusCode());
         }
         if (!"https".equalsIgnoreCase(response.uri().getScheme())) {
-            try (var body = response.body()) { body.transferTo(OutputStream.nullOutputStream()); }
+            response.body().close();
             throw new IOException("Agent upgrade redirected to a non-HTTPS URL");
         }
 
@@ -187,7 +190,7 @@ final class AgentUpgradeRunner implements Runnable {
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
             var buffer = new byte[COPY_BUFFER];
             int read;
-            while ((read = input.read(buffer)) >= 0) {
+            while ((read = readWithDeadline(input, buffer, deadlineNanos, DOWNLOAD_STALL_TIMEOUT)) >= 0) {
                 if (read == 0) continue;
                 written += read;
                 if (written > MAX_ARTIFACT_BYTES) throw new IOException("Agent upgrade exceeds 256 MiB");
@@ -285,9 +288,46 @@ final class AgentUpgradeRunner implements Runnable {
         }
     }
 
+    static int readWithDeadline(InputStream input, byte[] buffer, long deadlineNanos, Duration stallTimeout)
+            throws IOException {
+        var remaining = deadlineNanos - System.nanoTime();
+        if (remaining <= 0) throw new IOException("Agent upgrade download timed out");
+        var result = new java.util.concurrent.CompletableFuture<Integer>();
+        var reader = Thread.startVirtualThread(() -> {
+            try {
+                result.complete(input.read(buffer));
+            } catch (IOException exception) {
+                result.completeExceptionally(exception);
+            }
+        });
+        try {
+            return result.get(Math.min(remaining, stallTimeout.toNanos()), TimeUnit.NANOSECONDS);
+        } catch (TimeoutException exception) {
+            var expired = deadlineNanos - System.nanoTime() <= 0;
+            result.cancel(true);
+            try { input.close(); } catch (IOException ignored) { }
+            reader.interrupt();
+            throw new IOException(expired ? "Agent upgrade download timed out"
+                    : "Agent upgrade download stalled without progress", exception);
+        } catch (InterruptedException exception) {
+            result.cancel(true);
+            try { input.close(); } catch (IOException ignored) { }
+            reader.interrupt();
+            Thread.currentThread().interrupt();
+            throw new IOException("Agent upgrade download interrupted", exception);
+        } catch (java.util.concurrent.ExecutionException exception) {
+            var cause = exception.getCause();
+            if (cause instanceof IOException io) throw io;
+            throw new IOException("Agent upgrade download failed", cause == null ? exception : cause);
+        } finally {
+            if (!result.isDone()) reader.interrupt();
+        }
+    }
+
     private static boolean isRetryableDownloadFailure(IOException exception) {
         var message = exception.getMessage() == null ? "" : exception.getMessage().toLowerCase(Locale.ROOT);
         return message.contains("eof") || message.contains("reset") || message.contains("timed out")
+                || message.contains("stalled")
                 || message.contains("connect") || message.contains("closed") || message.contains("no bytes");
     }
 

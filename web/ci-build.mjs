@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
 
 if (process.env.GITHUB_ACTIONS !== 'true') {
   console.error('Local React compilation is disabled. Push a branch or java-vX.Y.Z tag and let GitHub Actions build it.')
@@ -21,3 +22,9 @@ for (const args of [['exec', 'tsc', '-b'], ['exec', 'vite', 'build']]) {
   }
   if (result.status !== 0) process.exit(result.status ?? 1)
 }
+
+writeFileSync('dist/release.json', JSON.stringify({
+  service: 'console',
+  version: process.env.RCM_RELEASE_VERSION || 'dev',
+  source_sha: process.env.RCM_SOURCE_SHA || process.env.GITHUB_SHA || 'unknown',
+}) + '\n')
