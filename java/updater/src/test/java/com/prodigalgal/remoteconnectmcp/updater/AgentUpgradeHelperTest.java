@@ -12,8 +12,6 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.AclEntryFlag;
-import java.nio.file.attribute.AclFileAttributeView;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import org.junit.jupiter.api.Test;
@@ -136,12 +134,12 @@ class AgentUpgradeHelperTest {
                 if (cause instanceof Error error) throw error;
                 throw exception;
             }
-            var aclView = Files.getFileAttributeView(target, AclFileAttributeView.class);
-            assertTrue(aclView != null, "Windows must provide an ACL attribute view");
-            var acl = aclView.getAcl();
-            assertFalse(acl.isEmpty());
-            assertTrue(acl.stream().allMatch(entry -> entry.flags().contains(AclEntryFlag.INHERITED)),
-                    "installed component files must inherit the target directory ACL");
+            var systemRoot = System.getenv().getOrDefault("SystemRoot", "C:\\Windows");
+            var process = new ProcessBuilder(Path.of(systemRoot, "System32", "icacls.exe").toString(),
+                    target.toString()).redirectErrorStream(true).start();
+            var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertEquals(0, process.waitFor(), output);
+            assertTrue(output.contains("(I)"), "installed component files must inherit the target directory ACL: " + output);
         } finally {
             deleteTree(root);
         }
