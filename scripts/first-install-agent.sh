@@ -86,6 +86,10 @@ download_verified() {
   local asset="$1" destination="$stage/$1" sidecar="$stage/$1.sha256" expected listed actual
   curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 600 "$release_base/$asset" -o "$destination"
   curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$release_base/$asset.sha256" -o "$sidecar"
+  verify_downloaded "$asset" "$destination" "$sidecar"
+}
+verify_downloaded() {
+  local asset="$1" destination="$2" sidecar="$3" expected listed actual
   read -r expected listed _ < "$sidecar" || { echo "invalid checksum sidecar for $asset" >&2; exit 1; }
   listed="${listed#\*}"
   [[ "$expected" =~ ^[[:xdigit:]]{64}$ && "$listed" == "$asset" ]] || { echo "invalid checksum sidecar for $asset" >&2; exit 1; }
@@ -93,8 +97,24 @@ download_verified() {
   [[ "$actual" == "${expected,,}" ]] || { echo "checksum mismatch for $asset" >&2; exit 1; }
   printf '%s\n' "$destination"
 }
+download_optional_verified() {
+  local asset="$1" destination="$stage/$1" sidecar="$stage/$1.sha256" status
+  if ! status="$(curl --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 600 \
+      --output "$destination" --write-out '%{http_code}' "$release_base/$asset")"; then
+    return 1
+  fi
+  if [[ "$status" == 404 ]]; then
+    rm -f -- "$destination"
+    echo "Release has no $asset; the Agent's compatibility updater will be used." >&2
+    return 0
+  fi
+  [[ "$status" == 200 ]] || { echo "could not download optional asset $asset (HTTP $status)" >&2; return 1; }
+  curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$release_base/$asset.sha256" -o "$sidecar"
+  verify_downloaded "$asset" "$destination" "$sidecar"
+}
 
 agent_zip="$(download_verified "remote-connect-mcp-agent-$version-linux-$arch.zip")"
+updater_zip="$(download_optional_verified "remote-connect-mcp-updater-$version-linux-$arch.zip")"
 desktop_zip=''
 browser_zip=''
 if $desktop; then desktop_zip="$(download_verified "remote-connect-mcp-desktop-$version-linux-$arch.zip")"; fi
@@ -131,6 +151,7 @@ export REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN="$enrollment_token"
 export REMOTE_CONNECT_MCP_AGENT_NAME="$agent_name"
 export REMOTE_CONNECT_MCP_AGENT_HOST_ID="$host_id"
 export REMOTE_CONNECT_MCP_AGENT_BINARY="$agent_zip"
+export REMOTE_CONNECT_MCP_AGENT_UPDATER_BINARY="$updater_zip"
 export REMOTE_CONNECT_MCP_AGENT_SERVICE_FILE="$service_file"
 export REMOTE_CONNECT_MCP_AGENT_CAPABILITIES="$capabilities"
 export REMOTE_CONNECT_MCP_AGENT_VERSION="$version"

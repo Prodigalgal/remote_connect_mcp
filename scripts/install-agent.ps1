@@ -22,6 +22,7 @@ param(
     [string]$CamoufoxInstallDir = $env:REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR,
     [string]$DesktopBinaryPath = "",
     [string]$BrowserBinaryPath = "",
+    [string]$UpdaterBinaryPath = "",
     [switch]$DesktopEnabled,
     [ValidateRange(1, 32)]
     [int]$MaxConcurrency = 1,
@@ -118,7 +119,7 @@ function Stop-AgentProcessForReplacement {
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
         $processes = @()
-        foreach ($name in @('rcm-agent.exe', 'rcm-desktop-companion.exe', 'rcm-browser-agent.exe')) {
+        foreach ($name in @('rcm-agent.exe', 'rcm-desktop-companion.exe', 'rcm-browser-agent.exe', 'rcm-updater.exe')) {
             foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='$name'" -ErrorAction SilentlyContinue)) {
                 if (-not $process.ExecutablePath) { continue }
                 try {
@@ -372,6 +373,10 @@ if ($DesktopEnabled -or -not [string]::IsNullOrWhiteSpace($DesktopBinaryPath)) {
 if (-not [string]::IsNullOrWhiteSpace($BrowserBinaryPath)) {
     $browserDestination = Install-NativeCompanionBundle -InputPath $BrowserBinaryPath -ExpectedExecutable 'rcm-browser-agent.exe' -DestinationDirectory (Join-Path $InstallRoot 'browser')
 }
+$updaterDestination = $null
+if (-not [string]::IsNullOrWhiteSpace($UpdaterBinaryPath)) {
+    $updaterDestination = Install-NativeCompanionBundle -InputPath $UpdaterBinaryPath -ExpectedExecutable 'rcm-updater.exe' -DestinationDirectory (Join-Path $InstallRoot 'updater')
+}
 
 $identity = Join-Path $StateDir 'identity.json'
 if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
@@ -469,6 +474,9 @@ if ($desktopDestination) {
 if ($browserDestination) {
     $environment += "REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=$browserDestination"
     $environment += "REMOTE_CONNECT_MCP_BROWSER_BINARY_PATH=$browserDestination"
+}
+if ($updaterDestination) {
+    $environment += "REMOTE_CONNECT_MCP_AGENT_UPDATER_BINARY_PATH=$updaterDestination"
 }
 if (-not [string]::IsNullOrWhiteSpace($PlaywrightBrowsersPath)) {
     $environment += "PLAYWRIGHT_BROWSERS_PATH=$PlaywrightBrowsersPath"

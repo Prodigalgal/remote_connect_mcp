@@ -136,6 +136,8 @@ public final class ReleaseManifestService {
         for (var plan : raw.components()) {
             if (plan == null || plan.component() == null || !COMPONENT.matcher(plan.component()).matches()) return null;
             if (plan.version() == null || plan.version().isBlank() || !VERSION.matcher(plan.version()).matches()) return null;
+            if (plan.minAgentVersion() != null && !plan.minAgentVersion().isBlank()
+                    && !VERSION.matcher(plan.minAgentVersion()).matches()) return null;
             if (!("linux".equals(plan.os()) || "windows".equals(plan.os()))) return null;
             if (!("amd64".equals(plan.arch()) || "arm64".equals(plan.arch()))) return null;
             if (plan.url() == null || plan.url().isBlank() || plan.sha256() == null

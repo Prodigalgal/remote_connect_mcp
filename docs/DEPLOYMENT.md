@@ -26,7 +26,7 @@ Native Image bundle，不会自行触发构建或退回 JVM JAR。
 两个工作流都会先执行 `scripts/scan-repository-secrets.sh`。检查只输出命中文件名，不会把令牌或
 私钥内容写入日志；真实域名、内网地址和部署 Secret 必须留在集群外的私有配置层。
 
-产物名为 `rcm-center`、`rcm-agent`、`rcm-desktop-companion` 和 `rcm-browser-agent`。其中后三个 Agent
+产物名为 `rcm-center`、`rcm-agent`、`rcm-desktop-companion`、`rcm-browser-agent` 和独立的一次性 `rcm-updater`。其中 Agent
 目标分别隔离命令、用户桌面和浏览器适配器生命周期；当前仓库的 Linux Native Docker builder 固定为
 `ghcr.io/graalvm/native-image-community:25@sha256:0d936f32bb8acb5bc60c41b33e05f064d7a6aaf36b726538296c54949bd4a3c0`；更新构建器时必须同步更新两个 Dockerfile、重新跑全套 Native smoke，并记录新的 digest。当前 GraalVM/NIK 25 的可验证 Native Image
 矩阵是 Linux amd64/arm64、Windows amd64；Windows arm64 会被脚本明确拒绝，不进入发布矩阵，不能把交叉编译结果当作原生生产物。每个支持目标都必须分别构建

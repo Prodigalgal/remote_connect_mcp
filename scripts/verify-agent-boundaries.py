@@ -19,6 +19,7 @@ MODULES = {
     "agent": {"protocol"},
     "desktop": {"protocol"},
     "browser": {"protocol"},
+    "updater": {"protocol"},
 }
 
 MAIN_CLASSES = {
@@ -26,6 +27,7 @@ MAIN_CLASSES = {
     "agent": "com.prodigalgal.remoteconnectmcp.agent.RemoteConnectAgentApplication",
     "desktop": "com.prodigalgal.remoteconnectmcp.desktop.DesktopCompanionApplication",
     "browser": "com.prodigalgal.remoteconnectmcp.browser.BrowserAgentApplication",
+    "updater": "com.prodigalgal.remoteconnectmcp.updater.UpdaterApplication",
 }
 
 IMAGE_NAMES = {
@@ -33,6 +35,7 @@ IMAGE_NAMES = {
     "agent": "rcm-agent",
     "desktop": "rcm-desktop-companion",
     "browser": "rcm-browser-agent",
+    "updater": "rcm-updater",
 }
 
 
@@ -149,7 +152,7 @@ def main() -> int:
                 if entry.get(flag) is not True:
                     errors.append(f"desktop companion JNI metadata for {name} must enable {flag}")
 
-    for module in ("agent", "browser", "center"):
+    for module in ("agent", "browser", "center", "updater"):
         resource_root = root / "java" / module / "src" / "main" / "resources"
         if not resource_root.is_dir():
             continue
@@ -162,6 +165,7 @@ def main() -> int:
     for module, forbidden in {
         "desktop": ("com.prodigalgal.remoteconnectmcp.agent", "com.prodigalgal.remoteconnectmcp.browser", "com.prodigalgal.remoteconnectmcp.center"),
         "browser": ("com.prodigalgal.remoteconnectmcp.agent", "com.prodigalgal.remoteconnectmcp.desktop", "com.prodigalgal.remoteconnectmcp.center"),
+        "updater": ("com.prodigalgal.remoteconnectmcp.agent", "com.prodigalgal.remoteconnectmcp.desktop", "com.prodigalgal.remoteconnectmcp.browser", "com.prodigalgal.remoteconnectmcp.center"),
     }.items():
         source_root = root / "java" / module / "src" / "main" / "java"
         if not source_root.is_dir():
@@ -174,12 +178,24 @@ def main() -> int:
                         f"{module} imports another runtime module ({package}) in {source.relative_to(root)}"
                     )
 
+    legacy_updater = root / "java/agent/src/main/java/com/prodigalgal/remoteconnectmcp/agent/AgentUpgradeHelper.java"
+    standalone_updater = root / "java/updater/src/main/java/com/prodigalgal/remoteconnectmcp/updater/AgentUpgradeHelper.java"
+    if legacy_updater.is_file() and standalone_updater.is_file():
+        legacy_source = legacy_updater.read_text(encoding="utf-8")
+        compatible_source = legacy_source.replace(
+            "package com.prodigalgal.remoteconnectmcp.agent;",
+            "package com.prodigalgal.remoteconnectmcp.updater;",
+            1,
+        )
+        if compatible_source != standalone_updater.read_text(encoding="utf-8"):
+            errors.append("legacy bootstrap updater and standalone updater implementations have drifted")
+
     if errors:
         for error in errors:
             fail(error)
         return 1
 
-    print("agent-boundary: command-agent, desktop-companion, browser-agent and center boundaries passed")
+    print("agent-boundary: center, command-agent, desktop-companion, browser-agent and updater boundaries passed")
     return 0
 
 

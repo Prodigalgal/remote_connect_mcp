@@ -14,8 +14,10 @@ binary_source="${REMOTE_CONNECT_MCP_AGENT_BINARY:-}"
 [[ "${binary_source,,}" == *.zip ]] || { echo "REMOTE_CONNECT_MCP_AGENT_BINARY must be a Native Image ZIP" >&2; exit 1; }
 desktop_source="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY:-}"
 browser_source="${REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY:-}"
+updater_source="${REMOTE_CONNECT_MCP_AGENT_UPDATER_BINARY:-}"
 [[ -z "$desktop_source" || "${desktop_source,,}" == *.zip ]] || { echo "REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY must be a Native Image ZIP" >&2; exit 1; }
 [[ -z "$browser_source" || "${browser_source,,}" == *.zip ]] || { echo "REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY must be a Native Image ZIP" >&2; exit 1; }
+[[ -z "$updater_source" || "${updater_source,,}" == *.zip ]] || { echo "REMOTE_CONNECT_MCP_AGENT_UPDATER_BINARY must be a Native Image ZIP" >&2; exit 1; }
 desktop_enabled="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED:-false}"
 desktop_enabled="${desktop_enabled,,}"
 desktop_user="${REMOTE_CONNECT_MCP_AGENT_DESKTOP_USER:-${SUDO_USER:-}}"
@@ -185,6 +187,7 @@ install -d -m 0755 "$install_root"
 install -d -m 0700 "$state_dir"
 install_companion_bundle "$desktop_source" rcm-desktop-companion "$install_root/desktop"
 install_companion_bundle "$browser_source" rcm-browser-agent "$install_root/browser"
+install_companion_bundle "$updater_source" rcm-updater "$install_root/updater"
 
 # On Linux the command Agent is a root system service, while AWT/Wayland/X11
 # must run in the logged-in user's session.  Install an optional systemd-user
@@ -407,6 +410,9 @@ install -d -m 0700 /etc/remote-connect-mcp-agent
   printf 'REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH=%s\n' "$cgroup_path"
   printf 'REMOTE_CONNECT_MCP_AGENT_BINARY_PATH=%s\n' "$install_root/rcm-agent"
   printf 'REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME=remote-connect-mcp-agent\n'
+  if [[ -x "$install_root/updater/rcm-updater" ]]; then
+    printf 'REMOTE_CONNECT_MCP_AGENT_UPDATER_BINARY_PATH=%s\n' "$install_root/updater/rcm-updater"
+  fi
   if [[ -x "$install_root/desktop/rcm-desktop-companion" ]]; then
     printf 'REMOTE_CONNECT_MCP_DESKTOP_BINARY_PATH=%s\n' "$install_root/desktop/rcm-desktop-companion"
   fi

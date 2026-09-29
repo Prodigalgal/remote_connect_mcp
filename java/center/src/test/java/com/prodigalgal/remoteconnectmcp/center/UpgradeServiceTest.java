@@ -50,6 +50,23 @@ class UpgradeServiceTest {
     }
 
     @Test
+    void updaterBundleIsWithheldFromAgentsBeforeTheBridgeVersion() {
+        var updater = new UpgradeComponentPlan("agent-updater", "v1.0.0", "linux", "amd64",
+                "https://example.test/updater.zip", SHA, 100L, "manual", "v0.1.36");
+        var old = new MachineView("old", "old", "old", "old", "linux", "amd64", "v0.1.35",
+                "/", List.of("command"), Instant.EPOCH, Instant.EPOCH, true);
+        var bridge = new MachineView("bridge", "bridge", "bridge", "bridge", "linux", "amd64", "v0.1.36",
+                "/", List.of("command"), Instant.EPOCH, Instant.EPOCH, true);
+        var prerelease = new MachineView("prerelease", "prerelease", "prerelease", "prerelease", "linux", "amd64", "v0.1.36-rc.1",
+                "/", List.of("command"), Instant.EPOCH, Instant.EPOCH, true);
+        var plans = Map.of("linux/amd64", List.of(updater));
+
+        assertTrue(UpgradeService.componentsForMachine(plans, old).isEmpty());
+        assertEquals(List.of(updater), UpgradeService.componentsForMachine(plans, bridge));
+        assertTrue(UpgradeService.componentsForMachine(plans, prerelease).isEmpty());
+    }
+
+    @Test
     void offersCanaryThenAdvancesBatchAfterSuccessfulAgentReport() {
         var registry = AgentRegistry.forTest("enroll");
         var first = registry.register(registration("one", "v1.0.0"), "enroll");

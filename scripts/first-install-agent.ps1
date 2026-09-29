@@ -114,9 +114,22 @@ try {
     $releaseBase = "https://github.com/Prodigalgal/remote_connect_mcp/releases/download/$ReleaseTag"
     $rawBase = "https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/$ReleaseTag"
     function Download-Verified {
-        param([Parameter(Mandatory = $true)][string]$Asset)
+        param([Parameter(Mandatory = $true)][string]$Asset, [switch]$Optional)
         $destination = Join-Path $stage $Asset
-        Invoke-WebRequest -UseBasicParsing -Uri "$releaseBase/$Asset" -OutFile $destination -TimeoutSec 180
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri "$releaseBase/$Asset" -OutFile $destination -TimeoutSec 180
+        } catch {
+            $statusCode = $null
+            if ($_.Exception.Response) {
+                try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { }
+            }
+            if ($Optional -and $statusCode -eq 404) {
+                Remove-Item -LiteralPath $destination -Force -ErrorAction SilentlyContinue
+                Write-Warning "Release has no $Asset; the Agent's compatibility updater will be used."
+                return $null
+            }
+            throw
+        }
         $sidecar = "$destination.sha256"
         Invoke-WebRequest -UseBasicParsing -Uri "$releaseBase/$Asset.sha256" -OutFile $sidecar -TimeoutSec 30
         $parts = ((Get-Content -LiteralPath $sidecar -Raw).Trim() -split '\s+')
@@ -128,6 +141,7 @@ try {
 
     $arch = 'windows-amd64'
     $agentZip = Download-Verified "remote-connect-mcp-agent-$Version-$arch.zip"
+    $updaterZip = Download-Verified "remote-connect-mcp-updater-$Version-$arch.zip" -Optional
     $desktopZip = $null
     $browserZip = $null
     if ($Desktop) { $desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-$arch.zip" }
@@ -180,6 +194,9 @@ try {
         '-MaxConcurrency', '1', '-MaxBrowserWorkers', '1', '-MaxChildProcesses', '32',
         '-MaxTotalChildProcesses', '32'
     )
+    if (-not [string]::IsNullOrWhiteSpace($updaterZip)) {
+        $arguments += @('-UpdaterBinaryPath', $updaterZip)
+    }
     if ($Desktop) { $arguments += @('-DesktopEnabled', '-DesktopBinaryPath', $desktopZip) }
     if ($Browser) { $arguments += @('-BrowserBinaryPath', $browserZip, '-BrowserAdapter', $adapter, '-BrowserEngine', 'camoufox', '-BrowserName', 'firefox', '-BrowserHeadless', $BrowserHeadless, '-BrowserProfileDir', (Join-Path $StateDir 'browser-profile')) }
     if ($ReEnroll) { $arguments += '-ReEnroll' }

@@ -79,24 +79,38 @@ final class AgentUpgradeRunner implements Runnable {
     @Override
     public void run() {
         Path staged = null;
+        var stagedArtifacts = new ArrayList<Path>();
+        Process helper = null;
         try {
             validatePlan(plan);
             report("downloading", null);
             var directory = config.stateDir().toAbsolutePath().normalize().resolve("upgrades");
             Files.createDirectories(directory);
             var safeVersion = safeComponent(plan.version());
-            var bundleSuffix = archiveSuffix(plan.url());
-            if (bundleSuffix == null) throw new IOException("Agent upgrade URL must reference a Native Image ZIP bundle");
-            staged = directory.resolve("agent-" + safeVersion + ".new" + bundleSuffix);
-            downloadVerified(plan.url(), plan.sha256(), staged);
+            var updateAgent = !plan.version().equals(config.currentVersion());
+            if (updateAgent) {
+                var bundleSuffix = archiveSuffix(plan.url());
+                if (bundleSuffix == null) throw new IOException("Agent upgrade URL must reference a Native Image ZIP bundle");
+                staged = directory.resolve("agent-" + safeVersion + ".new" + bundleSuffix);
+                stagedArtifacts.add(staged);
+                downloadVerified(plan.url(), plan.sha256(), staged);
+            }
 
             var componentConfigs = new ArrayList<AgentUpgradeHelper.ComponentConfig>();
+            var completedComponents = new java.util.LinkedHashMap<String, String>();
+            var updaterUpdatePending = false;
             for (var component : plan.components()) {
+                if ("agent-updater".equals(component.component()) && updaterAlreadyInstalled(component)) {
+                    completedComponents.put(component.component(), "already-current");
+                    continue;
+                }
                 var componentTarget = resolveComponentTarget(component.component());
+                if ("agent-updater".equals(component.component())) updaterUpdatePending = true;
                 var componentSuffix = archiveSuffix(component.url());
                 if (componentSuffix == null) throw new IOException("component upgrade URL must reference a Native Image ZIP bundle");
                 var componentStaged = directory.resolve(safeComponent(component.component()) + "-" + safeComponent(component.version())
                         + ".new" + componentSuffix);
+                stagedArtifacts.add(componentStaged);
                 report("downloading", null);
                 downloadVerified(component.url(), component.sha256(), componentStaged);
                 componentConfigs.add(new AgentUpgradeHelper.ComponentConfig(component.component(), component.version(),
@@ -106,16 +120,24 @@ final class AgentUpgradeRunner implements Runnable {
 
             var target = resolveTargetBinary();
             var helperConfig = new AgentUpgradeHelper.Config(
-                    plan.campaignId(), plan.version(), staged.toString(), target.toString(),
+                    plan.campaignId(), plan.version(), staged == null ? "" : staged.toString(), target.toString(),
                     config.stateDir().toAbsolutePath().normalize().toString(), serviceName(),
-                    ProcessHandle.current().pid(), plan.attempt(), componentConfigs);
+                    ProcessHandle.current().pid(), plan.attempt(), componentConfigs, completedComponents);
             var configPath = directory.resolve("helper-" + safeVersion + ".json");
             writeConfig(configPath, helperConfig);
             report("installing", null);
-            launchHelper(target, configPath);
+            helper = launchHelper(target, configPath, updaterUpdatePending);
             LOG.info(() -> "Agent upgrade helper launched for " + plan.version());
-            requestShutdown.run();
+            if (updateAgent) {
+                requestShutdown.run();
+            } else {
+                waitForComponentHelper(helper);
+            }
+        } catch (InterruptedException interrupted) {
+            cleanupUnclaimedArtifacts(stagedArtifacts, helper);
+            Thread.currentThread().interrupt();
         } catch (Exception exception) {
+            cleanupUnclaimedArtifacts(stagedArtifacts, helper);
             var message = compactError(exception.getMessage());
             LOG.log(Level.WARNING, "Agent upgrade failed: " + message, exception);
             try {
@@ -236,13 +258,68 @@ final class AgentUpgradeRunner implements Runnable {
         return target;
     }
 
-    private void launchHelper(Path target, Path configPath) throws IOException {
+    private Process launchHelper(Path target, Path configPath, boolean useEmbeddedHelper) throws IOException {
         var command = new java.util.ArrayList<String>();
-        command.add(target.toString());
+        Path updater = null;
+        if (!useEmbeddedHelper) {
+            try {
+                updater = resolveComponentTarget("agent-updater");
+            } catch (IOException ignored) {
+                // Older custom installations may not expose the canonical layout.
+            }
+        }
+        if (updater != null && Files.isRegularFile(updater, LinkOption.NOFOLLOW_LINKS)
+                && (isWindows() || Files.isExecutable(updater))) {
+            command.add(updater.toString());
+        } else {
+            // Keep the in-Agent helper as a bootstrap path until an updater
+            // component has been installed on this machine.
+            command.add(target.toString());
+        }
         command.add("--apply-update");
         command.add(configPath.toString());
-        new ProcessBuilder(command).redirectErrorStream(true)
+        return new ProcessBuilder(command).redirectErrorStream(true)
                 .redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+    }
+
+    private void waitForComponentHelper(Process helper) throws IOException, InterruptedException {
+        var exitCode = helper.waitFor();
+        var resultFile = config.stateDir().toAbsolutePath().normalize().resolve("upgrade-result.json");
+        if (!Files.isRegularFile(resultFile, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("component updater exited without a terminal result");
+        }
+        var result = JsonCodec.read(Files.readAllBytes(resultFile), AgentUpgradeHelper.Result.class);
+        if (!plan.campaignId().equals(result.campaignId())) {
+            throw new IOException("component updater wrote a result for a different campaign");
+        }
+        if (exitCode != 0) {
+            LOG.warning("Component updater exited with code " + exitCode
+                    + "; terminal details will be collected from the helper result file");
+        }
+    }
+
+    private static void cleanupUnclaimedArtifacts(ArrayList<Path> artifacts, Process helper) {
+        if (helper != null && helper.isAlive()) return;
+        for (var artifact : artifacts) {
+            try {
+                Files.deleteIfExists(artifact);
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private boolean updaterAlreadyInstalled(UpgradeComponentPlan component) throws IOException {
+        var executable = resolveComponentTarget(component.component());
+        if (!Files.isRegularFile(executable, LinkOption.NOFOLLOW_LINKS)
+                || (!isWindows() && !Files.isExecutable(executable))) return false;
+        var versionFile = config.stateDir().toAbsolutePath().normalize()
+                .resolve(safeComponent(component.component()) + "-version");
+        try {
+            return Files.isRegularFile(versionFile, LinkOption.NOFOLLOW_LINKS)
+                    && component.version().equals(Files.readString(versionFile, StandardCharsets.UTF_8).trim());
+        } catch (IOException ignored) {
+            return false;
+        }
     }
 
     private static void writeConfig(Path target, AgentUpgradeHelper.Config value) throws IOException {
@@ -284,6 +361,9 @@ final class AgentUpgradeRunner implements Runnable {
             var policy = component.restartPolicy() == null ? "" : component.restartPolicy().trim().toLowerCase(Locale.ROOT);
             if (!("drain-and-restart".equals(policy) || "restart".equals(policy) || "manual".equals(policy))) {
                 throw new IllegalArgumentException("upgrade component restart policy is invalid");
+            }
+            if ("agent-updater".equals(component.component()) && !"manual".equals(policy)) {
+                throw new IllegalArgumentException("Agent updater must use the manual restart policy");
             }
         }
     }
@@ -334,6 +414,7 @@ final class AgentUpgradeRunner implements Runnable {
     private Path resolveComponentTarget(String component) throws IOException {
         var key = component == null ? "" : component.trim().toLowerCase(Locale.ROOT);
         var env = switch (key) {
+            case "agent-updater" -> "REMOTE_CONNECT_MCP_AGENT_UPDATER_BINARY_PATH";
             case "desktop-companion", "desktop" -> "REMOTE_CONNECT_MCP_DESKTOP_BINARY_PATH";
             case "browser-agent", "browser" -> "REMOTE_CONNECT_MCP_BROWSER_BINARY_PATH";
             default -> "REMOTE_CONNECT_MCP_" + key.replace('-', '_').toUpperCase(Locale.ROOT) + "_BINARY_PATH";
@@ -351,15 +432,22 @@ final class AgentUpgradeRunner implements Runnable {
         if (commandPath != null && !commandPath.isBlank()) {
             var root = Path.of(commandPath.trim()).toAbsolutePath().normalize().getParent();
             if (root != null) {
-                var executable = isWindows()
-                        ? ("desktop-companion".equals(key) || "desktop".equals(key)
-                        ? "rcm-desktop-companion.exe" : "browser-agent".equals(key) || "browser".equals(key)
-                        ? "rcm-browser-agent.exe" : null)
-                        : ("desktop-companion".equals(key) || "desktop".equals(key)
-                        ? "rcm-desktop-companion" : "browser-agent".equals(key) || "browser".equals(key)
-                        ? "rcm-browser-agent" : null);
-                if (executable != null) return root.resolve("desktop".equals(key) || "desktop-companion".equals(key)
-                        ? "desktop" : "browser").resolve(executable).normalize();
+                var executable = switch (key) {
+                    case "agent-updater" -> isWindows() ? "rcm-updater.exe" : "rcm-updater";
+                    case "desktop-companion", "desktop" -> isWindows()
+                            ? "rcm-desktop-companion.exe" : "rcm-desktop-companion";
+                    case "browser-agent", "browser" -> isWindows()
+                            ? "rcm-browser-agent.exe" : "rcm-browser-agent";
+                    default -> null;
+                };
+                if (executable != null) {
+                    var directory = switch (key) {
+                        case "agent-updater" -> "updater";
+                        case "desktop-companion", "desktop" -> "desktop";
+                        default -> "browser";
+                    };
+                    return root.resolve(directory).resolve(executable).normalize();
+                }
             }
         }
         throw new IOException(env + " is required for component upgrade");

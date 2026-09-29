@@ -17,6 +17,8 @@ class DetectComponentChangesTest(unittest.TestCase):
         self.assertTrue(detect.matches("center", "java/Dockerfile.center.native"))
         self.assertTrue(detect.matches("agent", "java/Dockerfile.agent.native"))
         self.assertTrue(detect.matches("agent", "scripts/browser-runtime/package-lock.json"))
+        self.assertTrue(detect.matches("agent", "java/updater/src/main/java/UpdaterApplication.java"))
+        self.assertTrue(detect.matches("agent", "java/Dockerfile.updater.native"))
         self.assertTrue(detect.matches("console", "web/Dockerfile"))
         self.assertFalse(detect.matches("center", "web/src/views/TasksView.tsx"))
 

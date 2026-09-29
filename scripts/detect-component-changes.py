@@ -24,9 +24,11 @@ def matches(component: str, path: str) -> bool:
                 or path.startswith("scripts/verify-native-bundle")
                 or path == ".github/workflows/center-release.yml")
     if component == "agent":
-        return (common or protocol or path.startswith(("java/agent/", "java/desktop/", "java/browser/"))
-                or path.startswith(("java/Dockerfile.agent", "java/Dockerfile.desktop", "java/Dockerfile.browser"))
+        return (common or protocol or path.startswith(("java/agent/", "java/desktop/", "java/browser/", "java/updater/"))
+                or path.startswith(("java/Dockerfile.agent", "java/Dockerfile.desktop", "java/Dockerfile.browser", "java/Dockerfile.updater"))
                 or path.startswith(("scripts/install-agent", "scripts/first-install-agent",
+                                    "scripts/build-native", "scripts/verify-agent-boundaries.py",
+                                    "scripts/detect-component-changes.py",
                                     "scripts/deploy-desktop-browser", "scripts/browser-worker",
                                     "scripts/smoke-browser-runtime", "scripts/normalize-native-isa",
                                     "scripts/verify-native-bundle", "scripts/browser-runtime/", "deploy/systemd/"))

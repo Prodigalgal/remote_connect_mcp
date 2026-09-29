@@ -54,6 +54,7 @@ public final class UpgradeService {
     public static final String FAILED = "failed";
 
     private static final Pattern VERSION = Pattern.compile("v[0-9A-Za-z][0-9A-Za-z._+-]{0,127}");
+    private static final Pattern ORDERED_VERSION = Pattern.compile("^v(\\d+)\\.(\\d+)\\.(\\d+)(?:-([0-9A-Za-z.-]+))?(?:\\+[0-9A-Za-z.-]+)?$");
     private static final Pattern SHA256 = Pattern.compile("(?i)[0-9a-f]{64}");
     private static final Pattern SAFE_COMPONENT = Pattern.compile("[A-Za-z0-9._-]{1,180}");
     private static final Duration ONLINE_WINDOW = Duration.ofSeconds(45);
@@ -881,12 +882,40 @@ public final class UpgradeService {
     static List<UpgradeComponentPlan> componentsForMachine(
             Map<String, List<UpgradeComponentPlan>> plans, MachineView machine) {
         return plans.getOrDefault(platform(machine.os(), machine.arch()), List.of()).stream()
+                .filter(plan -> meetsMinimumAgentVersion(machine.version(), plan.minAgentVersion()))
                 .filter(plan -> switch (plan.component()) {
                     case "desktop-companion", "desktop" -> machine.capabilities().contains("desktop");
                     case "browser-agent", "browser" -> machine.capabilities().contains("browser");
                     default -> true;
                 }).toList();
     }
+
+    private static boolean meetsMinimumAgentVersion(String currentVersion, String minimumVersion) {
+        if (minimumVersion == null || minimumVersion.isBlank()) return true;
+        var current = parseOrderedVersion(currentVersion);
+        var minimum = parseOrderedVersion(minimumVersion);
+        if (current == null || minimum == null) return false;
+        for (int index = 0; index < current.parts().length; index++) {
+            if (current.parts()[index] != minimum.parts()[index]) {
+                return current.parts()[index] > minimum.parts()[index];
+            }
+        }
+        return !current.prerelease() || minimum.prerelease();
+    }
+
+    private static OrderedVersion parseOrderedVersion(String value) {
+        var matcher = ORDERED_VERSION.matcher(value == null ? "" : value.trim());
+        if (!matcher.matches()) return null;
+        try {
+            return new OrderedVersion(new int[]{Integer.parseInt(matcher.group(1)),
+                    Integer.parseInt(matcher.group(2)), Integer.parseInt(matcher.group(3))},
+                    matcher.group(4) != null);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private record OrderedVersion(int[] parts, boolean prerelease) { }
 
     private static Map<String, MachineView> machinesById(List<MachineView> values) {
         return values.stream().collect(java.util.stream.Collectors.toMap(MachineView::id, value -> value));
@@ -963,6 +992,10 @@ public final class UpgradeService {
         if (plan.version().isBlank() || !VERSION.matcher(plan.version()).matches()) {
             throw new IllegalArgumentException("component version is invalid");
         }
+        if (plan.minAgentVersion() != null && !plan.minAgentVersion().isBlank()
+                && !VERSION.matcher(plan.minAgentVersion()).matches()) {
+            throw new IllegalArgumentException("minimum Agent version is invalid");
+        }
         if (plan.url().isBlank() || plan.url().length() > 4096
                 || !SHA256.matcher(plan.sha256()).matches()) {
             throw new IllegalArgumentException("component artifact is incomplete");
@@ -977,6 +1010,9 @@ public final class UpgradeService {
         var policy = plan.restartPolicy().toLowerCase(java.util.Locale.ROOT);
         if (!("drain-and-restart".equals(policy) || "restart".equals(policy) || "manual".equals(policy))) {
             throw new IllegalArgumentException("unsupported component restart policy");
+        }
+        if ("agent-updater".equals(plan.component()) && !"manual".equals(policy)) {
+            throw new IllegalArgumentException("Agent updater must use the manual restart policy");
         }
         if (plan.bytes() != null && (plan.bytes() < 0 || plan.bytes() > 256L * 1024 * 1024)) {
             throw new IllegalArgumentException("component artifact exceeds 256 MiB");

@@ -76,6 +76,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           RUN_NUMBER: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
@@ -87,7 +88,7 @@ jobs:
             version="${REF_NAME#java-}"
             prerelease=false
           else
-            version="v0.0.0-main.${RUN_NUMBER}"
+            version="v0.0.0-main.${RUN_NUMBER}.${SHA:0:12}"
             prerelease=true
           fi
           [[ "${version}" =~ ^v[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$ ]] || {
@@ -99,7 +100,7 @@ jobs:
           echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
 
   agent-tests:
-    name: Agent JVM component gate
+    name: Agent and updater JVM component gate
     needs: prepare
     runs-on: ubuntu-latest
     steps:
@@ -109,9 +110,9 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: gradle
-      - name: Agent, Desktop and Browser tests
+      - name: Agent, Desktop, Browser and updater tests
         working-directory: java
-        run: bash ./gradlew -PreleaseVersion=${{ needs.prepare.outputs.version }} :agent:test :desktop:test :browser:test --no-daemon
+        run: bash ./gradlew -PreleaseVersion=${{ needs.prepare.outputs.version }} :agent:test :desktop:test :browser:test :updater:test --no-daemon
 
   browser-runtime:
     name: Camoufox navigation gate
@@ -162,8 +163,8 @@ jobs:
           if [[ "${TARGET_ARCH}" == 'arm64' ]]; then native_march='armv8-a'; fi
           sudo apt-get update
           sudo apt-get install -y zip
-          mkdir -p "out/${TARGET_ARCH}" "out/${TARGET_ARCH}/agent" "out/${TARGET_ARCH}/desktop" "out/${TARGET_ARCH}/browser"
-          for kind in agent desktop browser; do
+          mkdir -p "out/${TARGET_ARCH}" "out/${TARGET_ARCH}/agent" "out/${TARGET_ARCH}/desktop" "out/${TARGET_ARCH}/browser" "out/${TARGET_ARCH}/updater"
+          for kind in agent desktop browser updater; do
             docker buildx build --platform "linux/${TARGET_ARCH}" --target artifact \
               --build-arg RCM_CI_BUILD=true --build-arg RCM_NATIVE_MARCH="${native_march}" \
               --file "java/Dockerfile.${kind}.native" --output "type=local,dest=out/${kind}-${TARGET_ARCH}" java
@@ -171,25 +172,29 @@ jobs:
           agent="$(find "out/agent-${TARGET_ARCH}" -type f -name rcm-agent -print -quit)"
           desktop="$(find "out/desktop-${TARGET_ARCH}" -type f -name rcm-desktop-companion -print -quit)"
           browser="$(find "out/browser-${TARGET_ARCH}" -type f -name rcm-browser-agent -print -quit)"
-          test -n "${agent}" && test -n "${desktop}" && test -n "${browser}"
-          if [[ "${TARGET_ARCH}" == 'amd64' ]]; then python3 scripts/normalize-native-isa.py --normalize "${agent}" "${desktop}" "${browser}"; fi
-          python3 scripts/normalize-native-isa.py --check "${agent}" "${desktop}" "${browser}"
+          updater="$(find "out/updater-${TARGET_ARCH}" -type f -name rcm-updater -print -quit)"
+          test -n "${agent}" && test -n "${desktop}" && test -n "${browser}" && test -n "${updater}"
+          if [[ "${TARGET_ARCH}" == 'amd64' ]]; then python3 scripts/normalize-native-isa.py --normalize "${agent}" "${desktop}" "${browser}" "${updater}"; fi
+          python3 scripts/normalize-native-isa.py --check "${agent}" "${desktop}" "${browser}" "${updater}"
           cp "${agent}" "out/${TARGET_ARCH}/agent/rcm-agent"
           cp "${desktop}" "out/${TARGET_ARCH}/desktop/rcm-desktop-companion"
           cp "${browser}" "out/${TARGET_ARCH}/browser/rcm-browser-agent"
+          cp "${updater}" "out/${TARGET_ARCH}/updater/rcm-updater"
           find "$(dirname "${agent}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "out/${TARGET_ARCH}/agent/" \;
           find "$(dirname "${desktop}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "out/${TARGET_ARCH}/desktop/" \;
           find "$(dirname "${browser}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "out/${TARGET_ARCH}/browser/" \;
-          chmod +x "out/${TARGET_ARCH}/agent/rcm-agent" "out/${TARGET_ARCH}/desktop/rcm-desktop-companion" "out/${TARGET_ARCH}/browser/rcm-browser-agent"
-          for bin in "out/${TARGET_ARCH}/desktop/rcm-desktop-companion" "out/${TARGET_ARCH}/browser/rcm-browser-agent"; do
+          find "$(dirname "${updater}")" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp -f {} "out/${TARGET_ARCH}/updater/" \;
+          chmod +x "out/${TARGET_ARCH}/agent/rcm-agent" "out/${TARGET_ARCH}/desktop/rcm-desktop-companion" "out/${TARGET_ARCH}/browser/rcm-browser-agent" "out/${TARGET_ARCH}/updater/rcm-updater"
+          for bin in "out/${TARGET_ARCH}/desktop/rcm-desktop-companion" "out/${TARGET_ARCH}/browser/rcm-browser-agent" "out/${TARGET_ARCH}/updater/rcm-updater"; do
             set +e; "${bin}" --invalid-arguments >/dev/null 2>&1; code=$?; set -e
             test "${code}" -eq 2
           done
-          for dir in agent desktop browser; do (cd "out/${TARGET_ARCH}/${dir}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS); done
+          for dir in agent desktop browser updater; do (cd "out/${TARGET_ARCH}/${dir}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS); done
           agent_archive="remote-connect-mcp-agent-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
           desktop_archive="remote-connect-mcp-desktop-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
           browser_archive="remote-connect-mcp-browser-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
-          for spec in "agent:${agent_archive}" "desktop:${desktop_archive}" "browser:${browser_archive}"; do
+          updater_archive="remote-connect-mcp-updater-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          for spec in "agent:${agent_archive}" "desktop:${desktop_archive}" "browser:${browser_archive}" "updater:${updater_archive}"; do
             dir="${spec%%:*}"; archive="${spec#*:}"
             files=$(cd "out/${TARGET_ARCH}/${dir}" && find . -maxdepth 1 -type f \( -name 'rcm-*' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
             (cd "out/${TARGET_ARCH}/${dir}" && zip -q -9 -j "${GITHUB_WORKSPACE}/${archive}" ${files})
@@ -198,6 +203,7 @@ jobs:
           bash scripts/verify-native-bundle.sh "${agent_archive}" rcm-agent
           bash scripts/verify-native-bundle.sh "${desktop_archive}" rcm-desktop-companion
           bash scripts/verify-native-bundle.sh "${browser_archive}" rcm-browser-agent
+          bash scripts/verify-native-bundle.sh "${updater_archive}" rcm-updater
           cp scripts/install-agent.sh scripts/first-install-agent.sh deploy/systemd/remote-connect-mcp-agent.service deploy/systemd/agent.env.example README.md LICENSE NOTICE "out/${TARGET_ARCH}/"
           tar -C out -I 'gzip -9' -cf "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" "${TARGET_ARCH}"
           sha256sum "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" > "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz.sha256"
@@ -221,6 +227,8 @@ jobs:
             remote-connect-mcp-desktop-*-linux-${{ matrix.arch }}.zip.sha256
             remote-connect-mcp-browser-*-linux-${{ matrix.arch }}.zip
             remote-connect-mcp-browser-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-connect-mcp-updater-*-linux-${{ matrix.arch }}.zip
+            remote-connect-mcp-updater-*-linux-${{ matrix.arch }}.zip.sha256
             remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.spdx.json
           if-no-files-found: error
 
@@ -236,10 +244,10 @@ jobs:
           distribution: graalvm-community
           github-token: ${{ secrets.GITHUB_TOKEN }}
           native-image-job-reports: false
-      - name: Build Agent Native Images
+      - name: Build Agent and updater Native Images
         working-directory: java
         shell: pwsh
-        run: .\gradlew.bat -PnativeMarch=x86-64-v2 :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
+        run: .\gradlew.bat -PnativeMarch=x86-64-v2 :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile :updater:nativeCompile --no-daemon --no-parallel
       - name: Validate Agent Native contracts
         shell: pwsh
         run: |
@@ -248,7 +256,8 @@ jobs:
           if (-not (Test-Path -LiteralPath $agent -PathType Leaf)) { throw "Native binary missing: $agent" }
           foreach ($bin in @(
             '.\java\desktop\build\native\nativeCompile\rcm-desktop-companion.exe',
-            '.\java\browser\build\native\nativeCompile\rcm-browser-agent.exe'
+            '.\java\browser\build\native\nativeCompile\rcm-browser-agent.exe',
+            '.\java\updater\build\native\nativeCompile\rcm-updater.exe'
           )) {
             if (-not (Test-Path -LiteralPath $bin -PathType Leaf)) { throw "Native binary missing: $bin" }
             & $bin --invalid-arguments *> $null
@@ -263,22 +272,25 @@ jobs:
         shell: pwsh
         run: |
           $out = Join-Path $PWD 'agent-release-windows-amd64'
-          $agentOut = Join-Path $out 'agent'; $desktopOut = Join-Path $out 'desktop'; $browserOut = Join-Path $out 'browser'
-          New-Item -ItemType Directory -Force -Path $agentOut,$desktopOut,$browserOut | Out-Null
+          $agentOut = Join-Path $out 'agent'; $desktopOut = Join-Path $out 'desktop'; $browserOut = Join-Path $out 'browser'; $updaterOut = Join-Path $out 'updater'
+          New-Item -ItemType Directory -Force -Path $agentOut,$desktopOut,$browserOut,$updaterOut | Out-Null
           Copy-Item java/agent/build/native/nativeCompile/rcm-agent.exe $agentOut/rcm-agent.exe
           Copy-Item java/desktop/build/native/nativeCompile/rcm-desktop-companion.exe $desktopOut/rcm-desktop-companion.exe
           Copy-Item java/browser/build/native/nativeCompile/rcm-browser-agent.exe $browserOut/rcm-browser-agent.exe
+          Copy-Item java/updater/build/native/nativeCompile/rcm-updater.exe $updaterOut/rcm-updater.exe
           Get-ChildItem java/agent/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $agentOut
           Get-ChildItem java/desktop/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $desktopOut
           Get-ChildItem java/browser/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $browserOut
+          Get-ChildItem java/updater/build/native/nativeCompile/*.dll -File -ErrorAction SilentlyContinue | Copy-Item -Destination $updaterOut
           Copy-Item scripts/install-agent.ps1, scripts/first-install-agent.ps1, README.md, LICENSE, NOTICE $out
-          foreach ($bundle in @($agentOut,$desktopOut,$browserOut)) {
+          foreach ($bundle in @($agentOut,$desktopOut,$browserOut,$updaterOut)) {
             Get-FileHash (Get-ChildItem $bundle -File | Where-Object { $_.Extension -in '.exe','.dll' }) -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content (Join-Path $bundle 'SHA256SUMS') -Encoding ascii
           }
           $specs = @(
             @{ Dir=$agentOut; Name="remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-agent.exe' },
             @{ Dir=$desktopOut; Name="remote-connect-mcp-desktop-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-desktop-companion.exe' },
-            @{ Dir=$browserOut; Name="remote-connect-mcp-browser-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-browser-agent.exe' }
+            @{ Dir=$browserOut; Name="remote-connect-mcp-browser-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-browser-agent.exe' },
+            @{ Dir=$updaterOut; Name="remote-connect-mcp-updater-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-updater.exe' }
           )
           foreach ($spec in $specs) {
             Push-Location $spec.Dir
@@ -352,6 +364,9 @@ jobs:
     if: needs.prepare.outputs.version != ''
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: release
@@ -371,9 +386,22 @@ jobs:
           version = os.environ['RELEASE_VERSION']
           tag = os.environ['RELEASE_TAG']
           repo = os.environ['RELEASE_REPOSITORY']
+          import subprocess
+          updater_revision = subprocess.check_output(
+              ['git', 'log', '-1', '--format=%h', '--',
+               'java/updater/src/main/java', 'java/updater/src/main/resources',
+               'java/updater/build.gradle.kts', 'java/Dockerfile.updater.native',
+               'java/build.gradle.kts', 'java/settings.gradle.kts', 'java/gradle.properties',
+               'java/gradle', 'java/gradlew', 'java/gradlew.bat',
+               'java/protocol/src/main/java/com/prodigalgal/remoteconnectmcp/protocol/JsonCodec.java'],
+              text=True, encoding='utf-8').strip()
+          if not updater_revision:
+              raise SystemExit('could not resolve the standalone updater build revision')
+          updater_version = f'v1.0.0+{updater_revision}'
+          minimum_agent_version = pathlib.Path('java/updater/minimum-agent-version.txt').read_text(encoding='utf-8').strip()
           components = []
-          pattern = re.compile(r'^remote-connect-mcp-(desktop|browser)-' + re.escape(version) + r'-(linux|windows)-(amd64|arm64)\.zip$')
-          expected = {(kind, os_name, arch) for kind in ('desktop', 'browser')
+          pattern = re.compile(r'^remote-connect-mcp-(desktop|browser|updater)-' + re.escape(version) + r'-(linux|windows)-(amd64|arm64)\.zip$')
+          expected = {(kind, os_name, arch) for kind in ('desktop', 'browser', 'updater')
                       for os_name, arch in (('linux', 'amd64'), ('linux', 'arm64'), ('windows', 'amd64'))}
           found = set()
           for path in sorted(root.glob('remote-connect-mcp-*.zip')):
@@ -385,11 +413,14 @@ jobs:
               actual_sha = hashlib.sha256(path.read_bytes()).hexdigest()
               if not checksum.is_file() or checksum.read_text(encoding='utf-8').split()[0].lower() != actual_sha:
                   raise SystemExit(f'missing or mismatched checksum: {checksum.name}')
-              component = 'desktop-companion' if kind == 'desktop' else 'browser-agent'
-              components.append({'component': component, 'version': version, 'os': os_name, 'arch': arch,
+              component = 'desktop-companion' if kind == 'desktop' else 'browser-agent' if kind == 'browser' else 'agent-updater'
+              component_version = updater_version if kind == 'updater' else version
+              plan = {'component': component, 'version': component_version, 'os': os_name, 'arch': arch,
                   'url': f'https://github.com/{repo}/releases/download/{tag}/{path.name}',
                   'sha256': actual_sha, 'bytes': path.stat().st_size,
-                  'restart_policy': 'drain-and-restart'})
+                  'restart_policy': 'manual' if kind == 'updater' else 'drain-and-restart'}
+              if kind == 'updater': plan['min_agent_version'] = minimum_agent_version
+              components.append(plan)
           if found != expected:
               raise SystemExit(f'component bundle matrix incomplete: missing={sorted(expected - found)}, unexpected={sorted(found - expected)}')
           for os_name, arch in (('linux', 'amd64'), ('linux', 'arm64'), ('windows', 'amd64')):

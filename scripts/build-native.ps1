@@ -57,10 +57,10 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 # them; Center and Agent DLL sets are kept in separate directories because
 # generated java.dll/jvm.dll files are not guaranteed byte-identical.
 Get-ChildItem -LiteralPath $out -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^(rcm-(center|agent|desktop-companion|browser-agent)(\.exe|\.exe\.sha256)|.*\.dll(\.sha256)?|remote-connect-mcp-.*\.zip(\.sha256)?|manifest\.json)$' } |
+        Where-Object { $_.Name -match '^(rcm-(center|agent|desktop-companion|browser-agent|updater)(\.exe|\.exe\.sha256)|.*\.dll(\.sha256)?|remote-connect-mcp-.*\.zip(\.sha256)?|manifest\.json)$' } |
     Remove-Item -Force
 if ($os -eq 'windows') {
-    foreach ($bundle in @('center', 'agent', 'desktop', 'browser')) {
+    foreach ($bundle in @('center', 'agent', 'desktop', 'browser', 'updater')) {
         $bundlePath = Join-Path $out $bundle
         if (Test-Path -LiteralPath $bundlePath) { Remove-Item -LiteralPath $bundlePath -Recurse -Force }
     }
@@ -70,12 +70,13 @@ Push-Location (Join-Path $root 'java')
 try {
     # Native Image is intentionally serialized; running Center and Agent
     # images together can consume several GiB per process.
-    & $gradle -PnativeMarch=$nativeMarch :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
+    & $gradle -PnativeMarch=$nativeMarch :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile :updater:nativeCompile --no-daemon --no-parallel
     $suffix = if ($os -eq 'windows') { '.exe' } else { '' }
     $center = Join-Path (Get-Location) "center\build\native\nativeCompile\rcm-center$suffix"
     $agent = Join-Path (Get-Location) "agent\build\native\nativeCompile\rcm-agent$suffix"
     $desktop = Join-Path (Get-Location) "desktop\build\native\nativeCompile\rcm-desktop-companion$suffix"
     $browser = Join-Path (Get-Location) "browser\build\native\nativeCompile\rcm-browser-agent$suffix"
+    $updater = Join-Path (Get-Location) "updater\build\native\nativeCompile\rcm-updater$suffix"
     if ($os -eq 'windows') {
         Copy-Item -LiteralPath (Join-Path $root 'scripts\first-install-agent.ps1') -Destination $out -Force
         $bundles = @(
@@ -83,6 +84,7 @@ try {
             @{ Name = 'agent'; Binary = $agent }
             @{ Name = 'desktop'; Binary = $desktop }
             @{ Name = 'browser'; Binary = $browser }
+            @{ Name = 'updater'; Binary = $updater }
         )
         foreach ($bundle in $bundles) {
             $bundleOut = Join-Path $out $bundle.Name
@@ -125,14 +127,22 @@ try {
         Set-Content -LiteralPath "$browserArchive.sha256" -Value "$browserArchiveHash  $(Split-Path -Leaf $browserArchive)" -Encoding ascii
         & (Join-Path $root 'scripts\verify-native-bundle.ps1') -AgentArchive $browserArchive -ExecutableName 'rcm-browser-agent.exe'
 
+        $updaterArchive = Join-Path $out "remote-connect-mcp-updater-$version-$os-$arch.zip"
+        Push-Location (Join-Path $out 'updater')
+        try { Compress-Archive -Path '*.exe', '*.dll' -DestinationPath $updaterArchive -CompressionLevel Optimal -Force }
+        finally { Pop-Location }
+        $updaterArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $updaterArchive).Hash.ToLowerInvariant()
+        Set-Content -LiteralPath "$updaterArchive.sha256" -Value "$updaterArchiveHash  $(Split-Path -Leaf $updaterArchive)" -Encoding ascii
+        & (Join-Path $root 'scripts\verify-native-bundle.ps1') -AgentArchive $updaterArchive -ExecutableName 'rcm-updater.exe'
+
         $bundleArchive = Join-Path $out "remote-connect-mcp-$version-$os-$arch.zip"
         Push-Location $out
-        try { Compress-Archive -Path 'center', 'agent', 'desktop', 'browser' -DestinationPath $bundleArchive -CompressionLevel Optimal -Force }
+        try { Compress-Archive -Path 'center', 'agent', 'desktop', 'browser', 'updater' -DestinationPath $bundleArchive -CompressionLevel Optimal -Force }
         finally { Pop-Location }
         $bundleArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bundleArchive).Hash.ToLowerInvariant()
         Set-Content -LiteralPath "$bundleArchive.sha256" -Value "$bundleArchiveHash  $(Split-Path -Leaf $bundleArchive)" -Encoding ascii
     } else {
-        foreach ($binary in @($center, $agent, $desktop, $browser)) {
+        foreach ($binary in @($center, $agent, $desktop, $browser, $updater)) {
             if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Native artifact missing: $binary" }
             Copy-Item -LiteralPath $binary -Destination $out -Force
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $binary).Hash.ToLowerInvariant()

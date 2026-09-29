@@ -395,7 +395,7 @@ public record AgentConfig(
      * so a restarted Agent reports the new binary even when the service file
      * itself was not edited.
      */
-    private String currentVersion() {
+    String currentVersion() {
         var marker = stateDir.toAbsolutePath().normalize().resolve("agent-version");
         try {
             if (Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS)) {

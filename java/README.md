@@ -7,6 +7,7 @@
 - `agent`：无 Spring 的 Java command-agent，支持虚拟线程命令执行、磁盘 spool 与异步重试、Desktop IPC 客户端、Browser 本机适配器桥接、断线重连和身份持久化；只依赖 `protocol`，Native Image 不包含 AWT 桌面实现。
 - `desktop`：独立的 `rcm-desktop-companion` Java Native Image，仅在用户会话中提供 AWT/Robot 截图与输入能力，不向 Center 注册第二个身份。
 - `browser`：独立的 `rcm-browser-agent` Native Image，按任务启动本机 Camoufox Worker，不向 Center 注册第二个身份。
+- `updater`：独立的一次性 `rcm-updater` Native Image，只在组件升级期间运行；不注册 Center 身份，不启动常驻服务。
 
 Java 组件可独立进行协议验收。`--check-config` 只校验配置；`--register-once` 注册并把 Center 返回的日常身份写入 `STATE_DIR/identity.json`；`--run`（或无参数，供 Windows 启动任务/Linux systemd 使用）启动注册、心跳和异步任务循环，支持并发槽位、输出游标、超时、取消、桌面工件、Browser Worker 和 Center 控制的 canary 自升级。命令输出先落入有界本机 spool，再由独立虚拟线程上传；单任务和 Agent 级聚合输出上限同时生效，达到聚合上限时普通任务仍继续执行并仅截断后续输出；Center 暂时不可达时不会终止子进程，但 durable 日志达到上限会由看门器终止并标记失败。
 
@@ -26,6 +27,7 @@ $env:REMOTE_CONNECT_MCP_AGENT_NAME = 'dev-agent'
 $env:REMOTE_CONNECT_MCP_AGENT_STATE_DIR = 'C:\ProgramData\remote-connect-mcp-agent'
 $env:REMOTE_CONNECT_MCP_AGENT_BINARY_PATH = 'C:\Program Files\Remote Connect MCP Agent\rcm-agent.exe'
 $env:REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME = 'RemoteConnectMCPAgent'
+$env:REMOTE_CONNECT_MCP_AGENT_UPDATER_BINARY_PATH = 'C:\Program Files\Remote Connect MCP Agent\updater\rcm-updater.exe'
 $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY = 'C:\Program Files\Remote Connect MCP Agent\browser\rcm-browser-agent.exe'
 & 'C:\Program Files\Remote Connect MCP Agent\rcm-agent.exe' --run
 ```

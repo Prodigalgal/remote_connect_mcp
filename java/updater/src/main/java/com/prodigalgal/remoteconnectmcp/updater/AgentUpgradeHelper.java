@@ -1,4 +1,4 @@
-package com.prodigalgal.remoteconnectmcp.agent;
+package com.prodigalgal.remoteconnectmcp.updater;
 
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import java.io.IOException;

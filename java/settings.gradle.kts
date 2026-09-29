@@ -14,10 +14,11 @@ dependencyResolutionManagement {
 
 rootProject.name = "remote-connect-mcp-java"
 
-include(":protocol", ":center", ":agent", ":desktop", ":browser")
+include(":protocol", ":center", ":agent", ":desktop", ":browser", ":updater")
 
 project(":protocol").projectDir = file("protocol")
 project(":center").projectDir = file("center")
 project(":agent").projectDir = file("agent")
 project(":desktop").projectDir = file("desktop")
 project(":browser").projectDir = file("browser")
+project(":updater").projectDir = file("updater")

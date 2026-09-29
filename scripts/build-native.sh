@@ -41,13 +41,14 @@ mkdir -p "$OUT"
 cd "$ROOT/java"
 # Native Image is intentionally serialized; running Center and any Agent
 # image together can consume several GiB per process.
-./gradlew -PnativeMarch="$NATIVE_MARCH" :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile --no-daemon --no-parallel
-for name in rcm-center rcm-agent rcm-desktop-companion rcm-browser-agent; do
+./gradlew -PnativeMarch="$NATIVE_MARCH" :center:nativeCompile :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile :updater:nativeCompile --no-daemon --no-parallel
+for name in rcm-center rcm-agent rcm-desktop-companion rcm-browser-agent rcm-updater; do
   case "$name" in
     rcm-center) module=center ;;
     rcm-agent) module=agent ;;
     rcm-desktop-companion) module=desktop ;;
     rcm-browser-agent) module=browser ;;
+    rcm-updater) module=updater ;;
   esac
   src="$module/build/native/nativeCompile/$name"
   test -f "$src" || { echo "native artifact missing: $src" >&2; exit 1; }
@@ -70,32 +71,38 @@ AGENT_ASSET="$ROOT/dist/remote-connect-mcp-agent-$VERSION-$OS-$ARCH"
 CENTER_ASSET="$ROOT/dist/remote-connect-mcp-center-$VERSION-$OS-$ARCH"
 DESKTOP_ASSET="$ROOT/dist/remote-connect-mcp-desktop-$VERSION-$OS-$ARCH"
 BROWSER_ASSET="$ROOT/dist/remote-connect-mcp-browser-$VERSION-$OS-$ARCH"
+UPDATER_ASSET="$ROOT/dist/remote-connect-mcp-updater-$VERSION-$OS-$ARCH"
 AGENT_ARCHIVE="$AGENT_ASSET.zip"
 CENTER_ARCHIVE="$CENTER_ASSET.zip"
 DESKTOP_ARCHIVE="$DESKTOP_ASSET.zip"
 BROWSER_ARCHIVE="$BROWSER_ASSET.zip"
+UPDATER_ARCHIVE="$UPDATER_ASSET.zip"
 agent_files=$(cd "$OUT/agent" && find . -maxdepth 1 -type f \( -name 'rcm-agent' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
 center_files=$(cd "$OUT/center" && find . -maxdepth 1 -type f \( -name 'rcm-center' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
 desktop_files=$(cd "$OUT/desktop" && find . -maxdepth 1 -type f \( -name 'rcm-desktop-companion' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
 browser_files=$(cd "$OUT/browser" && find . -maxdepth 1 -type f \( -name 'rcm-browser-agent' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
+updater_files=$(cd "$OUT/updater" && find . -maxdepth 1 -type f \( -name 'rcm-updater' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
 (cd "$OUT/agent" && zip -q -j "$AGENT_ARCHIVE" $agent_files)
 (cd "$OUT/center" && zip -q -j "$CENTER_ARCHIVE" $center_files)
 (cd "$OUT/desktop" && zip -q -j "$DESKTOP_ARCHIVE" $desktop_files)
 (cd "$OUT/browser" && zip -q -j "$BROWSER_ARCHIVE" $browser_files)
+(cd "$OUT/updater" && zip -q -j "$UPDATER_ARCHIVE" $updater_files)
 sha256sum "$AGENT_ARCHIVE" > "$AGENT_ARCHIVE.sha256"
 sha256sum "$CENTER_ARCHIVE" > "$CENTER_ARCHIVE.sha256"
 sha256sum "$DESKTOP_ARCHIVE" > "$DESKTOP_ARCHIVE.sha256"
 sha256sum "$BROWSER_ARCHIVE" > "$BROWSER_ARCHIVE.sha256"
+sha256sum "$UPDATER_ARCHIVE" > "$UPDATER_ARCHIVE.sha256"
 "$ROOT/scripts/verify-native-bundle.sh" "$AGENT_ARCHIVE"
 "$ROOT/scripts/verify-native-bundle.sh" "$DESKTOP_ARCHIVE" rcm-desktop-companion
 "$ROOT/scripts/verify-native-bundle.sh" "$BROWSER_ARCHIVE" rcm-browser-agent
+"$ROOT/scripts/verify-native-bundle.sh" "$UPDATER_ARCHIVE" rcm-updater
 
 cp "$ROOT/scripts/install-agent.sh" "$ROOT/scripts/first-install-agent.sh" "$ROOT/deploy/systemd/remote-connect-mcp-agent.service" "$OUT/"
 cp "$ROOT/deploy/systemd/agent.env.example" "$OUT/agent.env.example"
 cp "$ROOT/README.md" "$ROOT/LICENSE" "$ROOT/NOTICE" "$OUT/"
 chmod +x "$OUT/install-agent.sh" "$OUT/first-install-agent.sh"
 
-printf '{"version":"%s","os":"%s","arch":"%s","artifacts":["center/rcm-center","agent/rcm-agent","desktop/rcm-desktop-companion","browser/rcm-browser-agent","install-agent.sh","first-install-agent.sh","remote-connect-mcp-agent.service","agent.env.example","README.md","LICENSE","NOTICE"]}\n' \
+printf '{"version":"%s","os":"%s","arch":"%s","artifacts":["center/rcm-center","agent/rcm-agent","desktop/rcm-desktop-companion","browser/rcm-browser-agent","updater/rcm-updater","install-agent.sh","first-install-agent.sh","remote-connect-mcp-agent.service","agent.env.example","README.md","LICENSE","NOTICE"]}\n' \
   "$VERSION" "$OS" "$ARCH" > "$OUT/manifest.json"
 ARCHIVE="$ROOT/dist/remote-connect-mcp-$VERSION-$OS-$ARCH.tar.gz"
 tar -C "$OUT" -czf "$ARCHIVE" .

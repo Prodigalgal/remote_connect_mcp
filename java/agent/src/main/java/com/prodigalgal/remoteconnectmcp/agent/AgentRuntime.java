@@ -299,6 +299,8 @@ public final class AgentRuntime {
                 || (plan.version().equals(metadata.version()) && plan.components().isEmpty())) {
             return false;
         }
+        var pendingResult = config.stateDir().toAbsolutePath().normalize().resolve("upgrade-result.json");
+        if (Files.isRegularFile(pendingResult, LinkOption.NOFOLLOW_LINKS)) return false;
         // A timed command is attached to the current Agent process and cannot
         // survive a binary replacement. Durable commands are safe because
         // their PID/log record is recovered by the next Agent instance.
@@ -339,6 +341,7 @@ public final class AgentRuntime {
 
     /** Report the helper's terminal result before the first heartbeat. */
     private void reportPendingUpgradeResult(AgentIdentity identity) {
+        if (upgrading.get()) return;
         var resultFile = config.stateDir().toAbsolutePath().normalize().resolve("upgrade-result.json");
         if (!Files.isRegularFile(resultFile, LinkOption.NOFOLLOW_LINKS)) return;
         try {
