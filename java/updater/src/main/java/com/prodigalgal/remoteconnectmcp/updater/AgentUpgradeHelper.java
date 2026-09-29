@@ -213,9 +213,12 @@ final class AgentUpgradeHelper {
     private static void applyComponentArchive(ComponentConfig component) throws IOException {
         var staged = Path.of(component.staged()).toAbsolutePath().normalize();
         var target = Path.of(component.target()).toAbsolutePath().normalize();
-        if (!Files.isRegularFile(staged, LinkOption.NOFOLLOW_LINKS)
-                || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IOException("component archive or target file is missing");
+        if (!Files.isRegularFile(staged, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("component archive is missing");
+        }
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)
+                && !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("component target is not a regular file");
         }
         var stateDir = Path.of(component.stateDir()).toAbsolutePath().normalize();
         Files.createDirectories(stateDir.resolve("upgrades"));
@@ -275,6 +278,7 @@ final class AgentUpgradeHelper {
         Files.write(manifest, lines, StandardCharsets.US_ASCII, StandardOpenOption.CREATE,
                 StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
         try {
+            Files.createDirectories(targetDir);
             for (var name : names) {
                 var installedName = installedComponentFileName(name, target.getFileName().toString(), component.component());
                 var current = targetDir.resolve(installedName).normalize();
@@ -759,7 +763,28 @@ final class AgentUpgradeHelper {
     }
 
     private static void setBundlePermissions(Path path) throws IOException {
-        if (isWindows()) return;
+        if (isWindows()) {
+            var systemRoot = System.getenv().getOrDefault("SystemRoot", "C:\\Windows");
+            var icacls = Path.of(systemRoot, "System32", "icacls.exe").toString();
+            try {
+                var process = new ProcessBuilder(icacls, path.toString(), "/reset")
+                        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                        .redirectError(ProcessBuilder.Redirect.DISCARD)
+                        .start();
+                if (!process.waitFor(10, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    throw new IOException("timed out while inheriting component permissions");
+                }
+                if (process.exitValue() != 0) {
+                    throw new IOException("could not inherit target directory permissions (icacls exit="
+                            + process.exitValue() + ")");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException("interrupted while inheriting component permissions", exception);
+            }
+            return;
+        }
         Files.setPosixFilePermissions(path, java.util.EnumSet.of(
                 java.nio.file.attribute.PosixFilePermission.OWNER_READ,
                 java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,

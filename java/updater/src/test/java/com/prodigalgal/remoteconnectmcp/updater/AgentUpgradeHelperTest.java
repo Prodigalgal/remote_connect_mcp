@@ -12,6 +12,8 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntryFlag;
+import java.nio.file.attribute.AclFileAttributeView;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import org.junit.jupiter.api.Test;
@@ -78,6 +80,68 @@ class AgentUpgradeHelperTest {
                     AgentUpgradeHelper.Result.class);
             assertEquals("completed", result.status());
             assertEquals("completed", result.componentStatuses().get("agent-updater"));
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    @Test
+    void componentOnlyCampaignInstallsWhenTargetDoesNotExistYet() throws Exception {
+        var root = Files.createTempDirectory("rcm-upgrade-first-component-install-");
+        try {
+            var agentDir = Files.createDirectories(root.resolve("agent"));
+            var stateDir = Files.createDirectories(root.resolve("state"));
+            var agent = agentDir.resolve(isWindows() ? "rcm-agent.exe" : "rcm-agent");
+            var updater = root.resolve("install").resolve("updater")
+                    .resolve(isWindows() ? "rcm-updater.exe" : "rcm-updater");
+            Files.writeString(agent, "unchanged-agent", StandardCharsets.UTF_8);
+
+            var archive = Files.createDirectories(stateDir.resolve("upgrades")).resolve("updater.zip");
+            try (var output = new ZipOutputStream(Files.newOutputStream(archive))) {
+                output.putNextEntry(new ZipEntry(updater.getFileName().toString()));
+                output.write("first-updater-install".getBytes(StandardCharsets.UTF_8));
+                output.closeEntry();
+            }
+            var component = new AgentUpgradeHelper.ComponentConfig("agent-updater", "v1.0.0+abc",
+                    archive.toString(), updater.toString(), stateDir.toString(), "", "manual");
+            var config = new AgentUpgradeHelper.Config("campaign-first-component-install", "v1.0.0", "",
+                    agent.toString(), stateDir.toString(), "", ProcessHandle.current().pid(), 1,
+                    java.util.List.of(component));
+            var configFile = root.resolve("helper.json");
+            Files.write(configFile, JsonCodec.write(config));
+
+            assertFalse(Files.exists(updater));
+            assertEquals(0, AgentUpgradeHelper.run(configFile.toString()));
+            assertEquals("first-updater-install", Files.readString(updater));
+            assertEquals("unchanged-agent", Files.readString(agent));
+            assertEquals("v1.0.0+abc", Files.readString(stateDir.resolve("agent-updater-version")).trim());
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    @Test
+    void windowsBundlePermissionsResetToTheTargetDirectoryAcl() throws Exception {
+        assumeTrue(isWindows(), "Windows Native Image bundles use inherited ACLs");
+        var root = Files.createTempDirectory("rcm-upgrade-windows-acl-");
+        try {
+            var target = Files.writeString(root.resolve("rcm-updater.exe"), "updater", StandardCharsets.UTF_8);
+            Method method = AgentUpgradeHelper.class.getDeclaredMethod("setBundlePermissions", Path.class);
+            method.setAccessible(true);
+            try {
+                method.invoke(null, target);
+            } catch (InvocationTargetException exception) {
+                var cause = exception.getCause();
+                if (cause instanceof Exception checked) throw checked;
+                if (cause instanceof Error error) throw error;
+                throw exception;
+            }
+            var aclView = Files.getFileAttributeView(target, AclFileAttributeView.class);
+            assertTrue(aclView != null, "Windows must provide an ACL attribute view");
+            var acl = aclView.getAcl();
+            assertFalse(acl.isEmpty());
+            assertTrue(acl.stream().allMatch(entry -> entry.flags().contains(AclEntryFlag.INHERITED)),
+                    "installed component files must inherit the target directory ACL");
         } finally {
             deleteTree(root);
         }

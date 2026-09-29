@@ -247,7 +247,7 @@ jobs:
       - name: Build Agent and updater Native Images
         working-directory: java
         shell: pwsh
-        run: .\gradlew.bat -PnativeMarch=x86-64-v2 :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile :updater:nativeCompile --no-daemon --no-parallel
+        run: .\gradlew.bat -PnativeMarch=x86-64-v2 :updater:test :agent:nativeCompile :desktop:nativeCompile :browser:nativeCompile :updater:nativeCompile --no-daemon --no-parallel
       - name: Validate Agent Native contracts
         shell: pwsh
         run: |
