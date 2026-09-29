@@ -1,6 +1,7 @@
 package com.prodigalgal.remoteconnectmcp.agent;
 
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
+import com.prodigalgal.remoteconnectmcp.protocol.UpgradeComponentPlan;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradePlan;
 import com.prodigalgal.remoteconnectmcp.protocol.UpgradeStatusRequest;
 import com.prodigalgal.remoteconnectmcp.protocol.SensitiveValueRedactor;
