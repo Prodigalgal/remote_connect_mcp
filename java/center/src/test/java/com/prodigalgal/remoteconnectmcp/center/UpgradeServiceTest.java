@@ -67,6 +67,22 @@ class UpgradeServiceTest {
     }
 
     @Test
+    void companionBundlesAreWithheldUntilTheAgentLifecycleFixIsInstalled() {
+        var desktop = new UpgradeComponentPlan("desktop-companion", "v0.1.36", "windows", "amd64",
+                "https://example.test/desktop.zip", SHA, 100L, "drain-and-restart", "v0.1.36");
+        var browser = new UpgradeComponentPlan("browser-agent", "v0.1.36", "windows", "amd64",
+                "https://example.test/browser.zip", SHA, 100L, "drain-and-restart", "v0.1.36");
+        var old = new MachineView("old", "old", "old", "old", "windows", "amd64", "v0.1.35",
+                "/", List.of("command", "desktop", "browser"), Instant.EPOCH, Instant.EPOCH, true);
+        var upgraded = new MachineView("upgraded", "upgraded", "upgraded", "upgraded", "windows", "amd64", "v0.1.36",
+                "/", List.of("command", "desktop", "browser"), Instant.EPOCH, Instant.EPOCH, true);
+        var plans = Map.of("windows/amd64", List.of(desktop, browser));
+
+        assertTrue(UpgradeService.componentsForMachine(plans, old).isEmpty());
+        assertEquals(List.of(desktop, browser), UpgradeService.componentsForMachine(plans, upgraded));
+    }
+
+    @Test
     void offersCanaryThenAdvancesBatchAfterSuccessfulAgentReport() {
         var registry = AgentRegistry.forTest("enroll");
         var first = registry.register(registration("one", "v1.0.0"), "enroll");

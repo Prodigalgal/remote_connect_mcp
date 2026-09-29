@@ -419,7 +419,8 @@ jobs:
                   'url': f'https://github.com/{repo}/releases/download/{tag}/{path.name}',
                   'sha256': actual_sha, 'bytes': path.stat().st_size,
                   'restart_policy': 'manual' if kind == 'updater' else 'drain-and-restart'}
-              if kind == 'updater': plan['min_agent_version'] = minimum_agent_version
+              if kind in ('desktop', 'browser', 'updater'):
+                  plan['min_agent_version'] = minimum_agent_version
               components.append(plan)
           if found != expected:
               raise SystemExit(f'component bundle matrix incomplete: missing={sorted(expected - found)}, unexpected={sorted(found - expected)}')
