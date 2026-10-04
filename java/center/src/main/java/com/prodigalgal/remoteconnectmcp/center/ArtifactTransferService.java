@@ -843,16 +843,8 @@ public final class ArtifactTransferService {
         if (descriptor == null || descriptor.bytes() < 0 || descriptor.bytes() > maxBytes) {
             return Optional.empty();
         }
-        var objectKey = jdbc == null
-                ? memory.values().stream()
-                .filter(value -> artifactId.trim().equals(value.descriptor().artifactId())
-                        && origin.principalId().equals(value.descriptor().principalId())
-                        && Set.of("ready", "delivered").contains(value.descriptor().status()))
-                .map(MemoryTransfer::objectKey).filter(value -> value != null && !value.isBlank()).findFirst().orElse("")
-                : jdbc.query("SELECT a.object_key FROM rcm_artifact a WHERE a.artifact_id = ? AND a.principal_id = ? AND a.status IN ('ready', 'delivered')",
-                ps -> { ps.setString(1, artifactId.trim()); ps.setString(2, origin.principalId()); },
-                rs -> rs.next() ? rs.getString(1) : "");
-        if (objectKey == null || objectKey.isBlank()) return Optional.empty();
+        var objectKey = inlineObjectKey(artifactId, origin);
+        if (objectKey.isBlank()) return Optional.empty();
         var data = store.read(objectKey);
         if (data.length != descriptor.bytes() || data.length > maxBytes) {
             throw new ArtifactStore.StorageException("inline artifact metadata does not match stored bytes");
@@ -862,6 +854,39 @@ public final class ArtifactTransferService {
             throw new ArtifactStore.StorageException("inline artifact SHA-256 does not match stored bytes");
         }
         return Optional.of(new InlineArtifact(descriptor.artifactId(), descriptor.fileName(), descriptor.mimeType(), digest, data));
+    }
+
+    /** Read only the requested text page, retaining the complete immutable file. */
+    public Optional<OutputPage> readTextPage(String artifactId, TaskOrigin origin, long cursor, int limit) {
+        if (cursor < 0 || limit < 1 || limit > TaskService.MAX_OUTPUT_PAGE)
+            throw new IllegalArgumentException("invalid text page cursor or limit");
+        var descriptor = findByArtifact(artifactId, origin).orElseThrow(() -> new IllegalArgumentException("artifact not found"));
+        if (cursor > descriptor.bytes()) throw new IllegalArgumentException("cursor is ahead of artifact");
+        var objectKey = inlineObjectKey(artifactId, origin);
+        if (objectKey.isBlank()) return Optional.empty();
+        try (var input = store.open(objectKey)) {
+            input.skipNBytes(cursor);
+            var expected = (int) Math.min(descriptor.bytes() - cursor, Math.max(4, limit));
+            var data = input.readNBytes(expected);
+            if (data.length != expected)
+                throw new ArtifactStore.StorageException("artifact text page does not match stored byte size");
+            return Optional.of(Utf8OutputPage.align(new OutputPage(data, cursor, cursor + data.length,
+                    cursor + data.length < descriptor.bytes()), limit));
+        } catch (IOException exception) {
+            throw new ArtifactStore.StorageException("cannot read artifact text page", exception);
+        }
+    }
+
+    private String inlineObjectKey(String artifactId, TaskOrigin origin) {
+        return jdbc == null
+                ? memory.values().stream()
+                .filter(value -> artifactId.trim().equals(value.descriptor().artifactId())
+                        && origin.principalId().equals(value.descriptor().principalId())
+                        && Set.of("ready", "delivered").contains(value.descriptor().status()))
+                .map(MemoryTransfer::objectKey).filter(value -> value != null && !value.isBlank()).findFirst().orElse("")
+                : jdbc.query("SELECT a.object_key FROM rcm_artifact a WHERE a.artifact_id = ? AND a.principal_id = ? AND a.status IN ('ready', 'delivered')",
+                ps -> { ps.setString(1, artifactId.trim()); ps.setString(2, origin.principalId()); },
+                rs -> rs.next() ? rs.getString(1) : "");
     }
 
     /**
