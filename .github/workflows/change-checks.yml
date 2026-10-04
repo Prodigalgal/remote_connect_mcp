@@ -67,6 +67,12 @@ jobs:
       - name: Browser tool contract tests
         run: node --test scripts/browser-worker.test.mjs
 
+  browser-runtime:
+    name: Browser runtime gate
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    uses: ./.github/workflows/browser-runtime-check.yml
+
   center-test:
     name: Center selective test
     needs: changes

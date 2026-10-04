@@ -166,14 +166,14 @@ try {
         foreach ($name in @('package.json', 'package-lock.json')) {
             Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/browser-runtime/$name" -OutFile (Join-Path $runtime $name) -TimeoutSec 30
         }
-        $nodeMajor = [int](& $NodePath -p 'process.versions.node.split(".")[0]')
-        if ($nodeMajor -lt 22) { throw 'Camoufox requires Node.js 22 or newer.' }
+        $nodeVersion = [version](& $NodePath -p 'process.versions.node')
+        if ($nodeVersion -lt [version]'22.15.0') { throw 'Camoufox requires Node.js 22.15 or newer.' }
         & $npm ci --prefix $runtime --no-audit --no-fund --ignore-scripts
         if ($LASTEXITCODE -ne 0) { throw "Camoufox npm install failed with exit $LASTEXITCODE" }
-        & $NodePath -e "require('better-sqlite3')"
-        if ($LASTEXITCODE -ne 0) { throw 'Camoufox runtime SQLite dependency could not be loaded.' }
+        & $NodePath --input-type=module -e "await import('@camoufox/camoufox')"
+        if ($LASTEXITCODE -ne 0) { throw 'Camoufox runtime package could not be loaded.' }
         $env:CAMOUFOX_INSTALL_DIR = $camoufoxInstallDir
-        & $NodePath (Join-Path $runtime 'node_modules\camoufox-js\dist\__main__.js') fetch
+        & $NodePath (Join-Path $runtime 'node_modules\@camoufox\camoufox\dist\__main__.js') fetch
         if ($LASTEXITCODE -ne 0) { throw "Camoufox browser install failed with exit $LASTEXITCODE" }
         $env:REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR = $camoufoxInstallDir
         $adapter = Join-Path $runtime 'browser-adapter.cmd'

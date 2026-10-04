@@ -29,6 +29,8 @@ try {
       RCM_BROWSER_TASK_REQUEST_FILE: request,
       RCM_BROWSER_RESULT_FILE: result,
       RCM_BROWSER_ARTIFACT_DIR: temporary,
+      RCM_BROWSER_PROFILE_DIR: path.join(temporary, 'profile'),
+      RCM_BROWSER_SESSION_FILE: path.join(temporary, 'session.json'),
       RCM_BROWSER_HEADLESS: '1',
       RCM_BROWSER_TASK_TIMEOUT_SECONDS: '60',
     },

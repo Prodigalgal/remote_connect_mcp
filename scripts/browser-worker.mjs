@@ -102,11 +102,11 @@ async function run(command) {
   if (!operation) throw new Error("browser action is required");
   let Camoufox;
   try {
-    ({ Camoufox } = await import("camoufox-js"));
+    ({ Camoufox } = await import("@camoufox/camoufox"));
   } catch (error) {
-    throw new Error("camoufox-js is not installed: " + (error instanceof Error ? error.message : String(error)));
+    throw new Error("@camoufox/camoufox is not installed: " + (error instanceof Error ? error.message : String(error)));
   }
-  if (typeof Camoufox !== "function") throw new Error("camoufox-js does not export Camoufox");
+  if (typeof Camoufox !== "function") throw new Error("@camoufox/camoufox does not export Camoufox");
   await mkdir(artifactDir, { recursive: true });
   if (profileDir) await mkdir(path.resolve(profileDir), { recursive: true });
 
@@ -115,7 +115,7 @@ async function run(command) {
   const launched = await Camoufox({
     headless,
     timeout: timeoutMs,
-    ...(profileDir ? { user_data_dir: path.resolve(profileDir), acceptDownloads: true } : {}),
+    ...(profileDir ? { persistent_context: true, user_data_dir: path.resolve(profileDir), acceptDownloads: true } : {}),
   });
   if (profileDir) {
     context = launched;
