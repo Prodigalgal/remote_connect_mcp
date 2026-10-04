@@ -16,7 +16,7 @@ MCP 地址是 `https://<center-domain>/mcp`。当前公开 7 个工具：`machin
 
 `artifact(get/read)` 的 `delivery_mode` 决定返回文件句柄还是内联内容，`wait_ms` 独立决定短等时长。`auto` 默认短等，`async` 默认立即返回；显式 `wait_ms` 优先。内联文本默认 16 KiB，通过 `cursor` / `limit` 继续读取，完整文件始终可下载。字段取舍与详情入口见 [MCP 结果字段](docs/MCP_RESULT_FIELDS.md)。
 
-Agent 默认使用事件唤醒的 HTTPS 长轮询：任务或升级出现时 Center 立即唤醒等待中的连接；空闲时没有固定频率的业务查询。Browser 使用 [Camoufox](https://github.com/apify/camoufox-js)，需要目标机安装 Node.js 22 及 npm；浏览器只在收到任务时启动，Profile 保留在目标机器。
+Agent 默认使用事件唤醒的 HTTPS 长轮询：任务或升级出现时 Center 立即唤醒等待中的连接；空闲时没有固定频率的业务查询。Browser 使用 [Camoufox 官方客户端](https://github.com/daijro/camoufox/tree/main/typescript)，固定客户端版本并下载其配套的浏览器构建，需要目标机安装 Node.js 22.15 及 npm；浏览器只在收到任务时启动，Profile 保留在目标机器。
 
 ## 更新
 

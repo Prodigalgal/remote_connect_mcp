@@ -136,10 +136,10 @@ if $browser; then
   for name in package.json package-lock.json; do
     curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$raw_base/scripts/browser-runtime/$name" -o "$runtime/$name"
   done
-  [[ "$("$node_path" -p 'process.versions.node.split(".")[0]')" -ge 22 ]] || { echo 'Camoufox requires Node.js 22 or newer' >&2; exit 1; }
+  "$node_path" -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 15) ? 0 : 1)' || { echo 'Camoufox requires Node.js 22.15 or newer' >&2; exit 1; }
   "$npm_path" ci --prefix "$runtime" --no-audit --no-fund
   export CAMOUFOX_INSTALL_DIR="$camoufox_install_dir"
-  "$node_path" "$runtime/node_modules/camoufox-js/dist/__main__.js" fetch
+  "$node_path" "$runtime/node_modules/@camoufox/camoufox/dist/__main__.js" fetch
   adapter="\"$node_path\" \"$worker\""
 fi
 
