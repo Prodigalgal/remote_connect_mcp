@@ -406,7 +406,7 @@ public class McpConfiguration {
     }
 
     static Map<String, Object> modelBrowserRequestSchema() {
-        var properties = Map.ofEntries(
+        var properties = Map.<String, Object>ofEntries(
                 Map.entry("action", modelEnum("browser action", List.of("navigate", "observe", "click", "fill", "select", "press", "wait", "extract", "download", "screenshot"))),
                 Map.entry("url", modelString("HTTP(S) navigation URL, at most 4096 UTF-8 bytes", 1, 4096)),
                 Map.entry("ref", modelString("rcm-ref-v1 snapshot reference", 1, 2048)),
@@ -459,7 +459,7 @@ public class McpConfiguration {
     }
 
     static Map<String, Object> machinesModelSchema() {
-        var properties = Map.ofEntries(
+        var properties = Map.<String, Object>ofEntries(
                 Map.entry("operation", modelEnum("inventory operation", List.of("list", "detail"))),
                 Map.entry("machine_id", modelString("stable machine identifier", 1, 180)),
                 Map.entry("offset", modelInteger("zero-based page offset", 0, 1000000)),
