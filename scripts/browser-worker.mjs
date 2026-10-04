@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const MAX_COMMAND_BYTES = 64 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -15,9 +16,9 @@ const MAX_EVENT_URL_BYTES = 2048;
 const MAX_SNAPSHOT_ELEMENTS = 64;
 const MAX_REFERENCE_LENGTH = 2048;
 
-const requestFile = requiredEnv("RCM_BROWSER_TASK_REQUEST_FILE");
-const resultFile = requiredEnv("RCM_BROWSER_RESULT_FILE");
-const artifactDir = path.resolve(requiredEnv("RCM_BROWSER_ARTIFACT_DIR"));
+let requestFile;
+let resultFile;
+let artifactDir;
 const timeoutMs = boundedInteger(process.env.RCM_BROWSER_TASK_TIMEOUT_SECONDS, 300, 1, 24 * 60 * 60) * 1000;
 const profileDir = process.env.RCM_BROWSER_PROFILE_DIR?.trim();
 const sessionFile = process.env.RCM_BROWSER_SESSION_FILE?.trim();
@@ -25,32 +26,44 @@ const headless = !["0", "false", "no"].includes((process.env.RCM_BROWSER_HEADLES
 
 let context;
 let browser;
+let taskEvents;
 
-try {
-  const task = JSON.parse(await readFile(requestFile, "utf8"));
-  const command = normalizeCommand(parseCommand(task.command));
-  const result = await run(command);
-  await writeResult({ status: "completed", output: result.output, ...(result.artifact ? { artifact: result.artifact } : {}) });
-} catch (error) {
-  const message = compactError(error instanceof Error ? error.message : String(error));
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+
+async function main() {
+  requestFile = requiredEnv("RCM_BROWSER_TASK_REQUEST_FILE");
+  resultFile = requiredEnv("RCM_BROWSER_RESULT_FILE");
+  artifactDir = path.resolve(requiredEnv("RCM_BROWSER_ARTIFACT_DIR"));
   try {
-    const recovery = await staleReferenceObservation(message);
-    await writeResult({ status: "failed", error: message, ...(recovery ? { output: recovery } : {}) });
-  } catch (writeError) {
-    console.error("[rcm-browser] result manifest failed: " + compactError(writeError instanceof Error ? writeError.message : String(writeError)));
-  }
-  console.error("[rcm-browser] " + message);
-  process.exitCode = 1;
-} finally {
-  try {
-    if (context) await context.close();
-  } catch {
-    // The Agent owns process termination; a close failure must not hide the task result.
-  }
-  try {
-    if (browser) await browser.close();
-  } catch {
-    // Persistent contexts already close their browser in context.close().
+    const task = JSON.parse(await readFile(requestFile, "utf8"));
+    const command = normalizeCommand(parseCommand(task.command));
+    const result = await run(command);
+    await writeResult({ status: "completed", output: result.output, ...(result.artifact ? { artifact: result.artifact } : {}) });
+  } catch (error) {
+    const message = compactError(error instanceof Error ? error.message : String(error));
+    try {
+      const recovery = await staleReferenceObservation(message);
+      const hasEvents = taskEvents && Object.values(taskEvents).some((entries) => entries.length);
+      const output = recovery || hasEvents
+        ? withEventSummary({ output: recovery || "{}" }, taskEvents || { network: [], console: [], pageErrors: [] }).output
+        : "";
+      await writeResult({ status: "failed", error: message, ...(output ? { output } : {}) });
+    } catch (writeError) {
+      console.error("[rcm-browser] result manifest failed: " + compactError(writeError instanceof Error ? writeError.message : String(writeError)));
+    }
+    console.error("[rcm-browser] " + message);
+    process.exitCode = 1;
+  } finally {
+    try {
+      if (context) await context.close();
+    } catch {
+      // The Agent owns process termination; a close failure must not hide the task result.
+    }
+    try {
+      if (browser) await browser.close();
+    } catch {
+      // Persistent contexts already close their browser in context.close().
+    }
   }
 }
 
@@ -69,13 +82,13 @@ async function staleReferenceObservation(message) {
     if (!page) return "";
     const snapshot = await snapshotPage(page);
     const elements = await elementReferences(page);
-    return limitText(JSON.stringify({
+    return serializeOutput({
       reason: "stale_reference",
       url: safeEventUrl(page.url()),
       title: safePageTitle(await page.title()),
       snapshot,
       elements,
-    }), MAX_OUTPUT_BYTES);
+    });
   } catch {
     return "";
   }
@@ -113,28 +126,48 @@ async function run(command) {
   const page = context.pages()[0] || await context.newPage();
   page.setDefaultTimeout(timeoutMs);
   const events = { network: [], console: [], pageErrors: [] };
+  taskEvents = events;
   const observedPages = new WeakSet();
   const observe = (candidate) => attachObservers(candidate, events, observedPages);
   observe(page);
   if (typeof context.on === "function") context.on("page", observe);
 
   await restoreSessionPage(page, operation);
-  const result = await executeOperation(page, command, operation);
+  const result = await executeAction(page, command);
   await persistSessionPage(page);
   return withEventSummary(result, events);
 }
 
-async function executeOperation(page, command, operation) {
+export async function executeAction(page, command, taskTimeout = timeoutMs) {
+  const actionTimeout = Math.min(taskTimeout, boundedInteger(command.timeout_ms, taskTimeout, 1, 300_000));
+  page.setDefaultTimeout(actionTimeout);
+  const result = await executeOperation(page, command, command.operation, actionTimeout);
+  if (command.include_snapshot === true && command.operation !== "snapshot") {
+    const payload = JSON.parse(result.output);
+    try {
+      payload.snapshot = await snapshotPage(page);
+      payload.elements = await elementReferences(page);
+    } catch (error) {
+      // The effect already succeeded. An optional observation failure must not
+      // suggest that it is safe to replay the click/fill.
+      payload.observation_error = compactError(error instanceof Error ? error.message : String(error));
+    }
+    result.output = serializeOutput(payload);
+  }
+  return result;
+}
+
+export async function executeOperation(page, command, operation, actionTimeout = timeoutMs) {
   switch (operation) {
     case "navigate": {
       const url = safeUrl(command.url);
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: actionTimeout });
       return { output: JSON.stringify({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()) }) };
     }
     case "snapshot": {
       const snapshot = await snapshotPage(page);
       const elements = await elementReferences(page);
-      return { output: limitText(JSON.stringify({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()), snapshot, elements }), MAX_OUTPUT_BYTES) };
+      return { output: serializeOutput({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()), snapshot, elements }) };
     }
     case "click": {
       await locator(page, command.selector).click();
@@ -145,7 +178,7 @@ async function executeOperation(page, command, operation) {
       return { output: JSON.stringify({ operation, selector: command.selector }) };
     }
     case "fill": {
-      const value = boundedText(command.value ?? command.text, MAX_TEXT_BYTES, "value");
+      const value = boundedText(command.value ?? command.text, MAX_TEXT_BYTES, "value", true);
       await locator(page, command.selector).fill(value);
       return { output: JSON.stringify({ operation, selector: command.selector }) };
     }
@@ -170,27 +203,28 @@ async function executeOperation(page, command, operation) {
     case "wait_for_selector": {
       const state = command.state === undefined ? "visible" : boundedText(command.state, 32, "state").toLowerCase();
       if (!['attached', 'detached', 'visible', 'hidden'].includes(state)) throw new Error("state must be attached, detached, visible, or hidden");
-      await locator(page, command.selector).waitFor({ state, timeout: timeoutMs });
+      await locator(page, command.selector).waitFor({ state, timeout: actionTimeout });
       return { output: JSON.stringify({ operation, selector: command.selector, state }) };
     }
     case "reload": {
-      await page.reload({ waitUntil: "domcontentloaded", timeout: timeoutMs });
+      await page.reload({ waitUntil: "domcontentloaded", timeout: actionTimeout });
       return { output: JSON.stringify({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()) }) };
     }
     case "back": {
-      await page.goBack({ waitUntil: "domcontentloaded", timeout: timeoutMs });
+      await page.goBack({ waitUntil: "domcontentloaded", timeout: actionTimeout });
       return { output: JSON.stringify({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()) }) };
     }
     case "forward": {
-      await page.goForward({ waitUntil: "domcontentloaded", timeout: timeoutMs });
+      await page.goForward({ waitUntil: "domcontentloaded", timeout: actionTimeout });
       return { output: JSON.stringify({ operation, url: safeEventUrl(page.url()), title: safePageTitle(await page.title()) }) };
     }
     case "text": {
       const value = await locator(page, command.selector).innerText();
-      return { output: limitText(JSON.stringify({ operation, selector: command.selector, text: boundedText(value, MAX_TEXT_BYTES, "text") }), MAX_OUTPUT_BYTES) };
+      return { output: serializeOutput({ operation, text: limitText(value, MAX_TEXT_BYTES) }) };
     }
     case "wait": {
       const waitMs = boundedInteger(command.wait_ms, 0, 0, MAX_WAIT_MS);
+      if (waitMs > actionTimeout) throw new Error("wait_ms exceeds the action timeout");
       await page.waitForTimeout(waitMs);
       return { output: JSON.stringify({ operation, wait_ms: waitMs }) };
     }
@@ -208,7 +242,7 @@ async function executeOperation(page, command, operation) {
       };
     }
     case "download": {
-      const downloadPromise = page.waitForEvent("download", { timeout: timeoutMs });
+      const downloadPromise = page.waitForEvent("download", { timeout: actionTimeout });
       await locator(page, command.selector).click();
       const download = await downloadPromise;
       const extension = safeExtension(download.suggestedFilename());
@@ -274,12 +308,12 @@ function pushBounded(list, value) {
   if (list.length < MAX_EVENT_ENTRIES) list.push(value);
 }
 
-function withEventSummary(result, events) {
-  const summary = {};
-  if (events.network.length > 0) summary.network = events.network;
-  if (events.console.length > 0) summary.console = events.console;
-  if (events.pageErrors.length > 0) summary.page_errors = events.pageErrors;
-  if (Object.keys(summary).length === 0) return result;
+export function withEventSummary(result, events) {
+  const diagnostics = {};
+  if (events.network.length > 0) diagnostics.network = events.network;
+  if (events.console.length > 0) diagnostics.console = events.console;
+  if (events.pageErrors.length > 0) diagnostics.page_errors = events.pageErrors;
+  if (Object.keys(diagnostics).length === 0) return { ...result, output: serializeOutput(JSON.parse(result.output)) };
   let payload;
   const safeOutput = redactEventText(result.output);
   try {
@@ -288,8 +322,48 @@ function withEventSummary(result, events) {
     payload = { result: safeOutput };
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = { result: payload };
-  Object.assign(payload, summary);
-  return { ...result, output: limitText(JSON.stringify(payload), MAX_OUTPUT_BYTES) };
+  payload.diagnostics = diagnostics;
+  const warnings = [
+    ...events.network.filter((event) => event.type === "requestfailed" || event.status >= 400),
+    ...events.console.filter((event) => ["error", "warn", "warning"].includes(event.type)),
+    ...events.pageErrors,
+  ];
+  if (warnings.length) {
+    payload.warning_count = warnings.length;
+    payload.warnings = warnings.slice(0, 4);
+  }
+  return { ...result, output: serializeOutput(payload) };
+}
+
+/** Trim values before serialization; complete references and JSON stay intact. */
+export function serializeOutput(value, maxBytes = MAX_OUTPUT_BYTES) {
+  const payload = JSON.parse(JSON.stringify(value));
+  const fits = () => {
+    const result = JSON.stringify(payload);
+    return Buffer.byteLength(result, "utf8") <= maxBytes
+      && Buffer.byteLength(JSON.stringify(result), "utf8") <= MAX_OUTPUT_BYTES - 16 * 1024;
+  };
+  if (!fits()) {
+    payload.truncated = true;
+    for (const key of ["network", "console", "page_errors"]) {
+      const entries = payload.diagnostics?.[key];
+      while (!fits() && Array.isArray(entries) && entries.length) entries.pop();
+      if (entries?.length === 0) delete payload.diagnostics[key];
+    }
+    for (const key of ["snapshot", "text"]) {
+      while (!fits() && typeof payload[key] === "string" && payload[key].length) {
+        const budget = Math.max(32, Math.floor(Buffer.byteLength(payload[key], "utf8") / 2));
+        payload[key] = limitText(payload[key], budget);
+        if (Buffer.byteLength(payload[key], "utf8") <= 32 && !fits()) delete payload[key];
+      }
+    }
+    for (const key of ["elements", "warnings"]) {
+      const entries = payload[key];
+      while (!fits() && Array.isArray(entries) && entries.length) entries.pop();
+    }
+    if (!fits()) throw new Error("browser output metadata exceeds its byte budget");
+  }
+  return JSON.stringify(payload);
 }
 
 function safeEventUrl(value) {
@@ -398,11 +472,11 @@ function referenceDescriptor(item) {
   return null;
 }
 
-function encodeReference(value) {
+export function encodeReference(value) {
   return "rcm-ref-v1:" + Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 }
 
-function decodeReference(value) {
+export function decodeReference(value) {
   if (typeof value !== "string" || !value.startsWith("rcm-ref-v1:")) throw new Error("invalid browser element reference");
   if (value.length > MAX_REFERENCE_LENGTH) throw new Error("browser element reference is too long");
   const encoded = value.slice("rcm-ref-v1:".length);
@@ -561,7 +635,7 @@ async function assertRegularFile(file) {
  * operation vocabulary. The public contract intentionally uses model-friendly
  * action names; this is the only translation point between the two layers.
  */
-function normalizeCommand(command) {
+export function normalizeCommand(command) {
   const action = text(command.action).toLowerCase();
   const operation = {
     navigate: "navigate",
@@ -589,9 +663,7 @@ function normalizeCommand(command) {
   if (action === "select" && normalized.values === undefined && command.value !== undefined) {
     normalized.values = command.value;
   }
-  if (action === "wait" && normalized.wait_ms === undefined && command.timeout_ms !== undefined) {
-    normalized.wait_ms = command.timeout_ms;
-  }
+  if (command.ref !== undefined && command.selector !== undefined) throw new Error("use exactly one ref or selector");
   return normalized;
 }
 
@@ -637,8 +709,8 @@ function safeUrl(value) {
   return parsed.toString();
 }
 
-function boundedText(value, maxBytes, name) {
-  if (typeof value !== "string" || value.length === 0) throw new Error(name + " is required");
+function boundedText(value, maxBytes, name, allowEmpty = false) {
+  if (typeof value !== "string" || (!allowEmpty && value.length === 0)) throw new Error(name + " is required");
   if (Buffer.byteLength(value, "utf8") > maxBytes) throw new Error(name + " exceeds " + maxBytes + " bytes");
   if (value.includes("\u0000")) throw new Error(name + " contains NUL");
   return value;
@@ -662,9 +734,12 @@ function safeExtension(value) {
 function limitText(value, maxBytes) {
   const output = String(value ?? "");
   if (Buffer.byteLength(output, "utf8") <= maxBytes) return output;
-  let result = output;
-  while (Buffer.byteLength(result, "utf8") > maxBytes - 32) result = result.slice(0, -1);
-  return result + "\n[truncated]";
+  const prefix = Buffer.from(output, "utf8").subarray(0, Math.max(0, maxBytes - 16));
+  let end = prefix.length;
+  while (end > 0 && (prefix[end - 1] & 0xc0) === 0x80) end--;
+  if (end > 0 && prefix[end - 1] >= 0xc0) end--;
+  else end = prefix.length;
+  return prefix.subarray(0, end).toString("utf8") + "\n[truncated]";
 }
 
 function compactError(value) {

@@ -6,7 +6,7 @@ import path from 'node:path';
 
 const server = createServer((_request, response) => {
   response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  response.end('<!doctype html><title>RCM browser smoke</title><h1>Ready</h1>');
+  response.end('<!doctype html><title>RCM browser smoke</title><h1>Ready</h1><button>中文按钮</button>');
 });
 const temporary = await mkdtemp(path.join(tmpdir(), 'rcm-browser-smoke-'));
 try {
@@ -20,6 +20,7 @@ try {
   const result = path.join(temporary, 'result.json');
   await writeFile(request, JSON.stringify({ command: JSON.stringify({
     action: 'navigate', url: `http://127.0.0.1:${address.port}/`,
+    include_snapshot: true, timeout_ms: 15000,
   }) }));
   const worker = path.resolve('scripts/browser-runtime/browser-worker.mjs');
   const child = spawn(process.execPath, [worker], {
@@ -45,7 +46,11 @@ try {
   if (exitCode !== 0 || output.status !== 'completed' || !output.output.includes('RCM browser smoke')) {
     throw new Error(`Camoufox navigation failed: ${errorText || output.error || output.status}`);
   }
-  process.stdout.write('Camoufox navigation OK\n');
+  const observed = JSON.parse(output.output);
+  if (!observed.snapshot?.includes('中文按钮') || !observed.elements?.some((element) => element.ref)) {
+    throw new Error('Camoufox post-navigation observation is missing usable element references');
+  }
+  process.stdout.write('Camoufox navigation and observation OK\n');
 } finally {
   server.close();
   await rm(temporary, { recursive: true, force: true });

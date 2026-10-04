@@ -37,7 +37,11 @@ Agent 不再解析或执行任何 `scope_mode`、`scope_root`、`workspace_polic
 
 只发布：`machines`、`command`、`desktop`、`browser`、`artifact`、`task_read`、`task_cancel`。
 
-Tool schema 只保留模型需要的意图：机器句柄、操作枚举、命令/浏览器请求、文件对象和任务句柄。会话、车道、风险、预算、主体和租约由 Center 派生。执行类工具先创建持久任务；`wait_ms=0` 立即返回任务，正数短等有界结果，等待到期不取消任务。之后的状态、输出和截图统一由 `task_read` 读取；`tail_bytes` 可直接查看长日志末尾。默认任务结果只带恢复所需句柄、状态和实际存在的退出码、错误、进度、输出或制品数据；空输出省略，默认输出页为 16 KiB，短等待失败时优先返回日志尾部。`task_read(detail=true)` 提供执行时间、命令上下文、完整进度和保留期；`artifact(read)` 提供传输诊断。内部租约、主体、会话、车道与风险不经 MCP 返回；MCP 不提供 `next_action` 决策对象。逐字段取舍见 [MCP 结果字段](MCP_RESULT_FIELDS.md)。
+Tool schema 只保留模型需要的意图：机器句柄、操作枚举、命令/浏览器请求、文件对象和任务句柄。会话、车道、风险、预算、主体和租约由 Center 派生。操作分支约束会在任务下发前检查必需字段与互斥字段。新调用创建新任务，同一次调用的重试由显式 `idempotency_key` 去重。
+
+执行类工具先创建持久任务；`wait_ms=0` 立即返回任务，正数短等有界结果，等待到期不取消任务。之后的状态、输出和截图统一由 `task_read` 读取；`tail_bytes` 可直接查看长日志末尾。默认输出页为 16 KiB，执行工具可用 `limit` 调整；命令与桌面操作短等待失败时优先返回日志尾部。`change_seq` 状态观察默认不重复附带输出，`include_output` 和 `include_artifact` 分别控制日志与截图内容。
+
+浏览器默认返回结构化 `output.data`、必要警告和有界页面观察；`task_read(detail=true)` 可读取保留的诊断信息。操作后的可选观察失败不会把已经完成的操作报告为失败。内联制品文本按 UTF-8 字节游标分页，完整文件保留下载能力。任务详情还提供执行时间、命令上下文、完整进度和保留期；`artifact(read)` 提供传输诊断。内部租约、主体、会话、车道与风险不经 MCP 返回；MCP 不提供 `next_action` 决策对象。逐字段取舍见 [MCP 结果字段](MCP_RESULT_FIELDS.md)。
 
 ## Desktop / Browser
 

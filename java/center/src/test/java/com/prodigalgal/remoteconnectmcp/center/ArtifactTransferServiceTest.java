@@ -24,6 +24,46 @@ import org.junit.jupiter.api.io.TempDir;
 
 class ArtifactTransferServiceTest {
     @Test
+    void largeTextIsStreamedInUtf8PagesWithoutLoadingTheWholeObject(@TempDir Path root) throws Exception {
+        var registry = AgentRegistry.forTest("enrollment");
+        var machine = registry.register(new RegisterRequest("text-agent", "host-text", "host-text", "linux", "amd64",
+                "dev", root.toString(), List.of("command", "file_transfer")), "enrollment");
+        var tasks = new TaskService(registry);
+        var store = org.mockito.Mockito.spy(new FileSystemArtifactStore(root.resolve("objects")));
+        var tokens = new CenterTokenConfig() {
+            @Override
+            public String artifactDownloadSecret() { return "text-page-signing-secret"; }
+        };
+        var service = new ArtifactTransferService(null, null, store, tasks, tokens);
+        var origin = TaskOrigin.configured();
+        var command = new TaskCommand("", TaskKind.COMMAND, "command", "ignored", root.toString(), Map.of(), 0, null, Instant.now());
+        var created = service.createAgentToWeb(origin, new CreateTaskRequest(machine.machineId(), command, "text-pages"),
+                root.resolve("large.txt").toString(), "large.txt", "text/plain");
+        var leased = tasks.poll(machine.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        var content = "中文😀line\n".repeat(12000);
+        var bytes = content.getBytes(StandardCharsets.UTF_8);
+        service.receiveFromAgent(machine.machineId(), created.transfer().transferId(), new ByteArrayInputStream(bytes),
+                bytes.length, sha256(bytes), "large.txt", "text/plain", leased.attempt());
+        var reconstructed = new StringBuilder();
+        long cursor = 0;
+        while (true) {
+            var page = service.readTextPage(created.transfer().artifactId(), origin, cursor, 4096).orElseThrow();
+            assertTrue(page.data().length <= 4096);
+            assertTrue(page.nextCursor() > cursor);
+            reconstructed.append(new String(page.data(), StandardCharsets.UTF_8));
+            cursor = page.nextCursor();
+            if (!page.more()) break;
+        }
+        assertEquals(content, reconstructed.toString());
+        org.mockito.Mockito.verify(store, org.mockito.Mockito.never()).read(org.mockito.ArgumentMatchers.anyString());
+        assertEquals(bytes.length, service.findByArtifact(created.transfer().artifactId(), origin).orElseThrow().bytes());
+        assertThrows(IllegalArgumentException.class,
+                () -> service.readTextPage(created.transfer().artifactId(), origin, bytes.length + 1, 4096));
+        assertThrows(IllegalArgumentException.class,
+                () -> service.readTextPage(created.transfer().artifactId(), new TaskOrigin("other", "token", "connection"), 0, 4096));
+    }
+
+    @Test
     void readsSmallImageInlineForMcpRendering(@TempDir Path root) throws Exception {
         var registry = AgentRegistry.forTest("enrollment");
         var registration = registry.register(new RegisterRequest("command-agent", "host-image", "host-image", "linux", "amd64",
