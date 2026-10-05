@@ -140,9 +140,6 @@ jobs:
           args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --verify-tag --title "Agent ${RELEASE_VERSION}" --generate-notes)
           if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then args+=(--prerelease); fi
           gh release create "${args[@]}"
-          marker="agent-published-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-            -f "ref=refs/tags/${marker}" -f "sha=${RELEASE_SOURCE_SHA}" >/dev/null
           {
             echo "### Agent ${RELEASE_VERSION}"
             echo "Source: \`${RELEASE_SOURCE_SHA}\`"

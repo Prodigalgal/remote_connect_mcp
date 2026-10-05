@@ -116,7 +116,7 @@ $runtime = Join-Path $StageRoot "browser-runtime"
 New-Item -ItemType Directory -Path $runtime -Force | Out-Null
 $worker = Join-Path $runtime "browser-worker.mjs"
 Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/browser-worker.mjs" -OutFile $worker -TimeoutSec 30
-foreach ($name in @('package.json', 'package-lock.json')) {
+foreach ($name in @('package.json', 'package-lock.json', 'resolve-executable.mjs')) {
     Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/browser-runtime/$name" -OutFile (Join-Path $runtime $name) -TimeoutSec 30
 }
 $node = if ([string]::IsNullOrWhiteSpace($NodePath)) {
@@ -147,10 +147,10 @@ $camoufoxCli = Join-Path $runtime 'node_modules\@camoufox\camoufox\dist\__main__
 & $node $camoufoxCli fetch
 if ($LASTEXITCODE -ne 0) { & $node $camoufoxCli fetch }
 if ($LASTEXITCODE -ne 0) { throw "Camoufox browser install failed with exit $LASTEXITCODE" }
-$camoufoxInstallDir = [string](& $node $camoufoxCli path)
-if ($LASTEXITCODE -ne 0) { throw 'Camoufox install path could not be resolved.' }
-$camoufoxInstallDir = $camoufoxInstallDir.Trim()
-$camoufoxExecutable = Join-Path $camoufoxInstallDir 'camoufox.exe'
+$camoufoxExecutable = [string](& $node (Join-Path $runtime 'resolve-executable.mjs'))
+if ($LASTEXITCODE -ne 0) { throw 'Camoufox executable path could not be resolved.' }
+$camoufoxExecutable = $camoufoxExecutable.Trim()
+$camoufoxInstallDir = Split-Path -Parent $camoufoxExecutable
 if (-not (Test-Path -LiteralPath $camoufoxExecutable -PathType Leaf)) { throw 'Camoufox executable is missing.' }
 $adapterWrapper = Join-Path $runtime 'browser-adapter.cmd'
 $adapterContent = "@echo off`r`nset `"CAMOUFOX_EXECUTABLE_PATH=$camoufoxExecutable`"`r`n`"$node`" `"$worker`"`r`n"
