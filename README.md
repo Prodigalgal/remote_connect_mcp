@@ -10,6 +10,14 @@ MCP 地址是 `https://<center-domain>/mcp`。当前公开 7 个工具：`machin
 2. 在“连接凭证”为自己的 MCP 客户端创建凭证。页面会同时授权该账户访问全部机器；Center 仍逐次验证身份和机器权限。
 3. 让客户端先用 `machines` 选择机器，再调用所需能力。长任务使用返回的任务 ID 继续读取，不重复提交。
 
+### 在 ChatGPT 网页端连接
+
+1. 在 ChatGPT 的 Apps/开发者模式中新建 MCP 应用，服务地址填写 `https://remote-connect-mcp-center.fantong.eu.org/mcp`，认证选择 **OAuth**。
+2. 点击扫描/创建后，ChatGPT 会打开 Center 的授权页。此时到 Console“连接凭证”创建一条新的 RCM Token，并把它填在 **Center 授权页**，点击“授权并返回 ChatGPT”。不要把 RCM Token 填进 ChatGPT 的 URL 或作为 OAuth access token。
+3. 授权成功后浏览器会回到 ChatGPT，等待工具扫描完成再保存应用。RCM Token 只用于换取 OAuth 令牌；日后在 ChatGPT 重新授权时再从 Console 创建新 Token。
+
+完整 MCP 写操作需要 ChatGPT 工作区支持自定义 MCP 应用和相应权限；入口可能因账户方案不同而显示在个人设置或工作区设置中。
+
 `command`、`desktop`、`browser` 和 `artifact(put/get)` 都创建持久任务。需要立即继续做别的事时传 `wait_ms=0`；预计很快完成时传正数，让同一次调用短等有界结果。等待到期不会取消任务，后续统一调用 `task_read(task_id)`。新调用创建新任务；重试同一次调用时显式复用 `idempotency_key`，避免再次执行。
 
 输出默认 16 KiB，可用执行工具的 `limit` 调整，后续用 `task_read(limit=...)` 或 `task_read(tail_bytes=8192)` 分页。只观察状态时用 `task_read(change_seq=..., wait_ms=...)`，默认不重复附带旧日志和图片；指定 `include_output=true` 读取日志，`include_artifact=true` 获取截图。浏览器输出为 `output.data`，`request.include_snapshot=true` 可在操作后一起观察页面；详细诊断用 `task_read(detail=true)` 读取。

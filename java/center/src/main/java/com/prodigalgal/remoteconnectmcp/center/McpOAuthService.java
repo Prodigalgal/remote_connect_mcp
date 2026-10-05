@@ -284,16 +284,23 @@ public final class McpOAuthService {
 
     private Set<String> requestedScopes(String raw, McpPrincipal principal) {
         var requested = raw == null || raw.isBlank() ? config.scopes() : splitScopes(raw);
+        if (requested.isEmpty()) {
+            throw new OAuthException("invalid_scope", "no OAuth scopes were requested");
+        }
         if (requested.stream().anyMatch(scope -> !"offline_access".equals(scope) && !config.scopes().contains(scope))) {
             throw new OAuthException("invalid_scope", "requested scope is not supported");
         }
-        // offline_access controls refresh-token issuance and is not an RCM
-        // permission.  All other scopes must be granted by the bootstrap
-        // principal before an OAuth token is issued.
-        if (requested.stream().anyMatch(scope -> !"offline_access".equals(scope) && !principal.allows(scope))) {
-            throw new OAuthException("invalid_scope", "requested scope is not granted to this principal");
+        // Scope metadata describes what this server can do, not what every
+        // bootstrap credential grants. Grant only the intersection so a
+        // broad advertised scope cannot make a narrower valid token unusable.
+        // offline_access is a protocol capability, not an RCM permission.
+        var granted = requested.stream()
+                .filter(scope -> "offline_access".equals(scope) || principal.allows(scope))
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        if (granted.isEmpty()) {
+            throw new OAuthException("invalid_scope", "no requested scope is granted to this principal");
         }
-        return Set.copyOf(requested);
+        return granted;
     }
 
     private void ensureEnabled() {

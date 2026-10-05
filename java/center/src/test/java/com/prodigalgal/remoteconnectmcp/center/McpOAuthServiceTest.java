@@ -70,6 +70,34 @@ class McpOAuthServiceTest {
                 CLIENT_ID, REDIRECT, "challenge", "S256", "mcp:admin", RESOURCE, "bootstrap-token"));
     }
 
+    @Test
+    void grantsOnlyRequestedScopesAllowedByTheBootstrapPrincipal() {
+        var config = new CenterOAuthConfig(Map.of(
+                "RCM_CENTER_OAUTH_ENABLED", "true",
+                "RCM_CENTER_OAUTH_ISSUER", RESOURCE,
+                "RCM_CENTER_OAUTH_RESOURCE", RESOURCE,
+                "RCM_CENTER_OAUTH_SCOPES", "mcp:read mcp:execute mcp:project"));
+        var principals = new McpPrincipalService(new CenterTokenConfig() {
+            @Override
+            public boolean acceptsMcp(String candidate) {
+                return false;
+            }
+        });
+        var issued = principals.issue(new McpPrincipalService.IssueRequest(
+                "owner", "owner", 3600L, Set.of("mcp:read", "mcp:execute")));
+        var service = new McpOAuthService(config, principals);
+
+        var authorizationCode = service.issueAuthorizationCode(CLIENT_ID, REDIRECT, "challenge", "S256",
+                null, RESOURCE, issued.token());
+
+        assertEquals(Set.of("mcp:read", "mcp:execute"), authorizationCode.scopes());
+        var partialGrant = service.issueAuthorizationCode(CLIENT_ID, REDIRECT, "challenge", "S256",
+                "mcp:read mcp:execute mcp:project offline_access", RESOURCE, issued.token());
+        assertEquals(Set.of("mcp:read", "mcp:execute", "offline_access"), partialGrant.scopes());
+        assertThrows(McpOAuthService.OAuthException.class, () -> service.issueAuthorizationCode(
+                CLIENT_ID, REDIRECT, "challenge", "S256", "mcp:project", RESOURCE, issued.token()));
+    }
+
     private static byte[] sha256(String value) {
         try {
             return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.US_ASCII));
