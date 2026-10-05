@@ -59,6 +59,8 @@ schema 1；runtime descriptor 缺失或字段不完整时直接拒绝，不猜�
 
 React 控制台只请求分页摘要；Admin API 同时返回 `offset`、`limit`、`total` 和 `has_more`，列表不会因为机器或任务数量增长而一次性加载无界数据。Admin Token 仅保存在内存。验证 Token 后挂起一个 Admin 事件长连接，只有收到变更才重新读取分页摘要；传输故障才使用带退避的重连，AbortController 在请求截止时取消失联请求。
 
+展开任务时，Console 使用既有 `GET /api/v1/admin/tasks/{id}/output` 按字节 cursor 读取；可选 `wait_ms` 为 0–25000，`change_seq` 用于同时等待状态和进度变化，响应中的 `task` 是当前任务快照。日志增量沿任务自己的通知通道唤醒，单页最多 64 KiB；完成、折叠或离开页面后停止跟随。正在执行的长日志只保留有界的最近预览，终态日志可从头分页读取；UTF-8 解码跨页保留未完成字符，避免中文在分块边界损坏。
+
 ## 无稳态轮询门禁
 
 - Agent 空闲时保持一次有界 HTTPS 长轮询；任务、取消、配置和升级事件通过条件变量、带单调序列号的 WebSocket 唤醒或 PostgreSQL `LISTEN/NOTIFY` 返回，不使用固定间隔请求。重复/乱序提示按序列号丢弃。

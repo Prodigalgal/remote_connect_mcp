@@ -9,6 +9,8 @@ interface TerminalOutputProps {
   onRefresh?: () => void
   onLoadMore?: () => void
   hasMore?: boolean
+  live?: boolean
+  receivedAt?: number | null
 }
 
 export function TerminalOutput({
@@ -19,6 +21,8 @@ export function TerminalOutput({
   onRefresh,
   onLoadMore,
   hasMore = false,
+  live = false,
+  receivedAt,
 }: TerminalOutputProps) {
   const [autoScroll, setAutoScroll] = useState(true)
   const bodyRef = useRef<HTMLPreElement>(null)
@@ -78,6 +82,11 @@ export function TerminalOutput({
         </div>
       </div>
 
+      <div style={{ padding: '6px 16px', color: live ? 'var(--accent-sky)' : 'var(--text-tertiary)', fontSize: '11px', borderBottom: '1px solid var(--border-subtle)' }}>
+        {live ? '实时接收 · 等待宿主机回传' : '日志记录'}
+        {receivedAt != null && ` · 最近接收 ${new Date(receivedAt).toLocaleTimeString()}`}
+      </div>
+
       {error ? (
         <div
           style={{
@@ -96,7 +105,7 @@ export function TerminalOutput({
         ref={bodyRef}
         className="terminal-body"
       >
-        {content || <span style={{ color: 'var(--text-muted)' }}>-- 暂无输出内容 --</span>}
+        {content || <span style={{ color: 'var(--text-muted)' }}>{live ? '等待宿主机回传输出…' : '-- 暂无输出内容 --'}</span>}
       </pre>
     </div>
   )

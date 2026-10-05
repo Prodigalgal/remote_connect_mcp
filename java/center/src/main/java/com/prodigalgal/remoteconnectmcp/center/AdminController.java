@@ -239,9 +239,18 @@ public final class AdminController {
     public CompletableFuture<ResponseEntity<?>> output(@RequestHeader(value = "Authorization", required = false) String authorization,
                                                        @PathVariable String taskId,
                                                        @RequestParam(defaultValue = "0") long cursor,
-                                                       @RequestParam(defaultValue = "16384") int limit) {
+                                                       @RequestParam(defaultValue = "16384") int limit,
+                                                       @RequestParam(value = "wait_ms", defaultValue = "0") long waitMs,
+                                                       @RequestParam(value = "change_seq", defaultValue = "-1") long changeSequence) {
         return execute(() -> {
             authenticate(authorization);
+            if (cursor < 0) throw new IllegalArgumentException("cursor must be non-negative");
+            if (limit > 65536) throw new IllegalArgumentException("limit must be at most 65536");
+            if (waitMs < 0 || waitMs > 25_000L) throw new IllegalArgumentException("wait_ms must be between 0 and 25000");
+            if (changeSequence < -1) throw new IllegalArgumentException("change_seq must be non-negative or -1");
+            // Output chunks deliberately do not invalidate the global admin
+            // feed. Subscribe to this task's existing wake path instead.
+            var task = tasks.waitForChange(taskId, cursor, changeSequence, Duration.ofMillis(waitMs));
             var page = tasks.readOutput(taskId, cursor, limit);
             var result = new LinkedHashMap<String, Object>();
             result.put("data_base64", Base64.getEncoder().encodeToString(page.data()));
@@ -249,7 +258,8 @@ public final class AdminController {
             result.put("cursor", page.cursor());
             result.put("next_cursor", page.nextCursor());
             result.put("more", page.more());
-            return ResponseEntity.ok(result);
+            result.put("task", task);
+            return noStore(result);
         });
     }
 

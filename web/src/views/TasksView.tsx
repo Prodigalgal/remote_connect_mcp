@@ -17,11 +17,11 @@ import {
   createTask,
   listTasksPage,
   readTaskArtifact,
-  readTaskOutput,
   type Machine,
   type Task,
 } from '../api'
 import { usePagedTail, usePagination } from '../utils'
+import { useTaskOutput } from '../useTaskOutput'
 
 interface TasksViewProps {
   rows: Task[] | null
@@ -39,6 +39,7 @@ export function TasksView({
   query,
 }: TasksViewProps) {
   const [showComposer, setShowComposer] = useState(false)
+  const [createdTaskId, setCreatedTaskId] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const paged = usePagedTail(rows, 100, (offset, limit) => listTasksPage(adminToken, offset, limit))
 
@@ -70,10 +71,10 @@ export function TasksView({
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '14px' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 800, color: '#fff', letterSpacing: '-0.02em' }}>
-            任务记录与编排调度
+            任务记录
           </h2>
           <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
-            下发异步任务至 Agent 节点，追踪实时进度、有界控制台输出及下载生成工件。
+            查看命令、桌面和浏览器任务的实时状态与输出。
           </p>
         </div>
 
@@ -125,7 +126,7 @@ export function TasksView({
             onClick={() => setShowComposer(!showComposer)}
           >
             <PlusIcon size={14} />
-            <span>{showComposer ? '关闭表单' : '创建后台任务'}</span>
+            <span>{showComposer ? '关闭表单' : '新建任务'}</span>
           </button>
         </div>
       </div>
@@ -135,7 +136,10 @@ export function TasksView({
         <TaskComposer
           machines={machines}
           token={adminToken}
-          onCreated={() => {
+          onCreated={(task) => {
+            setCreatedTaskId(task.id)
+            setStatusFilter('all')
+            pagination.goToPage(1)
             setShowComposer(false)
             onRefresh()
           }}
@@ -149,6 +153,8 @@ export function TasksView({
             <TaskItem
               key={task.id}
               task={task}
+              autoExpand={task.id === createdTaskId}
+              machineName={machines.find((machine) => machine.id === task.machineId)?.name ?? task.machineId}
               token={adminToken}
               onRefresh={onRefresh}
             />
@@ -190,7 +196,7 @@ function TaskComposer({
 }: {
   machines: Machine[]
   token: string
-  onCreated: () => void
+  onCreated: (task: Task) => void
 }) {
   const [kind, setKind] = useState<'command' | 'desktop' | 'browser'>('command')
   const eligibleMachines = machines.filter((m) => m.online && m.capabilities.includes(kind))
@@ -303,10 +309,10 @@ function TaskComposer({
       }
 
       const task = await createTask(token, basePayload)
-      setMessage(`已创建任务 ${task.id} (${kind})，已在 Agent 后台异步执行`)
+      setMessage(`已提交任务 ${task.id}，等待机器执行`)
       setCommand('')
       setIdempotencyKey(`console-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
-      onCreated()
+      onCreated(task)
     } catch (err) {
       setMessage(err instanceof Error ? err.message : '创建任务失败')
     } finally {
@@ -552,21 +558,26 @@ function TaskComposer({
 }
 
 function TaskItem({
-  task,
+  task: listedTask,
+  autoExpand,
+  machineName,
   token,
   onRefresh,
 }: {
   task: Task
+  autoExpand: boolean
+  machineName: string
   token: string
   onRefresh: () => void
 }) {
   const [canceling, setCanceling] = useState(false)
-  const [expanded, setExpanded] = useState(false)
-  const [output, setOutput] = useState('')
-  const [cursor, setCursor] = useState(0)
-  const [more, setMore] = useState(false)
-  const [loadingOutput, setLoadingOutput] = useState(false)
-  const [outputError, setOutputError] = useState('')
+  const [expanded, setExpanded] = useState(autoExpand)
+  const logs = useTaskOutput(token, listedTask, expanded)
+  const task = logs.task
+
+  useEffect(() => {
+    if (autoExpand) setExpanded(true)
+  }, [autoExpand])
 
   // Artifact Preview States
   const [artifactUrl, setArtifactUrl] = useState('')
@@ -583,22 +594,6 @@ function TaskItem({
   useEffect(() => () => {
     if (artifactUrl) URL.revokeObjectURL(artifactUrl)
   }, [artifactUrl])
-
-  const loadOutput = async (reset: boolean) => {
-    setLoadingOutput(true)
-    setOutputError('')
-    try {
-      const page = await readTaskOutput(token, task.id, reset ? 0 : cursor, 16 * 1024)
-      setOutput((prev) => (reset ? page.text : prev + page.text))
-      setCursor(page.nextCursor)
-      setMore(page.more)
-      setExpanded(true)
-    } catch (err) {
-      setOutputError(err instanceof Error ? err.message : '读取输出失败')
-    } finally {
-      setLoadingOutput(false)
-    }
-  }
 
   const loadArtifact = async () => {
     setLoadingArtifact(true)
@@ -664,7 +659,6 @@ function TaskItem({
           gap: '12px',
         }}
         onClick={() => {
-          if (!expanded && !output) void loadOutput(true)
           setExpanded(!expanded)
         }}
       >
@@ -696,7 +690,7 @@ function TaskItem({
               </span>
               <span className="tag-badge">{task.kind}</span>
               <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                {task.machineId} · {task.laneMode || 'write'}
+                {machineName}
               </span>
             </div>
 
@@ -770,16 +764,30 @@ function TaskItem({
       {/* Expanded Logs & Artifact Section */}
       {expanded && (
         <div style={{ padding: '16px 20px', background: 'var(--bg-subtle)' }}>
+          <div style={{ marginBottom: '12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            <pre className="font-mono" style={{ margin: '0 0 6px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{task.command || task.kind}</pre>
+            {task.cwd && <span>工作目录：{task.cwd} · </span>}
+            {task.startedAt && <span>开始：{new Date(task.startedAt).toLocaleTimeString()} · </span>}
+            {task.exitCode != null && <span>退出码：{task.exitCode}</span>}
+          </div>
           {/* Output log */}
           <TerminalOutput
-            title={`task://${task.id}/output.log`}
-            content={output}
-            error={outputError}
-            loading={loadingOutput}
-            onRefresh={() => void loadOutput(true)}
-            onLoadMore={() => void loadOutput(false)}
-            hasMore={more}
+            title={task.kind === 'command' ? '命令输出' : '任务输出'}
+            content={logs.output}
+            error={logs.error}
+            loading={logs.loading}
+            live={logs.live}
+            receivedAt={logs.receivedAt}
+            onRefresh={logs.refresh}
+            onLoadMore={logs.loadMore}
+            hasMore={logs.more && !logs.live}
           />
+
+          {logs.cropped && (
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '6px' }}>
+              日志较长，当前显示最新部分。任务完成后可点击“刷新”从头读取。
+            </div>
+          )}
 
           {task.outputTruncated && (
             <div style={{ fontSize: '11px', color: 'var(--accent-amber)', marginTop: '6px' }}>

@@ -87,9 +87,11 @@ export type Task = {
 
 export type TaskOutputPage = {
   text: string
+  dataBase64?: string
   cursor: number
   nextCursor: number
   more: boolean
+  task?: Task
 }
 
 export type UpgradeTarget = {
@@ -388,7 +390,7 @@ function mapTask(item: Record<string, unknown>): Task {
     artifactBytes: Number(item.artifact_bytes ?? 0),
     artifactMime: item.artifact_mime as string | undefined,
     artifactSha256: item.artifact_sha256 as string | undefined,
-    changeSeq: Number(item.change_seq ?? 0),
+    changeSeq: Number(item.change_seq ?? item.change_sequence ?? 0),
     progressPhase: item.progress_phase as string | undefined,
     progressPercent: item.progress_percent == null ? undefined : Number(item.progress_percent),
     progressMessage: item.progress_message as string | undefined,
@@ -416,18 +418,28 @@ export async function cancelTask(token: string, taskId: string): Promise<Task> {
   return mapTask(body)
 }
 
-export async function readTaskOutput(token: string, taskId: string, cursor = 0, limit = 16 * 1024): Promise<TaskOutputPage> {
+export async function readTaskOutput(
+  token: string, taskId: string, cursor = 0, limit = 16 * 1024,
+  options: { waitMs?: number; changeSeq?: number; signal?: AbortSignal } = {},
+): Promise<TaskOutputPage> {
+  const waitMs = Math.min(25_000, Math.max(0, Math.trunc(options.waitMs ?? 0)))
+  const params = new URLSearchParams({ cursor: String(Math.max(0, cursor)), limit: String(Math.min(64 * 1024, Math.max(1, limit))) })
+  if (waitMs > 0) params.set('wait_ms', String(waitMs))
+  if (options.changeSeq != null) params.set('change_seq', String(Math.max(0, Math.trunc(options.changeSeq))))
   const body = await request<Record<string, unknown>>(
-    `/api/v1/admin/tasks/${encodeURIComponent(taskId)}/output?cursor=${Math.max(0, cursor)}&limit=${Math.min(64 * 1024, Math.max(1, limit))}`,
+    `/api/v1/admin/tasks/${encodeURIComponent(taskId)}/output?${params}`,
     token,
     undefined,
-    15000,
+    Math.max(15000, waitMs + 5000),
+    options.signal,
   )
   return {
     text: String(body.text ?? ''),
+    dataBase64: typeof body.data_base64 === 'string' ? body.data_base64 : undefined,
     cursor: Number(body.cursor ?? cursor),
     nextCursor: Number(body.next_cursor ?? cursor),
     more: Boolean(body.more),
+    task: body.task && typeof body.task === 'object' ? mapTask(body.task as Record<string, unknown>) : undefined,
   }
 }
 
