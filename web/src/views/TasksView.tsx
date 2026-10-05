@@ -710,9 +710,9 @@ function TaskItem({
             </div>
 
             {/* Real Progress Phase Bar */}
-            {task.progressPhase && (
+            {!terminal && task.progressPhase && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', fontSize: '11px', color: 'var(--accent-sky)' }}>
-                <span>{terminal ? '最后进度：' : ''}{task.progressPhase}{task.progressMessage ? ` · ${task.progressMessage}` : ''}{task.progressCurrent != null && task.progressTotal != null ? ` · ${task.progressCurrent}/${task.progressTotal}${task.progressUnit ? ` ${task.progressUnit}` : ''}` : ''}</span>
+                <span>{task.progressPhase}{task.progressMessage ? ` · ${task.progressMessage}` : ''}{task.progressCurrent != null && task.progressTotal != null ? ` · ${task.progressCurrent}/${task.progressTotal}${task.progressUnit ? ` ${task.progressUnit}` : ''}` : ''}</span>
                 {progressPercent != null && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '120px' }}>
                     <div className="progress-rail" style={{ height: '4px' }}>
@@ -782,6 +782,13 @@ function TaskItem({
             {task.cwd && <span>工作目录：{task.cwd} · </span>}
             {task.startedAt && <span>开始：{new Date(task.startedAt).toLocaleTimeString()} · </span>}
             {task.exitCode != null && <span>退出码：{task.exitCode}</span>}
+            {terminal && task.progressPhase && (
+              <p style={{ margin: '8px 0 0' }}>
+                宿主机最后回传：{task.progressPhase}{task.progressMessage ? ` · ${task.progressMessage}` : ''}
+                {task.progressCurrent != null && task.progressTotal != null ? ` · ${task.progressCurrent}/${task.progressTotal}${task.progressUnit ? ` ${task.progressUnit}` : ''}` : ''}
+                {progressPercent != null ? ` · ${progressPercent}%` : ''}
+              </p>
+            )}
           </div>
           {/* Output log */}
           <TerminalOutput

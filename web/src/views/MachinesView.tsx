@@ -135,7 +135,7 @@ export function MachinesView({ rows, token, onEnroll, query }: MachinesViewProps
                           <strong style={{ color: '#fff', fontSize: '13px' }}>{machine.name}</strong>
                           {isLive && machine.version && (
                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                              v{machine.version}
+                              {machine.version}
                             </div>
                           )}
                         </div>
