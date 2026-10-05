@@ -122,7 +122,7 @@ def verify_runtime(component: str, version: str, url: str, source_sha: str | Non
         statuses = target.get("component_statuses") or {}
         for plan in plans:
             component = plan.get("component")
-            if component_expected(machine, component) and statuses.get(component) != "completed":
+            if component_expected(machine, component) and statuses.get(component) not in ("completed", "already-current"):
                 components_unverified.append({"machine": name, "component": component,
                                               "status": statuses.get(component)})
     browser_machines = [str(item.get("name") or item.get("id")) for item in machines

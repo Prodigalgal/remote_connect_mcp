@@ -13,6 +13,15 @@ spec.loader.exec_module(detect)
 
 
 class DetectComponentChangesTest(unittest.TestCase):
+    def test_agent_baseline_uses_published_releases_only(self):
+        self.assertEqual(['java-v0.1.38', 'java-v0.1.39-beta.1'], detect.published_agent_tags([
+            {'tag_name':'java-v0.1.38', 'draft':False, 'published_at':'2026-10-05'},
+            {'tag_name':'java-v0.1.39-beta.1', 'draft':False, 'published_at':'2026-10-05'},
+            {'tag_name':'java-v0.1.39', 'draft':True, 'published_at':None},
+            {'tag_name':'center-v0.1.39', 'draft':False, 'published_at':'2026-10-05'},
+            {'tag_name':'java-v-malformed*', 'draft':False, 'published_at':'2026-10-05'},
+        ]))
+
     def test_pr_checks_cover_release_inputs(self):
         self.assertTrue(detect.matches("center", "java/Dockerfile.center.native"))
         self.assertTrue(detect.matches("agent", "java/Dockerfile.agent.native"))

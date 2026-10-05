@@ -133,16 +133,17 @@ if $browser; then
   worker="$runtime/browser-worker.mjs"
   mkdir -p "$runtime" "$camoufox_install_dir"
   curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$raw_base/scripts/browser-worker.mjs" -o "$worker"
-  for name in package.json package-lock.json; do
+  for name in package.json package-lock.json resolve-executable.mjs; do
     curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$raw_base/scripts/browser-runtime/$name" -o "$runtime/$name"
   done
   "$node_path" -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 15) ? 0 : 1)' || { echo 'Camoufox requires Node.js 22.15 or newer' >&2; exit 1; }
   "$npm_path" ci --prefix "$runtime" --no-audit --no-fund
   export CAMOUFOX_INSTALL_DIR="$camoufox_install_dir"
   "$node_path" "$runtime/node_modules/@camoufox/camoufox/dist/__main__.js" fetch
-  camoufox_install_dir="$("$node_path" "$runtime/node_modules/@camoufox/camoufox/dist/__main__.js" path)"
-  [[ -x "$camoufox_install_dir/camoufox-bin" ]] || { echo 'Camoufox executable is missing' >&2; exit 1; }
-  adapter="env CAMOUFOX_EXECUTABLE_PATH=\"$camoufox_install_dir/camoufox-bin\" \"$node_path\" \"$worker\""
+  camoufox_executable="$("$node_path" "$runtime/resolve-executable.mjs")"
+  [[ -x "$camoufox_executable" ]] || { echo 'Camoufox executable is missing' >&2; exit 1; }
+  camoufox_install_dir="$(dirname "$camoufox_executable")"
+  adapter="env CAMOUFOX_EXECUTABLE_PATH=\"$camoufox_executable\" \"$node_path\" \"$worker\""
 fi
 
 capabilities='command,durable_tasks,file_transfer'

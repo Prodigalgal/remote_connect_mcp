@@ -11,6 +11,16 @@ spec.loader.exec_module(verify)
 
 
 class VerifyReleaseTest(unittest.TestCase):
+    def test_current_updater_is_verified_without_reinstallation(self):
+        machines = [{"id":"one", "os":"linux", "arch":"amd64", "version":"v2.0.0", "online":True,
+                     "capabilities":["command"]}]
+        campaigns = [{"id":"upgrade", "version":"v2.0.0", "status":"completed",
+                      "component_plans":{"linux/amd64":[{"component":"agent-updater"}]},
+                      "targets":[{"machine_id":"one", "status":"completed",
+                                  "component_statuses":{"agent-updater":"already-current"}}]}]
+        with patch.object(verify, "pages", side_effect=[machines, campaigns]):
+            self.assertTrue(verify.verify_runtime("agent", "v2.0.0", "https://center.example", None, "token", True, True)["verified"])
+
     def test_center_manifest_requires_digest_and_version(self):
         digest = "sha256:" + "a" * 64
         with tempfile.TemporaryDirectory() as directory:

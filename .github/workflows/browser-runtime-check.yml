@@ -27,5 +27,7 @@ jobs:
           npm ci --prefix scripts/browser-runtime --no-audit --no-fund
           export CAMOUFOX_INSTALL_DIR="${RUNNER_TEMP}/camoufox"
           node scripts/browser-runtime/node_modules/@camoufox/camoufox/dist/__main__.js fetch || node scripts/browser-runtime/node_modules/@camoufox/camoufox/dist/__main__.js fetch
+          export CAMOUFOX_EXECUTABLE_PATH="$(node scripts/browser-runtime/resolve-executable.mjs)"
+          test -x "$CAMOUFOX_EXECUTABLE_PATH"
           cp scripts/browser-worker.mjs scripts/browser-runtime/browser-worker.mjs
           node scripts/smoke-browser-runtime.mjs

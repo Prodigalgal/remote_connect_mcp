@@ -2,6 +2,8 @@
 """Select component checks from a Git diff or its last published release."""
 
 import argparse
+import json
+import os
 import subprocess
 
 
@@ -49,11 +51,26 @@ def changed_files(head: str, base: str | None) -> list[str]:
     return git("ls-tree", "-r", "--name-only", head).splitlines()
 
 
+def published_agent_tags(releases: list[dict]) -> list[str]:
+    import re
+    return sorted({release['tag_name'] for release in releases
+                   if release.get('draft') is False and release.get('published_at')
+                   and re.fullmatch(r'java-v[0-9A-Za-z][0-9A-Za-z._+-]{0,127}', release.get('tag_name', ''))})
+
+
 def last_release(component: str, head: str) -> str | None:
+    matches = [RELEASE_TAGS[component]]
+    if component == 'agent' and os.environ.get('GITHUB_REPOSITORY'):
+        pages = json.loads(subprocess.check_output(
+            ['gh', 'api', f"repos/{os.environ['GITHUB_REPOSITORY']}/releases?per_page=100",
+             '--paginate', '--slurp'], text=True, encoding='utf-8'))
+        matches = published_agent_tags([release for page in pages for release in page])
+        if not matches:
+            return None
     try:
         return subprocess.check_output(
-            ["git", "describe", "--tags", "--first-parent", "--match", RELEASE_TAGS[component],
-             "--abbrev=0", head],
+            ["git", "describe", "--tags", "--first-parent",
+             *[arg for pattern in matches for arg in ('--match', pattern)], "--abbrev=0", head],
             text=True, encoding="utf-8", stderr=subprocess.DEVNULL).strip()
     except subprocess.CalledProcessError:
         return None
