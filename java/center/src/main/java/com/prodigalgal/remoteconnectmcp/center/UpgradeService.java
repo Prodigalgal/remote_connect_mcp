@@ -178,6 +178,37 @@ public final class UpgradeService {
         }
     }
 
+    /** Latest install proof per machine for a release, used by automatic reconciliation. */
+    Map<String, List<UpgradeComponentPlan>> completedComponents(String version) {
+        List<UpgradeCampaignView> campaigns;
+        if (jdbc != null) {
+            campaigns = jdbc.query("SELECT campaign_id FROM rcm_upgrade_campaign WHERE version = ? ORDER BY created_at DESC, campaign_id DESC LIMIT 100",
+                    ps -> ps.setString(1, version), (rs, row) -> loadJdbc(rs.getString("campaign_id")))
+                    .stream().filter(Objects::nonNull).map(UpgradeService::view).toList();
+        } else {
+            memoryLock.lock();
+            try {
+                campaigns = memory.values().stream().filter(value -> version.equals(value.version))
+                        .sorted(Comparator.comparing((Campaign value) -> value.createdAt).reversed())
+                        .limit(100).map(UpgradeService::view).toList();
+            } finally {
+                memoryLock.unlock();
+            }
+        }
+        var result = new LinkedHashMap<String, List<UpgradeComponentPlan>>();
+        var seen = new java.util.HashSet<String>();
+        for (var campaign : campaigns) {
+            for (var target : campaign.targets()) {
+                if (!seen.add(target.machineId()) || !COMPLETED.equals(target.status())) continue;
+                var statuses = target.componentStatuses();
+                result.put(target.machineId(), campaign.componentPlans().values().stream().flatMap(List::stream)
+                        .filter(plan -> COMPLETED.equals(statuses.get(plan.component()))
+                                || "already-current".equals(statuses.get(plan.component()))).toList());
+            }
+        }
+        return Map.copyOf(result);
+    }
+
     /** Total campaign count for the paginated operations view. */
     public int count() {
         if (jdbc != null) {

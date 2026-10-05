@@ -4,9 +4,28 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import com.prodigalgal.remoteconnectmcp.protocol.UpgradeComponentPlan;
 import org.junit.jupiter.api.Test;
 
 class AgentReleaseWatcherTest {
+    @Test
+    void currentAgentStillReceivesCompatibleComponentsWithoutInstallProof() {
+        var updater = new UpgradeComponentPlan("agent-updater", "v1.0.0+abc", "linux", "amd64",
+                "https://example.test/updater.zip", "a".repeat(64), 100L, "manual", "v0.1.36");
+        var machine = machine("current", "linux", "amd64", "v0.1.39");
+        var desired = Map.of("linux/amd64", List.of(updater));
+        assertEquals(List.of("current"), AgentReleaseWatcher.selectTargets(List.of(machine),
+                release("v0.1.39", false), Set.of(), desired, Map.of()));
+        assertEquals(List.of(), AgentReleaseWatcher.selectTargets(List.of(machine),
+                release("v0.1.39", false), Set.of(), desired, Map.of("current", List.of(updater))));
+        var old = new UpgradeComponentPlan("agent-updater", "v1.0.0+old", "linux", "amd64",
+                "https://example.test/old.zip", "b".repeat(64), 100L, "manual", "v0.1.36");
+        assertEquals(List.of("current"), AgentReleaseWatcher.selectTargets(List.of(machine),
+                release("v0.1.39", false), Set.of(), desired, Map.of("current", List.of(old))));
+    }
+
     @Test
     void latePublicationOfOldReleaseCannotReplaceDesiredStableVersion() {
         assertEquals("v0.1.40", AgentReleaseWatcher.selectRelease(List.of(

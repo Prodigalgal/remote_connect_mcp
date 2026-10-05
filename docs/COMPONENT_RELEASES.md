@@ -15,6 +15,8 @@ Agent 在构建前固定源码 Tag，发布时验证该 Tag，不再次请求以
 
 Center 每 5 分钟查看已发布的 Agent Release，生产按正式版本数字顺序选择最高版本，迟到的旧发布不会遮住新版。只有目标平台的 ZIP、校验文件和有效组件清单齐全，且没有其他进行中或暂停的活动时，才为在线且版本落后的机器创建活动。组件清单缺失或无效会阻止创建，不能静默降级成仅更新 Agent；手工明确选择仅更新命令能力时可提供空组件计划。Desktop/Browser Native 组件只下发给已启用相应能力的机器。首台为 canary，随后每批 3 台；任务唤醒是即时的。离线机器不阻塞这一轮，重连后按实际版本自动补更；手工活动仍可显式包含离线机器。升级下载有总时限和停滞时限；Center 定期将过期的派发、下载或安装状态收敛为带原因的失败，暂停活动，避免盲目重复启动 Helper。确认机器状态后在控制台重试该机；若旧活动只剩离线目标，可取消旧活动，让自动发现继续，离线机上线后会重新纳入。自动升级默认启用；可用 `RCM_CENTER_AGENT_AUTO_UPGRADE_ENABLED=false` 关闭，`RCM_CENTER_AGENT_AUTO_UPGRADE_INCLUDE_PRERELEASE` 控制是否跟随预发布。暂缓维护的机器可通过逗号分隔的 `RCM_CENTER_AGENT_AUTO_UPGRADE_EXCLUDED_MACHINE_IDS` 排除，其他机器继续自动更新；排除不影响人工明确创建的活动。
 
+Agent 版本已相同但适用组件缺少成功安装记录时，Center 仍会自动创建组件补更活动。判断同时核对清单中的组件版本和摘要、该机最新活动的 `completed` / `already-current` 回报；不能用 Agent 版本代替组件证据。旧 Agent 升级后新满足兼容门槛的组件，也会在下一轮调谐中补更。Helper 自己判断已安装版本，补更不重复替换当前 Agent。
+
 启用 GitOps 时，仓库 Variables 提供 `RCM_CENTER_PRODUCTION_URL`、`RCM_CONSOLE_PRODUCTION_URL` 及需要预发布部署时的 `RCM_CENTER_STAGING_URL`、`RCM_CONSOLE_STAGING_URL`。工作流提交不可变镜像摘要后最多等待 10 分钟，自动验证 Center 实际版本与 readyz、Console 实际版本与源码 SHA。未就绪则工作流失败并保留期望配置和错误，不把“提交 GitOps”当成“部署完成”。Agent 的安装结果由 Center 记录，机器当前是否在线须同时查看；已完成的安装结果不会因后来离线被改写。
 
 工作流的 Summary 记录源码 SHA、发布版本、镜像摘要、GitOps 提交及自动运行态核验结果。需要独立审计时，仍使用同一个只读入口：

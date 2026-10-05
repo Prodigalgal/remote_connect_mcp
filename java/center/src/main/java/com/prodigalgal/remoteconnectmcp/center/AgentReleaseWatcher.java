@@ -1,10 +1,13 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
+import com.prodigalgal.remoteconnectmcp.protocol.UpgradeComponentPlan;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -19,13 +22,15 @@ public final class AgentReleaseWatcher {
     private final ReleaseCatalogService releases;
     private final UpgradeService upgrades;
     private final AgentRegistry agents;
+    private final ReleaseManifestService manifests;
 
     public AgentReleaseWatcher(UpgradeConfig config, ReleaseCatalogService releases,
-                               UpgradeService upgrades, AgentRegistry agents) {
+                               UpgradeService upgrades, AgentRegistry agents, ReleaseManifestService manifests) {
         this.config = config;
         this.releases = releases;
         this.upgrades = upgrades;
         this.agents = agents;
+        this.manifests = manifests;
     }
 
     @Scheduled(initialDelay = 120_000, fixedDelay = 300_000)
@@ -40,10 +45,13 @@ public final class AgentReleaseWatcher {
             if (candidate == null) return;
             if (candidate.assets().isEmpty()
                     || candidate.assets().stream().anyMatch(asset -> !asset.available() || !asset.checksumAvailable())) return;
-            var targets = selectTargets(agents.listAllMachines(Instant.now()), candidate, config.excludedMachineIds());
+            var plans = manifests.allComponents(candidate.version());
+            var proof = upgrades.completedComponents(candidate.version());
+            var targets = selectTargets(agents.listAllMachines(Instant.now()), candidate,
+                    config.excludedMachineIds(), plans, proof);
             if (targets.isEmpty()) return;
             upgrades.create(new CreateUpgradeCampaignRequest(candidate.version(), 1, 3,
-                    targets, null, false));
+                    targets, null, false, plans));
             LOG.log(System.Logger.Level.INFO, "Started Agent upgrade for " + candidate.version()
                     + " on " + targets.size() + " machine(s)");
         } catch (RuntimeException exception) {
@@ -62,6 +70,12 @@ public final class AgentReleaseWatcher {
 
     static List<String> selectTargets(List<MachineView> machines, ReleaseCatalogService.ReleaseView release,
                                       java.util.Set<String> excludedMachineIds) {
+        return selectTargets(machines, release, excludedMachineIds, Map.of(), Map.of());
+    }
+
+    static List<String> selectTargets(List<MachineView> machines, ReleaseCatalogService.ReleaseView release,
+            Set<String> excludedMachineIds, Map<String, List<UpgradeComponentPlan>> plans,
+            Map<String, List<UpgradeComponentPlan>> proof) {
         var result = new ArrayList<String>();
         for (var machine : machines.stream()
                 .filter(MachineView::online)
@@ -71,7 +85,10 @@ public final class AgentReleaseWatcher {
             var arch = machine.arch() == null ? "" : machine.arch().toLowerCase(Locale.ROOT);
             if (release.assets().stream().noneMatch(asset -> asset.os().equals(os) && asset.arch().equals(arch)
                     && asset.available() && asset.checksumAvailable())) continue;
-            if (behind(machine.version(), release.version(), release.prerelease())) result.add(machine.id());
+            var missingComponents = release.version().equals(machine.version())
+                    && UpgradeService.componentsForMachine(plans, machine).stream()
+                    .anyMatch(plan -> !proof.getOrDefault(machine.id(), List.of()).contains(plan));
+            if (behind(machine.version(), release.version(), release.prerelease()) || missingComponents) result.add(machine.id());
         }
         return List.copyOf(result);
     }
