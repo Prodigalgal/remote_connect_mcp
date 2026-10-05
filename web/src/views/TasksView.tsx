@@ -712,7 +712,7 @@ function TaskItem({
             {/* Real Progress Phase Bar */}
             {task.progressPhase && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', fontSize: '11px', color: 'var(--accent-sky)' }}>
-                <span>{task.progressPhase}{task.progressMessage ? ` · ${task.progressMessage}` : ''}{task.progressCurrent != null && task.progressTotal != null ? ` · ${task.progressCurrent}/${task.progressTotal}${task.progressUnit ? ` ${task.progressUnit}` : ''}` : ''}</span>
+                <span>{terminal ? '最后进度：' : ''}{task.progressPhase}{task.progressMessage ? ` · ${task.progressMessage}` : ''}{task.progressCurrent != null && task.progressTotal != null ? ` · ${task.progressCurrent}/${task.progressTotal}${task.progressUnit ? ` ${task.progressUnit}` : ''}` : ''}</span>
                 {progressPercent != null && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '120px' }}>
                     <div className="progress-rail" style={{ height: '4px' }}>
