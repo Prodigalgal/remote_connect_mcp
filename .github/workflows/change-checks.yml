@@ -54,6 +54,7 @@ jobs:
           bash scripts/scan-repository-secrets.sh
           python3 scripts/verify-agent-boundaries.py
           python3 -m unittest scripts/test_verify_release.py
+          python3 -m unittest scripts/test_verify_release_recovery.py
           python3 -m unittest scripts/test_detect_component_changes.py
           python3 -m unittest scripts/test_push_gitops_component.py
       - name: Enforce event-driven wait paths
