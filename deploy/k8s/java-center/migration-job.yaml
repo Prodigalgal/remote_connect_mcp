@@ -1,20 +1,20 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: remote-connect-mcp-java-migration
-  namespace: remote-connect-mcp
+  name: remote-control-mcp-migration
+  namespace: remote-control-mcp
   annotations:
     argocd.argoproj.io/hook: PreSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
   labels:
-    app.kubernetes.io/name: remote-connect-mcp-java-migration
-    app.kubernetes.io/part-of: remote-connect-mcp
+    app.kubernetes.io/name: remote-control-mcp-migration
+    app.kubernetes.io/part-of: remote-control-mcp
 spec:
   backoffLimit: 2
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: remote-connect-mcp-java-migration
+        app.kubernetes.io/name: remote-control-mcp-migration
     spec:
       restartPolicy: OnFailure
       automountServiceAccountToken: false
@@ -26,7 +26,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: liquibase
-          image: ghcr.io/replace-me/remote-connect-mcp-center-java:0.1.0
+          image: ghcr.io/replace-me/remote-control-mcp-center:0.1.0
           command: ["/opt/rcm-center/rcm-center", "--migrate"]
           env:
             - name: RCM_CENTER_PERSISTENCE_MODE
@@ -34,17 +34,17 @@ spec:
             - name: RCM_CENTER_DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: remote-connect-mcp-java-secrets
+                  name: remote-control-mcp-secrets
                   key: database-url
             - name: RCM_CENTER_DATABASE_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: remote-connect-mcp-java-secrets
+                  name: remote-control-mcp-secrets
                   key: database-username
             - name: RCM_CENTER_DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: remote-connect-mcp-java-secrets
+                  name: remote-control-mcp-secrets
                   key: database-password
             - name: RCM_CENTER_LIQUIBASE_ENABLED
               value: "true"

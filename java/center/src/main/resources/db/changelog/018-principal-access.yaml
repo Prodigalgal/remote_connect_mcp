@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 018-principal-access
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: principals,acl
       contexts: postgres
       runInTransaction: true

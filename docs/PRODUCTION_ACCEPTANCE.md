@@ -52,7 +52,7 @@ Java Agent `v0.1.26` 已通过 GitHub Actions Native Release（构建与签名�
 
 ## 2026-09-15 生产批次
 
-生产应用 `remote-connect-mcp-java-production` 在 Kubernetes 中为 `Synced/Healthy`；Java Center、Console、PostgreSQL 均为 Ready，Liquibase migration Job 为 Complete。生产镜像版本已收敛到 `v0.1.22`，对应 GitOps 提交为 `ac82da9`，镜像使用不可变 digest。
+生产应用 `remote-control-mcp-production` 在 Kubernetes 中为 `Synced/Healthy`；Java Center、Console、PostgreSQL 均为 Ready，Liquibase migration Job 为 Complete。生产镜像版本已收敛到 `v0.1.22`，对应 GitOps 提交为 `ac82da9`，镜像使用不可变 digest。
 
 | 能力 | 结果 | 证据与说明 |
 | --- | --- | --- |
@@ -158,8 +158,8 @@ Center 能收到 `task process tree exceeded 32 processes` 之类的可解释原
 ## 2026-09-15 P2-03/P2-04 可观测性只读探针
 
 生产 `/metrics` 返回 HTTP 200，Prometheus 文本中可见任务、队列、Agent 在线率、
-工件容量、审计背压和升级失败率等指标（例如 `remote_connect_mcp_tasks_queue_depth`、
-`remote_connect_mcp_machines_online_ratio`、`remote_connect_mcp_artifact_bytes`）。
+工件容量、审计背压和升级失败率等指标（例如 `remote_control_mcp_tasks_queue_depth`、
+`remote_control_mcp_machines_online_ratio`、`remote_control_mcp_artifact_bytes`）。
 同一 Admin Token 调用事件等待端点返回 HTTP 200，`changed=true`，说明事件游标可被
 唤醒；响应未发现凭据字段。
 
@@ -254,7 +254,7 @@ Java command-agent，并在同一安装目录下启用独立 desktop-companion �
 | 项目 | 结果 | 证据与边界 |
 | --- | --- | --- |
 | Java command-agent 替换 | 通过 | 目标 Agent 上报版本 `v0.1.28`，Center 状态 online；旧 Go Agent 不再承载该身份 |
-| Desktop bundle/任务 | 已部署 | `rcm-desktop-companion.exe` 已安装；`RemoteConnectMCPDesktopCompanion` 任务为 Ready、登录用户触发；当前没有交互用户会话，Center 报告 `desktop_session_available=false`，因此未伪造截图/输入通过 |
+| Desktop bundle/任务 | 已部署 | `rcm-desktop-companion.exe` 已安装；`RemoteControlMCPDesktopCompanion` 任务为 Ready、登录用户触发；当前没有交互用户会话，Center 报告 `desktop_session_available=false`，因此未伪造截图/输入通过 |
 | Browser bundle/运行时 | 通过 | `rcm-browser-agent.exe`、Node 22、Playwright 1.63.0 和 Chromium 共享缓存已安装；Center 上报 `browser_adapter_configured=true` |
 | Browser MCP navigate | 通过 | 真实 `/mcp` `browser` 任务在该目标完成 `navigate https://example.com`，HTTP 200、标题 `Example Domain`，状态 `completed`、Attempt 1、退出码 0；输出 169 字节且无敏感字段 |
 | 进程回收 | 通过 | Browser 任务结束后由 command-agent 回收 browser-agent/Node 子进程；目标并发仍为 1，进程树上限 32 |
@@ -274,7 +274,7 @@ Java command-agent，并在同一安装目录下启用独立 desktop-companion �
 
 | 项目 | 结果 | 证据与边界 |
 | --- | --- | --- |
-| Desktop Companion 部署 | 通过 | 新二进制与 CI 资产 SHA-256 一致；`remote-connect-mcp-desktop.service` 重启后 `active`、`MainPID` 正常、无重启计数 |
+| Desktop Companion 部署 | 通过 | 新二进制与 CI 资产 SHA-256 一致；`remote-control-mcp-desktop.service` 重启后 `active`、`MainPID` 正常、无重启计数 |
 | Desktop 本机 IPC | 通过 | `screens` 返回 1 个 `1920×1080` 屏幕；`screenshot(screen=0)` 返回有效 PNG，约 6 KiB |
 | Desktop Center/MCP screens | 通过 | 真实 `/mcp` 任务经历 `queued → running → completed`，退出码 0，输出 65 字节，屏幕描述与目标一致 |
 | Desktop Center/MCP screenshot | 通过 | 真实 `/mcp` 任务完成，生成 `image/png` 工件约 629 KiB，Center 返回工件大小、MIME 和 SHA-256 元数据 |
@@ -297,8 +297,8 @@ amd64/arm64、Windows amd64、镜像和 release jobs 全部成功；本机未执
 
 | 项目 | 结果 | 证据 |
 | --- | --- | --- |
-| 稳定 Desktop 资产 | 通过 | `remote-connect-mcp-desktop-v0.1.29-linux-arm64.zip` 校验通过；目标二进制 SHA 与资产一致 |
-| 服务与回滚 | 通过 | `remote-connect-mcp-desktop.service` 为 `active`、`NRestarts=0`；`desktop-...-v0129` 回滚副本保留 |
+| 稳定 Desktop 资产 | 通过 | `remote-control-mcp-desktop-v0.1.29-linux-arm64.zip` 校验通过；目标二进制 SHA 与资产一致 |
+| 服务与回滚 | 通过 | `remote-control-mcp-desktop.service` 为 `active`、`NRestarts=0`；`desktop-...-v0129` 回滚副本保留 |
 | 稳定 MCP screens | 通过 | `/mcp` 任务 `queued → running → completed`，退出码 0，返回 1 个 `1920×1080` 屏幕 |
 | 稳定 MCP screenshot | 通过 | `/mcp` 任务完成，返回 `image/png` 工件约 629 KiB，并带 SHA-256 元数据 |
 | 稳定 Browser 回归 | 通过 | 同一目标 `navigate https://example.com` 完成，标题 `Example Domain`，退出码 0 |

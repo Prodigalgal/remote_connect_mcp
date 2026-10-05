@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 009-task-lease-index
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: task-lease
       contexts: postgres
       runInTransaction: true

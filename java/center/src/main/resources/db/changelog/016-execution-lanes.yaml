@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 016-execution-lanes
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: tasks
       contexts: postgres
       runInTransaction: true

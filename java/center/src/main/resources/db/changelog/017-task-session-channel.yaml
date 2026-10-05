@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 017-task-session-channel
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: tasks
       contexts: postgres
       runInTransaction: true

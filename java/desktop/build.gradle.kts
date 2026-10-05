@@ -19,7 +19,7 @@ dependencies {
 }
 
 application {
-    mainClass.set("com.prodigalgal.remoteconnectmcp.desktop.DesktopCompanionApplication")
+    mainClass.set("com.prodigalgal.remotecontrolmcp.desktop.DesktopCompanionApplication")
 }
 
 graalvmNative {

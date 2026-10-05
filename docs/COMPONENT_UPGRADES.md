@@ -5,7 +5,7 @@
 ## 当前边界
 
 每个 Agent Release 附带
-`remote-connect-mcp-manifest-vX.Y.Z.json`，由 Center 固化为 Campaign 的多组件计划。
+`remote-control-mcp-manifest-vX.Y.Z.json`，由 Center 固化为 Campaign 的多组件计划。
 `command-agent` 安装包单独发布；Manifest 只列出可独立升级的 Desktop、Browser 和 updater，
 并为每个受支持的平台提供一条计划。发布工作流检查平台矩阵；Center 拒绝缺失或无效的 Manifest。
 
@@ -29,7 +29,7 @@ Manifest 使用 `components` 数组，`command-agent` 包不在数组中。简�
       "version": "v1.0.0+<updater-source-sha>",
       "os": "linux",
       "arch": "amd64",
-      "url": "https://github.com/ORG/REPO/releases/download/java-vX.Y.Z/remote-connect-mcp-updater-vX.Y.Z-linux-amd64.zip",
+      "url": "https://github.com/ORG/REPO/releases/download/java-vX.Y.Z/remote-control-mcp-updater-vX.Y.Z-linux-amd64.zip",
       "sha256": "64-hex-digest",
       "bytes": 123456,
       "restart_policy": "manual",
@@ -42,8 +42,8 @@ Manifest 使用 `components` 数组，`command-agent` 包不在数组中。简�
 Center 通过 HTTPS 读取并校验 Manifest 版本、平台、下载地址和摘要字段；Agent 下载后再校验包的 SHA-256，成功后才交给 updater 安装。
 
 Agent 从本机环境解析组件目标：
-`REMOTE_CONNECT_MCP_DESKTOP_BINARY_PATH`、`REMOTE_CONNECT_MCP_BROWSER_BINARY_PATH`
-及 `REMOTE_CONNECT_MCP_AGENT_UPDATER_BINARY_PATH`，以及需要重启的组件对应的
+`REMOTE_CONTROL_MCP_DESKTOP_BINARY_PATH`、`REMOTE_CONTROL_MCP_BROWSER_BINARY_PATH`
+及 `REMOTE_CONTROL_MCP_AGENT_UPDATER_BINARY_PATH`，以及需要重启的组件对应的
 `*_SERVICE_NAME`。Manifest 不能注入远程目标路径；Browser 引擎
 缓存、Playwright/Patchright/Comoufox runtime、Profile/Cookie 始终保持独立。
 
@@ -51,7 +51,7 @@ Agent 从本机环境解析组件目标：
 
 ## Release Manifest
 
-GitHub Actions 每个 Java Release 生成并发布 `remote-connect-mcp-manifest-vX.Y.Z.json`。
+GitHub Actions 每个 Java Release 生成并发布 `remote-control-mcp-manifest-vX.Y.Z.json`。
 Center 按该文件创建不可变的组件计划；Console 不能提交任意下载地址。updater 自己的版本
 只跟 updater 实现、运行时资源、构建配置和 `JsonCodec` 变化；测试与兼容门槛配置变动
 不会触发机器重新下载同一二进制，Agent 其他代码变动也不会要求重装 updater。
@@ -98,7 +98,7 @@ offered -> downloading -> staged -> draining -> installing -> restarting -> heal
 | --- | --- | --- | --- |
 | command-agent | SYSTEM 服务的 detached helper 原子替换 | systemd 服务的 detached helper 原子替换 | `identity.json`、Agent Token、scope 配置 |
 | agent-updater | 单次进程，无服务或计划任务 | 单次进程，无 systemd unit | 只在升级事务中运行；同版本且存在时跳过下载 |
-| desktop-companion | `RemoteConnectMCPDesktopCompanion` 登录任务，在用户 Session 重启 | systemd-user graphical session 重启 | 用户桌面会话、桌面 ACL、已登记 GUI 子进程 |
+| desktop-companion | `RemoteControlMCPDesktopCompanion` 登录任务，在用户 Session 重启 | systemd-user graphical session 重启 | 用户桌面会话、桌面 ACL、已登记 GUI 子进程 |
 | browser-agent | Browser Worker drain 后替换 Native bundle | Browser Worker drain 后替换 Native bundle | Profile、Cookie、CDP 凭据、浏览器缓存 |
 
 Agent 必须先把所选组件全部下载到 `state/upgrades/<campaign>/<attempt>/`，逐项校验后才停止进程。单组件采用 `.previous` 备份和原子 rename；失败只回滚该组件。

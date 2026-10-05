@@ -1,6 +1,8 @@
-# Remote Connect MCP
+# Remote Control MCP
 
 RCM 让一个人通过 MCP 客户端管理自己的远程机器。Center 负责身份、逐凭证的机器/工具授权、任务和结果；每台机器上的 Agent 按本机账户权限执行命令。需要图形界面时，再启用桌面或浏览器能力。
+
+项目和仓库统一使用 Remote Control MCP / `remote_control_mcp`，安装服务、镜像和配置使用 `remote-control-mcp` 与 `REMOTE_CONTROL_MCP_*`。现有安装的旧环境变量和历史 Release 资产仅在迁移兼容入口中读取，新名称优先；机器身份、凭证和任务协议保持连续。
 
 MCP 地址是 `https://<center-domain>/mcp`。当前公开 7 个工具：`machines`、`command`、`desktop`、`browser`、`artifact`、`task_read`、`task_cancel`。
 

@@ -12,8 +12,8 @@ from urllib.request import Request, urlopen
 
 
 IMAGES = {
-    "center": "ghcr.io/prodigalgal/remote-connect-mcp-center-java",
-    "console": "ghcr.io/prodigalgal/remote-connect-mcp-console",
+    "center": "ghcr.io/prodigalgal/remote-control-mcp-center",
+    "console": "ghcr.io/prodigalgal/remote-control-mcp-console",
 }
 
 

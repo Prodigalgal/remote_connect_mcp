@@ -21,22 +21,22 @@ Java 组件可独立进行协议验收。`--check-config` 只校验配置；`--r
 运行 Java Agent（PowerShell 示例，生产安装推荐使用 `scripts/install-agent.ps1`）：
 
 ```powershell
-$env:REMOTE_CONNECT_MCP_AGENT_CENTER_URL = 'https://remote-connect-mcp-agent.example.invalid'
-$env:REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN = '<one-time-enrollment-token>'
-$env:REMOTE_CONNECT_MCP_AGENT_NAME = 'dev-agent'
-$env:REMOTE_CONNECT_MCP_AGENT_STATE_DIR = 'C:\ProgramData\remote-connect-mcp-agent'
-$env:REMOTE_CONNECT_MCP_AGENT_BINARY_PATH = 'C:\Program Files\Remote Connect MCP Agent\rcm-agent.exe'
-$env:REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME = 'RemoteConnectMCPAgent'
-$env:REMOTE_CONNECT_MCP_AGENT_UPDATER_BINARY_PATH = 'C:\Program Files\Remote Connect MCP Agent\updater\rcm-updater.exe'
-$env:REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY = 'C:\Program Files\Remote Connect MCP Agent\browser\rcm-browser-agent.exe'
-& 'C:\Program Files\Remote Connect MCP Agent\rcm-agent.exe' --run
+$env:REMOTE_CONTROL_MCP_AGENT_CENTER_URL = 'https://remote-control-mcp-agent.example.invalid'
+$env:REMOTE_CONTROL_MCP_AGENT_ENROLLMENT_TOKEN = '<one-time-enrollment-token>'
+$env:REMOTE_CONTROL_MCP_AGENT_NAME = 'dev-agent'
+$env:REMOTE_CONTROL_MCP_AGENT_STATE_DIR = 'C:\ProgramData\remote-control-mcp-agent'
+$env:REMOTE_CONTROL_MCP_AGENT_BINARY_PATH = 'C:\Program Files\Remote Control MCP Agent\rcm-agent.exe'
+$env:REMOTE_CONTROL_MCP_AGENT_SERVICE_NAME = 'RemoteControlMCPAgent'
+$env:REMOTE_CONTROL_MCP_AGENT_UPDATER_BINARY_PATH = 'C:\Program Files\Remote Control MCP Agent\updater\rcm-updater.exe'
+$env:REMOTE_CONTROL_MCP_AGENT_BROWSER_BINARY = 'C:\Program Files\Remote Control MCP Agent\browser\rcm-browser-agent.exe'
+& 'C:\Program Files\Remote Control MCP Agent\rcm-agent.exe' --run
 ```
 
 `install-agent.ps1` / `install-agent.sh` 会先用一次性 Enrollment Token 调用
 `--register-once`，确认 `identity.json` 写入成功后再创建长期运行配置，并且不把 Enrollment
 Token 写入启动任务环境；日常通信只使用 `identity.json` 中的每机 Token。Java Agent 默认使用
 25 秒 HTTP 长轮询，在任务、取消、配置、升级事件或服务端 deadline 时才返回；设置
-`REMOTE_CONNECT_MCP_AGENT_LONG_POLL_SECONDS` 必须设置在 1–25 秒范围内；事件驱动长轮询不可关闭。不要把该文件
+`REMOTE_CONTROL_MCP_AGENT_LONG_POLL_SECONDS` 必须设置在 1–25 秒范围内；事件驱动长轮询不可关闭。不要把该文件
 或环境变量提交到 Git。
 
 Windows 开启 `-DesktopEnabled` 时，安装器还会注册一个当前用户登录触发的
@@ -53,19 +53,19 @@ Desktop Native 包采用“桌面能力优先”策略：桌面目标专用的 J
 私有成员未注册而失败；这些元数据和运行库只进入 `desktop-companion`，不会污染精简的 command-agent
 或 browser-agent。代价是 Desktop 包的构建时间和体积略有增加，这是桌面可用性优先于极限压缩的明确取舍。
 
-`nativeCompile` 需要 `JAVA_HOME` 指向带 `native-image` 的 GraalVM 25.x 或 Liberica NIK 25.x，但开发机和目标宿主机不执行该任务；正式构建由 GitHub Actions 在匹配 OS/CPU 架构的 runner 完成。Linux/Windows 发布的 command-agent、desktop-companion 和 browser-agent 都是各自包含 Native Image 运行库的平铺 ZIP：`remote-connect-mcp-agent-*`、`remote-connect-mcp-desktop-*`、`remote-connect-mcp-browser-*`。Browser Agent 不注册 Center 身份，由 command-agent 按 browser cap 按任务启动并在超时/取消时回收。Windows command-agent 可把 `remote-connect-mcp-agent-<version>-windows-amd64.zip` 传给 `scripts/install-agent.ps1 -BinaryPath`，并把 desktop/browser ZIP 分别传给对应的 companion 参数；Linux 必须把三个 ZIP 分别通过 `REMOTE_CONNECT_MCP_AGENT_BINARY`、`REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY` 和 `REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY` 交给 `scripts/install-agent.sh`，安装器会先校验同目录 `.sha256`（若提供）再安装完整 Native Image bundle；桌面伴侣仍需在用户会话中通过桌面环境自启动。完整 Linux tar 包同时包含三个 bundle 目录和安装脚本。安装器只接受带旁路库的正式 ZIP，不接受裸可执行文件，避免组件版本和运行库发生漂移。
+`nativeCompile` 需要 `JAVA_HOME` 指向带 `native-image` 的 GraalVM 25.x 或 Liberica NIK 25.x，但开发机和目标宿主机不执行该任务；正式构建由 GitHub Actions 在匹配 OS/CPU 架构的 runner 完成。Linux/Windows 发布的 command-agent、desktop-companion 和 browser-agent 都是各自包含 Native Image 运行库的平铺 ZIP：`remote-control-mcp-agent-*`、`remote-control-mcp-desktop-*`、`remote-control-mcp-browser-*`。Browser Agent 不注册 Center 身份，由 command-agent 按 browser cap 按任务启动并在超时/取消时回收。Windows command-agent 可把 `remote-control-mcp-agent-<version>-windows-amd64.zip` 传给 `scripts/install-agent.ps1 -BinaryPath`，并把 desktop/browser ZIP 分别传给对应的 companion 参数；Linux 必须把三个 ZIP 分别通过 `REMOTE_CONTROL_MCP_AGENT_BINARY`、`REMOTE_CONTROL_MCP_AGENT_DESKTOP_BINARY` 和 `REMOTE_CONTROL_MCP_AGENT_BROWSER_BINARY` 交给 `scripts/install-agent.sh`，安装器会先校验同目录 `.sha256`（若提供）再安装完整 Native Image bundle；桌面伴侣仍需在用户会话中通过桌面环境自启动。完整 Linux tar 包同时包含三个 bundle 目录和安装脚本。安装器只接受带旁路库的正式 ZIP，不接受裸可执行文件，避免组件版本和运行库发生漂移。
 `scripts/build-java.*`、`scripts/build-native.*` 仅供 GitHub Actions 使用，
 在本机直接运行会安全退出并提示提交到 Actions；`java/Dockerfile.*.native` 与 `web/Dockerfile` 也要求
 CI 构建参数。Gradle 根配置还会拦截本机的 `build/test/compile/jar/native` 等任务；只读的
 `tasks`、`dependencies` 查询不受影响。不要在目标主机安装或运行 Gradle/GraalVM。
-Agent 默认使用 HTTPS 长轮询：单次 `/agent/v1/poll?wait_ms=25000` 会在任务、取消、配置或升级事件时立即返回，空闲只由服务端 deadline 结束，不再叠加固定 sleep。设置 `REMOTE_CONNECT_MCP_AGENT_WAKE_TRANSPORT=websocket` 后会额外连接 Center 的 `/agent/v1/ws`，只接收有界 `wake` 提示以进一步降低事件延迟；任务领取、输出、工件和 Token 校验仍走 HTTPS。长轮询/WebSocket 不可用时按指数退避重试。Center 端使用 `RCM_CENTER_AGENT_WEBSOCKET_ENABLED=true` 开启该端点。每次心跳的 runtime descriptor 还公布单任务和 Agent 级进程预算。
+Agent 默认使用 HTTPS 长轮询：单次 `/agent/v1/poll?wait_ms=25000` 会在任务、取消、配置或升级事件时立即返回，空闲只由服务端 deadline 结束，不再叠加固定 sleep。设置 `REMOTE_CONTROL_MCP_AGENT_WAKE_TRANSPORT=websocket` 后会额外连接 Center 的 `/agent/v1/ws`，只接收有界 `wake` 提示以进一步降低事件延迟；任务领取、输出、工件和 Token 校验仍走 HTTPS。长轮询/WebSocket 不可用时按指数退避重试。Center 端使用 `RCM_CENTER_AGENT_WEBSOCKET_ENABLED=true` 开启该端点。每次心跳的 runtime descriptor 还公布单任务和 Agent 级进程预算。
 
 Native Agent 烟测可设置 `RCM_SMOKE_RESOURCE_REPORT=/tmp/rcm-agent-resource.json`（Windows PowerShell
 使用 `-ResourceReport`），脚本会在 Agent 在线和命令闭环期间采样工作集峰值；该文件只用于 CI 资源回归，
 不应提交到仓库或作为运行时限制依据。
 
 资源回收约束：command-agent 在 `STATE_DIR/agent.lock` 上单实例运行；Browser Worker 达到
-`REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` 后不会再领取 browser 任务，超时/取消会终止整个子进程树并删除临时文件；Desktop companion 在 `STATE_DIR/desktop/desktop-companion.lock` 上单实例运行，最多 4 个 IPC 请求和 16 个活动启动进程，已退出的进程通过 `ProcessHandle.onExit()` 自动释放名额。没有用户会话时，桌面任务只返回明确的 companion 不可用错误，不在 command-agent 内回退实现 GUI 或启动桌面进程。`REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`（默认按并发计算、封顶 256；可配置 1–4096）仅约束 command 任务和 browser-agent supervisor 的 Agent 级进程预算；desktop-companion 使用自己的连接/启动上限和退出回收，不共享该预算或其实现代码。任务监督器观察到新的子进程时占用预算，任务终止/正常退出会释放预算；Agent 关闭、重启或升级时，command/browser 进程树按既有监督语义回收，伴侣由自己的 shutdown hook 回收 GUI 进程。Windows 启动任务和 Linux systemd 仍应配置运行管理器的重启/资源上限，不能用无限制的 `maxConcurrency` 代替容量规划。
+`REMOTE_CONTROL_MCP_AGENT_MAX_BROWSER_WORKERS` 后不会再领取 browser 任务，超时/取消会终止整个子进程树并删除临时文件；Desktop companion 在 `STATE_DIR/desktop/desktop-companion.lock` 上单实例运行，最多 4 个 IPC 请求和 16 个活动启动进程，已退出的进程通过 `ProcessHandle.onExit()` 自动释放名额。没有用户会话时，桌面任务只返回明确的 companion 不可用错误，不在 command-agent 内回退实现 GUI 或启动桌面进程。`REMOTE_CONTROL_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`（默认按并发计算、封顶 256；可配置 1–4096）仅约束 command 任务和 browser-agent supervisor 的 Agent 级进程预算；desktop-companion 使用自己的连接/启动上限和退出回收，不共享该预算或其实现代码。任务监督器观察到新的子进程时占用预算，任务终止/正常退出会释放预算；Agent 关闭、重启或升级时，command/browser 进程树按既有监督语义回收，伴侣由自己的 shutdown hook 回收 GUI 进程。Windows 启动任务和 Linux systemd 仍应配置运行管理器的重启/资源上限，不能用无限制的 `maxConcurrency` 代替容量规划。
 
 Center 持久化统一使用 PostgreSQL + Liquibase，不使用 Flyway。默认 `RCM_CENTER_PERSISTENCE_MODE=memory` 只用于无数据库协议回归；生产设置 `RCM_CENTER_PERSISTENCE_MODE=postgres`、`RCM_CENTER_DATABASE_URL`、`RCM_CENTER_DATABASE_USERNAME` 和 `RCM_CENTER_DATABASE_PASSWORD`。任务、输出游标和有界截图工件均写入事务存储。生产通过 `deploy/k8s/java-center/migration-job.yaml` 单独执行 Liquibase，Center Pod 设置 `RCM_CENTER_LIQUIBASE_ENABLED=false`。
 

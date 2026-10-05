@@ -12,8 +12,8 @@ desktop=false
 browser=false
 desktop_user=''
 browser_headless='1'
-install_root='/opt/remote-connect-mcp-agent'
-state_dir='/var/lib/remote-connect-mcp-agent'
+install_root='/opt/remote-control-mcp-agent'
+state_dir='/var/lib/remote-control-mcp-agent'
 re_enroll=false
 original_args=("$@")
 
@@ -74,14 +74,14 @@ esac
 stage="$(mktemp -d -t rcm-first-install.XXXXXX)"
 runtime="$state_dir/browser-runtime"
 camoufox_install_dir="$state_dir/camoufox"
-trap 'rm -rf -- "$stage"; unset REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN' EXIT
+trap 'rm -rf -- "$stage"; unset REMOTE_CONTROL_MCP_AGENT_ENROLLMENT_TOKEN' EXIT
 mkdir -p "$state_dir"
 
 command -v curl >/dev/null 2>&1 || { echo 'curl is required' >&2; exit 1; }
 command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required' >&2; exit 1; }
 command -v unzip >/dev/null 2>&1 || { echo 'unzip is required (install unzip)' >&2; exit 1; }
-release_base="https://github.com/Prodigalgal/remote_connect_mcp/releases/download/$release_tag"
-raw_base="https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/$release_tag"
+release_base="https://github.com/Prodigalgal/remote_control_mcp/releases/download/$release_tag"
+raw_base="https://raw.githubusercontent.com/Prodigalgal/remote_control_mcp/$release_tag"
 download_verified() {
   local asset="$1" destination="$stage/$1" sidecar="$stage/$1.sha256" expected listed actual
   curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 600 "$release_base/$asset" -o "$destination"
@@ -113,16 +113,16 @@ download_optional_verified() {
   verify_downloaded "$asset" "$destination" "$sidecar"
 }
 
-agent_zip="$(download_verified "remote-connect-mcp-agent-$version-linux-$arch.zip")"
-updater_zip="$(download_optional_verified "remote-connect-mcp-updater-$version-linux-$arch.zip")"
+agent_zip="$(download_verified "remote-control-mcp-agent-$version-linux-$arch.zip")"
+updater_zip="$(download_optional_verified "remote-control-mcp-updater-$version-linux-$arch.zip")"
 desktop_zip=''
 browser_zip=''
-if $desktop; then desktop_zip="$(download_verified "remote-connect-mcp-desktop-$version-linux-$arch.zip")"; fi
-if $browser; then browser_zip="$(download_verified "remote-connect-mcp-browser-$version-linux-$arch.zip")"; fi
+if $desktop; then desktop_zip="$(download_verified "remote-control-mcp-desktop-$version-linux-$arch.zip")"; fi
+if $browser; then browser_zip="$(download_verified "remote-control-mcp-browser-$version-linux-$arch.zip")"; fi
 installer="$stage/install-agent.sh"
-service_file="$stage/remote-connect-mcp-agent.service"
+service_file="$stage/remote-control-mcp-agent.service"
 curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$raw_base/scripts/install-agent.sh" -o "$installer"
-curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$raw_base/deploy/systemd/remote-connect-mcp-agent.service" -o "$service_file"
+curl --fail --location --silent --show-error --retry 3 --connect-timeout 15 --max-time 60 "$raw_base/deploy/systemd/remote-control-mcp-agent.service" -o "$service_file"
 chmod 0700 "$installer"
 
 adapter=''
@@ -149,28 +149,28 @@ fi
 capabilities='command,durable_tasks,file_transfer'
 if $desktop; then capabilities+=',desktop'; fi
 if $browser; then capabilities+=',browser'; fi
-export REMOTE_CONNECT_MCP_AGENT_CENTER_URL="$center_url"
-export REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN="$enrollment_token"
-export REMOTE_CONNECT_MCP_AGENT_NAME="$agent_name"
-export REMOTE_CONNECT_MCP_AGENT_HOST_ID="$host_id"
-export REMOTE_CONNECT_MCP_AGENT_BINARY="$agent_zip"
-export REMOTE_CONNECT_MCP_AGENT_UPDATER_BINARY="$updater_zip"
-export REMOTE_CONNECT_MCP_AGENT_SERVICE_FILE="$service_file"
-export REMOTE_CONNECT_MCP_AGENT_CAPABILITIES="$capabilities"
-export REMOTE_CONNECT_MCP_AGENT_VERSION="$version"
-export REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD='/'
-export REMOTE_CONNECT_MCP_AGENT_STATE_DIR="$state_dir"
-export REMOTE_CONNECT_MCP_AGENT_INSTALL_ROOT="$install_root"
-export REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED="$desktop"
-export REMOTE_CONNECT_MCP_AGENT_DESKTOP_USER="$desktop_user"
-export REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER="$adapter"
-export REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR="$state_dir/browser-profile"
-export REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE='camoufox'
-export REMOTE_CONNECT_MCP_AGENT_BROWSER='firefox'
-export REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS="$browser_headless"
-export REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR="$camoufox_install_dir"
-export REMOTE_CONNECT_MCP_AGENT_REENROLL="$re_enroll"
-if $desktop; then export REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY="$desktop_zip"; fi
-if $browser; then export REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY="$browser_zip"; fi
+export REMOTE_CONTROL_MCP_AGENT_CENTER_URL="$center_url"
+export REMOTE_CONTROL_MCP_AGENT_ENROLLMENT_TOKEN="$enrollment_token"
+export REMOTE_CONTROL_MCP_AGENT_NAME="$agent_name"
+export REMOTE_CONTROL_MCP_AGENT_HOST_ID="$host_id"
+export REMOTE_CONTROL_MCP_AGENT_BINARY="$agent_zip"
+export REMOTE_CONTROL_MCP_AGENT_UPDATER_BINARY="$updater_zip"
+export REMOTE_CONTROL_MCP_AGENT_SERVICE_FILE="$service_file"
+export REMOTE_CONTROL_MCP_AGENT_CAPABILITIES="$capabilities"
+export REMOTE_CONTROL_MCP_AGENT_VERSION="$version"
+export REMOTE_CONTROL_MCP_AGENT_DEFAULT_CWD='/'
+export REMOTE_CONTROL_MCP_AGENT_STATE_DIR="$state_dir"
+export REMOTE_CONTROL_MCP_AGENT_INSTALL_ROOT="$install_root"
+export REMOTE_CONTROL_MCP_AGENT_DESKTOP_ENABLED="$desktop"
+export REMOTE_CONTROL_MCP_AGENT_DESKTOP_USER="$desktop_user"
+export REMOTE_CONTROL_MCP_AGENT_BROWSER_ADAPTER="$adapter"
+export REMOTE_CONTROL_MCP_AGENT_BROWSER_PROFILE_DIR="$state_dir/browser-profile"
+export REMOTE_CONTROL_MCP_AGENT_BROWSER_ENGINE='camoufox'
+export REMOTE_CONTROL_MCP_AGENT_BROWSER='firefox'
+export REMOTE_CONTROL_MCP_AGENT_BROWSER_HEADLESS="$browser_headless"
+export REMOTE_CONTROL_MCP_AGENT_CAMOUFOX_INSTALL_DIR="$camoufox_install_dir"
+export REMOTE_CONTROL_MCP_AGENT_REENROLL="$re_enroll"
+if $desktop; then export REMOTE_CONTROL_MCP_AGENT_DESKTOP_BINARY="$desktop_zip"; fi
+if $browser; then export REMOTE_CONTROL_MCP_AGENT_BROWSER_BINARY="$browser_zip"; fi
 bash "$installer"
 printf '{"status":"installed","agent":"%s","version":"%s","capabilities":"%s","desktop":%s,"browser":%s}\n' "$agent_name" "$version" "$capabilities" "$desktop" "$browser"

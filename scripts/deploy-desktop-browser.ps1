@@ -7,8 +7,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$ReleaseTag = "",
     [string]$StageRoot = "",
-    [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
-    [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent",
+    [string]$InstallRoot = "$env:ProgramFiles\Remote Control MCP Agent",
+    [string]$StateDir = "$env:ProgramData\RemoteControlMCPAgent",
     [string]$NodePath = "",
     [ValidatePattern("^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")]
     [string]$DesktopUser = "",
@@ -24,8 +24,8 @@ $ProgressPreference = "SilentlyContinue"
 
 function Resolve-PowerShell7Path {
     $candidates = [System.Collections.Generic.List[string]]::new()
-    if (-not [string]::IsNullOrWhiteSpace($env:REMOTE_CONNECT_MCP_PWSH_PATH)) {
-        [void]$candidates.Add($env:REMOTE_CONNECT_MCP_PWSH_PATH)
+    if (-not [string]::IsNullOrWhiteSpace($env:REMOTE_CONTROL_MCP_PWSH_PATH)) {
+        [void]$candidates.Add($env:REMOTE_CONTROL_MCP_PWSH_PATH)
     }
     foreach ($package in @(Get-AppxPackage -Name Microsoft.PowerShell -ErrorAction SilentlyContinue |
         Sort-Object Version -Descending | Select-Object -First 1)) {
@@ -44,7 +44,7 @@ function Resolve-PowerShell7Path {
             if (Test-Path -LiteralPath $resolved -PathType Leaf) { return $resolved }
         } catch { }
     }
-    throw 'PowerShell 7 was not found. Install Microsoft.PowerShell 7 or set REMOTE_CONNECT_MCP_PWSH_PATH to pwsh.exe.'
+    throw 'PowerShell 7 was not found. Install Microsoft.PowerShell 7 or set REMOTE_CONTROL_MCP_PWSH_PATH to pwsh.exe.'
 }
 
 if ([string]::IsNullOrWhiteSpace($HostId)) { $HostId = $AgentName }
@@ -77,8 +77,8 @@ $driveName = [IO.Path]::GetPathRoot($StageRoot).TrimEnd('\').TrimEnd(':')
 $drive = Get-PSDrive -Name $driveName -ErrorAction Stop
 if ($drive.Free -lt 1GB) { throw "free space on $driveName`: is below 1 GiB" }
 
-$releaseBase = "https://github.com/Prodigalgal/remote_connect_mcp/releases/download/$ReleaseTag"
-$rawBase = "https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/$ReleaseTag"
+$releaseBase = "https://github.com/Prodigalgal/remote_control_mcp/releases/download/$ReleaseTag"
+$rawBase = "https://raw.githubusercontent.com/Prodigalgal/remote_control_mcp/$ReleaseTag"
 
 function Download-Verified {
     param([Parameter(Mandatory = $true)][string]$Asset)
@@ -97,9 +97,9 @@ $agentZip = $null
 $desktopZip = $null
 $browserZip = $null
 if (-not $RuntimeOnly) {
-    $agentZip = Download-Verified "remote-connect-mcp-agent-$Version-windows-amd64.zip"
-    $desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-windows-amd64.zip"
-    $browserZip = Download-Verified "remote-connect-mcp-browser-$Version-windows-amd64.zip"
+    $agentZip = Download-Verified "remote-control-mcp-agent-$Version-windows-amd64.zip"
+    $desktopZip = Download-Verified "remote-control-mcp-desktop-$Version-windows-amd64.zip"
+    $browserZip = Download-Verified "remote-control-mcp-browser-$Version-windows-amd64.zip"
 }
 $installer = Join-Path $StageRoot "install-agent.ps1"
 # Prefer the checked-out installer when this script is run from the repository;
@@ -170,7 +170,7 @@ function ConvertTo-PSLiteral {
 # change after this staging command has returned to Center.
 $apply = Join-Path $StageRoot "apply.ps1"
 $statusFile = Join-Path $StageRoot "apply-status.json"
-$applyTaskName = "RemoteConnectMCPDesktopBrowserApply-" + ($Version -replace '[^A-Za-z0-9]', '')
+$applyTaskName = "RemoteControlMCPDesktopBrowserApply-" + ($Version -replace '[^A-Za-z0-9]', '')
 $applyLines = @(
     '$ErrorActionPreference = "Stop"',
     '$ProgressPreference = "SilentlyContinue"',
@@ -195,7 +195,7 @@ $applyLines = @(
     '  if ([string]::IsNullOrWhiteSpace($desktopUser)) { throw "no interactive user; pass -DesktopUser for a not-yet-logged-in GUI host" }',
     '  $env:USERNAME = $desktopUser',
     '  $node = $nodePath',
-    ('  $env:REMOTE_CONNECT_MCP_PWSH_PATH = {0}' -f (ConvertTo-PSLiteral $pwsh)),
+    ('  $env:REMOTE_CONTROL_MCP_PWSH_PATH = {0}' -f (ConvertTo-PSLiteral $pwsh)),
     '  $worker = Join-Path $stage "browser-runtime\browser-worker.mjs"',
     # Keep the adapter executable invocation in a tiny .cmd shim.  Passing a
     # quoted multi-path command as one ProcessBuilder argument is parsed twice
@@ -212,9 +212,9 @@ $applyLines = @(
     ('  $browser = Join-Path $stage {0}' -f (ConvertTo-PSLiteral (Split-Path -Leaf $browserZip))),
     ('  & {0} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $installer -BinaryPath $agent -AgentName $agentName -HostId $hostId -CenterUrl $centerUrl -DefaultCwd "C:\" -Capabilities "command,durable_tasks,desktop,browser,file_transfer" -Version $version -DesktopEnabled -DesktopBinaryPath $desktop -BrowserBinaryPath $browser -BrowserAdapter $adapter -BrowserEngine camoufox -BrowserName firefox -BrowserHeadless $browserHeadless -CamoufoxInstallDir $camoufoxInstallDir -BrowserProfileDir $browserProfileDir -MaxConcurrency 1 -MaxBrowserWorkers 1 -DesktopMaxLaunchedProcesses 16 -MaxChildProcesses 32 -MaxTotalChildProcesses 32' -f (ConvertTo-PSLiteral $pwsh)),
     '  if ($LASTEXITCODE -ne 0) { throw "agent installer failed with exit $LASTEXITCODE" }',
-    '  try { Start-ScheduledTask -TaskName "RemoteConnectMCPDesktopCompanion" -ErrorAction Stop } catch { }',
+    '  try { Start-ScheduledTask -TaskName "RemoteControlMCPDesktopCompanion" -ErrorAction Stop } catch { }',
     '  Start-Sleep -Seconds 3',
-    '  $desktopState = (Get-ScheduledTask -TaskName "RemoteConnectMCPDesktopCompanion" -ErrorAction SilentlyContinue).State',
+    '  $desktopState = (Get-ScheduledTask -TaskName "RemoteControlMCPDesktopCompanion" -ErrorAction SilentlyContinue).State',
     '  [ordered]@{ status = "completed"; desktop_task_state = [string]$desktopState; browser_runtime = "camoufox"; finished_at = (Get-Date).ToUniversalTime().ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $statusFile -Encoding UTF8',
     '} catch {',
     '  [ordered]@{ status = "failed"; error = $_.Exception.Message; finished_at = (Get-Date).ToUniversalTime().ToString("o") } | ConvertTo-Json | Set-Content -LiteralPath $statusFile -Encoding UTF8',
@@ -229,7 +229,7 @@ $action = New-ScheduledTaskAction -Execute $pwsh -Argument ('-NoProfile -NonInte
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(15)
 $applyPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 Unregister-ScheduledTask -TaskName $applyTaskName -Confirm:$false -ErrorAction SilentlyContinue
-Register-ScheduledTask -TaskName $applyTaskName -Action $action -Trigger $trigger -Principal $applyPrincipal -Description "Remote Connect MCP Desktop/Browser $Version apply" -Force | Out-Null
+Register-ScheduledTask -TaskName $applyTaskName -Action $action -Trigger $trigger -Principal $applyPrincipal -Description "Remote Control MCP Desktop/Browser $Version apply" -Force | Out-Null
 Start-ScheduledTask -TaskName $applyTaskName
 
 [ordered]@{

@@ -12,8 +12,8 @@ param(
     [ValidatePattern("^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")][string]$DesktopUser = "",
     [ValidateSet("0", "1")][string]$BrowserHeadless = "1",
     [string]$NodePath = "",
-    [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
-    [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent",
+    [string]$InstallRoot = "$env:ProgramFiles\Remote Control MCP Agent",
+    [string]$StateDir = "$env:ProgramData\RemoteControlMCPAgent",
     [switch]$ReEnroll,
     [switch]$InternalChild
 )
@@ -24,8 +24,8 @@ $ProgressPreference = "SilentlyContinue"
 
 function Resolve-PowerShell7Path {
     $candidates = [System.Collections.Generic.List[string]]::new()
-    if (-not [string]::IsNullOrWhiteSpace($env:REMOTE_CONNECT_MCP_PWSH_PATH)) {
-        [void]$candidates.Add($env:REMOTE_CONNECT_MCP_PWSH_PATH)
+    if (-not [string]::IsNullOrWhiteSpace($env:REMOTE_CONTROL_MCP_PWSH_PATH)) {
+        [void]$candidates.Add($env:REMOTE_CONTROL_MCP_PWSH_PATH)
     }
     foreach ($package in @(Get-AppxPackage -Name Microsoft.PowerShell -ErrorAction SilentlyContinue |
         Sort-Object Version -Descending | Select-Object -First 1)) {
@@ -44,7 +44,7 @@ function Resolve-PowerShell7Path {
             if (Test-Path -LiteralPath $resolved -PathType Leaf) { return $resolved }
         } catch { }
     }
-    throw 'PowerShell 7 was not found. Install Microsoft.PowerShell 7 or set REMOTE_CONNECT_MCP_PWSH_PATH to pwsh.exe.'
+    throw 'PowerShell 7 was not found. Install Microsoft.PowerShell 7 or set REMOTE_CONTROL_MCP_PWSH_PATH to pwsh.exe.'
 }
 
 function ConvertTo-CliArgument {
@@ -111,8 +111,8 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
 
 try {
-    $releaseBase = "https://github.com/Prodigalgal/remote_connect_mcp/releases/download/$ReleaseTag"
-    $rawBase = "https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/$ReleaseTag"
+    $releaseBase = "https://github.com/Prodigalgal/remote_control_mcp/releases/download/$ReleaseTag"
+    $rawBase = "https://raw.githubusercontent.com/Prodigalgal/remote_control_mcp/$ReleaseTag"
     function Download-Verified {
         param([Parameter(Mandatory = $true)][string]$Asset, [switch]$Optional)
         $destination = Join-Path $stage $Asset
@@ -140,12 +140,12 @@ try {
     }
 
     $arch = 'windows-amd64'
-    $agentZip = Download-Verified "remote-connect-mcp-agent-$Version-$arch.zip"
-    $updaterZip = Download-Verified "remote-connect-mcp-updater-$Version-$arch.zip" -Optional
+    $agentZip = Download-Verified "remote-control-mcp-agent-$Version-$arch.zip"
+    $updaterZip = Download-Verified "remote-control-mcp-updater-$Version-$arch.zip" -Optional
     $desktopZip = $null
     $browserZip = $null
-    if ($Desktop) { $desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-$arch.zip" }
-    if ($Browser) { $browserZip = Download-Verified "remote-connect-mcp-browser-$Version-$arch.zip" }
+    if ($Desktop) { $desktopZip = Download-Verified "remote-control-mcp-desktop-$Version-$arch.zip" }
+    if ($Browser) { $browserZip = Download-Verified "remote-control-mcp-browser-$Version-$arch.zip" }
     $installer = Join-Path $stage 'install-agent.ps1'
     Invoke-WebRequest -UseBasicParsing -Uri "$rawBase/scripts/install-agent.ps1" -OutFile $installer -TimeoutSec 30
 
@@ -180,7 +180,7 @@ try {
         $camoufoxExecutable = $camoufoxExecutable.Trim()
         $camoufoxInstallDir = Split-Path -Parent $camoufoxExecutable
         if (-not (Test-Path -LiteralPath $camoufoxExecutable -PathType Leaf)) { throw 'Camoufox executable is missing.' }
-        $env:REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR = $camoufoxInstallDir
+        $env:REMOTE_CONTROL_MCP_AGENT_CAMOUFOX_INSTALL_DIR = $camoufoxInstallDir
         $adapter = Join-Path $runtime 'browser-adapter.cmd'
         Set-Content -LiteralPath $adapter -Value "@echo off`r`nset `"CAMOUFOX_EXECUTABLE_PATH=$camoufoxExecutable`"`r`n`"$NodePath`" `"$worker`"`r`n" -Encoding ASCII -Force
     }
@@ -188,7 +188,7 @@ try {
     $capabilities = 'command,durable_tasks,file_transfer'
     if ($Desktop) { $capabilities += ',desktop' }
     if ($Browser) { $capabilities += ',browser' }
-    $env:REMOTE_CONNECT_MCP_PWSH_PATH = Resolve-PowerShell7Path
+    $env:REMOTE_CONTROL_MCP_PWSH_PATH = Resolve-PowerShell7Path
     if ($Desktop) { $env:USERNAME = $DesktopUser }
     $arguments = @(
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $installer,
@@ -205,7 +205,7 @@ try {
     if ($Desktop) { $arguments += @('-DesktopEnabled', '-DesktopBinaryPath', $desktopZip) }
     if ($Browser) { $arguments += @('-BrowserBinaryPath', $browserZip, '-BrowserAdapter', $adapter, '-BrowserEngine', 'camoufox', '-BrowserName', 'firefox', '-BrowserHeadless', $BrowserHeadless, '-BrowserProfileDir', (Join-Path $StateDir 'browser-profile')) }
     if ($ReEnroll) { $arguments += '-ReEnroll' }
-    & $env:REMOTE_CONNECT_MCP_PWSH_PATH @arguments
+    & $env:REMOTE_CONTROL_MCP_PWSH_PATH @arguments
     if ($LASTEXITCODE -ne 0) { throw "Java Agent installation failed with exit $LASTEXITCODE" }
     [ordered]@{
         status = 'installed'; agent = $AgentName; version = $Version; capabilities = $capabilities

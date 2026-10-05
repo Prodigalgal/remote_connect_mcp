@@ -47,7 +47,7 @@ trap finish EXIT
 
 RCM_CENTER_PERSISTENCE_MODE=memory \
 RCM_CENTER_VERSION=smoke \
-REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN=smoke-admin-token \
+REMOTE_CONTROL_MCP_CENTER_ADMIN_TOKEN=smoke-admin-token \
 "$center_binary" "--server.port=$port" >"$tmp/out" 2>"$tmp/err" &
 pid=$!
 
@@ -105,7 +105,7 @@ metrics="$(curl --silent --show-error --fail --max-time 5 \
   -H 'Authorization: Bearer smoke-admin-token' \
   -H 'Accept: text/plain' \
   "http://127.0.0.1:$port/metrics")"
-grep -q 'remote_connect_mcp_machines_total' <<<"$metrics"
+grep -q 'remote_control_mcp_machines_total' <<<"$metrics"
 if grep -Fq "$mcp_token" <<<"$metrics"; then
   echo 'metrics response contains an MCP credential' >&2
   exit 1

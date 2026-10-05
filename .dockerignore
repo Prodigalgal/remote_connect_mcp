@@ -1,9 +1,9 @@
 .git
 .github
 .research
-.remote_connect_mcp
+.remote_control_mcp
 dist
 deploy
 *.log
 *.tmp
-remote_connect_mcp.env
+remote_control_mcp.env

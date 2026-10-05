@@ -103,7 +103,7 @@ jobs:
           cache: gradle
       - name: Agent, Desktop, Browser and updater tests
         working-directory: java
-        run: bash ./gradlew -PreleaseVersion=${{ needs.prepare.outputs.version }} :agent:test :desktop:test :browser:test :updater:test --no-daemon
+        run: bash ./gradlew -PreleaseVersion=${{ needs.prepare.outputs.version }} :protocol:test :agent:test :desktop:test :browser:test :updater:test --no-daemon
 
   browser-runtime:
     name: Camoufox navigation gate
@@ -163,10 +163,10 @@ jobs:
             test "${code}" -eq 2
           done
           for dir in agent desktop browser updater; do (cd "out/${TARGET_ARCH}/${dir}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS); done
-          agent_archive="remote-connect-mcp-agent-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
-          desktop_archive="remote-connect-mcp-desktop-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
-          browser_archive="remote-connect-mcp-browser-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
-          updater_archive="remote-connect-mcp-updater-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          agent_archive="remote-control-mcp-agent-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          desktop_archive="remote-control-mcp-desktop-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          browser_archive="remote-control-mcp-browser-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          updater_archive="remote-control-mcp-updater-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
           for spec in "agent:${agent_archive}" "desktop:${desktop_archive}" "browser:${browser_archive}" "updater:${updater_archive}"; do
             dir="${spec%%:*}"; archive="${spec#*:}"
             files=$(cd "out/${TARGET_ARCH}/${dir}" && find . -maxdepth 1 -type f \( -name 'rcm-*' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
@@ -177,32 +177,32 @@ jobs:
           bash scripts/verify-native-bundle.sh "${desktop_archive}" rcm-desktop-companion
           bash scripts/verify-native-bundle.sh "${browser_archive}" rcm-browser-agent
           bash scripts/verify-native-bundle.sh "${updater_archive}" rcm-updater
-          cp scripts/install-agent.sh scripts/first-install-agent.sh deploy/systemd/remote-connect-mcp-agent.service deploy/systemd/agent.env.example README.md LICENSE NOTICE "out/${TARGET_ARCH}/"
-          tar -C out -I 'gzip -9' -cf "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" "${TARGET_ARCH}"
-          sha256sum "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" > "remote-connect-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz.sha256"
+          cp scripts/install-agent.sh scripts/first-install-agent.sh deploy/systemd/remote-control-mcp-agent.service deploy/systemd/agent.env.example README.md LICENSE NOTICE "out/${TARGET_ARCH}/"
+          tar -C out -I 'gzip -9' -cf "remote-control-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" "${TARGET_ARCH}"
+          sha256sum "remote-control-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz" > "remote-control-mcp-${RELEASE_VERSION}-linux-${TARGET_ARCH}.tar.gz.sha256"
       - name: Generate Agent SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           path: out/${{ matrix.arch }}
           format: spdx-json
-          output-file: remote-connect-mcp-agent-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.spdx.json
+          output-file: remote-control-mcp-agent-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.spdx.json
           upload-artifact: false
           upload-release-assets: false
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rcm-agent-linux-${{ matrix.arch }}
           path: |
-            remote-connect-mcp-*.tar.gz
-            remote-connect-mcp-*.tar.gz.sha256
-            remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.zip
-            remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.zip.sha256
-            remote-connect-mcp-desktop-*-linux-${{ matrix.arch }}.zip
-            remote-connect-mcp-desktop-*-linux-${{ matrix.arch }}.zip.sha256
-            remote-connect-mcp-browser-*-linux-${{ matrix.arch }}.zip
-            remote-connect-mcp-browser-*-linux-${{ matrix.arch }}.zip.sha256
-            remote-connect-mcp-updater-*-linux-${{ matrix.arch }}.zip
-            remote-connect-mcp-updater-*-linux-${{ matrix.arch }}.zip.sha256
-            remote-connect-mcp-agent-*-linux-${{ matrix.arch }}.spdx.json
+            remote-control-mcp-*.tar.gz
+            remote-control-mcp-*.tar.gz.sha256
+            remote-control-mcp-agent-*-linux-${{ matrix.arch }}.zip
+            remote-control-mcp-agent-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-control-mcp-desktop-*-linux-${{ matrix.arch }}.zip
+            remote-control-mcp-desktop-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-control-mcp-browser-*-linux-${{ matrix.arch }}.zip
+            remote-control-mcp-browser-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-control-mcp-updater-*-linux-${{ matrix.arch }}.zip
+            remote-control-mcp-updater-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-control-mcp-agent-*-linux-${{ matrix.arch }}.spdx.json
           if-no-files-found: error
 
   windows-native:
@@ -260,10 +260,10 @@ jobs:
             Get-FileHash (Get-ChildItem $bundle -File | Where-Object { $_.Extension -in '.exe','.dll' }) -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content (Join-Path $bundle 'SHA256SUMS') -Encoding ascii
           }
           $specs = @(
-            @{ Dir=$agentOut; Name="remote-connect-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-agent.exe' },
-            @{ Dir=$desktopOut; Name="remote-connect-mcp-desktop-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-desktop-companion.exe' },
-            @{ Dir=$browserOut; Name="remote-connect-mcp-browser-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-browser-agent.exe' },
-            @{ Dir=$updaterOut; Name="remote-connect-mcp-updater-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-updater.exe' }
+            @{ Dir=$agentOut; Name="remote-control-mcp-agent-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-agent.exe' },
+            @{ Dir=$desktopOut; Name="remote-control-mcp-desktop-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-desktop-companion.exe' },
+            @{ Dir=$browserOut; Name="remote-control-mcp-browser-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-browser-agent.exe' },
+            @{ Dir=$updaterOut; Name="remote-control-mcp-updater-$env:RELEASE_VERSION-windows-amd64.zip"; Exe='rcm-updater.exe' }
           )
           foreach ($spec in $specs) {
             Push-Location $spec.Dir
@@ -273,15 +273,15 @@ jobs:
             (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() + "  $($spec.Name)" | Set-Content "$archive.sha256" -Encoding ascii
             & "$PWD/scripts/verify-native-bundle.ps1" -AgentArchive $archive -ExecutableName $spec.Exe
           }
-          Compress-Archive -Path "$out/*" -DestinationPath "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -CompressionLevel Optimal -Force
-          (Get-FileHash "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "remote-connect-mcp-$env:RELEASE_VERSION-windows-amd64.zip.sha256" -Encoding ascii
+          Compress-Archive -Path "$out/*" -DestinationPath "remote-control-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -CompressionLevel Optimal -Force
+          (Get-FileHash "remote-control-mcp-$env:RELEASE_VERSION-windows-amd64.zip" -Algorithm SHA256).Hash.ToLower() + "  remote-control-mcp-$env:RELEASE_VERSION-windows-amd64.zip" | Set-Content "remote-control-mcp-$env:RELEASE_VERSION-windows-amd64.zip.sha256" -Encoding ascii
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rcm-agent-windows-amd64
           path: |
-            remote-connect-mcp-*.zip
-            remote-connect-mcp-*.zip.sha256
-            remote-connect-mcp-*.tar.gz
+            remote-control-mcp-*.zip
+            remote-control-mcp-*.zip.sha256
+            remote-control-mcp-*.tar.gz
           if-no-files-found: error
 
   images:
@@ -315,20 +315,20 @@ jobs:
           set -euo pipefail
           owner="${IMAGE_OWNER,,}"
           mkdir -p image-root/amd64 image-root/arm64
-          unzip -q "image-input/amd64/remote-connect-mcp-agent-${RELEASE_VERSION}-linux-amd64.zip" -d image-root/amd64
-          unzip -q "image-input/arm64/remote-connect-mcp-agent-${RELEASE_VERSION}-linux-arm64.zip" -d image-root/arm64
+          unzip -q "image-input/amd64/remote-control-mcp-agent-${RELEASE_VERSION}-linux-amd64.zip" -d image-root/amd64
+          unzip -q "image-input/arm64/remote-control-mcp-agent-${RELEASE_VERSION}-linux-arm64.zip" -d image-root/arm64
           for arch in amd64 arm64; do
             docker buildx build --platform "linux/${arch}" --file java/Dockerfile.agent.native-runtime \
-              --tag "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}-${arch}" \
+              --tag "ghcr.io/${owner}/remote-control-mcp-agent:${RELEASE_VERSION}-${arch}" \
               --provenance=true --sbom=true --push "image-root/${arch}"
           done
-          docker buildx imagetools create --tag "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}" \
-            "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}-amd64" \
-            "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}-arm64"
+          docker buildx imagetools create --tag "ghcr.io/${owner}/remote-control-mcp-agent:${RELEASE_VERSION}" \
+            "ghcr.io/${owner}/remote-control-mcp-agent:${RELEASE_VERSION}-amd64" \
+            "ghcr.io/${owner}/remote-control-mcp-agent:${RELEASE_VERSION}-arm64"
           if [[ "${{ needs.prepare.outputs.prerelease }}" != 'true' ]]; then
-            docker buildx imagetools create --tag "ghcr.io/${owner}/remote-connect-mcp-agent-java:latest" \
-              "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}-amd64" \
-              "ghcr.io/${owner}/remote-connect-mcp-agent-java:${RELEASE_VERSION}-arm64"
+            docker buildx imagetools create --tag "ghcr.io/${owner}/remote-control-mcp-agent:latest" \
+              "ghcr.io/${owner}/remote-control-mcp-agent:${RELEASE_VERSION}-amd64" \
+              "ghcr.io/${owner}/remote-control-mcp-agent:${RELEASE_VERSION}-arm64"
           fi
 
   recovery:

@@ -77,7 +77,7 @@ export function Sidebar({
             <span className="brand-logo-text">RC</span>
           </div>
           <div className="brand-title-wrap">
-            <strong>Remote Connect</strong>
+            <strong>Remote Control</strong>
             <span>MCP Control Center</span>
           </div>
         </div>

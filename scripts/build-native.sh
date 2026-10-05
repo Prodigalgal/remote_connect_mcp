@@ -67,11 +67,11 @@ done
 # flat Center/Agent ZIP bundles contain the executable and all Native Image
 # shared objects. The archives are outside OUT so they are never packed into
 # themselves; the native executable remains private inside its bundle directory.
-AGENT_ASSET="$ROOT/dist/remote-connect-mcp-agent-$VERSION-$OS-$ARCH"
-CENTER_ASSET="$ROOT/dist/remote-connect-mcp-center-$VERSION-$OS-$ARCH"
-DESKTOP_ASSET="$ROOT/dist/remote-connect-mcp-desktop-$VERSION-$OS-$ARCH"
-BROWSER_ASSET="$ROOT/dist/remote-connect-mcp-browser-$VERSION-$OS-$ARCH"
-UPDATER_ASSET="$ROOT/dist/remote-connect-mcp-updater-$VERSION-$OS-$ARCH"
+AGENT_ASSET="$ROOT/dist/remote-control-mcp-agent-$VERSION-$OS-$ARCH"
+CENTER_ASSET="$ROOT/dist/remote-control-mcp-center-$VERSION-$OS-$ARCH"
+DESKTOP_ASSET="$ROOT/dist/remote-control-mcp-desktop-$VERSION-$OS-$ARCH"
+BROWSER_ASSET="$ROOT/dist/remote-control-mcp-browser-$VERSION-$OS-$ARCH"
+UPDATER_ASSET="$ROOT/dist/remote-control-mcp-updater-$VERSION-$OS-$ARCH"
 AGENT_ARCHIVE="$AGENT_ASSET.zip"
 CENTER_ARCHIVE="$CENTER_ASSET.zip"
 DESKTOP_ARCHIVE="$DESKTOP_ASSET.zip"
@@ -97,14 +97,14 @@ sha256sum "$UPDATER_ARCHIVE" > "$UPDATER_ARCHIVE.sha256"
 "$ROOT/scripts/verify-native-bundle.sh" "$BROWSER_ARCHIVE" rcm-browser-agent
 "$ROOT/scripts/verify-native-bundle.sh" "$UPDATER_ARCHIVE" rcm-updater
 
-cp "$ROOT/scripts/install-agent.sh" "$ROOT/scripts/first-install-agent.sh" "$ROOT/deploy/systemd/remote-connect-mcp-agent.service" "$OUT/"
+cp "$ROOT/scripts/install-agent.sh" "$ROOT/scripts/first-install-agent.sh" "$ROOT/deploy/systemd/remote-control-mcp-agent.service" "$OUT/"
 cp "$ROOT/deploy/systemd/agent.env.example" "$OUT/agent.env.example"
 cp "$ROOT/README.md" "$ROOT/LICENSE" "$ROOT/NOTICE" "$OUT/"
 chmod +x "$OUT/install-agent.sh" "$OUT/first-install-agent.sh"
 
-printf '{"version":"%s","os":"%s","arch":"%s","artifacts":["center/rcm-center","agent/rcm-agent","desktop/rcm-desktop-companion","browser/rcm-browser-agent","updater/rcm-updater","install-agent.sh","first-install-agent.sh","remote-connect-mcp-agent.service","agent.env.example","README.md","LICENSE","NOTICE"]}\n' \
+printf '{"version":"%s","os":"%s","arch":"%s","artifacts":["center/rcm-center","agent/rcm-agent","desktop/rcm-desktop-companion","browser/rcm-browser-agent","updater/rcm-updater","install-agent.sh","first-install-agent.sh","remote-control-mcp-agent.service","agent.env.example","README.md","LICENSE","NOTICE"]}\n' \
   "$VERSION" "$OS" "$ARCH" > "$OUT/manifest.json"
-ARCHIVE="$ROOT/dist/remote-connect-mcp-$VERSION-$OS-$ARCH.tar.gz"
+ARCHIVE="$ROOT/dist/remote-control-mcp-$VERSION-$OS-$ARCH.tar.gz"
 tar -C "$OUT" -czf "$ARCHIVE" .
 sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
 echo "Native Java artifacts written to $OUT"

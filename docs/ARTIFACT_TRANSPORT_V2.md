@@ -117,7 +117,7 @@ ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation
 | --- | --- | --- |
 | `artifact(operation=put)` | Web 文件写入终端 | transfer_id、任务状态和摘要 |
 | `artifact(operation=get)` | 终端文件回传 Web | artifact_id、文件元数据 |
-| `artifact(operation=read)` | 按需读取元数据和短期文件对象 | `structuredContent.file` + `ui://remote-connect-mcp/artifact-viewer-v1.html` Viewer |
+| `artifact(operation=read)` | 按需读取元数据和短期文件对象 | `structuredContent.file` + `ui://remote-control-mcp/artifact-viewer-v1.html` Viewer |
 
 现有 `command`、`desktop`、`browser`、`task_read` 工具只引用 Artifact，不复制文件传输逻辑。
 
@@ -129,7 +129,7 @@ ChatGPT 文件输入参数：
 ```json
 {
   "_meta": {
-    "ui": { "resourceUri": "ui://remote-connect-mcp/artifact-viewer-v1.html" },
+    "ui": { "resourceUri": "ui://remote-control-mcp/artifact-viewer-v1.html" },
     "openai/fileParams": ["file"]
   }
 }

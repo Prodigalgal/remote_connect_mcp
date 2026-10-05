@@ -99,18 +99,18 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: remote_connect_mcp
+          POSTGRES_DB: remote_control_mcp
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d remote_connect_mcp"
+          --health-cmd "pg_isready -U postgres -d remote_control_mcp"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
     env:
-      RCM_TEST_POSTGRES_URL: jdbc:postgresql://127.0.0.1:5432/remote_connect_mcp
+      RCM_TEST_POSTGRES_URL: jdbc:postgresql://127.0.0.1:5432/remote_control_mcp
       RCM_TEST_POSTGRES_USERNAME: postgres
       RCM_TEST_POSTGRES_PASSWORD: postgres
     steps:
@@ -124,7 +124,7 @@ jobs:
         run: bash scripts/sync-artifact-viewer.sh
       - name: Center tests
         working-directory: java
-        run: bash ./gradlew -PreleaseVersion=${{ needs.prepare.outputs.version }} :center:test --no-daemon
+        run: bash ./gradlew -PreleaseVersion=${{ needs.prepare.outputs.version }} :protocol:test :center:test --no-daemon
 
   linux-native:
     name: Center Native (${{ matrix.arch }})
@@ -142,13 +142,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: remote_connect_mcp
+          POSTGRES_DB: remote_control_mcp
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d remote_connect_mcp"
+          --health-cmd "pg_isready -U postgres -d remote_control_mcp"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
@@ -186,11 +186,11 @@ jobs:
           RCM_CENTER_PERSISTENCE_MODE=postgres \
           RCM_CENTER_REQUIRE_DURABLE_STORAGE=false \
           RCM_CENTER_LIQUIBASE_ENABLED=true \
-          RCM_CENTER_DATABASE_URL=jdbc:postgresql://127.0.0.1:5432/remote_connect_mcp \
+          RCM_CENTER_DATABASE_URL=jdbc:postgresql://127.0.0.1:5432/remote_control_mcp \
           RCM_CENTER_DATABASE_USERNAME=postgres \
           RCM_CENTER_DATABASE_PASSWORD=postgres \
           timeout 120s "out/${TARGET_ARCH}/center/rcm-center" --migrate
-          archive="remote-connect-mcp-center-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
+          archive="remote-control-mcp-center-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
           files=$(cd "out/${TARGET_ARCH}/center" && find . -maxdepth 1 -type f \( -name 'rcm-center' -o -name '*.so' -o -name '*.so.*' \) -printf '%f\n' | sort)
           (cd "out/${TARGET_ARCH}/center" && zip -q -9 -j "${GITHUB_WORKSPACE}/${archive}" ${files})
           sha256sum "${archive}" > "${archive}.sha256"
@@ -200,16 +200,16 @@ jobs:
         with:
           path: out/${{ matrix.arch }}/center
           format: spdx-json
-          output-file: remote-connect-mcp-center-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.spdx.json
+          output-file: remote-control-mcp-center-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.spdx.json
           upload-artifact: false
           upload-release-assets: false
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rcm-center-linux-${{ matrix.arch }}
           path: |
-            remote-connect-mcp-center-*-linux-${{ matrix.arch }}.zip
-            remote-connect-mcp-center-*-linux-${{ matrix.arch }}.zip.sha256
-            remote-connect-mcp-center-*-linux-${{ matrix.arch }}.spdx.json
+            remote-control-mcp-center-*-linux-${{ matrix.arch }}.zip
+            remote-control-mcp-center-*-linux-${{ matrix.arch }}.zip.sha256
+            remote-control-mcp-center-*-linux-${{ matrix.arch }}.spdx.json
           if-no-files-found: error
 
   images:
@@ -243,23 +243,23 @@ jobs:
           set -euo pipefail
           owner="${IMAGE_OWNER,,}"
           mkdir -p image-root/amd64 image-root/arm64
-          unzip -q "image-input/amd64/remote-connect-mcp-center-${RELEASE_VERSION}-linux-amd64.zip" -d image-root/amd64
-          unzip -q "image-input/arm64/remote-connect-mcp-center-${RELEASE_VERSION}-linux-arm64.zip" -d image-root/arm64
+          unzip -q "image-input/amd64/remote-control-mcp-center-${RELEASE_VERSION}-linux-amd64.zip" -d image-root/amd64
+          unzip -q "image-input/arm64/remote-control-mcp-center-${RELEASE_VERSION}-linux-arm64.zip" -d image-root/arm64
           for arch in amd64 arm64; do
             docker buildx build --platform "linux/${arch}" \
               --file java/Dockerfile.center.native-runtime \
-              --tag "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}-${arch}" \
+              --tag "ghcr.io/${owner}/remote-control-mcp-center:center-${RELEASE_VERSION}-${arch}" \
               --provenance=true --sbom=true --push "image-root/${arch}"
           done
           docker buildx imagetools create \
-            --tag "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}" \
-            "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}-amd64" \
-            "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}-arm64"
+            --tag "ghcr.io/${owner}/remote-control-mcp-center:center-${RELEASE_VERSION}" \
+            "ghcr.io/${owner}/remote-control-mcp-center:center-${RELEASE_VERSION}-amd64" \
+            "ghcr.io/${owner}/remote-control-mcp-center:center-${RELEASE_VERSION}-arm64"
           if [[ "${{ needs.prepare.outputs.prerelease }}" != 'true' ]]; then
             docker buildx imagetools create \
-              --tag "ghcr.io/${owner}/remote-connect-mcp-center-java:latest" \
-              "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}-amd64" \
-              "ghcr.io/${owner}/remote-connect-mcp-center-java:center-${RELEASE_VERSION}-arm64"
+              --tag "ghcr.io/${owner}/remote-control-mcp-center:latest" \
+              "ghcr.io/${owner}/remote-control-mcp-center:center-${RELEASE_VERSION}-amd64" \
+              "ghcr.io/${owner}/remote-control-mcp-center:center-${RELEASE_VERSION}-arm64"
           fi
 
   release:
@@ -337,11 +337,11 @@ jobs:
           set -euo pipefail
           owner="${IMAGE_OWNER,,}"
           token="$(curl --fail --silent --show-error --user "${GHCR_USER}:${GHCR_TOKEN}" \
-            "https://ghcr.io/token?service=ghcr.io&scope=repository:${owner}/remote-connect-mcp-center-java:pull" | jq --raw-output --exit-status '.token')"
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${owner}/remote-control-mcp-center:pull" | jq --raw-output --exit-status '.token')"
           digest="$(curl --fail --silent --show-error --head \
             --header "Authorization: Bearer ${token}" \
             --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-            "https://ghcr.io/v2/${owner}/remote-connect-mcp-center-java/manifests/center-${RELEASE_VERSION}" \
+            "https://ghcr.io/v2/${owner}/remote-control-mcp-center/manifests/center-${RELEASE_VERSION}" \
             | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" { print $2; exit }')"
           [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
@@ -354,7 +354,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then overlay='remote-connect-mcp-java-staging'; else overlay='remote-connect-mcp-java-production'; fi
+          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then overlay='remote-control-mcp-staging'; else overlay='remote-control-mcp-production'; fi
           export OVERLAY_DIR="gitops/${overlay}"
           RELEASE_VERSION="${RELEASE_VERSION}" CENTER_DIGEST="${CENTER_DIGEST}" OVERLAY_DIR="${OVERLAY_DIR}" python3 - <<'PY'
           import os
@@ -365,7 +365,7 @@ jobs:
           digest = os.environ['CENTER_DIGEST']
           version = os.environ['RELEASE_VERSION']
           files = [root / 'center.yaml', root / 'migration-job.yaml']
-          image_pattern = re.compile(r'(image:\s*ghcr\.io/prodigalgal/remote-connect-mcp-center-java@)sha256:[0-9a-f]{64}')
+          image_pattern = re.compile(r'(image:\s*ghcr\.io/prodigalgal/remote-control-mcp-center@)sha256:[0-9a-f]{64}')
           version_pattern = re.compile(r'(?m)^(\s*-\s*name:\s*RCM_CENTER_VERSION\s*\n\s*value:\s*)[^\r\n]+$')
           total = 0
           for path in files:
@@ -390,12 +390,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then overlay='remote-connect-mcp-java-staging'; else overlay='remote-connect-mcp-java-production'; fi
-          git -C gitops config user.name 'remote-connect-mcp-actions[bot]'
-          git -C gitops config user.email 'remote-connect-mcp-actions[bot]@users.noreply.github.com'
+          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then overlay='remote-control-mcp-staging'; else overlay='remote-control-mcp-production'; fi
+          git -C gitops config user.name 'remote-control-mcp-actions[bot]'
+          git -C gitops config user.email 'remote-control-mcp-actions[bot]@users.noreply.github.com'
           git -C gitops add "${overlay}/center.yaml" "${overlay}/migration-job.yaml"
           if git -C gitops diff --cached --quiet; then echo 'Center overlay already points at this release.'; exit 0; fi
-          git -C gitops commit -m "chore(remote-connect-mcp): promote center ${RELEASE_VERSION}"
+          git -C gitops commit -m "chore(remote-control-mcp): promote center ${RELEASE_VERSION}"
           python3 scripts/push-gitops-component.py gitops
       - name: Record Center promotion evidence
         env:

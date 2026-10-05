@@ -1,7 +1,7 @@
 param(
-    [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
-    [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent",
-    [string]$TaskName = "RemoteConnectMCPDesktopCompanion",
+    [string]$InstallRoot = "$env:ProgramFiles\Remote Control MCP Agent",
+    [string]$StateDir = "$env:ProgramData\RemoteControlMCPAgent",
+    [string]$TaskName = "RemoteControlMCPDesktopCompanion",
     [string]$DesktopUser = ""
 )
 
@@ -63,7 +63,7 @@ $taskPrincipal = New-ScheduledTaskPrincipal -UserId $DesktopUser -LogonType Inte
 $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $taskPrincipal `
-    -Settings $settings -Description "Interactive desktop companion for Remote Connect MCP" -Force | Out-Null
+    -Settings $settings -Description "Interactive desktop companion for Remote Control MCP" -Force | Out-Null
 
 [pscustomobject]@{
     Task = $TaskName

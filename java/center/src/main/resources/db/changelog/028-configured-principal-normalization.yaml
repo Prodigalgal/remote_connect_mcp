@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 028-configured-principal-normalization
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: principals,cleanup
       contexts: postgres
       runInTransaction: true

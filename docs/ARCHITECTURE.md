@@ -1,4 +1,4 @@
-# 历史记录：Remote Connect MCP 目标架构
+# 历史记录：Remote Control MCP 目标架构
 
 > 本文件保留早期架构推演，不能作为当前实现契约。当前底层严格采用全机 Agent、无 project/worktree/workspace/path 栅栏的极简模型，请以 [`FULL_HOST_MODEL.md`](FULL_HOST_MODEL.md) 和根目录 [`README.md`](../README.md) 为准。
 
@@ -194,8 +194,8 @@ Browser Agent 与 Desktop Agent 分离，Java Agent 负责身份、生命周期�
  Worker 只接收 Agent 写入的结构化请求文件，不从环境变量读取命令。
   仓库提供 `scripts/browser-worker.mjs` 作为最小参考适配器，通过 `RCM_BROWSER_ENGINE` 动态加载 Playwright、Patchright 或 Comoufox，并把 `navigate`、`snapshot`、`click`、`fill`、`press`、`wait`、`title`、`url`、`screenshot`、`download` 映射为少量结构化操作。Worker 不提供任意 `evaluate` 脚本入口，避免页面脚本把 Cookie、Profile 或其他凭据带回 Center。`snapshot` 同时返回最多 64 个有界 `rcm-ref-v1` 元素引用；引用只编码 role/name、test-id、placeholder 或 text 定位及序号，后续任务可以复用引用而不把整棵 DOM 带回 MCP。启用独立 profile 时，Agent 在状态目录保留最近页面的脱敏 origin/path，会话重新打开时先尝试恢复该页面；query、fragment、Cookie 和 CDP 凭据永不写入会话标记。
   结果清单由 Agent 校验 MIME、路径、大小和 SHA-256 后才上传单个工件；适配器异常或越界均 fail-closed。Worker 已支持 CSS、`rcm-ref-v1`、role、label、placeholder、text 和 test-id 结构化定位，并返回有界脱敏网络/控制台/页面错误摘要；稳定引用依赖页面仍可访问，定位失败时应重新执行 `snapshot`。目标主机仍需安装浏览器运行时并完成持久会话、跨浏览器和真实站点回归。
-- Agent 默认只允许 1 个 Browser Worker（总并发为 1 时自然为 1），可通过 `REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS` 提高到最多 8，且始终不超过总并发。每个 browser 任务由独立的 `rcm-browser-agent` Native 进程编排本机适配器；该进程无 Center Token、只存活一个任务，任务有默认 300 秒超时、最长 24 小时硬上限，超时/取消/Agent 关闭会终止整个子进程树并删除临时请求、结果和工件目录；达到 Browser cap 时 Agent 从下一次 poll 的 `available_capabilities` 中移除 `browser`，不会在本机堆积等待进程。
-- command 和 browser-agent supervisor 共享 `REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES` Agent 级进程总预算（默认随并发增长但封顶 256，范围 1–4096）。监督器在任务启动时先为根进程保留名额，观察到新增后代时动态占用；预算耗尽立即终止该任务并回传原因，任务退出时释放名额。用户会话中的 desktop-companion 不进入该预算：它只由自己的 IPC 并发、GUI 启动上限和 `ProcessHandle.onExit()` 回收机制管理，command-agent 在没有伴侣时不执行桌面直启回退。这样三个 Native 目标不会共享桌面实现、进程注册表或资源回收代码。
+- Agent 默认只允许 1 个 Browser Worker（总并发为 1 时自然为 1），可通过 `REMOTE_CONTROL_MCP_AGENT_MAX_BROWSER_WORKERS` 提高到最多 8，且始终不超过总并发。每个 browser 任务由独立的 `rcm-browser-agent` Native 进程编排本机适配器；该进程无 Center Token、只存活一个任务，任务有默认 300 秒超时、最长 24 小时硬上限，超时/取消/Agent 关闭会终止整个子进程树并删除临时请求、结果和工件目录；达到 Browser cap 时 Agent 从下一次 poll 的 `available_capabilities` 中移除 `browser`，不会在本机堆积等待进程。
+- command 和 browser-agent supervisor 共享 `REMOTE_CONTROL_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES` Agent 级进程总预算（默认随并发增长但封顶 256，范围 1–4096）。监督器在任务启动时先为根进程保留名额，观察到新增后代时动态占用；预算耗尽立即终止该任务并回传原因，任务退出时释放名额。用户会话中的 desktop-companion 不进入该预算：它只由自己的 IPC 并发、GUI 启动上限和 `ProcessHandle.onExit()` 回收机制管理，command-agent 在没有伴侣时不执行桌面直启回退。这样三个 Native 目标不会共享桌面实现、进程注册表或资源回收代码。
 
 ## 7. 连接与配置演进
 

@@ -31,7 +31,7 @@ Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布�
 ## 已实现代码与待验收边界
 
 1. Native Image：v0.1.28 正式 tag Release 已完成；Linux amd64/arm64、Windows amd64 原生构建、原生烟测、SPDX SBOM、Sigstore keyless 签名、OIDC Artifact Attestation 和 Agent 资源门禁均由 GitHub Actions 完成。Windows/Linux 发布物为包含旁路运行库的平铺 ZIP；Windows ARM64 不在发布矩阵。开发机不执行编译。
-2. PostgreSQL：生产库使用独立 `remote_connect_mcp_prod` schema/database，并由 Liquibase 管理当前数据模型；工件抽象为 `ArtifactStore`，新写入走独立持久卷文件对象或有界 HTTPS 对象网关，数据库只保存 key、大小、MIME 和 SHA-256。Artifact Transport v2 的状态机、分块偏移、配额和 GC 字节指标代码已完成；卷备份恢复、高并发容量、Center 重启和正式恢复演练属于生产门禁。
+2. PostgreSQL：生产库使用独立 `remote_control_mcp_prod` schema/database，并由 Liquibase 管理当前数据模型；工件抽象为 `ArtifactStore`，新写入走独立持久卷文件对象或有界 HTTPS 对象网关，数据库只保存 key、大小、MIME 和 SHA-256。Artifact Transport v2 的状态机、分块偏移、配额和 GC 字节指标代码已完成；卷备份恢复、高并发容量、Center 重启和正式恢复演练属于生产门禁。
 3. Browser Agent：Java Agent 已提供独立 Browser Native 目标和参考 `scripts/browser-worker.mjs`，可按环境加载 Playwright/Patchright/Comoufox，并支持 CSS/`rcm-ref-v1`/role/label/placeholder/text/test-id 结构化定位；快照最多返回 64 个有界引用，独立 profile 保存脱敏 origin/path，引用失效返回一次有界 snapshot 建议；结果包含有界动作摘要、截图/下载工件以及脱敏网络/控制台/页面错误，并有进程/profile 回收。目标平台浏览器安装和跨浏览器回归属于统一验收。
 4. Desktop Agent：截图/区域截图、屏幕/窗口枚举、输入、剪贴板和 Windows 窗口聚焦已具备；command-agent 原子发布伴侣 scope 策略，伴侣在 IPC 前复核真实路径和合同过期时间，并在重启时回收 GUI 子进程；Linux AWT/Java2D/X11 与 Wayland native helper 均有明确代码路径。Windows 多会话/UAC、Wayland、多显示器输入和跨桌面回归属于统一验收。
 5. 构建拆分：`command-agent`、`desktop-companion`、`browser-agent` 已分别建立 Gradle Native 目标、Docker artifact 目标和 Release ZIP/校验流程；GitHub Actions 已通过 Linux amd64/arm64、Windows amd64 的四目标编译与烟测，9 台登记 Agent 的 v0.1.28 安装/升级回归已完成。
@@ -60,7 +60,7 @@ Java 25 Center/Agent 与 React 控制台已经完成既有 v0.1.28 生产发布�
   64 MiB、聚合 spool 64 MiB。Native Agent 的目标 RSS 必须在 CI/目标平台用同一版本实测；当前没有把
   编译进程的内存数字冒充运行时测量。Go 基线仓库内 Linux Agent 文件大小为 6,537,378 字节，但这
   只是磁盘体积，也不能替代同场景 RSS 对比。
-- 每个 command/browser 任务现在有独立进程树监督：默认最多 32 个后代进程，可选墙钟、累计 CPU 时间和 Linux `/proc` RSS 上限；超限终止整棵树并回传明确失败原因。command 任务和 browser-agent supervisor 共享 Agent 级总进程预算（`REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`，默认随并发增长但封顶 256，允许 1–4096），动态进程树扩展后自动释放；desktop-companion 使用自己的 IPC/GUI 启动上限和 shutdown 回收，不进入 command-agent 总预算。资源监督只在任务运行期间存在，不增加空闲轮询；Windows RSS 仍需后续 Job Object/目标机门禁补齐。
+- 每个 command/browser 任务现在有独立进程树监督：默认最多 32 个后代进程，可选墙钟、累计 CPU 时间和 Linux `/proc` RSS 上限；超限终止整棵树并回传明确失败原因。command 任务和 browser-agent supervisor 共享 Agent 级总进程预算（`REMOTE_CONTROL_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES`，默认随并发增长但封顶 256，允许 1–4096），动态进程树扩展后自动释放；desktop-companion 使用自己的 IPC/GUI 启动上限和 shutdown 回收，不进入 command-agent 总预算。资源监督只在任务运行期间存在，不增加空闲轮询；Windows RSS 仍需后续 Job Object/目标机门禁补齐。
 - Agent dispatch 对同一 task ID 使用原子 `putIfAbsent` fence；Center/网络重试在旧 runner 仍存在时只丢弃重复响应，不覆盖 Future 或重复执行任务。该保护不替代 Center 的租约/Attempt 真相源，重启和断线演练仍待目标环境验收。
 - `scripts/smoke-java-agent.sh/.ps1` 在 Agent 在线和任务闭环期间采样工作集峰值；Release/迁移工作流
   会先按 256 MiB 默认预算校验，再将 JSON 作为私有 Actions 工件上传，不放入公开 Release；

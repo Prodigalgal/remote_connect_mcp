@@ -23,7 +23,7 @@ if (localBuildTasks && providers.environmentVariable("GITHUB_ACTIONS").orNull !=
     )
 }
 
-group = "com.prodigalgal.remoteconnectmcp"
+group = "com.prodigalgal.remotecontrolmcp"
 version = providers.gradleProperty("releaseVersion").orElse("0.1.0-SNAPSHOT").get()
 
 allprojects {

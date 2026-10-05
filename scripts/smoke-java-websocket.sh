@@ -31,7 +31,7 @@ trap cleanup EXIT INT TERM
 export RCM_CENTER_PERSISTENCE_MODE=memory
 export RCM_CENTER_VERSION=websocket-smoke
 export RCM_CENTER_AGENT_WEBSOCKET_ENABLED=true
-export REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN=smoke-admin-token
+export REMOTE_CONTROL_MCP_CENTER_ADMIN_TOKEN=smoke-admin-token
 "$CENTER_BINARY" "--server.port=$PORT" >"$STATE_DIR/center.log" 2>&1 &
 CENTER_PID=$!
 

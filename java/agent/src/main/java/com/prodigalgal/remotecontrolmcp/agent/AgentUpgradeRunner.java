@@ -1,0 +1,503 @@
+package com.prodigalgal.remotecontrolmcp.agent;
+
+import com.prodigalgal.remotecontrolmcp.protocol.RuntimeEnvironment;
+
+import com.prodigalgal.remotecontrolmcp.protocol.JsonCodec;
+import com.prodigalgal.remotecontrolmcp.protocol.UpgradeComponentPlan;
+import com.prodigalgal.remotecontrolmcp.protocol.UpgradePlan;
+import com.prodigalgal.remotecontrolmcp.protocol.UpgradeStatusRequest;
+import com.prodigalgal.remotecontrolmcp.protocol.SensitiveValueRedactor;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Base64;
+import java.util.HexFormat;
+import java.util.Locale;
+import java.util.ArrayList;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+/**
+ * Stages a Center-offered Agent binary and launches a detached helper.  The
+ * helper performs the stop/replace/start transaction after this process exits;
+ * the Agent itself never overwrites its currently executing file.
+ */
+final class AgentUpgradeRunner implements Runnable {
+    private static final Logger LOG = Logger.getLogger(AgentUpgradeRunner.class.getName());
+    // Native Image bundles are currently below 100 MiB, but the executable
+    // and runtime DLL set must have room to grow without making a valid
+    // release impossible to install. The helper applies a separate 256 MiB
+    // uncompressed bundle ceiling.
+    private static final long MAX_ARTIFACT_BYTES = 256L * 1024 * 1024;
+    private static final Duration DOWNLOAD_TIMEOUT = Duration.ofMinutes(15);
+    private static final Duration DOWNLOAD_STALL_TIMEOUT = Duration.ofMinutes(2);
+    private static final int MAX_DOWNLOAD_ATTEMPTS = 3;
+    private static final Duration DOWNLOAD_RETRY_DELAY = Duration.ofSeconds(2);
+    private static final int COPY_BUFFER = 64 * 1024;
+
+    private final AgentConfig config;
+    private final AgentIdentity identity;
+    private final AgentTransport transport;
+    private final UpgradePlan plan;
+    private final Runnable requestShutdown;
+    private final HttpClient http = HttpClient.newBuilder()
+            // GitHub release redirects intermittently terminate HTTP/2 streams
+            // on long Native Image ZIP downloads.  Keep the control plane
+            // websocket/HTTPS paths unchanged, but use a deterministic HTTP/1.1
+            // connection for the bounded upgrade artifact fetch.
+            .version(HttpClient.Version.HTTP_1_1)
+            // GitHub Release URLs redirect to release-assets.githubusercontent.com.
+            // On slower or filtered egress paths the redirected TLS connection
+            // can take more than ten seconds even though the Agent is healthy.
+            // Keep the bounded upgrade request, but allow a 30-second connect
+            // window so a transient slow route is not reported as a failed
+            // upgrade.
+            .connectTimeout(Duration.ofSeconds(30))
+            .followRedirects(HttpClient.Redirect.NORMAL).build();
+
+    AgentUpgradeRunner(AgentConfig config, AgentIdentity identity, AgentTransport transport,
+                       UpgradePlan plan, Runnable requestShutdown) {
+        this.config = config;
+        this.identity = identity;
+        this.transport = transport;
+        this.plan = plan;
+        this.requestShutdown = requestShutdown == null ? () -> { } : requestShutdown;
+    }
+
+    @Override
+    public void run() {
+        Path staged = null;
+        var stagedArtifacts = new ArrayList<Path>();
+        Process helper = null;
+        try {
+            validatePlan(plan);
+            report("downloading", null);
+            var directory = config.stateDir().toAbsolutePath().normalize().resolve("upgrades");
+            Files.createDirectories(directory);
+            var safeVersion = safeComponent(plan.version());
+            var updateAgent = !plan.version().equals(config.currentVersion());
+            if (updateAgent) {
+                var bundleSuffix = archiveSuffix(plan.url());
+                if (bundleSuffix == null) throw new IOException("Agent upgrade URL must reference a Native Image ZIP bundle");
+                staged = directory.resolve("agent-" + safeVersion + ".new" + bundleSuffix);
+                stagedArtifacts.add(staged);
+                downloadVerified(plan.url(), plan.sha256(), staged);
+            }
+
+            var componentConfigs = new ArrayList<AgentUpgradeHelper.ComponentConfig>();
+            var completedComponents = new java.util.LinkedHashMap<String, String>();
+            var updaterUpdatePending = false;
+            for (var component : plan.components()) {
+                if ("agent-updater".equals(component.component()) && updaterAlreadyInstalled(component)) {
+                    completedComponents.put(component.component(), "already-current");
+                    continue;
+                }
+                var componentTarget = resolveComponentTarget(component.component());
+                if ("agent-updater".equals(component.component())) updaterUpdatePending = true;
+                var componentSuffix = archiveSuffix(component.url());
+                if (componentSuffix == null) throw new IOException("component upgrade URL must reference a Native Image ZIP bundle");
+                var componentStaged = directory.resolve(safeComponent(component.component()) + "-" + safeComponent(component.version())
+                        + ".new" + componentSuffix);
+                stagedArtifacts.add(componentStaged);
+                report("downloading", null);
+                downloadVerified(component.url(), component.sha256(), componentStaged);
+                componentConfigs.add(new AgentUpgradeHelper.ComponentConfig(component.component(), component.version(),
+                        componentStaged.toString(), componentTarget.toString(), config.stateDir().toAbsolutePath().normalize().toString(),
+                        componentServiceName(component.component()), component.restartPolicy()));
+            }
+
+            var target = resolveTargetBinary();
+            var helperConfig = new AgentUpgradeHelper.Config(
+                    plan.campaignId(), plan.version(), staged == null ? "" : staged.toString(), target.toString(),
+                    config.stateDir().toAbsolutePath().normalize().toString(), serviceName(),
+                    ProcessHandle.current().pid(), plan.attempt(), componentConfigs, completedComponents);
+            var configPath = directory.resolve("helper-" + safeVersion + ".json");
+            writeConfig(configPath, helperConfig);
+            report("installing", null);
+            helper = launchHelper(target, configPath, updaterUpdatePending);
+            LOG.info(() -> "Agent upgrade helper launched for " + plan.version());
+            if (updateAgent) {
+                requestShutdown.run();
+            } else {
+                waitForComponentHelper(helper);
+            }
+        } catch (InterruptedException interrupted) {
+            cleanupUnclaimedArtifacts(stagedArtifacts, helper);
+            Thread.currentThread().interrupt();
+        } catch (Exception exception) {
+            cleanupUnclaimedArtifacts(stagedArtifacts, helper);
+            var message = compactError(exception.getMessage());
+            LOG.log(Level.WARNING, "Agent upgrade failed: " + message, exception);
+            try {
+                report("failed", message);
+            } catch (Exception reportFailure) {
+                LOG.log(Level.WARNING, "could not report Agent upgrade failure", reportFailure);
+            }
+        }
+    }
+
+    private void report(String status, String error) throws IOException, InterruptedException {
+        AgentRetry.call(LOG, "upgrade status " + plan.campaignId(), () -> {
+            transport.reportUpgrade(identity.machineId(), identity.token(),
+                    new UpgradeStatusRequest(plan.campaignId(), status, error, plan.attempt(), java.util.Map.of()));
+            return null;
+        });
+    }
+
+    private void downloadVerified(String rawUrl, String expected, Path destination)
+            throws IOException, InterruptedException {
+        IOException last = null;
+        for (int attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt++) {
+            try {
+                if (attempt > 1) report("downloading", null);
+                downloadVerifiedOnce(rawUrl, expected, destination);
+                return;
+            } catch (IOException exception) {
+                last = exception;
+                if (attempt == MAX_DOWNLOAD_ATTEMPTS || !isRetryableDownloadFailure(exception)) throw exception;
+                LOG.log(Level.INFO, "retrying Agent upgrade download ({0}/{1}): {2}",
+                        new Object[]{attempt + 1, MAX_DOWNLOAD_ATTEMPTS, compactError(exception.getMessage())});
+                Thread.sleep(DOWNLOAD_RETRY_DELAY.toMillis());
+            }
+        }
+        throw last == null ? new IOException("Agent upgrade download failed") : last;
+    }
+
+    private void downloadVerifiedOnce(String rawUrl, String expected, Path destination)
+            throws IOException, InterruptedException {
+        var deadlineNanos = System.nanoTime() + DOWNLOAD_TIMEOUT.toNanos();
+        var request = HttpRequest.newBuilder(URI.create(rawUrl.trim()))
+                .timeout(DOWNLOAD_TIMEOUT)
+                .header("Accept", "application/octet-stream")
+                .header("User-Agent", "remote-control-mcp-agent-updater")
+                .GET().build();
+        var future = http.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream());
+        HttpResponse<InputStream> response;
+        try {
+            response = future.get(DOWNLOAD_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException exception) {
+            future.cancel(true);
+            throw new IOException("Agent upgrade download timed out", exception);
+        } catch (java.util.concurrent.ExecutionException exception) {
+            var cause = exception.getCause();
+            if (cause instanceof IOException io) throw io;
+            throw new IOException("Agent upgrade download failed", cause == null ? exception : cause);
+        }
+        if (response.statusCode() != 200) {
+            response.body().close();
+            throw new IOException("Agent upgrade endpoint returned HTTP " + response.statusCode());
+        }
+        if (!"https".equalsIgnoreCase(response.uri().getScheme())) {
+            response.body().close();
+            throw new IOException("Agent upgrade redirected to a non-HTTPS URL");
+        }
+
+        var temporary = destination.resolveSibling("." + destination.getFileName() + ".download");
+        Files.deleteIfExists(temporary);
+        var digest = sha256Digest();
+        long written = 0;
+        try (var input = response.body(); var output = Files.newOutputStream(temporary,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+            var buffer = new byte[COPY_BUFFER];
+            int read;
+            while ((read = readWithDeadline(input, buffer, deadlineNanos, DOWNLOAD_STALL_TIMEOUT)) >= 0) {
+                if (read == 0) continue;
+                written += read;
+                if (written > MAX_ARTIFACT_BYTES) throw new IOException("Agent upgrade exceeds 256 MiB");
+                output.write(buffer, 0, read);
+                digest.update(buffer, 0, read);
+            }
+            output.flush();
+        } catch (Exception exception) {
+            Files.deleteIfExists(temporary);
+            if (exception instanceof IOException io) throw io;
+            throw new IOException("Agent upgrade download failed", exception);
+        }
+        var actual = HexFormat.of().formatHex(digest.digest());
+        if (!MessageDigest.isEqual(actual.getBytes(StandardCharsets.US_ASCII), expected.trim().toLowerCase(Locale.ROOT).getBytes(StandardCharsets.US_ASCII))) {
+            Files.deleteIfExists(temporary);
+            throw new IOException("Agent upgrade SHA-256 mismatch");
+        }
+        try {
+            Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException exception) {
+            Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING);
+        }
+        try {
+            Files.setPosixFilePermissions(destination, java.util.EnumSet.of(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE));
+        } catch (Exception ignored) {
+            // Windows ACLs are applied by the Agent installer/startup task.
+        }
+    }
+
+    private Path resolveTargetBinary() throws IOException {
+        var configured = RuntimeEnvironment.get("REMOTE_CONTROL_MCP_AGENT_BINARY_PATH");
+        if (configured == null || configured.isBlank()) {
+            throw new IOException("REMOTE_CONTROL_MCP_AGENT_BINARY_PATH is required for self-upgrade");
+        }
+        var target = Path.of(configured.trim()).toAbsolutePath().normalize();
+        if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Agent binary path is not a file: " + target);
+        if (target.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")) {
+            throw new IOException("Agent self-upgrade requires the installed Native Image executable");
+        }
+        return target;
+    }
+
+    private Process launchHelper(Path target, Path configPath, boolean useEmbeddedHelper) throws IOException {
+        var command = new java.util.ArrayList<String>();
+        Path updater = null;
+        if (!useEmbeddedHelper) {
+            try {
+                updater = resolveComponentTarget("agent-updater");
+            } catch (IOException ignored) {
+                // Older custom installations may not expose the canonical layout.
+            }
+        }
+        if (updater != null && Files.isRegularFile(updater, LinkOption.NOFOLLOW_LINKS)
+                && (isWindows() || Files.isExecutable(updater))) {
+            command.add(updater.toString());
+        } else {
+            // Keep the in-Agent helper as a bootstrap path until an updater
+            // component has been installed on this machine.
+            command.add(target.toString());
+        }
+        command.add("--apply-update");
+        command.add(configPath.toString());
+        return new ProcessBuilder(command).redirectErrorStream(true)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+    }
+
+    private void waitForComponentHelper(Process helper) throws IOException, InterruptedException {
+        var exitCode = helper.waitFor();
+        var resultFile = config.stateDir().toAbsolutePath().normalize().resolve("upgrade-result.json");
+        if (!Files.isRegularFile(resultFile, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("component updater exited without a terminal result");
+        }
+        var result = JsonCodec.read(Files.readAllBytes(resultFile), AgentUpgradeHelper.Result.class);
+        if (!plan.campaignId().equals(result.campaignId())) {
+            throw new IOException("component updater wrote a result for a different campaign");
+        }
+        if (exitCode != 0) {
+            LOG.warning("Component updater exited with code " + exitCode
+                    + "; terminal details will be collected from the helper result file");
+        }
+    }
+
+    private static void cleanupUnclaimedArtifacts(ArrayList<Path> artifacts, Process helper) {
+        if (helper != null && helper.isAlive()) return;
+        for (var artifact : artifacts) {
+            try {
+                Files.deleteIfExists(artifact);
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private boolean updaterAlreadyInstalled(UpgradeComponentPlan component) throws IOException {
+        var executable = resolveComponentTarget(component.component());
+        if (!Files.isRegularFile(executable, LinkOption.NOFOLLOW_LINKS)
+                || (!isWindows() && !Files.isExecutable(executable))) return false;
+        var versionFile = config.stateDir().toAbsolutePath().normalize()
+                .resolve(safeComponent(component.component()) + "-version");
+        try {
+            return Files.isRegularFile(versionFile, LinkOption.NOFOLLOW_LINKS)
+                    && component.version().equals(Files.readString(versionFile, StandardCharsets.UTF_8).trim());
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    private static void writeConfig(Path target, AgentUpgradeHelper.Config value) throws IOException {
+        var temp = target.resolveSibling("." + target.getFileName() + ".tmp");
+        Files.write(temp, JsonCodec.write(value), StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        try {
+            Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException exception) {
+            Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private static void validatePlan(UpgradePlan value) {
+        if (value == null || value.campaignId() == null || value.campaignId().isBlank()) throw new IllegalArgumentException("upgrade campaign_id is required");
+        if (value.version() == null || value.version().isBlank() || value.version().length() > 128) throw new IllegalArgumentException("upgrade version is invalid");
+        var uri = URI.create(value.url() == null ? "" : value.url().trim());
+        if (value.url() == null || value.url().isBlank() || value.url().length() > 4096
+                || archiveSuffix(value.url()) == null
+                || !"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                || uri.getUserInfo() != null || uri.getFragment() != null) {
+            throw new IllegalArgumentException("upgrade URL must be an HTTPS Native Image ZIP bundle");
+        }
+        if (value.sha256() == null || !value.sha256().trim().matches("(?i)[0-9a-f]{64}")) throw new IllegalArgumentException("upgrade SHA-256 is invalid");
+        var names = new java.util.HashSet<String>();
+        for (var component : value.components()) {
+            if (component == null || component.component().isBlank() || !names.add(component.component())) {
+                throw new IllegalArgumentException("upgrade component is duplicated or missing");
+            }
+            var componentUri = URI.create(component.url() == null ? "" : component.url().trim());
+            if (component.url().isBlank() || component.url().length() > 4096
+                    || archiveSuffix(component.url()) == null
+                    || !"https".equalsIgnoreCase(componentUri.getScheme())
+                    || componentUri.getHost() == null || componentUri.getUserInfo() != null
+                    || componentUri.getFragment() != null
+                    || !component.sha256().matches("(?i)[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("upgrade component artifact is invalid");
+            }
+            var policy = component.restartPolicy() == null ? "" : component.restartPolicy().trim().toLowerCase(Locale.ROOT);
+            if (!("drain-and-restart".equals(policy) || "restart".equals(policy) || "manual".equals(policy))) {
+                throw new IllegalArgumentException("upgrade component restart policy is invalid");
+            }
+            if ("agent-updater".equals(component.component()) && !"manual".equals(policy)) {
+                throw new IllegalArgumentException("Agent updater must use the manual restart policy");
+            }
+        }
+    }
+
+    static int readWithDeadline(InputStream input, byte[] buffer, long deadlineNanos, Duration stallTimeout)
+            throws IOException {
+        var remaining = deadlineNanos - System.nanoTime();
+        if (remaining <= 0) throw new IOException("Agent upgrade download timed out");
+        var result = new java.util.concurrent.CompletableFuture<Integer>();
+        var reader = Thread.startVirtualThread(() -> {
+            try {
+                result.complete(input.read(buffer));
+            } catch (IOException exception) {
+                result.completeExceptionally(exception);
+            }
+        });
+        try {
+            return result.get(Math.min(remaining, stallTimeout.toNanos()), TimeUnit.NANOSECONDS);
+        } catch (TimeoutException exception) {
+            var expired = deadlineNanos - System.nanoTime() <= 0;
+            result.cancel(true);
+            try { input.close(); } catch (IOException ignored) { }
+            reader.interrupt();
+            throw new IOException(expired ? "Agent upgrade download timed out"
+                    : "Agent upgrade download stalled without progress", exception);
+        } catch (InterruptedException exception) {
+            result.cancel(true);
+            try { input.close(); } catch (IOException ignored) { }
+            reader.interrupt();
+            Thread.currentThread().interrupt();
+            throw new IOException("Agent upgrade download interrupted", exception);
+        } catch (java.util.concurrent.ExecutionException exception) {
+            var cause = exception.getCause();
+            if (cause instanceof IOException io) throw io;
+            throw new IOException("Agent upgrade download failed", cause == null ? exception : cause);
+        } finally {
+            if (!result.isDone()) reader.interrupt();
+        }
+    }
+
+    private static boolean isRetryableDownloadFailure(IOException exception) {
+        var message = exception.getMessage() == null ? "" : exception.getMessage().toLowerCase(Locale.ROOT);
+        return message.contains("eof") || message.contains("reset") || message.contains("timed out")
+                || message.contains("stalled")
+                || message.contains("connect") || message.contains("closed") || message.contains("no bytes");
+    }
+
+    private Path resolveComponentTarget(String component) throws IOException {
+        var key = component == null ? "" : component.trim().toLowerCase(Locale.ROOT);
+        var env = switch (key) {
+            case "agent-updater" -> "REMOTE_CONTROL_MCP_AGENT_UPDATER_BINARY_PATH";
+            case "desktop-companion", "desktop" -> "REMOTE_CONTROL_MCP_DESKTOP_BINARY_PATH";
+            case "browser-agent", "browser" -> "REMOTE_CONTROL_MCP_BROWSER_BINARY_PATH";
+            default -> "REMOTE_CONTROL_MCP_" + key.replace('-', '_').toUpperCase(Locale.ROOT) + "_BINARY_PATH";
+        };
+        var configured = RuntimeEnvironment.get(env);
+        if (configured != null && !configured.isBlank()) {
+            return Path.of(configured.trim()).toAbsolutePath().normalize();
+        }
+
+        // The installer keeps all component bundles beside the command-agent.
+        // Resolve that immutable layout when an older installation did not
+        // persist the optional component path variable.  This is the canonical
+        // layout, not a second download or a duplicate component bundle.
+        var commandPath = RuntimeEnvironment.get("REMOTE_CONTROL_MCP_AGENT_BINARY_PATH");
+        if (commandPath != null && !commandPath.isBlank()) {
+            var root = Path.of(commandPath.trim()).toAbsolutePath().normalize().getParent();
+            if (root != null) {
+                var executable = switch (key) {
+                    case "agent-updater" -> isWindows() ? "rcm-updater.exe" : "rcm-updater";
+                    case "desktop-companion", "desktop" -> isWindows()
+                            ? "rcm-desktop-companion.exe" : "rcm-desktop-companion";
+                    case "browser-agent", "browser" -> isWindows()
+                            ? "rcm-browser-agent.exe" : "rcm-browser-agent";
+                    default -> null;
+                };
+                if (executable != null) {
+                    var directory = switch (key) {
+                        case "agent-updater" -> "updater";
+                        case "desktop-companion", "desktop" -> "desktop";
+                        default -> "browser";
+                    };
+                    return root.resolve(directory).resolve(executable).normalize();
+                }
+            }
+        }
+        throw new IOException(env + " is required for component upgrade");
+    }
+
+    private static String componentServiceName(String component) {
+        var key = component == null ? "" : component.trim().toLowerCase(Locale.ROOT);
+        var env = switch (key) {
+            case "desktop-companion", "desktop" -> "REMOTE_CONTROL_MCP_DESKTOP_SERVICE_NAME";
+            case "browser-agent", "browser" -> "REMOTE_CONTROL_MCP_BROWSER_SERVICE_NAME";
+            default -> "REMOTE_CONTROL_MCP_" + key.replace('-', '_').toUpperCase(Locale.ROOT) + "_SERVICE_NAME";
+        };
+        var configured = RuntimeEnvironment.getOrDefault(env, "").trim();
+        if (!configured.isBlank()) return configured;
+        // Windows installs use one stable interactive task name.  Keep the
+        // default here so a component installed before the service-name env
+        // field was introduced can still be drained and replaced safely.
+        if (isWindows() && ("desktop-companion".equals(key) || "desktop".equals(key))) {
+            return RuntimeEnvironment.desktopServiceDefault();
+        }
+        return "";
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private static String safeComponent(String value) {
+        var result = value == null ? "upgrade" : value.replaceAll("[^A-Za-z0-9._-]", "");
+        return result.isBlank() ? "upgrade" : result.substring(0, Math.min(80, result.length()));
+    }
+
+    private static String archiveSuffix(String value) {
+        if (value == null) return null;
+        var normalized = value.trim().toLowerCase(Locale.ROOT);
+        var query = normalized.indexOf('?');
+        if (query >= 0) normalized = normalized.substring(0, query);
+        if (normalized.endsWith(".zip")) return ".zip";
+        return null;
+    }
+    private static String serviceName() { return RuntimeEnvironment.getOrDefault("REMOTE_CONTROL_MCP_AGENT_SERVICE_NAME", "").trim(); }
+    private static MessageDigest sha256Digest() {
+        try { return MessageDigest.getInstance("SHA-256"); }
+        catch (java.security.NoSuchAlgorithmException exception) { throw new IllegalStateException(exception); }
+    }
+    private static String compactError(String value) {
+        var error = value == null || value.isBlank() ? "Agent upgrade failed" : SensitiveValueRedactor.redact(value.trim());
+        return error.length() <= 4096 ? error : error.substring(0, 4096);
+    }
+}

@@ -25,7 +25,7 @@ export function AuthGate({ initialToken, loading, onSubmit }: AuthGateProps) {
     <main className="auth-shell">
       <section className="auth-card" aria-labelledby="auth-title">
         <div className="auth-brand-mark" aria-hidden="true">RC</div>
-        <div className="auth-kicker">REMOTE CONNECT MCP</div>
+        <div className="auth-kicker">REMOTE CONTROL MCP</div>
         <h1 id="auth-title">登录 Control Center</h1>
         <p className="auth-description">
           这是受保护的终端控制面板。请输入 Center Admin Token，验证通过后才能查看机器、任务、文件和审计数据。

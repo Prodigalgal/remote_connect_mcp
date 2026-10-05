@@ -1,18 +1,18 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: remote-connect-mcp-java-center
-  namespace: remote-connect-mcp
+  name: remote-control-mcp-center
+  namespace: remote-control-mcp
 spec:
   hostnames:
-    - remote-connect-mcp-gateway.example.invalid
-    - remote-connect-mcp-agent.example.invalid
+    - remote-control-mcp-gateway.example.invalid
+    - remote-control-mcp-agent.example.invalid
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: remote-connect-mcp-console
-  namespace: remote-connect-mcp
+  name: remote-control-mcp-console
+  namespace: remote-control-mcp
 spec:
   hostnames:
-    - remote-connect-mcp-console.example.invalid
+    - remote-control-mcp-console.example.invalid

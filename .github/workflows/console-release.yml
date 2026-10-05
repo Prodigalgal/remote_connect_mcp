@@ -126,8 +126,8 @@ jobs:
           set -euo pipefail
           owner="${IMAGE_OWNER,,}"
           tag="console-${RELEASE_VERSION}"
-          tags=(--tag "ghcr.io/${owner}/remote-connect-mcp-console:${tag}")
-          if [[ "${RELEASE_PRERELEASE}" != 'true' ]]; then tags+=(--tag "ghcr.io/${owner}/remote-connect-mcp-console:latest"); fi
+          tags=(--tag "ghcr.io/${owner}/remote-control-mcp-console:${tag}")
+          if [[ "${RELEASE_PRERELEASE}" != 'true' ]]; then tags+=(--tag "ghcr.io/${owner}/remote-control-mcp-console:latest"); fi
           docker buildx build --platform linux/amd64,linux/arm64 --build-arg RCM_CI_BUILD=true \
             --build-arg "RCM_RELEASE_VERSION=${RELEASE_VERSION}" --build-arg "RCM_SOURCE_SHA=${GITHUB_SHA}" \
             --file web/Dockerfile "${tags[@]}" --provenance=true --sbom=true --push web
@@ -168,11 +168,11 @@ jobs:
           set -euo pipefail
           owner="${IMAGE_OWNER,,}"
           token="$(curl --fail --silent --show-error --user "${GHCR_USER}:${GHCR_TOKEN}" \
-            "https://ghcr.io/token?service=ghcr.io&scope=repository:${owner}/remote-connect-mcp-console:pull" | jq --raw-output --exit-status '.token')"
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${owner}/remote-control-mcp-console:pull" | jq --raw-output --exit-status '.token')"
           digest="$(curl --fail --silent --show-error --head \
             --header "Authorization: Bearer ${token}" \
             --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-            "https://ghcr.io/v2/${owner}/remote-connect-mcp-console/manifests/console-${RELEASE_VERSION}" \
+            "https://ghcr.io/v2/${owner}/remote-control-mcp-console/manifests/console-${RELEASE_VERSION}" \
             | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" { print $2; exit }')"
           [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
@@ -185,7 +185,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then overlay='remote-connect-mcp-java-staging'; else overlay='remote-connect-mcp-java-production'; fi
+          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then overlay='remote-control-mcp-staging'; else overlay='remote-control-mcp-production'; fi
           path="gitops/${overlay}/console.yaml"
           test -f "${path}"
           CONSOLE_DIGEST="${CONSOLE_DIGEST}" python3 - "${path}" <<'PY'
@@ -195,7 +195,7 @@ jobs:
           path = pathlib.Path(__import__('sys').argv[1])
           digest = os.environ['CONSOLE_DIGEST']
           text = path.read_text(encoding='utf-8')
-          pattern = re.compile(r'(image:\s*ghcr\.io/prodigalgal/remote-connect-mcp-console@)sha256:[0-9a-f]{64}')
+          pattern = re.compile(r'(image:\s*ghcr\.io/prodigalgal/remote-control-mcp-console@)sha256:[0-9a-f]{64}')
           text, count = pattern.subn(r'\1' + digest, text)
           if count != 1: raise SystemExit(f'expected one Console image reference, found {count}')
           path.write_text(text, encoding='utf-8', newline='\n')
@@ -208,12 +208,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then overlay='remote-connect-mcp-java-staging'; else overlay='remote-connect-mcp-java-production'; fi
-          git -C gitops config user.name 'remote-connect-mcp-actions[bot]'
-          git -C gitops config user.email 'remote-connect-mcp-actions[bot]@users.noreply.github.com'
+          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then overlay='remote-control-mcp-staging'; else overlay='remote-control-mcp-production'; fi
+          git -C gitops config user.name 'remote-control-mcp-actions[bot]'
+          git -C gitops config user.email 'remote-control-mcp-actions[bot]@users.noreply.github.com'
           git -C gitops add "${overlay}/console.yaml"
           if git -C gitops diff --cached --quiet; then echo 'Console overlay already points at this release.'; exit 0; fi
-          git -C gitops commit -m "chore(remote-connect-mcp): promote console ${RELEASE_VERSION}"
+          git -C gitops commit -m "chore(remote-control-mcp): promote console ${RELEASE_VERSION}"
           python3 scripts/push-gitops-component.py gitops
       - name: Record Console promotion evidence
         env:

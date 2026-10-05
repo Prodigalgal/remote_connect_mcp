@@ -111,7 +111,7 @@ try {
     $centerProcess = New-ManagedProcess $center @("--server.port=$Port") @{
         RCM_CENTER_PERSISTENCE_MODE = 'memory'
         RCM_CENTER_VERSION = 'native-agent-smoke'
-        REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN = $adminToken
+        REMOTE_CONTROL_MCP_CENTER_ADMIN_TOKEN = $adminToken
     }
     $centerProc = $centerProcess.Process
     $centerOut = $centerProcess.Stdout
@@ -143,14 +143,14 @@ try {
     if ([string]::IsNullOrWhiteSpace($enrollmentToken)) { throw 'Center did not return a one-time enrollment token' }
 
     $agentEnv = @{
-        REMOTE_CONNECT_MCP_AGENT_CENTER_URL = $base
-        REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN = $enrollmentToken
-        REMOTE_CONNECT_MCP_AGENT_NAME = 'native-smoke-agent'
-        REMOTE_CONNECT_MCP_AGENT_HOST_ID = 'native-smoke-host'
-        REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD = $root
-        REMOTE_CONNECT_MCP_AGENT_STATE_DIR = $tempState
-        REMOTE_CONNECT_MCP_AGENT_CAPABILITIES = 'command,durable_tasks'
-        REMOTE_CONNECT_MCP_AGENT_POLL_INTERVAL_MS = '250'
+        REMOTE_CONTROL_MCP_AGENT_CENTER_URL = $base
+        REMOTE_CONTROL_MCP_AGENT_ENROLLMENT_TOKEN = $enrollmentToken
+        REMOTE_CONTROL_MCP_AGENT_NAME = 'native-smoke-agent'
+        REMOTE_CONTROL_MCP_AGENT_HOST_ID = 'native-smoke-host'
+        REMOTE_CONTROL_MCP_AGENT_DEFAULT_CWD = $root
+        REMOTE_CONTROL_MCP_AGENT_STATE_DIR = $tempState
+        REMOTE_CONTROL_MCP_AGENT_CAPABILITIES = 'command,durable_tasks'
+        REMOTE_CONTROL_MCP_AGENT_POLL_INTERVAL_MS = '250'
     }
     $register = New-ManagedProcess $agent @('--register-once') $agentEnv
     try {
@@ -172,7 +172,7 @@ try {
 
     # Deliberately remove the one-time token before starting the long-lived
     # runtime. Existing identity.json must be sufficient for normal startup.
-    $agentEnv.Remove('REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN')
+    $agentEnv.Remove('REMOTE_CONTROL_MCP_AGENT_ENROLLMENT_TOKEN')
     $agentProcess = New-ManagedProcess $agent @('--run') $agentEnv
     $agentProc = $agentProcess.Process
     $script:agentProcForResource = $agentProc

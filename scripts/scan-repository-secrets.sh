@@ -39,7 +39,7 @@ report_matches 'private network address' '(^|[^0-9])(10[.]([0-9]{1,3}[.]){2}[0-9
 report_matches 'SSH URL with embedded credentials' 'ssh://[^[:space:]]+@'
 report_matches 'private key material' '-----BEGIN (RSA|OPENSSH|EC|DSA|PRIVATE) KEY-----'
 report_matches 'common provider credential' '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,})'
-report_matches 'high-entropy RCM secret assignment' 'REMOTE_CONNECT_MCP_[A-Z0-9_]*(TOKEN|PASSWORD|SECRET)=[A-Za-z0-9._~+/=-]{32,}'
+report_matches 'high-entropy RCM secret assignment' 'REMOTE_CONTROL_MCP_[A-Z0-9_]*(TOKEN|PASSWORD|SECRET)=[A-Za-z0-9._~+/=-]{32,}'
 
 tracked_sensitive="$(git ls-files | grep -E '(^|/)[.]env([.]|$)|(^|/)(kubeconfig|id_rsa|id_ed25519|[^/]+[.]pem)$' || true)"
 if [[ -n "$tracked_sensitive" ]]; then

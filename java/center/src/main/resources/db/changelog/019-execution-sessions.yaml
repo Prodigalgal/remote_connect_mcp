@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 019-execution-sessions
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: sessions
       contexts: postgres
       runInTransaction: true

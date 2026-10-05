@@ -51,7 +51,7 @@ schema 1；runtime descriptor 缺失或字段不完整时直接拒绝，不猜�
 
 - 一个任务由独立虚拟线程承载；进程等待、stdout/stderr drain、Center 上传是三个可相互取消的阶段。
 - 普通有超时任务把输出写入有界磁盘 spool；单任务上限与 Agent 级聚合上限同时生效，达到聚合上限时仅截断后续输出、不中断子进程。上传线程按 cursor 幂等提交，并以 1–30 秒指数退避处理 408/425/429/5xx/网络断线。
-- 无超时任务使用 durable PID/日志记录。Agent 重启会按记录重新附着；服务停止只中断 Agent 观察者，不重复启动命令。日志增量通过 `WatchService` 事件和 `ProcessHandle.onExit` 驱动，durable 日志超过 `REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES` 时终止任务并上报 `failed + output_truncated`，保护磁盘。
+- 无超时任务使用 durable PID/日志记录。Agent 重启会按记录重新附着；服务停止只中断 Agent 观察者，不重复启动命令。日志增量通过 `WatchService` 事件和 `ProcessHandle.onExit` 驱动，durable 日志超过 `REMOTE_CONTROL_MCP_AGENT_MAX_OUTPUT_BYTES` 时终止任务并上报 `failed + output_truncated`，保护磁盘。
 - 所有 HTTP 请求由 `HttpClient.sendAsync` 发起并带超时取消；认证错误不重试，运行时连接错误采用带抖动的退避。
 - Agent 退出时取消普通任务的观察线程；输出 spool、临时截图和一次性下载文件均在终态清理，Windows 句柄关闭存在短暂延迟时只做一次非阻塞清理，遗留文件交给下一次启动扫尾。
 

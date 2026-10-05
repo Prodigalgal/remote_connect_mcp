@@ -1,8 +1,8 @@
 /dist/
-/.remote_connect_mcp/
+/.remote_control_mcp/
 /.env
 /center.env
-/remote_connect_mcp.env
+/remote_control_mcp.env
 *.env
 !.env.example
 !**/*.env.example

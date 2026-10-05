@@ -1,0 +1,485 @@
+package com.prodigalgal.remotecontrolmcp.center;
+
+import com.prodigalgal.remotecontrolmcp.protocol.AgentMetadata;
+import com.prodigalgal.remotecontrolmcp.protocol.AgentRuntimeDescriptor;
+import com.prodigalgal.remotecontrolmcp.protocol.JsonCodec;
+import com.prodigalgal.remotecontrolmcp.protocol.PollRequest;
+import com.prodigalgal.remotecontrolmcp.protocol.PollResponse;
+import com.prodigalgal.remotecontrolmcp.protocol.ProtocolValidation;
+import com.prodigalgal.remotecontrolmcp.protocol.RegisterRequest;
+import com.prodigalgal.remotecontrolmcp.protocol.RegisterResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.stereotype.Service;
+
+/**
+ * Registry facade. Authentication and protocol validation stay independent of
+ * the storage adapter. Memory mode is retained for protocol tests; when
+ * PostgreSQL mode is enabled, registration, identity and heartbeat state are
+ * written to the Liquibase-managed agent table. A Center process selects one
+ * adapter and never dual-writes memory and PostgreSQL.
+ */
+@Service
+public final class AgentRegistry {
+    private static final int MACHINE_PAGE_SIZE = 200;
+    private static final int MAX_MACHINE_SNAPSHOT = 10_000;
+    private final CenterTokenConfig tokens;
+    private final EnrollmentTokenService enrollments;
+    private final JdbcTemplate jdbc;
+    private final TransactionTemplate transactions;
+    private final TaskChangeRegistry changes;
+    private final SecureRandom random = new SecureRandom();
+    private final Map<String, RegisteredAgent> agents = new ConcurrentHashMap<>();
+
+    @Autowired
+    public AgentRegistry(CenterTokenConfig tokens, ObjectProvider<JdbcTemplate> jdbcProvider,
+                         EnrollmentTokenService enrollments, ObjectProvider<TransactionTemplate> transactionProvider,
+                         ObjectProvider<TaskChangeRegistry> changeProvider) {
+        this(tokens, jdbcProvider.getIfAvailable(), enrollments, transactionProvider.getIfAvailable(),
+                changeProvider == null ? null : changeProvider.getIfAvailable());
+    }
+
+    /** Construction overload used by focused registry tests. */
+    public AgentRegistry(CenterTokenConfig tokens, ObjectProvider<JdbcTemplate> jdbcProvider,
+                         EnrollmentTokenService enrollments, ObjectProvider<TransactionTemplate> transactionProvider) {
+        this(tokens, jdbcProvider.getIfAvailable(), enrollments, transactionProvider.getIfAvailable(), null);
+    }
+
+    private AgentRegistry(CenterTokenConfig tokens, JdbcTemplate jdbc, EnrollmentTokenService enrollments,
+                          TransactionTemplate transactions, TaskChangeRegistry changes) {
+        this.tokens = tokens;
+        this.jdbc = jdbc;
+        this.enrollments = enrollments;
+        this.transactions = transactions;
+        this.changes = changes;
+    }
+
+    private AgentRegistry(String enrollmentToken) {
+        this(new CenterTokenConfig(), (JdbcTemplate) null, EnrollmentTokenService.forTest(enrollmentToken), null, null);
+    }
+
+    public static AgentRegistry forTest(String enrollmentToken) {
+        return new AgentRegistry(enrollmentToken);
+    }
+
+    static AgentRegistry forTest(String enrollmentToken, JdbcTemplate jdbc) {
+        return new AgentRegistry(new CenterTokenConfig(), jdbc, EnrollmentTokenService.forTest(enrollmentToken), null, null);
+    }
+
+    public RegisterResponse register(RegisterRequest request, String enrollmentToken) {
+        if (request == null) {
+            throw new IllegalArgumentException("registration body is required");
+        }
+        AgentMetadata metadata = request.metadata();
+        ProtocolValidation.validateMetadata(metadata);
+        if (!enrollments.consume(enrollmentToken, metadata.name())) {
+            throw new SecurityException("invalid enrollment token");
+        }
+        var token = randomToken();
+        var now = Instant.now();
+        var tokenHash = hash(token);
+        if (jdbc == null) {
+            synchronized (agents) {
+                var existing = agents.entrySet().stream()
+                        .filter(entry -> sameIdentity(entry.getValue().metadata(), metadata))
+                        .findFirst();
+                if (existing.isEmpty() && agents.values().stream()
+                        .anyMatch(value -> value.metadata().name().equals(metadata.name()))) {
+                    // A machine name is the human-facing stable key in the
+                    // console and is unique in PostgreSQL.  Never let an
+                    // enrollment token from another host rotate the token
+                    // of an existing Agent just because it reused that name.
+                    throw new IllegalArgumentException("machine name is already registered with another host_id; choose a unique name");
+                }
+                var machineId = existing.map(Map.Entry::getKey)
+                        .orElseGet(() -> "machine_" + UUID.randomUUID().toString().replace("-", ""));
+                agents.put(machineId, new RegisteredAgent(metadata, tokenHash, now));
+                var result = new RegisterResponse(machineId, token);
+                signalChange();
+                return result;
+            }
+        } else {
+            java.util.function.Supplier<String> persist = () -> {
+                var existing = jdbc.query("SELECT agent_id FROM rcm_agent WHERE machine_name = ? AND host_id = ? ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
+                        ps -> { ps.setString(1, metadata.name()); ps.setString(2, metadata.hostId()); },
+                        rs -> rs.next() ? rs.getString(1) : null);
+                if (existing == null) {
+                    var nameConflict = jdbc.query("SELECT agent_id FROM rcm_agent WHERE machine_name = ? ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
+                            ps -> ps.setString(1, metadata.name()), rs -> rs.next() ? rs.getString(1) : null);
+                    if (nameConflict != null) {
+                        throw new IllegalArgumentException("machine name is already registered with another host_id; choose a unique name");
+                    }
+                    existing = "machine_" + UUID.randomUUID().toString().replace("-", "");
+                    insertAgent(existing, metadata, tokenHash, now);
+                } else {
+                    updateAgent(existing, metadata, tokenHash, now);
+                }
+                return existing;
+            };
+            String machineId;
+            try {
+                machineId = transactions == null ? persist.get() : transactions.execute(status -> persist.get());
+            } catch (DuplicateKeyException race) {
+                // A unique machine-name index closes the registration race
+                // between two Center instances.  Re-read the committed row
+                // and rotate that identity's daily token instead of exposing
+                // a transient 500.  Recovery is allowed only when the
+                // committed row belongs to the same host_id; otherwise this
+                // is a genuine same-name conflict and must fail closed.
+                java.util.function.Supplier<String> recover = () -> {
+                    var existing = jdbc.query("SELECT agent_id FROM rcm_agent WHERE machine_name = ? AND host_id = ? ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
+                            ps -> { ps.setString(1, metadata.name()); ps.setString(2, metadata.hostId()); },
+                            rs -> rs.next() ? rs.getString(1) : null);
+                    if (existing == null) {
+                        var conflicting = jdbc.query("SELECT agent_id FROM rcm_agent WHERE machine_name = ? ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
+                                ps -> ps.setString(1, metadata.name()), rs -> rs.next() ? rs.getString(1) : null);
+                        if (conflicting != null) {
+                            throw new IllegalArgumentException("machine name is already registered with another host_id; choose a unique name", race);
+                        }
+                        throw race;
+                    }
+                    updateAgent(existing, metadata, tokenHash, now);
+                    return existing;
+                };
+                machineId = transactions == null ? recover.get() : transactions.execute(status -> recover.get());
+            }
+            var result = new RegisterResponse(machineId, token);
+            signalChange();
+            return result;
+        }
+    }
+
+    private void signalChange() {
+        if (changes != null) changes.signalGlobal();
+    }
+
+    public PollResponse poll(String machineId, String agentToken, PollRequest request) {
+        if (machineId == null || machineId.isBlank()) {
+            throw new SecurityException("invalid agent credentials");
+        }
+        if (request != null && request.metadata() != null) {
+            ProtocolValidation.validateMetadata(request.metadata());
+        }
+        if (jdbc == null) {
+            var agent = agents.get(machineId);
+            if (agent == null || !MessageDigest.isEqual(agent.tokenHash(), hash(agentToken))) {
+                throw new SecurityException("invalid agent credentials");
+            }
+            if (request != null && request.metadata() != null) {
+                agent.validateIdentity(request.metadata());
+                agent.updateMetadata(request.metadata());
+            }
+            agent.touch();
+        } else {
+            var storedHash = storedTokenHash(machineId);
+            if (storedHash == null || !MessageDigest.isEqual(storedHash.trim().getBytes(StandardCharsets.US_ASCII), hexHash(agentToken).getBytes(StandardCharsets.US_ASCII))) {
+                throw new SecurityException("invalid agent credentials");
+            }
+            if (request != null && request.metadata() != null) {
+                validateHeartbeatIdentity(machineId, request.metadata());
+            }
+            jdbc.update("UPDATE rcm_agent SET last_seen_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?", machineId);
+            if (request != null && request.metadata() != null) updateHeartbeatMetadata(machineId, request.metadata());
+        }
+        return PollResponse.empty();
+    }
+
+    private void validateHeartbeatIdentity(String machineId, AgentMetadata metadata) {
+        var identity = jdbc.query("SELECT machine_name, host_id FROM rcm_agent WHERE agent_id = ?",
+                ps -> ps.setString(1, machineId), rs -> {
+                    if (!rs.next()) return null;
+                    return new RegisteredIdentity(rs.getString("machine_name"), rs.getString("host_id"));
+                });
+        if (identity == null || !identity.name().equals(metadata.name()) || !identity.hostId().equals(metadata.hostId())) {
+            // machine_name and host_id are registration identity fields, not
+            // heartbeat labels.  Requiring re-enrollment for a change keeps a
+            // stale or misconfigured Agent from renaming itself into another
+            // machine row (and from bypassing the same-name guard).
+            throw new SecurityException("Agent identity metadata does not match registration");
+        }
+    }
+
+    private void updateHeartbeatMetadata(String machineId, AgentMetadata metadata) {
+        var capabilities = new String(JsonCodec.write(metadata.capabilities()), StandardCharsets.UTF_8);
+        var runtime = new String(JsonCodec.write(metadata.runtime()), StandardCharsets.UTF_8);
+        jdbc.update("""
+                UPDATE rcm_agent SET hostname = ?, os = ?, arch = ?, version = ?,
+                    default_cwd = ?, capabilities = CAST(? AS jsonb),
+                    runtime_descriptor = CAST(? AS jsonb),
+                    updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?
+                """, metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
+                metadata.defaultCwd(), capabilities, runtime, machineId);
+    }
+
+    public boolean acceptsAgent(String machineId, String agentToken) {
+        if (machineId == null || machineId.isBlank()) {
+            return false;
+        }
+        if (jdbc == null) {
+            var agent = agents.get(machineId);
+            return agent != null && MessageDigest.isEqual(agent.tokenHash(), hash(agentToken));
+        }
+        var storedHash = storedTokenHash(machineId);
+        return storedHash != null && MessageDigest.isEqual(storedHash.trim().getBytes(StandardCharsets.US_ASCII), hexHash(agentToken).getBytes(StandardCharsets.US_ASCII));
+    }
+
+    public Optional<MachineView> findMachine(String machineId, Instant now) {
+        if (machineId == null || machineId.isBlank()) {
+            return Optional.empty();
+        }
+        if (jdbc == null) {
+            var agent = agents.get(machineId);
+            return agent == null ? Optional.empty() : Optional.of(agent.view(machineId, now));
+        }
+        var rows = jdbc.query("""
+                SELECT agent_id, machine_name, host_id, hostname, os, arch, version,
+                       default_cwd, capabilities, runtime_descriptor,
+                       created_at, last_seen_at
+                  FROM rcm_agent WHERE agent_id = ?
+                """, ps -> ps.setString(1, machineId), (rs, rowNum) -> machineView(rs, now));
+        return rows.stream().findFirst();
+    }
+
+    public List<MachineView> listMachines(int offset, int limit, Instant now) {
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must be non-negative");
+        }
+        if (limit < 1 || limit > 200) {
+            throw new IllegalArgumentException("limit must be between 1 and 200");
+        }
+        if (jdbc == null) {
+            var result = new ArrayList<MachineView>();
+            agents.forEach((id, agent) -> result.add(agent.view(id, now)));
+            result.sort(java.util.Comparator.comparing(MachineView::name, String.CASE_INSENSITIVE_ORDER));
+            if (offset >= result.size()) {
+                return List.of();
+            }
+            return List.copyOf(result.subList(offset, Math.min(result.size(), offset + limit)));
+        }
+        return List.copyOf(jdbc.query("""
+                SELECT agent_id, machine_name, host_id, hostname, os, arch, version,
+                       default_cwd, capabilities, runtime_descriptor,
+                       created_at, last_seen_at
+                  FROM rcm_agent ORDER BY machine_name, agent_id OFFSET ? LIMIT ?
+                """, ps -> {
+                    ps.setInt(1, offset);
+                    ps.setInt(2, limit);
+                }, (rs, rowNum) -> machineView(rs, now)));
+    }
+
+    /**
+     * Read a bounded, complete machine snapshot for one control-plane
+     * operation.  Admin inventory remains paginated, but upgrade reconciliation
+     * must also see a target registered after the first page; otherwise an
+     * offline or newly-added Agent could be silently omitted from a campaign.
+     * This is an explicit operation (not a timer/poll loop) and has a hard
+     * ceiling so a malformed or unexpectedly huge fleet cannot exhaust Center
+     * memory.
+     */
+    public List<MachineView> listAllMachines(Instant now) {
+        var reference = now == null ? Instant.now() : now;
+        var result = new ArrayList<MachineView>();
+        var offset = 0;
+        while (true) {
+            var page = listMachines(offset, MACHINE_PAGE_SIZE, reference);
+            result.addAll(page);
+            if (result.size() > MAX_MACHINE_SNAPSHOT) {
+                throw new IllegalStateException("machine inventory exceeds the control-plane snapshot limit");
+            }
+            if (page.size() < MACHINE_PAGE_SIZE) return List.copyOf(result);
+            offset += page.size();
+        }
+    }
+
+    private static boolean sameIdentity(AgentMetadata existing, AgentMetadata requested) {
+        return existing != null && requested != null
+                && existing.name().equals(requested.name())
+                && existing.hostId().equals(requested.hostId());
+    }
+
+    private static MachineView machineView(java.sql.ResultSet rs, Instant now) throws java.sql.SQLException {
+        var created = rs.getTimestamp("created_at");
+        var lastSeen = rs.getTimestamp("last_seen_at");
+        var capabilitiesJson = rs.getString("capabilities");
+        List<String> capabilities = List.of();
+        if (capabilitiesJson != null && !capabilitiesJson.isBlank()) {
+            try {
+                capabilities = Arrays.asList(JsonCodec.read(capabilitiesJson.getBytes(StandardCharsets.UTF_8), String[].class));
+            } catch (RuntimeException failure) {
+                throw new IllegalStateException("stored Agent capabilities are invalid", failure);
+            }
+        }
+        AgentRuntimeDescriptor runtime;
+        var runtimeJson = rs.getString("runtime_descriptor");
+        if (runtimeJson == null || runtimeJson.isBlank()) {
+            throw new IllegalStateException("stored Agent runtime descriptor is missing");
+        }
+        try {
+            runtime = JsonCodec.read(runtimeJson.getBytes(StandardCharsets.UTF_8), AgentRuntimeDescriptor.class);
+        } catch (RuntimeException failure) {
+            throw new IllegalStateException("stored Agent runtime descriptor is invalid", failure);
+        }
+        var last = lastSeen == null ? null : lastSeen.toInstant();
+        return new MachineView(
+                rs.getString("agent_id"), rs.getString("machine_name"), rs.getString("host_id"),
+                rs.getString("hostname"), rs.getString("os"), rs.getString("arch"), rs.getString("version"),
+                rs.getString("default_cwd"),
+                capabilities, created == null ? null : created.toInstant(), last,
+                last != null && now.minusSeconds(45).isBefore(last), runtime);
+    }
+
+    public int size() {
+        if (jdbc == null) {
+            return agents.size();
+        }
+        var count = jdbc.queryForObject("SELECT COUNT(*) FROM rcm_agent", Long.class);
+        return count == null ? 0 : Math.toIntExact(count);
+    }
+
+    /** Total number of registered Agent identities for paginated admin views. */
+    public int totalCount() {
+        return size();
+    }
+
+    /** Count heartbeats without loading machine metadata or credentials. */
+    public int onlineCount(Instant now) {
+        var reference = now == null ? Instant.now() : now;
+        if (jdbc == null) {
+            var cutoff = reference.minusSeconds(45);
+            return Math.toIntExact(agents.values().stream()
+                    .filter(agent -> agent.lastSeen != null && !agent.lastSeen.isBefore(cutoff))
+                    .count());
+        }
+        var count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM rcm_agent WHERE last_seen_at >= ?",
+                Integer.class, java.sql.Timestamp.from(reference.minusSeconds(45)));
+        return count == null ? 0 : count;
+    }
+
+    private void insertAgent(String machineId, AgentMetadata metadata, byte[] tokenHash, Instant now) {
+        var capabilities = new String(JsonCodec.write(metadata.capabilities()), StandardCharsets.UTF_8);
+        var runtime = new String(JsonCodec.write(metadata.runtime()), StandardCharsets.UTF_8);
+        jdbc.update("""
+                INSERT INTO rcm_agent (
+                    agent_id, machine_name, host_id, hostname, os, arch, version,
+                    default_cwd, capabilities, runtime_descriptor, token_hash,
+                    last_seen_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?)
+                """,
+                machineId,
+                metadata.name(),
+                metadata.hostId(),
+                metadata.hostname(),
+                metadata.os(),
+                metadata.arch(),
+                metadata.version(),
+                metadata.defaultCwd(),
+                capabilities,
+                runtime,
+                hexHash(tokenHash),
+                java.sql.Timestamp.from(now),
+                java.sql.Timestamp.from(now),
+                java.sql.Timestamp.from(now));
+    }
+
+    private void updateAgent(String machineId, AgentMetadata metadata, byte[] tokenHash, Instant now) {
+        var capabilities = new String(JsonCodec.write(metadata.capabilities()), StandardCharsets.UTF_8);
+        var runtime = new String(JsonCodec.write(metadata.runtime()), StandardCharsets.UTF_8);
+        jdbc.update("""
+                UPDATE rcm_agent SET machine_name = ?, host_id = ?, hostname = ?, os = ?, arch = ?, version = ?,
+                    default_cwd = ?, capabilities = CAST(? AS jsonb),
+                    runtime_descriptor = CAST(? AS jsonb), token_hash = ?,
+                    last_seen_at = ?, updated_at = ? WHERE agent_id = ?
+                """, metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
+                metadata.defaultCwd(), capabilities, runtime, hexHash(tokenHash),
+                java.sql.Timestamp.from(now), java.sql.Timestamp.from(now), machineId);
+    }
+
+    private String storedTokenHash(String machineId) {
+        return jdbc.query("SELECT token_hash FROM rcm_agent WHERE agent_id = ?", ps -> ps.setString(1, machineId), rs -> rs.next() ? rs.getString(1) : null);
+    }
+
+    private String randomToken() {
+        var bytes = new byte[32];
+        random.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    private static byte[] hash(String value) {
+        if (value == null) {
+            value = "";
+        }
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static String hexHash(String value) {
+        return hexHash(hash(value));
+    }
+
+    private static String hexHash(byte[] value) {
+        return java.util.HexFormat.of().formatHex(value);
+    }
+
+    private static final class RegisteredAgent {
+        private volatile AgentMetadata metadata;
+        private final byte[] tokenHash;
+        private volatile Instant lastSeen;
+
+        private RegisteredAgent(AgentMetadata metadata, byte[] tokenHash, Instant lastSeen) {
+            this.metadata = metadata;
+            this.tokenHash = tokenHash;
+            this.lastSeen = lastSeen;
+        }
+
+        private byte[] tokenHash() {
+            return tokenHash;
+        }
+
+        private AgentMetadata metadata() {
+            return metadata;
+        }
+
+        private void touch() {
+            lastSeen = Instant.now();
+        }
+
+        private void updateMetadata(AgentMetadata value) {
+            metadata = value;
+        }
+
+        private void validateIdentity(AgentMetadata value) {
+            if (!sameIdentity(metadata, value)) {
+                throw new SecurityException("Agent identity metadata does not match registration");
+            }
+        }
+
+        private MachineView view(String id, Instant now) {
+            return new MachineView(id, metadata.name(), metadata.hostId(), metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(),
+                    metadata.defaultCwd(), metadata.capabilities(), lastSeen, lastSeen,
+                    lastSeen != null && now.minusSeconds(45).isBefore(lastSeen), metadata.runtime());
+        }
+    }
+
+    private record RegisteredIdentity(String name, String hostId) {
+    }
+
+}

@@ -12,7 +12,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "remote-connect-mcp-java"
+rootProject.name = "remote-control-mcp"
 
 include(":protocol", ":center", ":agent", ":desktop", ":browser", ":updater")
 

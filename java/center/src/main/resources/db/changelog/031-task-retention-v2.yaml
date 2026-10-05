@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 031-task-retention-v2
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: task,retention,long-running
       contexts: postgres
       runInTransaction: true

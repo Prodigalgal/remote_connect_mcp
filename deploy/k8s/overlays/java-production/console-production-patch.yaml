@@ -1,8 +1,8 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: remote-connect-mcp-console
-  namespace: remote-connect-mcp
+  name: remote-control-mcp-console
+  namespace: remote-control-mcp
 spec:
   template:
     spec:

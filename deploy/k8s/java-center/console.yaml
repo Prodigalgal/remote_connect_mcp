@@ -1,21 +1,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: remote-connect-mcp-console
-  namespace: remote-connect-mcp
+  name: remote-control-mcp-console
+  namespace: remote-control-mcp
   labels:
-    app.kubernetes.io/name: remote-connect-mcp-console
-    app.kubernetes.io/part-of: remote-connect-mcp
+    app.kubernetes.io/name: remote-control-mcp-console
+    app.kubernetes.io/part-of: remote-control-mcp
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app.kubernetes.io/name: remote-connect-mcp-console
+      app.kubernetes.io/name: remote-control-mcp-console
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: remote-connect-mcp-console
-        app.kubernetes.io/part-of: remote-connect-mcp
+        app.kubernetes.io/name: remote-control-mcp-console
+        app.kubernetes.io/part-of: remote-control-mcp
     spec:
       securityContext:
         runAsNonRoot: true
@@ -25,7 +25,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: console
-          image: ghcr.io/replace-me/remote-connect-mcp-console:0.1.0
+          image: ghcr.io/replace-me/remote-control-mcp-console:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -70,14 +70,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: remote-connect-mcp-console
-  namespace: remote-connect-mcp
+  name: remote-control-mcp-console
+  namespace: remote-control-mcp
   labels:
-    app.kubernetes.io/name: remote-connect-mcp-console
-    app.kubernetes.io/part-of: remote-connect-mcp
+    app.kubernetes.io/name: remote-control-mcp-console
+    app.kubernetes.io/part-of: remote-control-mcp
 spec:
   selector:
-    app.kubernetes.io/name: remote-connect-mcp-console
+    app.kubernetes.io/name: remote-control-mcp-console
   ports:
     - name: http
       port: 8080
@@ -86,10 +86,10 @@ spec:
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: remote-connect-mcp-console
-  namespace: remote-connect-mcp
+  name: remote-control-mcp-console
+  namespace: remote-control-mcp
   labels:
-    app.kubernetes.io/name: remote-connect-mcp-console
+    app.kubernetes.io/name: remote-control-mcp-console
 spec:
   parentRefs:
     - group: gateway.networking.k8s.io
@@ -98,12 +98,12 @@ spec:
       namespace: gateway-system
       sectionName: https
   hostnames:
-    - remote-connect-mcp-console.example.invalid
+    - remote-control-mcp-console.example.invalid
   rules:
     - matches:
         - path:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: remote-connect-mcp-console
+        - name: remote-control-mcp-console
           port: 8080

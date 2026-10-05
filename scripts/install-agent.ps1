@@ -3,23 +3,23 @@ param(
     [switch]$PurgeState,
     [switch]$ReEnroll,
     [string]$BinaryPath,
-    [string]$CenterUrl = "https://remote-connect-mcp-agent.example.invalid",
-    [string]$EnrollmentToken = $env:REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN,
+    [string]$CenterUrl = "https://remote-control-mcp-agent.example.invalid",
+    [string]$EnrollmentToken = $env:REMOTE_CONTROL_MCP_AGENT_ENROLLMENT_TOKEN,
     [string]$AgentName = $env:COMPUTERNAME,
     [string]$HostId = "",
     [string]$DefaultCwd = "C:\",
     [string]$Capabilities = "command,durable_tasks,file_transfer",
     [string]$Version = "dev",
     [string]$BrowserAdapter = "",
-    [string]$BrowserProfileDir = $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR,
+    [string]$BrowserProfileDir = $env:REMOTE_CONTROL_MCP_AGENT_BROWSER_PROFILE_DIR,
     [ValidateSet("camoufox", "playwright", "patchright")]
-    [string]$BrowserEngine = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE } else { "camoufox" }),
+    [string]$BrowserEngine = $(if ($env:REMOTE_CONTROL_MCP_AGENT_BROWSER_ENGINE) { $env:REMOTE_CONTROL_MCP_AGENT_BROWSER_ENGINE } else { "camoufox" }),
     [ValidateSet("chromium", "firefox", "webkit")]
-    [string]$BrowserName = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER } else { "firefox" }),
+    [string]$BrowserName = $(if ($env:REMOTE_CONTROL_MCP_AGENT_BROWSER) { $env:REMOTE_CONTROL_MCP_AGENT_BROWSER } else { "firefox" }),
     [ValidateSet("0", "1")]
-    [string]$BrowserHeadless = $(if ($env:REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS) { $env:REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS } else { "1" }),
-    [string]$PlaywrightBrowsersPath = $env:REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH,
-    [string]$CamoufoxInstallDir = $env:REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR,
+    [string]$BrowserHeadless = $(if ($env:REMOTE_CONTROL_MCP_AGENT_BROWSER_HEADLESS) { $env:REMOTE_CONTROL_MCP_AGENT_BROWSER_HEADLESS } else { "1" }),
+    [string]$PlaywrightBrowsersPath = $env:REMOTE_CONTROL_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH,
+    [string]$CamoufoxInstallDir = $env:REMOTE_CONTROL_MCP_AGENT_CAMOUFOX_INSTALL_DIR,
     [string]$DesktopBinaryPath = "",
     [string]$BrowserBinaryPath = "",
     [string]$UpdaterBinaryPath = "",
@@ -38,7 +38,7 @@ param(
     [ValidateRange(1, 256)]
     [int]$MaxChildProcesses = 32,
     [ValidateRange(0, 4096)]
-    [int]$MaxTotalChildProcesses = $(if ($env:REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES) { [int]$env:REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES } else { 0 }),
+    [int]$MaxTotalChildProcesses = $(if ($env:REMOTE_CONTROL_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES) { [int]$env:REMOTE_CONTROL_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES } else { 0 }),
     [ValidateRange(0, 17179869184)]
     [long]$MaxRssBytes = 0,
     [ValidateRange(0, 2592000)]
@@ -46,16 +46,16 @@ param(
     [ValidateRange(250, 10000)]
     [long]$ResourceSampleIntervalMs = 1000,
     [ValidateRange(5, 3600)]
-    [long]$TransferStallTimeoutSeconds = $(if ($env:REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS) { [long]$env:REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS } else { 120 }),
-    [string]$CgroupPath = $env:REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH,
-    [string]$InstallRoot = "$env:ProgramFiles\Remote Connect MCP Agent",
-    [string]$StateDir = "$env:ProgramData\RemoteConnectMCPAgent"
+    [long]$TransferStallTimeoutSeconds = $(if ($env:REMOTE_CONTROL_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS) { [long]$env:REMOTE_CONTROL_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS } else { 120 }),
+    [string]$CgroupPath = $env:REMOTE_CONTROL_MCP_AGENT_CGROUP_PATH,
+    [string]$InstallRoot = "$env:ProgramFiles\Remote Control MCP Agent",
+    [string]$StateDir = "$env:ProgramData\RemoteControlMCPAgent"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$serviceName = "RemoteConnectMCPAgent"
-$companionTaskName = "RemoteConnectMCPDesktopCompanion"
+$serviceName = "RemoteControlMCPAgent"
+$companionTaskName = "RemoteControlMCPDesktopCompanion"
 
 function ConvertTo-PowerShellLiteral {
     param([AllowEmptyString()][string]$Value)
@@ -141,8 +141,8 @@ function Stop-AgentProcessForReplacement {
 
 function Resolve-PowerShell7Path {
     $candidates = [System.Collections.Generic.List[string]]::new()
-    if (-not [string]::IsNullOrWhiteSpace($env:REMOTE_CONNECT_MCP_PWSH_PATH)) {
-        [void]$candidates.Add($env:REMOTE_CONNECT_MCP_PWSH_PATH)
+    if (-not [string]::IsNullOrWhiteSpace($env:REMOTE_CONTROL_MCP_PWSH_PATH)) {
+        [void]$candidates.Add($env:REMOTE_CONTROL_MCP_PWSH_PATH)
     }
     foreach ($package in @(Get-AppxPackage -Name Microsoft.PowerShell -ErrorAction SilentlyContinue |
         Sort-Object Version -Descending | Select-Object -First 1)) {
@@ -161,7 +161,7 @@ function Resolve-PowerShell7Path {
             if (Test-Path -LiteralPath $resolved -PathType Leaf) { return $resolved }
         } catch { }
     }
-    throw 'PowerShell 7 was not found. Install Microsoft.PowerShell 7 or set REMOTE_CONNECT_MCP_PWSH_PATH to pwsh.exe.'
+    throw 'PowerShell 7 was not found. Install Microsoft.PowerShell 7 or set REMOTE_CONTROL_MCP_PWSH_PATH to pwsh.exe.'
 }
 
 function Register-AgentTask {
@@ -180,7 +180,7 @@ function Register-AgentTask {
         -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
         -ExecutionTimeLimit ([TimeSpan]::Zero)
     Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger -Principal $principal `
-        -Settings $settings -Description 'Remote Connect MCP Java Agent (system startup task)' -Force | Out-Null
+        -Settings $settings -Description 'Remote Control MCP Java Agent (system startup task)' -Force | Out-Null
 }
 
 function Start-AgentTaskAndWait {
@@ -194,7 +194,7 @@ function Start-AgentTaskAndWait {
     }
     $info = Get-ScheduledTaskInfo -TaskName $Name -ErrorAction SilentlyContinue
     $result = if ($info) { $info.LastTaskResult } else { 'unknown' }
-    throw "Remote Connect MCP Java Agent task did not enter Running state (last result: $result)."
+    throw "Remote Control MCP Java Agent task did not enter Running state (last result: $result)."
 }
 
 if ($MaxTotalChildProcesses -eq 0) {
@@ -264,7 +264,7 @@ if ($Uninstall) {
     Remove-AgentScmService -Name $serviceName
     if (Test-Path -LiteralPath $InstallRoot) { Remove-Item -LiteralPath $InstallRoot -Recurse -Force }
     if ($PurgeState -and (Test-Path -LiteralPath $StateDir)) { Remove-Item -LiteralPath $StateDir -Recurse -Force }
-    Write-Host "Remote Connect MCP Agent task removed."
+    Write-Host "Remote Control MCP Agent task removed."
     return
 }
 
@@ -384,35 +384,35 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
         throw "EnrollmentToken is required for first registration or -ReEnroll. It is not stored after registration."
     }
     $bootstrap = @{
-        REMOTE_CONNECT_MCP_AGENT_CENTER_URL = $CenterUrl.TrimEnd('/')
-        REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN = $EnrollmentToken.Trim()
-        REMOTE_CONNECT_MCP_AGENT_NAME = $AgentName.Trim()
-        REMOTE_CONNECT_MCP_AGENT_HOST_ID = $HostId.Trim()
-        REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD = $DefaultCwd
-        REMOTE_CONNECT_MCP_AGENT_CAPABILITIES = $Capabilities
-        REMOTE_CONNECT_MCP_AGENT_VERSION = $Version.Trim()
-        REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER = $BrowserAdapter.Trim()
-        REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR = [string]$BrowserProfileDir
-        REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE = $BrowserEngine
-        REMOTE_CONNECT_MCP_AGENT_BROWSER = $BrowserName
-        REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS = $BrowserHeadless
-        REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH = [string]$PlaywrightBrowsersPath
-        REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR = [string]$CamoufoxInstallDir
-        REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED = $DesktopEnabled.IsPresent.ToString().ToLowerInvariant()
-        REMOTE_CONNECT_MCP_AGENT_STATE_DIR = $StateDir
-        REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY = $MaxConcurrency.ToString()
-        REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS = $MaxBrowserWorkers.ToString()
-        REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES = $DesktopMaxLaunchedProcesses.ToString()
-        REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES = $MaxOutputBytes.ToString()
-        REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES = $MaxAggregateOutputBytes.ToString()
-        REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS = $MaxTaskDurationSeconds.ToString()
-        REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES = $MaxChildProcesses.ToString()
-        REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES = $MaxTotalChildProcesses.ToString()
-        REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES = $MaxRssBytes.ToString()
-        REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS = $MaxCpuSeconds.ToString()
-        REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS = $ResourceSampleIntervalMs.ToString()
-        REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS = $TransferStallTimeoutSeconds.ToString()
-        REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH = [string]$CgroupPath
+        REMOTE_CONTROL_MCP_AGENT_CENTER_URL = $CenterUrl.TrimEnd('/')
+        REMOTE_CONTROL_MCP_AGENT_ENROLLMENT_TOKEN = $EnrollmentToken.Trim()
+        REMOTE_CONTROL_MCP_AGENT_NAME = $AgentName.Trim()
+        REMOTE_CONTROL_MCP_AGENT_HOST_ID = $HostId.Trim()
+        REMOTE_CONTROL_MCP_AGENT_DEFAULT_CWD = $DefaultCwd
+        REMOTE_CONTROL_MCP_AGENT_CAPABILITIES = $Capabilities
+        REMOTE_CONTROL_MCP_AGENT_VERSION = $Version.Trim()
+        REMOTE_CONTROL_MCP_AGENT_BROWSER_ADAPTER = $BrowserAdapter.Trim()
+        REMOTE_CONTROL_MCP_AGENT_BROWSER_PROFILE_DIR = [string]$BrowserProfileDir
+        REMOTE_CONTROL_MCP_AGENT_BROWSER_ENGINE = $BrowserEngine
+        REMOTE_CONTROL_MCP_AGENT_BROWSER = $BrowserName
+        REMOTE_CONTROL_MCP_AGENT_BROWSER_HEADLESS = $BrowserHeadless
+        REMOTE_CONTROL_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH = [string]$PlaywrightBrowsersPath
+        REMOTE_CONTROL_MCP_AGENT_CAMOUFOX_INSTALL_DIR = [string]$CamoufoxInstallDir
+        REMOTE_CONTROL_MCP_AGENT_DESKTOP_ENABLED = $DesktopEnabled.IsPresent.ToString().ToLowerInvariant()
+        REMOTE_CONTROL_MCP_AGENT_STATE_DIR = $StateDir
+        REMOTE_CONTROL_MCP_AGENT_MAX_CONCURRENCY = $MaxConcurrency.ToString()
+        REMOTE_CONTROL_MCP_AGENT_MAX_BROWSER_WORKERS = $MaxBrowserWorkers.ToString()
+        REMOTE_CONTROL_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES = $DesktopMaxLaunchedProcesses.ToString()
+        REMOTE_CONTROL_MCP_AGENT_MAX_OUTPUT_BYTES = $MaxOutputBytes.ToString()
+        REMOTE_CONTROL_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES = $MaxAggregateOutputBytes.ToString()
+        REMOTE_CONTROL_MCP_AGENT_MAX_TASK_DURATION_SECONDS = $MaxTaskDurationSeconds.ToString()
+        REMOTE_CONTROL_MCP_AGENT_MAX_CHILD_PROCESSES = $MaxChildProcesses.ToString()
+        REMOTE_CONTROL_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES = $MaxTotalChildProcesses.ToString()
+        REMOTE_CONTROL_MCP_AGENT_MAX_RSS_BYTES = $MaxRssBytes.ToString()
+        REMOTE_CONTROL_MCP_AGENT_MAX_CPU_SECONDS = $MaxCpuSeconds.ToString()
+        REMOTE_CONTROL_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS = $ResourceSampleIntervalMs.ToString()
+        REMOTE_CONTROL_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS = $TransferStallTimeoutSeconds.ToString()
+        REMOTE_CONTROL_MCP_AGENT_CGROUP_PATH = [string]$CgroupPath
     }
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $destination
@@ -436,47 +436,47 @@ if ($ReEnroll -or -not (Test-Path -LiteralPath $identity -PathType Leaf)) {
 }
 
 $environment = [string[]]@(
-    "REMOTE_CONNECT_MCP_AGENT_CENTER_URL=$($CenterUrl.TrimEnd('/'))",
-    "REMOTE_CONNECT_MCP_AGENT_NAME=$($AgentName.Trim())",
-    "REMOTE_CONNECT_MCP_AGENT_HOST_ID=$($HostId.Trim())",
-    "REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD=$DefaultCwd",
-    "REMOTE_CONNECT_MCP_AGENT_CAPABILITIES=$Capabilities",
-    "REMOTE_CONNECT_MCP_AGENT_VERSION=$($Version.Trim())",
-    "REMOTE_CONNECT_MCP_AGENT_BROWSER_ADAPTER=$($BrowserAdapter.Trim())",
-    "REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR=$BrowserProfileDir",
-    "REMOTE_CONNECT_MCP_AGENT_BROWSER_ENGINE=$BrowserEngine",
-    "REMOTE_CONNECT_MCP_AGENT_BROWSER=$BrowserName",
-    "REMOTE_CONNECT_MCP_AGENT_BROWSER_HEADLESS=$BrowserHeadless",
-    "REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH=$PlaywrightBrowsersPath",
-    "REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR=$CamoufoxInstallDir",
-    "REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=$($DesktopEnabled.IsPresent.ToString().ToLowerInvariant())",
-    "REMOTE_CONNECT_MCP_AGENT_STATE_DIR=$StateDir",
-    "REMOTE_CONNECT_MCP_AGENT_MAX_CONCURRENCY=$MaxConcurrency",
-    "REMOTE_CONNECT_MCP_AGENT_MAX_BROWSER_WORKERS=$MaxBrowserWorkers",
-    "REMOTE_CONNECT_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES=$DesktopMaxLaunchedProcesses",
-    "REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES=$MaxOutputBytes",
-    "REMOTE_CONNECT_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES=$MaxAggregateOutputBytes",
-    "REMOTE_CONNECT_MCP_AGENT_MAX_TASK_DURATION_SECONDS=$MaxTaskDurationSeconds",
-    "REMOTE_CONNECT_MCP_AGENT_MAX_CHILD_PROCESSES=$MaxChildProcesses",
-    "REMOTE_CONNECT_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES=$MaxTotalChildProcesses",
-    "REMOTE_CONNECT_MCP_AGENT_MAX_RSS_BYTES=$MaxRssBytes",
-    "REMOTE_CONNECT_MCP_AGENT_MAX_CPU_SECONDS=$MaxCpuSeconds",
-    "REMOTE_CONNECT_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS=$ResourceSampleIntervalMs",
-    "REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS=$TransferStallTimeoutSeconds",
-    "REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH=$CgroupPath",
-    "REMOTE_CONNECT_MCP_AGENT_BINARY_PATH=$destination",
-    "REMOTE_CONNECT_MCP_AGENT_SERVICE_NAME=$serviceName"
+    "REMOTE_CONTROL_MCP_AGENT_CENTER_URL=$($CenterUrl.TrimEnd('/'))",
+    "REMOTE_CONTROL_MCP_AGENT_NAME=$($AgentName.Trim())",
+    "REMOTE_CONTROL_MCP_AGENT_HOST_ID=$($HostId.Trim())",
+    "REMOTE_CONTROL_MCP_AGENT_DEFAULT_CWD=$DefaultCwd",
+    "REMOTE_CONTROL_MCP_AGENT_CAPABILITIES=$Capabilities",
+    "REMOTE_CONTROL_MCP_AGENT_VERSION=$($Version.Trim())",
+    "REMOTE_CONTROL_MCP_AGENT_BROWSER_ADAPTER=$($BrowserAdapter.Trim())",
+    "REMOTE_CONTROL_MCP_AGENT_BROWSER_PROFILE_DIR=$BrowserProfileDir",
+    "REMOTE_CONTROL_MCP_AGENT_BROWSER_ENGINE=$BrowserEngine",
+    "REMOTE_CONTROL_MCP_AGENT_BROWSER=$BrowserName",
+    "REMOTE_CONTROL_MCP_AGENT_BROWSER_HEADLESS=$BrowserHeadless",
+    "REMOTE_CONTROL_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH=$PlaywrightBrowsersPath",
+    "REMOTE_CONTROL_MCP_AGENT_CAMOUFOX_INSTALL_DIR=$CamoufoxInstallDir",
+    "REMOTE_CONTROL_MCP_AGENT_DESKTOP_ENABLED=$($DesktopEnabled.IsPresent.ToString().ToLowerInvariant())",
+    "REMOTE_CONTROL_MCP_AGENT_STATE_DIR=$StateDir",
+    "REMOTE_CONTROL_MCP_AGENT_MAX_CONCURRENCY=$MaxConcurrency",
+    "REMOTE_CONTROL_MCP_AGENT_MAX_BROWSER_WORKERS=$MaxBrowserWorkers",
+    "REMOTE_CONTROL_MCP_AGENT_DESKTOP_MAX_LAUNCHED_PROCESSES=$DesktopMaxLaunchedProcesses",
+    "REMOTE_CONTROL_MCP_AGENT_MAX_OUTPUT_BYTES=$MaxOutputBytes",
+    "REMOTE_CONTROL_MCP_AGENT_MAX_AGGREGATE_OUTPUT_BYTES=$MaxAggregateOutputBytes",
+    "REMOTE_CONTROL_MCP_AGENT_MAX_TASK_DURATION_SECONDS=$MaxTaskDurationSeconds",
+    "REMOTE_CONTROL_MCP_AGENT_MAX_CHILD_PROCESSES=$MaxChildProcesses",
+    "REMOTE_CONTROL_MCP_AGENT_MAX_TOTAL_CHILD_PROCESSES=$MaxTotalChildProcesses",
+    "REMOTE_CONTROL_MCP_AGENT_MAX_RSS_BYTES=$MaxRssBytes",
+    "REMOTE_CONTROL_MCP_AGENT_MAX_CPU_SECONDS=$MaxCpuSeconds",
+    "REMOTE_CONTROL_MCP_AGENT_RESOURCE_SAMPLE_INTERVAL_MS=$ResourceSampleIntervalMs",
+    "REMOTE_CONTROL_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS=$TransferStallTimeoutSeconds",
+    "REMOTE_CONTROL_MCP_AGENT_CGROUP_PATH=$CgroupPath",
+    "REMOTE_CONTROL_MCP_AGENT_BINARY_PATH=$destination",
+    "REMOTE_CONTROL_MCP_AGENT_SERVICE_NAME=$serviceName"
 )
 if ($desktopDestination) {
-    $environment += "REMOTE_CONNECT_MCP_DESKTOP_BINARY_PATH=$desktopDestination"
-    $environment += "REMOTE_CONNECT_MCP_DESKTOP_SERVICE_NAME=$companionTaskName"
+    $environment += "REMOTE_CONTROL_MCP_DESKTOP_BINARY_PATH=$desktopDestination"
+    $environment += "REMOTE_CONTROL_MCP_DESKTOP_SERVICE_NAME=$companionTaskName"
 }
 if ($browserDestination) {
-    $environment += "REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=$browserDestination"
-    $environment += "REMOTE_CONNECT_MCP_BROWSER_BINARY_PATH=$browserDestination"
+    $environment += "REMOTE_CONTROL_MCP_AGENT_BROWSER_BINARY=$browserDestination"
+    $environment += "REMOTE_CONTROL_MCP_BROWSER_BINARY_PATH=$browserDestination"
 }
 if ($updaterDestination) {
-    $environment += "REMOTE_CONNECT_MCP_AGENT_UPDATER_BINARY_PATH=$updaterDestination"
+    $environment += "REMOTE_CONTROL_MCP_AGENT_UPDATER_BINARY_PATH=$updaterDestination"
 }
 if (-not [string]::IsNullOrWhiteSpace($PlaywrightBrowsersPath)) {
     $environment += "PLAYWRIGHT_BROWSERS_PATH=$PlaywrightBrowsersPath"
@@ -591,7 +591,7 @@ if ($DesktopEnabled) {
     $desktopSettings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
     Register-ScheduledTask -TaskName $companionTaskName -Action $action -Trigger $trigger -Principal $principal `
-        -Settings $desktopSettings -Description "Interactive desktop companion for Remote Connect MCP" -Force | Out-Null
+        -Settings $desktopSettings -Description "Interactive desktop companion for Remote Control MCP" -Force | Out-Null
 } else {
     Unregister-ScheduledTask -TaskName $companionTaskName -Confirm:$false -ErrorAction SilentlyContinue
 }

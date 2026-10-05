@@ -55,18 +55,18 @@ export function EnrollmentView({ adminToken, releases }: EnrollmentViewProps) {
 
   const downloadEnv = () => {
     if (!issued) return
-    const content = `# Remote Connect MCP Agent - 完整环境安装与运行配置
+    const content = `# Remote Control MCP Agent - 完整环境安装与运行配置
 # 生成时间: ${new Date().toLocaleString()}
 # 令牌过期: ${issued.expiresAt}
 # 说明：此环境变量文件包含了首次安装与 Agent 守护进程运行所需的全量参数。
 # 令牌为一次性注册使用，Agent 完成首次接入后将在本地生成持久化公私钥与身份证明。
 
-REMOTE_CONNECT_MCP_AGENT_CENTER_URL="${centerUrl.trim()}"
-REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN="${issued.token}"
-REMOTE_CONNECT_MCP_AGENT_NAME="${name.trim()}"
-REMOTE_CONNECT_MCP_AGENT_VERSION="${version.trim()}"
-REMOTE_CONNECT_MCP_AGENT_RELEASE_TAG="${releaseTag}"
-REMOTE_CONNECT_MCP_AGENT_MODE="${mode}"
+REMOTE_CONTROL_MCP_AGENT_CENTER_URL="${centerUrl.trim()}"
+REMOTE_CONTROL_MCP_AGENT_ENROLLMENT_TOKEN="${issued.token}"
+REMOTE_CONTROL_MCP_AGENT_NAME="${name.trim()}"
+REMOTE_CONTROL_MCP_AGENT_VERSION="${version.trim()}"
+REMOTE_CONTROL_MCP_AGENT_RELEASE_TAG="${releaseTag}"
+REMOTE_CONTROL_MCP_AGENT_MODE="${mode}"
 
 # ==============================================================================
 # 首次一键安装脚本指令参考（可直接在终端中以管理员/root 权限执行）:
@@ -80,7 +80,7 @@ REMOTE_CONNECT_MCP_AGENT_MODE="${mode}"
     const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
     const link = document.createElement('a')
     link.href = url
-    link.download = `remote-connect-mcp-agent-${name || 'node'}.env`
+    link.download = `remote-control-mcp-agent-${name || 'node'}.env`
     link.click()
     URL.revokeObjectURL(url)
     notify('已生成配置文件并开始下载', 'success')
@@ -90,11 +90,11 @@ REMOTE_CONNECT_MCP_AGENT_MODE="${mode}"
   const releaseTag = selectedRelease?.tag || `java-${version}`
 
   const psCommand = issued && version.trim() && name.trim()
-    ? `$p=Join-Path $env:TEMP 'rcm-first-install.ps1'; try { Invoke-WebRequest -UseBasicParsing -Uri ${psLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-agent.ps1`)} -OutFile $p -ErrorAction Stop } catch { Invoke-WebRequest -UseBasicParsing -Uri ${psLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-java-agent.ps1`)} -OutFile $p -ErrorAction Stop }; & $p -CenterUrl ${psLiteral(centerUrl.trim())} -AgentName ${psLiteral(name.trim())} -Version ${psLiteral(version.trim())} -ReleaseTag ${psLiteral(releaseTag)} -EnrollmentToken ${psLiteral(issued.token)} -Mode ${psLiteral(mode)}`
+    ? `$p=Join-Path $env:TEMP 'rcm-first-install.ps1'; try { Invoke-WebRequest -UseBasicParsing -Uri ${psLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_control_mcp/${releaseTag}/scripts/first-install-agent.ps1`)} -OutFile $p -ErrorAction Stop } catch { Invoke-WebRequest -UseBasicParsing -Uri ${psLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_control_mcp/${releaseTag}/scripts/first-install-java-agent.ps1`)} -OutFile $p -ErrorAction Stop }; & $p -CenterUrl ${psLiteral(centerUrl.trim())} -AgentName ${psLiteral(name.trim())} -Version ${psLiteral(version.trim())} -ReleaseTag ${psLiteral(releaseTag)} -EnrollmentToken ${psLiteral(issued.token)} -Mode ${psLiteral(mode)}`
     : ''
 
   const shCommand = issued && version.trim() && name.trim()
-    ? `$p=/tmp/rcm-first-install-agent.sh; (curl -fsSL ${shLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-agent.sh`)} -o "$p" || curl -fsSL ${shLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_connect_mcp/${releaseTag}/scripts/first-install-java-agent.sh`)} -o "$p") && chmod 700 "$p" && sudo "$p" --center-url ${shLiteral(centerUrl.trim())} --agent-name ${shLiteral(name.trim())} --version ${shLiteral(version.trim())} --release-tag ${shLiteral(releaseTag)} --enrollment-token ${shLiteral(issued.token)} --mode ${shLiteral(mode)}`
+    ? `$p=/tmp/rcm-first-install-agent.sh; (curl -fsSL ${shLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_control_mcp/${releaseTag}/scripts/first-install-agent.sh`)} -o "$p" || curl -fsSL ${shLiteral(`https://raw.githubusercontent.com/Prodigalgal/remote_control_mcp/${releaseTag}/scripts/first-install-java-agent.sh`)} -o "$p") && chmod 700 "$p" && sudo "$p" --center-url ${shLiteral(centerUrl.trim())} --agent-name ${shLiteral(name.trim())} --version ${shLiteral(version.trim())} --release-tag ${shLiteral(releaseTag)} --enrollment-token ${shLiteral(issued.token)} --mode ${shLiteral(mode)}`
     : ''
 
   return (
@@ -146,7 +146,7 @@ REMOTE_CONNECT_MCP_AGENT_MODE="${mode}"
                 className="form-input font-mono"
                 value={centerUrl}
                 onChange={(e) => setCenterUrl(e.target.value)}
-                placeholder="https://remote-connect-mcp-center.example.invalid"
+                placeholder="https://remote-control-mcp-center.example.invalid"
                 required
               />
             </div>

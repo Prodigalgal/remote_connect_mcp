@@ -32,7 +32,7 @@ dependencies {
 }
 
 application {
-    mainClass.set("com.prodigalgal.remoteconnectmcp.center.RemoteConnectCenterApplication")
+    mainClass.set("com.prodigalgal.remotecontrolmcp.center.RemoteControlCenterApplication")
 }
 
 graalvmNative {

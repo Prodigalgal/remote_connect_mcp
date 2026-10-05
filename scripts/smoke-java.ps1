@@ -104,7 +104,7 @@ try {
     $psi.RedirectStandardError = $true
     $psi.Environment['RCM_CENTER_PERSISTENCE_MODE'] = 'memory'
     $psi.Environment['RCM_CENTER_VERSION'] = 'smoke'
-    $psi.Environment['REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN'] = $adminToken
+    $psi.Environment['REMOTE_CONTROL_MCP_CENTER_ADMIN_TOKEN'] = $adminToken
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $psi
     if (-not $process.Start()) { throw 'could not start Java Center' }
@@ -170,7 +170,7 @@ try {
             throw "metrics returned HTTP $([int]$metricsResponse.StatusCode)"
         }
         $metricsBody = $metricsResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-        if ($metricsBody -notmatch 'remote_connect_mcp_machines_total' -or $metricsBody.Contains($mcpToken)) {
+        if ($metricsBody -notmatch 'remote_control_mcp_machines_total' -or $metricsBody.Contains($mcpToken)) {
             throw 'metrics response is missing counters or contains a secret'
         }
         $badMetricsRequest = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, "$base/metrics")

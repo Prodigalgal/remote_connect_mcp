@@ -1,0 +1,5 @@
+[
+  {"name":"com.prodigalgal.remotecontrolmcp.updater.AgentUpgradeHelper$Config","allDeclaredConstructors":true,"allDeclaredMethods":true},
+  {"name":"com.prodigalgal.remotecontrolmcp.updater.AgentUpgradeHelper$ComponentConfig","allDeclaredConstructors":true,"allDeclaredMethods":true},
+  {"name":"com.prodigalgal.remotecontrolmcp.updater.AgentUpgradeHelper$Result","allDeclaredConstructors":true,"allDeclaredMethods":true}
+]

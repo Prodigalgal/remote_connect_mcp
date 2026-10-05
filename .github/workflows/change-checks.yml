@@ -84,18 +84,18 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: remote_connect_mcp
+          POSTGRES_DB: remote_control_mcp
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d remote_connect_mcp"
+          --health-cmd "pg_isready -U postgres -d remote_control_mcp"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
     env:
-      RCM_TEST_POSTGRES_URL: jdbc:postgresql://127.0.0.1:5432/remote_connect_mcp
+      RCM_TEST_POSTGRES_URL: jdbc:postgresql://127.0.0.1:5432/remote_control_mcp
       RCM_TEST_POSTGRES_USERNAME: postgres
       RCM_TEST_POSTGRES_PASSWORD: postgres
     steps:
@@ -108,7 +108,7 @@ jobs:
       - run: bash scripts/sync-artifact-viewer.sh
       - name: Center tests
         working-directory: java
-        run: bash ./gradlew :center:test --no-daemon
+        run: bash ./gradlew :protocol:test :center:test --no-daemon
 
   agent-test:
     name: Agent selective test

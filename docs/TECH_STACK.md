@@ -1,4 +1,4 @@
-# Remote Connect MCP 技术选型
+# Remote Control MCP 技术选型
 
 需求上游基线：[`docs/REQUIREMENTS.md`](REQUIREMENTS.md)。本文只记录为满足该基线所选择的技术和运行时边界，不把技术选型本身当作产品需求。
 
@@ -166,15 +166,15 @@ Worker 不是第二个物理 Agent，不注册第二台机器；command-agent �
 使用 GraalVM Native Image 25.x 或 Liberica NIK 25.x，版本写入 Java 构建约束文件和构建容器 digest。Center、command-agent、desktop-companion 和 browser-agent 的正式发布物为平台二进制；JVM jar 只作为 CI 诊断产物，不作为运行时后备：
 
 ```text
- remote-connect-mcp-center-vX.Y.Z-linux-amd64.zip    # Center ELF + Native Image .so 运行库
- remote-connect-mcp-center-vX.Y.Z-linux-arm64.zip    # Center ELF + Native Image .so 运行库
- remote-connect-mcp-agent-vX.Y.Z-linux-amd64.zip    # command-agent ELF + Native Image .so 运行库
- remote-connect-mcp-agent-vX.Y.Z-linux-arm64.zip    # command-agent ELF + Native Image .so 运行库
- remote-connect-mcp-agent-vX.Y.Z-windows-amd64.zip  # command-agent rcm-agent.exe + Native Image DLLs
- remote-connect-mcp-desktop-vX.Y.Z-linux-amd64.zip / remote-connect-mcp-desktop-vX.Y.Z-linux-arm64.zip
- remote-connect-mcp-desktop-vX.Y.Z-windows-amd64.zip      # desktop-companion + Native Image runtime
- remote-connect-mcp-browser-vX.Y.Z-linux-amd64.zip / remote-connect-mcp-browser-vX.Y.Z-linux-arm64.zip
- remote-connect-mcp-browser-vX.Y.Z-windows-amd64.zip      # browser-agent + Native Image runtime
+ remote-control-mcp-center-vX.Y.Z-linux-amd64.zip    # Center ELF + Native Image .so 运行库
+ remote-control-mcp-center-vX.Y.Z-linux-arm64.zip    # Center ELF + Native Image .so 运行库
+ remote-control-mcp-agent-vX.Y.Z-linux-amd64.zip    # command-agent ELF + Native Image .so 运行库
+ remote-control-mcp-agent-vX.Y.Z-linux-arm64.zip    # command-agent ELF + Native Image .so 运行库
+ remote-control-mcp-agent-vX.Y.Z-windows-amd64.zip  # command-agent rcm-agent.exe + Native Image DLLs
+ remote-control-mcp-desktop-vX.Y.Z-linux-amd64.zip / remote-control-mcp-desktop-vX.Y.Z-linux-arm64.zip
+ remote-control-mcp-desktop-vX.Y.Z-windows-amd64.zip      # desktop-companion + Native Image runtime
+ remote-control-mcp-browser-vX.Y.Z-linux-amd64.zip / remote-control-mcp-browser-vX.Y.Z-linux-arm64.zip
+ remote-control-mcp-browser-vX.Y.Z-windows-amd64.zip      # browser-agent + Native Image runtime
 ```
 
 每个发布资产附带 SHA-256、SBOM、构建元数据和签名。Linux/Windows Agent 必须把可执行文件与同一构建生成的 `.so`/DLL 一起打包，不能把裸可执行文件当作完整运行包。Native Image 是针对具体 OS/CPU 架构的构建产物，不能把一个 Linux 二进制当作跨平台包；CI 使用匹配架构 runner/容器分别编译和冒烟测试，不做未经验证的交叉编译。

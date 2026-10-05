@@ -1,10 +1,10 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: remote-connect-mcp-java-center
-  namespace: remote-connect-mcp
+  name: remote-control-mcp-center
+  namespace: remote-control-mcp
   labels:
-    app.kubernetes.io/name: remote-connect-mcp-java-center
+    app.kubernetes.io/name: remote-control-mcp-center
 spec:
   parentRefs:
     - group: gateway.networking.k8s.io
@@ -14,17 +14,17 @@ spec:
       sectionName: https
   hostnames:
     # Keep the established gateway alias for MCP clients.  Production overlays
-    # may reuse the existing remote-connect-mcp-* records without creating a
+    # may reuse the existing remote-control-mcp-* records without creating a
     # second DNS name just because the implementation is Java.
-    - remote-connect-mcp-gateway.example.invalid
-    - remote-connect-mcp-agent.example.invalid
+    - remote-control-mcp-gateway.example.invalid
+    - remote-control-mcp-agent.example.invalid
   rules:
     - matches:
         - path:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: remote-connect-mcp-java-center
+        - name: remote-control-mcp-center
           port: 8080
       timeouts:
         request: 0s

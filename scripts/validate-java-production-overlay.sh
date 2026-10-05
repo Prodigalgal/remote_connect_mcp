@@ -90,11 +90,11 @@ else
   ((digest_count == 0)) || fail 'template mode must not contain a production image digest'
 fi
 
-# Every public route is intentionally prefixed with remote-connect-mcp-.  The
+# Every public route is intentionally prefixed with remote-control-mcp-.  The
 # check also catches a malformed or missing hostname without echoing it.
-hostname_lines="$(grep -n -I -E -- '^[[:space:]]*-[[:space:]]+remote-connect-mcp-[A-Za-z0-9-]+[.][A-Za-z0-9.-]+[[:space:]]*$' "$routes" || true)"
+hostname_lines="$(grep -n -I -E -- '^[[:space:]]*-[[:space:]]+remote-control-mcp-[A-Za-z0-9-]+[.][A-Za-z0-9.-]+[[:space:]]*$' "$routes" || true)"
 hostname_count="$(printf '%s\n' "$hostname_lines" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
-((hostname_count == 3)) || fail "expected three remote-connect-mcp hostnames, found $hostname_count"
+((hostname_count == 3)) || fail "expected three remote-control-mcp hostnames, found $hostname_count"
 hostname_values="$(printf '%s\n' "$hostname_lines" | sed -E 's/^[^:]+:[[:space:]]*-[[:space:]]*//; s/[[:space:]]+$//' | sort -u)"
 unique_hostname_count="$(printf '%s\n' "$hostname_values" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
 ((unique_hostname_count == hostname_count)) || fail 'route hostnames must be unique'
@@ -108,8 +108,8 @@ fi
 base="$overlay/../../java-center"
 base="$(cd "$base" 2>/dev/null && pwd)" || fail 'overlay resource base ../../java-center is missing'
 if [[ -d "$base" ]]; then
-  grep -R -q -I -E -- 'name:[[:space:]]*remote-connect-mcp-java-secrets' "$base" || \
-    fail 'java-center base must reference the external remote-connect-mcp-java-secrets Secret'
+  grep -R -q -I -E -- 'name:[[:space:]]*remote-control-mcp-secrets' "$base" || \
+    fail 'java-center base must reference the external remote-control-mcp-secrets Secret'
   secret_ref_count="$(grep -R -n -I -E -- '^[[:space:]]*secretKeyRef:' "$base" | wc -l | tr -d ' ')"
   ((secret_ref_count >= 5)) || fail "java-center base has too few Secret references: $secret_ref_count"
   grep -R -q -I -E -- 'name:[[:space:]]*RCM_CENTER_REQUIRE_DURABLE_STORAGE[[:space:]]*$' "$base" || \

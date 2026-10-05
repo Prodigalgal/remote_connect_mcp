@@ -17,7 +17,7 @@ dependencies {
 }
 
 application {
-    mainClass.set("com.prodigalgal.remoteconnectmcp.browser.BrowserAgentApplication")
+    mainClass.set("com.prodigalgal.remotecontrolmcp.browser.BrowserAgentApplication")
 }
 
 graalvmNative {

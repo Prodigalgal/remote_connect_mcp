@@ -16,7 +16,7 @@ dependencies {
 }
 
 application {
-    mainClass.set("com.prodigalgal.remoteconnectmcp.updater.UpdaterApplication")
+    mainClass.set("com.prodigalgal.remotecontrolmcp.updater.UpdaterApplication")
 }
 
 graalvmNative {

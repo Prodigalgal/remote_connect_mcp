@@ -1,11 +1,11 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: remote-connect-mcp-java-center
-  namespace: remote-connect-mcp
+  name: remote-control-mcp-center
+  namespace: remote-control-mcp
   labels:
-    app.kubernetes.io/name: remote-connect-mcp-java-center
-    app.kubernetes.io/part-of: remote-connect-mcp
+    app.kubernetes.io/name: remote-control-mcp-center
+    app.kubernetes.io/part-of: remote-control-mcp
 spec:
   replicas: 1
   strategy:
@@ -13,12 +13,12 @@ spec:
   revisionHistoryLimit: 3
   selector:
     matchLabels:
-      app.kubernetes.io/name: remote-connect-mcp-java-center
+      app.kubernetes.io/name: remote-control-mcp-center
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: remote-connect-mcp-java-center
-        app.kubernetes.io/part-of: remote-connect-mcp
+        app.kubernetes.io/name: remote-control-mcp-center
+        app.kubernetes.io/part-of: remote-control-mcp
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: center
-          image: ghcr.io/replace-me/remote-connect-mcp-center-java:0.1.0
+          image: ghcr.io/replace-me/remote-control-mcp-center:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -42,9 +42,9 @@ spec:
             - name: RCM_CENTER_ARTIFACT_STORE
               value: filesystem
             - name: RCM_CENTER_ARTIFACT_ROOT
-              value: /var/lib/remote-connect-mcp-center/artifacts
+              value: /var/lib/remote-control-mcp-center/artifacts
             - name: RCM_CENTER_TRANSFER_SPOOL_ROOT
-              value: /var/lib/remote-connect-mcp-center/artifacts/.transfer-spool
+              value: /var/lib/remote-control-mcp-center/artifacts/.transfer-spool
             # Artifact retention is independent from the short-lived signed
             # URL handed to the Web client.  An offline Agent can therefore
             # wait for days without keeping a browser URL valid for days.
@@ -62,16 +62,16 @@ spec:
             # metadata. Production overlays must replace this example value
             # with the stable HTTPS Center hostname.
             - name: RCM_CENTER_PUBLIC_BASE_URL
-              value: https://remote-connect-mcp-center.example.invalid
+              value: https://remote-control-mcp-center.example.invalid
             # ChatGPT Web uses OAuth discovery; direct Codex/CLI clients use
             # Console-issued RCM Bearer credentials. Production overlays must
             # replace issuer/resource with the real HTTPS origin(s).
             - name: RCM_CENTER_OAUTH_ENABLED
               value: "false"
             - name: RCM_CENTER_OAUTH_ISSUER
-              value: https://remote-connect-mcp-center.example.invalid
+              value: https://remote-control-mcp-center.example.invalid
             - name: RCM_CENTER_OAUTH_RESOURCE
-              value: https://remote-connect-mcp-center.example.invalid
+              value: https://remote-control-mcp-center.example.invalid
             - name: RCM_CENTER_OAUTH_ALLOW_STATIC_TOKEN_BOOTSTRAP
               value: "true"
             - name: RCM_CENTER_TRANSFER_MAX_CONCURRENT
@@ -97,54 +97,54 @@ spec:
             - name: RCM_CENTER_AGENT_AUTO_UPGRADE_INCLUDE_PRERELEASE
               value: "true"
             - name: RCM_CENTER_RELEASE_BASE_URL
-              value: https://github.com/Prodigalgal/remote_connect_mcp/releases/download
+              value: https://github.com/Prodigalgal/remote_control_mcp/releases/download
             - name: RCM_CENTER_RELEASES_API_URL
-              value: https://api.github.com/repos/Prodigalgal/remote_connect_mcp/releases
+              value: https://api.github.com/repos/Prodigalgal/remote_control_mcp/releases
             - name: RCM_CENTER_RELEASE_TAG_PREFIX
               value: java-
             - name: RCM_CENTER_DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: remote-connect-mcp-java-secrets
+                  name: remote-control-mcp-secrets
                   key: database-url
             - name: RCM_CENTER_DATABASE_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: remote-connect-mcp-java-secrets
+                  name: remote-control-mcp-secrets
                   key: database-username
             - name: RCM_CENTER_DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: remote-connect-mcp-java-secrets
+                  name: remote-control-mcp-secrets
                   key: database-password
-            - name: REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN
+            - name: REMOTE_CONTROL_MCP_CENTER_ADMIN_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: remote-connect-mcp-java-secrets
+                  name: remote-control-mcp-secrets
                   key: admin-token
-            - name: REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET
+            - name: REMOTE_CONTROL_MCP_CENTER_ARTIFACT_SIGNING_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: remote-connect-mcp-java-secrets
+                  name: remote-control-mcp-secrets
                   key: artifact-signing-secret
             # Optional rolling-rotation key. Keep the previous key until the
             # longest signed URL TTL has elapsed, then remove it.
-            - name: REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET_PREVIOUS
+            - name: REMOTE_CONTROL_MCP_CENTER_ARTIFACT_SIGNING_SECRET_PREVIOUS
               valueFrom:
                 secretKeyRef:
-                  name: remote-connect-mcp-java-secrets
+                  name: remote-control-mcp-secrets
                   key: artifact-signing-secret-previous
                   optional: true
-            - name: REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID
+            - name: REMOTE_CONTROL_MCP_CENTER_ARTIFACT_SIGNING_KID
               valueFrom:
                 secretKeyRef:
-                  name: remote-connect-mcp-java-secrets
+                  name: remote-control-mcp-secrets
                   key: artifact-signing-kid
                   optional: true
-            - name: REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID_PREVIOUS
+            - name: REMOTE_CONTROL_MCP_CENTER_ARTIFACT_SIGNING_KID_PREVIOUS
               valueFrom:
                 secretKeyRef:
-                  name: remote-connect-mcp-java-secrets
+                  name: remote-control-mcp-secrets
                   key: artifact-signing-kid-previous
                   optional: true
           readinessProbe:
@@ -177,11 +177,11 @@ spec:
             - name: tmp
               mountPath: /tmp
             - name: artifacts
-              mountPath: /var/lib/remote-connect-mcp-center/artifacts
+              mountPath: /var/lib/remote-control-mcp-center/artifacts
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 512Mi
         - name: artifacts
           persistentVolumeClaim:
-            claimName: remote-connect-mcp-java-artifacts
+            claimName: remote-control-mcp-artifacts

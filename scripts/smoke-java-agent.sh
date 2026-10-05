@@ -155,7 +155,7 @@ fail_with_logs() {
 
 export RCM_CENTER_PERSISTENCE_MODE=memory
 export RCM_CENTER_VERSION=native-agent-smoke
-export REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN="$ADMIN_TOKEN"
+export REMOTE_CONTROL_MCP_CENTER_ADMIN_TOKEN="$ADMIN_TOKEN"
 "$CENTER_BINARY" "--server.port=$PORT" >"$CENTER_LOG" 2>&1 &
 CENTER_PID=$!
 
@@ -181,20 +181,20 @@ issued="$(curl --fail --silent --show-error \
 enrollment_token="$(json_field "$issued" token)"
 [[ -n "$enrollment_token" ]] || fail_with_logs "Center did not return a one-time enrollment token"
 
-export REMOTE_CONNECT_MCP_AGENT_CENTER_URL="$BASE"
-export REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN="$enrollment_token"
-export REMOTE_CONNECT_MCP_AGENT_NAME=linux-native-smoke-agent
-export REMOTE_CONNECT_MCP_AGENT_HOST_ID=linux-native-smoke-host
-export REMOTE_CONNECT_MCP_AGENT_DEFAULT_CWD="$ROOT"
-export REMOTE_CONNECT_MCP_AGENT_STATE_DIR="$STATE_DIR/agent-state"
-export REMOTE_CONNECT_MCP_AGENT_CAPABILITIES=command,durable_tasks
-export REMOTE_CONNECT_MCP_AGENT_POLL_INTERVAL_MS=250
-mkdir -p "$REMOTE_CONNECT_MCP_AGENT_STATE_DIR"
+export REMOTE_CONTROL_MCP_AGENT_CENTER_URL="$BASE"
+export REMOTE_CONTROL_MCP_AGENT_ENROLLMENT_TOKEN="$enrollment_token"
+export REMOTE_CONTROL_MCP_AGENT_NAME=linux-native-smoke-agent
+export REMOTE_CONTROL_MCP_AGENT_HOST_ID=linux-native-smoke-host
+export REMOTE_CONTROL_MCP_AGENT_DEFAULT_CWD="$ROOT"
+export REMOTE_CONTROL_MCP_AGENT_STATE_DIR="$STATE_DIR/agent-state"
+export REMOTE_CONTROL_MCP_AGENT_CAPABILITIES=command,durable_tasks
+export REMOTE_CONTROL_MCP_AGENT_POLL_INTERVAL_MS=250
+mkdir -p "$REMOTE_CONTROL_MCP_AGENT_STATE_DIR"
 
 "$AGENT_BINARY" --register-once >"$REGISTER_LOG" 2>&1 &
 register_pid=$!
 for _ in $(seq 1 120); do
-  if [[ -f "$REMOTE_CONNECT_MCP_AGENT_STATE_DIR/identity.json" ]]; then
+  if [[ -f "$REMOTE_CONTROL_MCP_AGENT_STATE_DIR/identity.json" ]]; then
     break
   fi
   if ! kill -0 "$register_pid" 2>/dev/null; then
@@ -203,17 +203,17 @@ for _ in $(seq 1 120); do
   fi
   sleep 0.25
 done
-if [[ ! -f "$REMOTE_CONNECT_MCP_AGENT_STATE_DIR/identity.json" ]]; then
+if [[ ! -f "$REMOTE_CONTROL_MCP_AGENT_STATE_DIR/identity.json" ]]; then
   wait "$register_pid" 2>/dev/null || true
   fail_with_logs "Agent registration timed out"
 fi
 wait "$register_pid" || fail_with_logs "Agent registration exited unsuccessfully"
-machine_id="$(json_field "$(<"$REMOTE_CONNECT_MCP_AGENT_STATE_DIR/identity.json")" machine_id)"
+machine_id="$(json_field "$(<"$REMOTE_CONTROL_MCP_AGENT_STATE_DIR/identity.json")" machine_id)"
 [[ -n "$machine_id" ]] || fail_with_logs "identity.json has no machine_id"
 
 # The long-running process must work from identity.json alone.  Remove the
 # enrollment token from its environment before starting it.
-unset REMOTE_CONNECT_MCP_AGENT_ENROLLMENT_TOKEN
+unset REMOTE_CONTROL_MCP_AGENT_ENROLLMENT_TOKEN
 "$AGENT_BINARY" --run >"$AGENT_LOG" 2>&1 &
 AGENT_PID=$!
 

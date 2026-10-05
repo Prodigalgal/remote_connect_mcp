@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const sourcePath = path.join(root, 'java', 'center', 'src', 'main', 'java', 'com', 'prodigalgal', 'remoteconnectmcp', 'center', 'McpConfiguration.java');
+const sourcePath = path.join(root, 'java', 'center', 'src', 'main', 'java', 'com', 'prodigalgal', 'remotecontrolmcp', 'center', 'McpConfiguration.java');
 const goldenPath = path.join(root, 'docs', 'mcp-tool-surface.json');
 const source = await fs.readFile(sourcePath, 'utf8');
 const golden = JSON.parse(await fs.readFile(goldenPath, 'utf8'));
@@ -63,8 +63,8 @@ const errors = [];
 for (const removedPath of [
   'go.mod',
   'go.sum',
-  'cmd/remote-connect-mcp-agent',
-  'cmd/remote-connect-mcp-center',
+  'cmd/remote-control-mcp-agent',
+  'cmd/remote-control-mcp-center',
   'internal',
   'Dockerfile.center',
   '.github/workflows/ci.yml',
@@ -92,8 +92,8 @@ for (const forbidden of ['legacyToolSpecs', 'rcm.mcp.legacy-tools', 'onToolOutpu
   if (source.includes(forbidden)) errors.push(`forbidden compatibility path remains in Center source: ${forbidden}`);
 }
 for (const forbidden of [
-  'REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN',
-  'REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN',
+  'REMOTE_CONTROL_MCP_CENTER_MCP_TOKEN',
+  'REMOTE_CONTROL_MCP_CENTER_ENROLLMENT_TOKEN',
   'RCM_CENTER_ALLOW_SHARED_ENROLLMENT',
   'RCM_BROWSER_TASK_COMMAND',
   'onToolOutput',

@@ -1,4 +1,4 @@
-# 历史记录：Remote Connect MCP 需求基线
+# 历史记录：Remote Control MCP 需求基线
 
 > 本文件保留早期需求基线。项目/工作区/路径限制已经取消，当前底层只保留全机 Agent、机器授权、异步任务和紧凑 MCP 工具面；当前有效要求以 [`FULL_HOST_MODEL.md`](FULL_HOST_MODEL.md) 和根目录 [`README.md`](../README.md) 为准。
 
@@ -8,7 +8,7 @@
 
 状态：已确认的产品与工程基线；P2-05-lite 轻量多主体、会话/车道/配额、Artifact Transport v2、Desktop/Browser 隔离和 React Viewer 代码已完成，统一 GitHub Actions、目标机和 ChatGPT Web 真实验收待进行
 
-本文档定义 Remote Connect MCP（RCM）要解决的问题、必须具备的能力、明确的边界和验收标准。它是后续架构、协议、实现和发布决策的上游依据。
+本文档定义 Remote Control MCP（RCM）要解决的问题、必须具备的能力、明确的边界和验收标准。它是后续架构、协议、实现和发布决策的上游依据。
 
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)：描述组件如何协作；
 - [`docs/ASYNC_CONTRACT.md`](ASYNC_CONTRACT.md)：描述异步任务的协议语义；
@@ -273,7 +273,7 @@ RCM 不要求所有任务运行在容器或虚拟机里。可信的整机模式�
 
 ### 9.2 公网和宿主机
 
-- Center 使用自有 `remote-connect-mcp-*` 域名和 HTTPS；
+- Center 使用自有 `remote-control-mcp-*` 域名和 HTTPS；
 - 生产主链路不依赖 Cloudflare Tunnel；Tunnel 只作为没有公网入口时的可选部署方式；
 - Agent 只主动连接 Center，不监听公网入站端口；
 - Agent 宿主机不需要为 Agent 单独创建 DNS 记录；

@@ -4,7 +4,7 @@
 
 更新时间：2026-09-20（Asia/Shanghai）
 
-本文是 Remote Connect MCP 的可持续任务清单。第一列只表示代码交付状态：实现和自动化检查完成即可勾选；生产验收单独记录在 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)，不再阻止代码任务勾选。这样可以明确区分“代码没做完”和“代码已完成但尚未在目标环境验收”。
+本文是 Remote Control MCP 的可持续任务清单。第一列只表示代码交付状态：实现和自动化检查完成即可勾选；生产验收单独记录在 [`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md)，不再阻止代码任务勾选。这样可以明确区分“代码没做完”和“代码已完成但尚未在目标环境验收”。
 
 ## 当前有效底层清单
 
@@ -116,7 +116,7 @@
 | [x] | P0-AT-11 | 配额 admission 数据库事务级原子预留 | JDBC Task/Transfer 在事务内使用 PostgreSQL principal advisory lock，避免 count/insert TOCTOU；Session 及真实并发矩阵仍待生产验收 |
 | [x] | P1-AT-08 | Public Artifact HTTP Range | Artifact URL 支持单段 `Range`、`206`、`Content-Range`、`Accept-Ranges` 和 `416`；代理/大文件现场验证仍待进行 |
 | [x] | P1-AT-09 | 明确 `RCM_CENTER_PUBLIC_BASE_URL` | K8s 模板、部署文档和 Viewer CSP 已加入；生产 overlay 必须填稳定 Center HTTPS Origin |
-| [x] | P1-AT-10 | 独立 Artifact signing secret | 新增 `REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET`，不再默认复用 MCP/Admin Token；密钥轮换需单独验收 |
+| [x] | P1-AT-10 | 独立 Artifact signing secret | 新增 `REMOTE_CONTROL_MCP_CENTER_ARTIFACT_SIGNING_SECRET`，不再默认复用 MCP/Admin Token；密钥轮换需单独验收 |
 | [x] | P1-AT-11 | 加强 `download_url` DNS rebinding 防护 | 每一跳请求前后重复解析公共地址集合，允许最多 5 跳 HTTPS 301/302/303/307/308 并逐跳拒绝私网、循环和解析变化；无法在 JDK HttpClient 中绝对 pin socket，需安全回归 |
 | [x] | P1-AT-12 | 调整 `artifact_get` annotations | `artifact_get` 不再错误标为 destructive/open-world；仍保留异步任务语义，不伪称完全无副作用 |
 | [x] | P1-AT-13 | 区分 quota reserved/transferred bytes | Console/API 增加 `reserved_transfer_bytes` 与 `transferred_transfer_bytes`，不再输出模糊的总量别名 |
@@ -193,7 +193,7 @@
 | [x] | P1-07 | 配置与心跳自描述 | 版本化 runtime descriptor、generation/CAS、有限历史和回滚、严格 schema 校验已实现；目标机回滚演练属于独立生产验收 | AgentRuntimeSettings/ConfigurationService/runtime descriptor 测试、GitHub Actions |
 | [x] | P1-08 | 终端与子 Agent 生命周期 | command-agent、desktop-companion、browser-agent 已拆为独立构建目标；各自拥有锁、并发/进程预算、会话隔离和崩溃/退出回收，Center 只登记 command-agent 身份；多物理 Agent 主机现场矩阵单独验收 | `AgentRuntime`、`DesktopCompanionServer`、`BrowserTaskRunner` 边界实现；统一 Actions/多 Agent 现场验收 |
 | [x] | P1-09 | 审计与错误可解释性 | 有界异步审计队列、PostgreSQL `rcm_audit_event`、Admin/Console 查询、来源区分、错误脱敏和有界保留清理入口已实现；审批来源细化、脱敏抽样和真实故障报告属于独立生产验收 | StructuredLog/AuditService/脱敏测试、GitHub Actions |
-| [x] | P1-10 | ChatGPT Web Artifact Viewer | 稳定 `ui://remote-connect-mcp/artifact-viewer-v1.html` 资源、`openai/fileParams`、structured `file` 对象、React 任务页预览/下载和大文件引用桥接已实现；真实 ChatGPT Web 渲染属于 P1-AT-01 E2E | `McpConfiguration` resource/output schema、React Artifact Viewer；连接器刷新/真实 Web E2E |
+| [x] | P1-10 | ChatGPT Web Artifact Viewer | 稳定 `ui://remote-control-mcp/artifact-viewer-v1.html` 资源、`openai/fileParams`、structured `file` 对象、React 任务页预览/下载和大文件引用桥接已实现；真实 ChatGPT Web 渲染属于 P1-AT-01 E2E | `McpConfiguration` resource/output schema、React Artifact Viewer；连接器刷新/真实 Web E2E |
 
 ### P1 生产验收门禁（不计代码状态）
 

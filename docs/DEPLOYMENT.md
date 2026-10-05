@@ -64,28 +64,28 @@ Linux 入口在非 root 时通过 `sudo` 重新执行。两者均不安装 Boots
 JVM/React 门禁，再在匹配架构的 GitHub-hosted runner（`ubuntu-24.04` 与
 `ubuntu-24.04-arm`）上构建并执行 Linux amd64/arm64 Native Image 烟测，随后在 Windows
 amd64 runner 上构建 Windows Native Image。Release 同时
-上传安装压缩包和按 `remote-connect-mcp-agent-vX.Y.Z-<os>-<arch>` 命名的 Agent
+上传安装压缩包和按 `remote-control-mcp-agent-vX.Y.Z-<os>-<arch>` 命名的 Agent
 升级资产及 `.sha256`，供 Center 自动升级解析；Linux/Windows 资产都是包含 Agent 可执行文件与
 Native Image 运行库的同名平铺 ZIP。Windows 主安装包另外包含 `center/`、`agent/`、`desktop/` 与 `browser/` 四个
 隔离 bundle。main 推送会创建预发布 Release，供 Center 版本目录选择；稳定 Tag 会创建正式 Release；
 手动运行工作流只构建，不创建 Release。
 
 Linux 完整 tar 包的根目录包含 `install-agent.sh` 和匹配版本的
-`remote-connect-mcp-agent.service`；必须把正式 bundle ZIP 传给
-`REMOTE_CONNECT_MCP_AGENT_BINARY`，例如
-`REMOTE_CONNECT_MCP_AGENT_BINARY=./agent/remote-connect-mcp-agent-<version>-linux-amd64.zip ./install-agent.sh`。需要桌面/浏览器能力时，再设置
-`REMOTE_CONNECT_MCP_AGENT_DESKTOP_BINARY=./desktop/rcm-desktop-companion.zip` 和
-`REMOTE_CONNECT_MCP_AGENT_BROWSER_BINARY=./browser/rcm-browser-agent.zip`；安装器会将两个
-companion 放到隔离目录。Linux 同时设置 `REMOTE_CONNECT_MCP_AGENT_DESKTOP_ENABLED=true`、
-`REMOTE_CONNECT_MCP_AGENT_DESKTOP_USER=<登录用户名>` 后，安装器会为该账号创建
+`remote-control-mcp-agent.service`；必须把正式 bundle ZIP 传给
+`REMOTE_CONTROL_MCP_AGENT_BINARY`，例如
+`REMOTE_CONTROL_MCP_AGENT_BINARY=./agent/remote-control-mcp-agent-<version>-linux-amd64.zip ./install-agent.sh`。需要桌面/浏览器能力时，再设置
+`REMOTE_CONTROL_MCP_AGENT_DESKTOP_BINARY=./desktop/rcm-desktop-companion.zip` 和
+`REMOTE_CONTROL_MCP_AGENT_BROWSER_BINARY=./browser/rcm-browser-agent.zip`；安装器会将两个
+companion 放到隔离目录。Linux 同时设置 `REMOTE_CONTROL_MCP_AGENT_DESKTOP_ENABLED=true`、
+`REMOTE_CONTROL_MCP_AGENT_DESKTOP_USER=<登录用户名>` 后，安装器会为该账号创建
 systemd user companion unit，并仅通过 ACL 授予 `state_dir/desktop` 访问；没有 `acl` 或活动图形会话时只安装二进制，不伪造桌面在线状态。
-Linux Browser 目标还应将 `REMOTE_CONNECT_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH` 指向 root
+Linux Browser 目标还应将 `REMOTE_CONTROL_MCP_AGENT_PLAYWRIGHT_BROWSERS_PATH` 指向 root
 和图形用户均可读的共享目录，并在该目录安装 Chromium；安装器会把该变量写入 systemd
 环境，command-agent 启动 browser worker 时自动继承，避免 systemd 服务使用 root profile
 时找不到按用户下载的浏览器。
 Windows 仍由 `-DesktopEnabled` 创建按用户登录触发的 Scheduled Task。安装器会在每个 ZIP 旁存在 `.sha256`
 时先校验，再安装完整 ZIP 内的 Native Image 运行库，并使用包内 systemd 模板（也可用
-`REMOTE_CONNECT_MCP_AGENT_SERVICE_FILE` 显式覆盖）。
+`REMOTE_CONTROL_MCP_AGENT_SERVICE_FILE` 显式覆盖）。
 
 ## PostgreSQL 与 Liquibase
 
@@ -95,26 +95,26 @@ Windows 仍由 `-DesktopEnabled` 创建按用户登录触发的 Scheduled Task�
 RCM_CENTER_PERSISTENCE_MODE=postgres
 RCM_CENTER_REQUIRE_DURABLE_STORAGE=true
 RCM_CENTER_LIQUIBASE_ENABLED=false
-RCM_CENTER_PUBLIC_BASE_URL=https://remote-connect-mcp-center.example.invalid
+RCM_CENTER_PUBLIC_BASE_URL=https://remote-control-mcp-center.example.invalid
 RCM_CENTER_OAUTH_ENABLED=true
-RCM_CENTER_OAUTH_ISSUER=https://remote-connect-mcp-center.example.invalid
-RCM_CENTER_OAUTH_RESOURCE=https://remote-connect-mcp-center.example.invalid
+RCM_CENTER_OAUTH_ISSUER=https://remote-control-mcp-center.example.invalid
+RCM_CENTER_OAUTH_RESOURCE=https://remote-control-mcp-center.example.invalid
 RCM_CENTER_OAUTH_ALLOW_STATIC_TOKEN_BOOTSTRAP=true
-RCM_CENTER_DATABASE_URL=jdbc:postgresql://<host>:5432/remote_connect_mcp
+RCM_CENTER_DATABASE_URL=jdbc:postgresql://<host>:5432/remote_control_mcp
 RCM_CENTER_DATABASE_USERNAME=<user>
 RCM_CENTER_DATABASE_PASSWORD=<password>
-REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET=<at-least-32-char-secret>
+REMOTE_CONTROL_MCP_CENTER_ARTIFACT_SIGNING_SECRET=<at-least-32-char-secret>
 # Optional during a rolling rotation; remove after the signed URL TTL window.
-REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET_PREVIOUS=<previous-secret>
-REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID=v2
-REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID_PREVIOUS=v1
+REMOTE_CONTROL_MCP_CENTER_ARTIFACT_SIGNING_SECRET_PREVIOUS=<previous-secret>
+REMOTE_CONTROL_MCP_CENTER_ARTIFACT_SIGNING_KID=v2
+REMOTE_CONTROL_MCP_CENTER_ARTIFACT_SIGNING_KID_PREVIOUS=v1
 ```
 
 `RCM_CENTER_PUBLIC_BASE_URL` 必须是用户/ChatGPT Web 能访问的稳定 HTTPS Center
 Origin；它用于签名 Artifact URL 和 MCP Apps Viewer 的 CSP 元数据。`RCM_CENTER_OAUTH_ISSUER`
 和 `RCM_CENTER_OAUTH_RESOURCE` 也必须是稳定 HTTPS URL；同一 Center 部署通常把两者设置为
 同一 Origin，独立授权服务器可以使用不同 issuer。Artifact URL
-签名使用独立的 `REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET`，不要复用 MCP
+签名使用独立的 `REMOTE_CONTROL_MCP_CENTER_ARTIFACT_SIGNING_SECRET`，不要复用 MCP
 或 Admin Token。
 
 启用混合认证后，Center 提供 `/.well-known/oauth-protected-resource`、
@@ -123,7 +123,7 @@ ChatGPT Web 通过 Authorization Code + PKCE（S256）打开授权页；用户�
 创建 MCP 凭证时选择可访问的机器及每台机器上的工具，再在授权页输入该凭证。Center 只把它换成短期 OAuth access/refresh token，并继续按源凭证的权限矩阵校验调用。Codex/CLI 可直接携带
 `Authorization: Bearer <Console-issued MCP credential>`，仍使用同一权限矩阵。撤销源凭证会使其
 OAuth access/refresh token 失效。Center 不读取或接受进程级共享 MCP Bearer 环境变量；
-`REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN` 仅用于 Console 管理 API，与 MCP 凭证用途分开。
+`REMOTE_CONTROL_MCP_CENTER_ADMIN_TOKEN` 仅用于 Console 管理 API，与 MCP 凭证用途分开。
 ChatGPT 连接器不支持自定义 API Key，且生产授权元数据不提供 DCR registration endpoint，优先走
 CIMD（`https://chatgpt.com/oauth/client.json`）。
 
@@ -157,14 +157,14 @@ ZIP 与 checksum 是否存在。创建升级活动时，Center 仍会再次按�
 
 ```bash
 export PGHOST=db.example.internal PGPORT=5432
-export PGDATABASE=remote_connect_mcp PGUSER=rcm_center PGPASSWORD='从 Secret 临时注入'
+export PGDATABASE=remote_control_mcp PGUSER=rcm_center PGPASSWORD='从 Secret 临时注入'
 bash ./scripts/backup-postgres.sh
 ```
 
 ```powershell
 $env:PGHOST = 'db.example.internal'
 $env:PGPORT = '5432'
-$env:PGDATABASE = 'remote_connect_mcp'
+$env:PGDATABASE = 'remote_control_mcp'
 $env:PGUSER = 'rcm_center'
 $env:PGPASSWORD = '<从 Secret 临时注入>'
 pwsh ./scripts/backup-postgres.ps1
@@ -185,7 +185,7 @@ Remove-Item Env:PGPASSWORD
 
 Linux/Windows 原生二进制还会由 GitHub OIDC 生成 Artifact Attestation（工作流同时声明
 `id-token: write`、`attestations: write` 和 `artifact-metadata: write`）；下载 Release 资产后，
-可使用 `gh attestation verify <binary> -R Prodigalgal/remote_connect_mcp` 校验构建来源。GitHub
+可使用 `gh attestation verify <binary> -R Prodigalgal/remote_control_mcp` 校验构建来源。GitHub
 仓库必须允许 Actions 写入 attestations；若仓库权限或计划不支持该能力，发布 Job 会失败，
 不会降级为“只有 SHA-256 但没有来源证明”的生产 Release。
 
@@ -233,7 +233,7 @@ Authorization: Bearer <Admin Token>
 后端额外清理一小时宽限期以前、且没有数据库引用的 `fs-v1` 孤儿对象。若不需要自动清理，
 可以在部署 overlay 中移除 `artifact-gc-cronjob.yaml`，然后由外部运维平台按同一接口触发。
 
-Agent 端可用 `REMOTE_CONNECT_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS`（默认 120 秒，
+Agent 端可用 `REMOTE_CONTROL_MCP_AGENT_TRANSFER_STALL_TIMEOUT_SECONDS`（默认 120 秒，
 5 秒至 1 小时）收紧已建立文件流的无进展等待；它与 30 分钟绝对传输上限独立。
 
 审计记录默认只通过有界异步队列写入 PostgreSQL。保留清理由管理员或外部
@@ -272,7 +272,7 @@ Authorization: Bearer <Admin Token>
 
 仓库中的 `deploy/k8s/overlays/java-production` 只是一份公开、占位安全的
 模板，不应直接同步到集群。将它复制到集群外的私有部署层，替换三个
-`remote-connect-mcp-*` 域名、Center/Console 镜像的 SHA-256 digest、Center
+`remote-control-mcp-*` 域名、Center/Console 镜像的 SHA-256 digest、Center
 版本和外部 Secret 后，先执行：
 
 ```bash
@@ -286,20 +286,20 @@ kustomize build /path/to/private/java-production > /tmp/rcm-java-rendered.yaml
 迁移 Job、旁路路由、ChatGPT Web MCP、Agent canary、备份恢复和回滚验收。
 
 云上双区集群可先使用 `deploy/k8s/overlays/java-production`：它把镜像切换到
-`ghcr.io/prodigalgal/remote-connect-mcp-{center-java,console}` 的版本标签、三个
-`remote-connect-mcp-*.example.invalid` 占位路由（MCP、Agent、控制台）并启用 Agent WebSocket
+`ghcr.io/prodigalgal/remote-control-mcp-{center-java,console}` 的版本标签、三个
+`remote-control-mcp-*.example.invalid` 占位路由（MCP、Agent、控制台）并启用 Agent WebSocket
 唤醒通道。正式同步前必须在集群外的部署参数/私有 overlay 中替换为真实域名，并把镜像标签改为已
-验证 Release 的 digest；Secret 管理流程创建 `remote-connect-mcp-java-secrets`，公共 overlay
+验证 Release 的 digest；Secret 管理流程创建 `remote-control-mcp-secrets`，公共 overlay
 不得包含真实域名、Token 或数据库密码。
 
-React 控制台使用独立的 `web/Dockerfile` 镜像和 `console.yaml` Deployment。Nginx 只托管静态资源，并把同源 `/api/` 反向代理到 Center；因此 Admin Token 仍只在浏览器内存中，生产无需开启宽泛 CORS。控制台域名与 MCP/Agent 域名分开，均保留 `remote-connect-mcp-*` 前缀。
+React 控制台使用独立的 `web/Dockerfile` 镜像和 `console.yaml` Deployment。Nginx 只托管静态资源，并把同源 `/api/` 反向代理到 Center；因此 Admin Token 仍只在浏览器内存中，生产无需开启宽泛 CORS。控制台域名与 MCP/Agent 域名分开，均保留 `remote-control-mcp-*` 前缀。
 
 ### CI → GitOps CD
 
 `.github/workflows/java-release.yml` 的 `gitops-deploy` Job 只在完整 Native、镜像和
 GitHub Release 成功后运行。`main` 推送产生的不可变预发布版本更新私有
-`remote-connect-mcp-java-staging` overlay；`java-vX.Y.Z` 稳定 Tag 更新
-`remote-connect-mcp-java-production` overlay。Job 查询 GHCR 多架构镜像的 manifest digest，
+`remote-control-mcp-staging` overlay；`java-vX.Y.Z` 稳定 Tag 更新
+`remote-control-mcp-production` overlay。Job 查询 GHCR 多架构镜像的 manifest digest，
 只改写私有 GitOps 仓库中的 `center.yaml`、`migration-job.yaml` 和 `console.yaml`，提交后由
 Argo CD 的既有 Application 自动同步；它不直接持有 kubeconfig，也不在应用仓库写入生产域名或 Secret。
 
@@ -309,7 +309,7 @@ Secret：`RCM_GITOPS_REPOSITORY`（例如组织/私有 GitOps 仓库名）和
 个人 PAT；轮换时先在 GitOps 仓库新增 Deploy Key，再更新应用仓库 Secret，最后删除旧 Key。
 如果没有启用变量，构建/Release 仍正常完成，但 CD Job 会明确跳过。
 
-模板域名均使用 `remote-connect-mcp-*` 示例名；真实域名只应在部署层注入，不进入源码、日志、指标或前端构建产物。
+模板域名均使用 `remote-control-mcp-*` 示例名；真实域名只应在部署层注入，不进入源码、日志、指标或前端构建产物。
 
 Actions 产出的工件可在需要时下载到临时目录，再运行短时烟测，验证真实 HTTP 启动和 MCP 工具发现；
 烟测本身不编译：
@@ -356,7 +356,7 @@ Agent 烟测同时在注册后的空闲/命令阶段采样 Agent 工作集，生
 - Agent/Admin Servlet 控制器返回 `CompletableFuture<ResponseEntity<?>>`；认证后的 JDBC、任务写入、输出和工件处理统一提交到可关闭的虚拟线程执行器，容器请求线程只负责解析和挂起响应。
 - `/readyz` 的 PostgreSQL 探针同样异步执行；数据库不可达或 Liquibase 核心表不存在时返回 503，避免迁移未完成就接收流量。
 - Agent 的进程等待、stdout/stderr drain 和 Center 上传完全分离：子进程只写有界磁盘 spool，HTTP 使用 `sendAsync`，超时线程可以随时终止无输出进程；输出上报按游标幂等并在网络抖动时退避重试。
-- 无超时任务使用可恢复日志文件，但仍受 `REMOTE_CONNECT_MCP_AGENT_MAX_OUTPUT_BYTES` 硬上限保护；超过上限会终止该任务、保留前缀并以 `failed + output_truncated` 收口，避免离线期间无限占满磁盘。
+- 无超时任务使用可恢复日志文件，但仍受 `REMOTE_CONTROL_MCP_AGENT_MAX_OUTPUT_BYTES` 硬上限保护；超过上限会终止该任务、保留前缀并以 `failed + output_truncated` 收口，避免离线期间无限占满磁盘。
 - Agent 重连使用指数退避和抖动；Center 租约过期后重新排队，不复制逻辑任务。
 - 控制台 API 只加载分页摘要，长输出按 cursor 获取；Admin Token 只保留在当前页面内存。
 - Agent 空闲时只保留一个有界 HTTPS 长轮询请求和少量虚拟线程；任务、取消、配置或升级事件到达即返回，服务端 deadline 结束空闲请求。任务并发、输出磁盘上限和 Browser 默认超时均有配置边界。无超时任务额外由独立文件事件看门器监控日志，离线期间超过上限会终止并收口，避免用“可靠恢复”换取无限资源占用。
@@ -365,7 +365,7 @@ Agent 烟测同时在注册后的空闲/命令阶段采样 Agent 工作集，生
 
 ## Agent 资源预算
 
-默认值按 1C/1G 级别终端设计：空闲 Agent 只保持一个最长 25 秒的 HTTPS 长轮询请求，不运行固定 5 秒心跳；事件到达或服务端 deadline 才结束请求，断线时才使用指数退避。`MAX_CONCURRENCY=1` 限制同时子进程数，`MAX_BROWSER_WORKERS=1` 再对浏览器适配器做独立上限；每任务 stdout/stderr 默认为 64 MiB，普通任务共享 `MAX_AGGREGATE_OUTPUT_BYTES` 聚合 spool 上限（默认随并发增长但不超过 256 MiB）；输出上传使用 16 KiB 分片。每个运行中的任务另外由任务级监督器限制进程树（默认 32）、合同/任务墙钟时长，并可通过 `MAX_RSS_BYTES`（Linux procfs）、`MAX_CPU_SECONDS` 和采样间隔启用资源硬边界；在 Linux 可将预创建的 cgroup v2 目录通过 `REMOTE_CONNECT_MCP_AGENT_CGROUP_PATH` 交给每个任务，Agent 无法附加时 fail-closed；Windows 由 JDK 进程树监督配合内置启动任务，暂不伪造 Job Object 已启用。command 任务和 browser-agent supervisor 共享 `MAX_TOTAL_CHILD_PROCESSES` Agent 级总进程预算（默认 `min(256,max(32,MAX_CONCURRENCY*32))`，范围 1–4096），超额任务在启动后立即 fail-closed，现有任务结束即归还名额；desktop-companion 不进入该预算。超限会终止整棵子进程树并回传明确失败原因，不会给空闲 Agent 增加轮询。Browser 任务无显式超时时默认 300 秒，最长 24 小时；配置 `REMOTE_CONNECT_MCP_AGENT_BROWSER_PROFILE_DIR` 后，Playwright/Patchright/Comoufox Worker 使用目标机持久 Profile，Center 只看到脱敏 origin/path 标记；引擎、浏览器和 headless 选项均为 Agent 本地环境配置。引用失效时 Worker 返回一次新的有界 snapshot 建议，不会盲目重放动作。durable 日志看门器由 fsnotify/WatchService 文件事件驱动；Desktop companion 另有最多 4 个并发 IPC 请求和 16 个活动启动进程，并通过文件锁保证单实例；没有用户会话时 command-agent 只返回明确的 companion 不可用错误。聚合上限达到时普通任务继续执行并标记输出截断，只有 durable 任务达到其硬上限才会终止，确保节约资源不会把可恢复任务静默杀掉。确需并行时逐台提高并发并观察 RSS、磁盘和 Center 延迟，不建议在小规格主机上直接设置 32 个槽位或 1 GiB 输出上限。
+默认值按 1C/1G 级别终端设计：空闲 Agent 只保持一个最长 25 秒的 HTTPS 长轮询请求，不运行固定 5 秒心跳；事件到达或服务端 deadline 才结束请求，断线时才使用指数退避。`MAX_CONCURRENCY=1` 限制同时子进程数，`MAX_BROWSER_WORKERS=1` 再对浏览器适配器做独立上限；每任务 stdout/stderr 默认为 64 MiB，普通任务共享 `MAX_AGGREGATE_OUTPUT_BYTES` 聚合 spool 上限（默认随并发增长但不超过 256 MiB）；输出上传使用 16 KiB 分片。每个运行中的任务另外由任务级监督器限制进程树（默认 32）、合同/任务墙钟时长，并可通过 `MAX_RSS_BYTES`（Linux procfs）、`MAX_CPU_SECONDS` 和采样间隔启用资源硬边界；在 Linux 可将预创建的 cgroup v2 目录通过 `REMOTE_CONTROL_MCP_AGENT_CGROUP_PATH` 交给每个任务，Agent 无法附加时 fail-closed；Windows 由 JDK 进程树监督配合内置启动任务，暂不伪造 Job Object 已启用。command 任务和 browser-agent supervisor 共享 `MAX_TOTAL_CHILD_PROCESSES` Agent 级总进程预算（默认 `min(256,max(32,MAX_CONCURRENCY*32))`，范围 1–4096），超额任务在启动后立即 fail-closed，现有任务结束即归还名额；desktop-companion 不进入该预算。超限会终止整棵子进程树并回传明确失败原因，不会给空闲 Agent 增加轮询。Browser 任务无显式超时时默认 300 秒，最长 24 小时；配置 `REMOTE_CONTROL_MCP_AGENT_BROWSER_PROFILE_DIR` 后，Playwright/Patchright/Comoufox Worker 使用目标机持久 Profile，Center 只看到脱敏 origin/path 标记；引擎、浏览器和 headless 选项均为 Agent 本地环境配置。引用失效时 Worker 返回一次新的有界 snapshot 建议，不会盲目重放动作。durable 日志看门器由 fsnotify/WatchService 文件事件驱动；Desktop companion 另有最多 4 个并发 IPC 请求和 16 个活动启动进程，并通过文件锁保证单实例；没有用户会话时 command-agent 只返回明确的 companion 不可用错误。聚合上限达到时普通任务继续执行并标记输出截断，只有 durable 任务达到其硬上限才会终止，确保节约资源不会把可恢复任务静默杀掉。确需并行时逐台提高并发并观察 RSS、磁盘和 Center 延迟，不建议在小规格主机上直接设置 32 个槽位或 1 GiB 输出上限。
 ### Artifact deduplication and optional compression
 
 The Center keeps the original SHA-256/size in PostgreSQL and can optionally
@@ -375,7 +375,7 @@ storage remains independent from the Native component release lifecycle:
 ```text
 RCM_CENTER_ARTIFACT_DEDUP_ENABLED=true
 RCM_CENTER_ARTIFACT_COMPRESSION=off   # off or gzip; gzip is disk-spooled
-RCM_CENTER_TRANSFER_SPOOL_ROOT=/var/lib/remote-connect-mcp-center/transfer
+RCM_CENTER_TRANSFER_SPOOL_ROOT=/var/lib/remote-control-mcp-center/transfer
 RCM_CENTER_ARTIFACT_RETENTION_SECONDS=604800
 RCM_CENTER_ARTIFACT_WEB_RETENTION_SECONDS=604800
 RCM_CENTER_ARTIFACT_LARGE_RETENTION_SECONDS=259200

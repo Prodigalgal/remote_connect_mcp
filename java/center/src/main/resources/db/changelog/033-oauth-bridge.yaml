@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 033-oauth-bridge
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: oauth,authentication
       contexts: postgres
       runInTransaction: true

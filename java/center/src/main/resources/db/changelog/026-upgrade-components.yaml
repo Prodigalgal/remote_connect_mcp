@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 026-upgrade-components
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: upgrades,components
       contexts: postgres
       runInTransaction: true

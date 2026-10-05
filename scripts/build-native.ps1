@@ -57,7 +57,7 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 # them; Center and Agent DLL sets are kept in separate directories because
 # generated java.dll/jvm.dll files are not guaranteed byte-identical.
 Get-ChildItem -LiteralPath $out -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^(rcm-(center|agent|desktop-companion|browser-agent|updater)(\.exe|\.exe\.sha256)|.*\.dll(\.sha256)?|remote-connect-mcp-.*\.zip(\.sha256)?|manifest\.json)$' } |
+        Where-Object { $_.Name -match '^(rcm-(center|agent|desktop-companion|browser-agent|updater)(\.exe|\.exe\.sha256)|.*\.dll(\.sha256)?|remote-control-mcp-.*\.zip(\.sha256)?|manifest\.json)$' } |
     Remove-Item -Force
 if ($os -eq 'windows') {
     foreach ($bundle in @('center', 'agent', 'desktop', 'browser', 'updater')) {
@@ -103,7 +103,7 @@ try {
         # Produce the same usable Windows packages as the GitHub release:
         # a flat Agent archive for self-upgrade and an optional full bundle for
         # manual Center/Agent installation.  Checksums are kept beside them.
-        $agentArchive = Join-Path $out "remote-connect-mcp-agent-$version-$os-$arch.zip"
+        $agentArchive = Join-Path $out "remote-control-mcp-agent-$version-$os-$arch.zip"
         Push-Location (Join-Path $out 'agent')
         try { Compress-Archive -Path '*.exe', '*.dll' -DestinationPath $agentArchive -CompressionLevel Optimal -Force }
         finally { Pop-Location }
@@ -111,7 +111,7 @@ try {
         Set-Content -LiteralPath "$agentArchive.sha256" -Value "$agentArchiveHash  $(Split-Path -Leaf $agentArchive)" -Encoding ascii
         & (Join-Path $root 'scripts\verify-native-bundle.ps1') -AgentArchive $agentArchive
 
-        $desktopArchive = Join-Path $out "remote-connect-mcp-desktop-$version-$os-$arch.zip"
+        $desktopArchive = Join-Path $out "remote-control-mcp-desktop-$version-$os-$arch.zip"
         Push-Location (Join-Path $out 'desktop')
         try { Compress-Archive -Path '*.exe', '*.dll' -DestinationPath $desktopArchive -CompressionLevel Optimal -Force }
         finally { Pop-Location }
@@ -119,7 +119,7 @@ try {
         Set-Content -LiteralPath "$desktopArchive.sha256" -Value "$desktopArchiveHash  $(Split-Path -Leaf $desktopArchive)" -Encoding ascii
         & (Join-Path $root 'scripts\verify-native-bundle.ps1') -AgentArchive $desktopArchive -ExecutableName 'rcm-desktop-companion.exe'
 
-        $browserArchive = Join-Path $out "remote-connect-mcp-browser-$version-$os-$arch.zip"
+        $browserArchive = Join-Path $out "remote-control-mcp-browser-$version-$os-$arch.zip"
         Push-Location (Join-Path $out 'browser')
         try { Compress-Archive -Path '*.exe', '*.dll' -DestinationPath $browserArchive -CompressionLevel Optimal -Force }
         finally { Pop-Location }
@@ -127,7 +127,7 @@ try {
         Set-Content -LiteralPath "$browserArchive.sha256" -Value "$browserArchiveHash  $(Split-Path -Leaf $browserArchive)" -Encoding ascii
         & (Join-Path $root 'scripts\verify-native-bundle.ps1') -AgentArchive $browserArchive -ExecutableName 'rcm-browser-agent.exe'
 
-        $updaterArchive = Join-Path $out "remote-connect-mcp-updater-$version-$os-$arch.zip"
+        $updaterArchive = Join-Path $out "remote-control-mcp-updater-$version-$os-$arch.zip"
         Push-Location (Join-Path $out 'updater')
         try { Compress-Archive -Path '*.exe', '*.dll' -DestinationPath $updaterArchive -CompressionLevel Optimal -Force }
         finally { Pop-Location }
@@ -135,7 +135,7 @@ try {
         Set-Content -LiteralPath "$updaterArchive.sha256" -Value "$updaterArchiveHash  $(Split-Path -Leaf $updaterArchive)" -Encoding ascii
         & (Join-Path $root 'scripts\verify-native-bundle.ps1') -AgentArchive $updaterArchive -ExecutableName 'rcm-updater.exe'
 
-        $bundleArchive = Join-Path $out "remote-connect-mcp-$version-$os-$arch.zip"
+        $bundleArchive = Join-Path $out "remote-control-mcp-$version-$os-$arch.zip"
         Push-Location $out
         try { Compress-Archive -Path 'center', 'agent', 'desktop', 'browser', 'updater' -DestinationPath $bundleArchive -CompressionLevel Optimal -Force }
         finally { Pop-Location }

@@ -10,9 +10,9 @@ resources:
   - console.yaml
   - routes.yaml
 images:
-  - name: ghcr.io/replace-me/remote-connect-mcp-center-java
-    newName: ghcr.io/replace-me/remote-connect-mcp-center-java
+  - name: ghcr.io/replace-me/remote-control-mcp-center
+    newName: ghcr.io/replace-me/remote-control-mcp-center
     newTag: 0.1.0
-  - name: ghcr.io/replace-me/remote-connect-mcp-console
-    newName: ghcr.io/replace-me/remote-connect-mcp-console
+  - name: ghcr.io/replace-me/remote-control-mcp-console
+    newName: ghcr.io/replace-me/remote-control-mcp-console
     newTag: 0.1.0

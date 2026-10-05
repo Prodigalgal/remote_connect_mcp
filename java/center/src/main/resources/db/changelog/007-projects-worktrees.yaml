@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 007-projects-worktrees
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: projects
       contexts: postgres
       runInTransaction: true

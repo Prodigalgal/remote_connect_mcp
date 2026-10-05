@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 032-conversations-connections
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: conversations,connections,recovery
       contexts: postgres
       runInTransaction: true

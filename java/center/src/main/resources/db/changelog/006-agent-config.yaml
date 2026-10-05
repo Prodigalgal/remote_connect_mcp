@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 006-agent-config
-      author: remote-connect-mcp
+      author: remote-control-mcp
       labels: agent-config
       contexts: postgres
       runInTransaction: true

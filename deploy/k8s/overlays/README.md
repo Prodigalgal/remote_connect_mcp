@@ -11,7 +11,7 @@ Before a production sync:
 2. Replace the two image tags in `java-production/kustomization.yaml` and the
    Center version in `java-production/center-production-patch.yaml` with the
    verified release version. For production, prefer an immutable image digest.
-3. Create `remote-connect-mcp-java-secrets` outside Git with the Console Admin
+3. Create `remote-control-mcp-secrets` outside Git with the Console Admin
    token and PostgreSQL connection values. MCP client credentials are issued
    per client in Console and are not Center-wide secrets. Do not store an
    Enrollment Token in the Center Secret; issue one per machine through Console and use it
@@ -28,7 +28,7 @@ Before a production sync:
 
    The checked-in overlay is intentionally a public template and will fail
    `--strict` until it is copied into a private deployment layer with real
-   `remote-connect-mcp-*` hostnames, immutable image digests and an external
+   `remote-control-mcp-*` hostnames, immutable image digests and an external
    Secret. CI runs the non-deploying `--template` mode to ensure those
    placeholders remain safe in the public repository.
 

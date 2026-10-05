@@ -4,11 +4,11 @@ param(
 
     [string]$EnvFile = "center.env",
 
-    [string]$Namespace = "remote-connect-mcp",
+    [string]$Namespace = "remote-control-mcp",
 
-    [string]$SecretName = "remote-connect-mcp-java-secrets",
+    [string]$SecretName = "remote-control-mcp-secrets",
 
-    [string]$DeploymentName = "remote-connect-mcp-java-center",
+    [string]$DeploymentName = "remote-control-mcp-center",
 
     [string]$ConsoleUrl = "https://console.example.invalid",
 
@@ -19,7 +19,7 @@ $ErrorActionPreference = "Stop"
 
 $keys = @{
     admin = @{
-        Env = "REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN"
+        Env = "REMOTE_CONTROL_MCP_CENTER_ADMIN_TOKEN"
         Secret = "admin-token"
     }
 }
@@ -45,13 +45,13 @@ function Read-EnvValues([string]$Path) {
 }
 
 function Write-EnvValues([string]$Path, [hashtable]$Values) {
-    $name = "REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN"
+    $name = "REMOTE_CONTROL_MCP_CENTER_ADMIN_TOKEN"
     $lines = [System.Collections.Generic.List[string]]::new()
     $adminWritten = $false
     foreach ($line in [IO.File]::ReadAllLines($Path)) {
         if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=') {
             $variable = $matches[1]
-            if ($variable -in @("REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN", "REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN")) {
+            if ($variable -in @("REMOTE_CONTROL_MCP_CENTER_MCP_TOKEN", "REMOTE_CONTROL_MCP_CENTER_ENROLLMENT_TOKEN")) {
                 continue
             }
             if ($variable -eq $name) {
@@ -93,7 +93,7 @@ if (-not $NewToken) {
     $NewToken = Read-Host "Enter the new Admin token" -AsSecureString
 }
 $plainToken = ConvertFrom-SecureValue $NewToken
-if ($plainToken.Length -lt 32 -or $plainToken -match '[\r\n]' -or $plainToken.Contains("REMOTE_CONNECT_MCP_CENTER_")) {
+if ($plainToken.Length -lt 32 -or $plainToken -match '[\r\n]' -or $plainToken.Contains("REMOTE_CONTROL_MCP_CENTER_")) {
     throw "Token must be one line, at least 32 characters, and must not contain an environment key."
 }
 

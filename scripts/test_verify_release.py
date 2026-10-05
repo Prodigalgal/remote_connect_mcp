@@ -41,7 +41,7 @@ class VerifyReleaseTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "center.yaml"
             path.write_text("""
-image: ghcr.io/prodigalgal/remote-connect-mcp-center-java@%s
+image: ghcr.io/prodigalgal/remote-control-mcp-center@%s
 env:
   - name: RCM_CENTER_VERSION
     value: v1.2.3
