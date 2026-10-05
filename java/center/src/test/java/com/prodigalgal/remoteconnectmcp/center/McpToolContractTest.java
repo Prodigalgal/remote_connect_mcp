@@ -22,6 +22,17 @@ import org.junit.jupiter.api.Test;
 
 class McpToolContractTest {
     @Test
+    void invalidActionReportsOnlyItsOwnMissingField() {
+        var error = McpJsonDefaults.getSchemaValidator().validate(McpConfiguration.desktopModelSchema(),
+                Map.of("operation", "click", "machine_id", "m", "x", 1));
+        assertFalse(error.valid());
+        assertTrue(error.errorMessage().contains("y"));
+        assertTrue(error.errorMessage().length() < 512, error.errorMessage());
+        assertFalse(error.errorMessage().contains("window_title"));
+        assertFalse(error.errorMessage().contains("executable"));
+    }
+
+    @Test
     void actionSchemasRejectMissingAndIrrelevantFields() {
         var desktop = McpConfiguration.desktopModelSchema();
         valid(desktop, Map.of("operation", "click", "machine_id", "m", "x", 1, "y", 2));

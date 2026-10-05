@@ -140,7 +140,9 @@ if $browser; then
   "$npm_path" ci --prefix "$runtime" --no-audit --no-fund
   export CAMOUFOX_INSTALL_DIR="$camoufox_install_dir"
   "$node_path" "$runtime/node_modules/@camoufox/camoufox/dist/__main__.js" fetch
-  adapter="\"$node_path\" \"$worker\""
+  camoufox_install_dir="$("$node_path" "$runtime/node_modules/@camoufox/camoufox/dist/__main__.js" path)"
+  [[ -x "$camoufox_install_dir/camoufox-bin" ]] || { echo 'Camoufox executable is missing' >&2; exit 1; }
+  adapter="env CAMOUFOX_EXECUTABLE_PATH=\"$camoufox_install_dir/camoufox-bin\" \"$node_path\" \"$worker\""
 fi
 
 capabilities='command,durable_tasks,file_transfer'
