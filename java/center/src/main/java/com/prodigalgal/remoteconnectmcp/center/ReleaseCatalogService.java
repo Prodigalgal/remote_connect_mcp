@@ -22,9 +22,8 @@ import org.springframework.stereotype.Service;
 /**
  * Request-triggered GitHub Release catalog for the admin console.
  *
- * <p>The Center never runs a fixed discovery poller.  A console load or an
- * explicit refresh performs one bounded request and shares the result through
- * a short in-process cache.  If GitHub is temporarily unavailable, the last
+ * <p>The automatic reconciler and console share one bounded request through
+ * a short in-process cache. If GitHub is temporarily unavailable, the last
  * successful catalog remains usable and is marked stale.</p>
  */
 @Service

@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 spec = importlib.util.spec_from_file_location(
@@ -13,6 +14,14 @@ spec.loader.exec_module(detect)
 
 
 class DetectComponentChangesTest(unittest.TestCase):
+    def test_each_component_uses_only_its_published_release_as_baseline(self):
+        releases = [{'tag_name': prefix + 'v0.1.40', 'draft': False, 'published_at': '2026-10-05'}
+                    for prefix in ('java-', 'center-', 'console-')]
+        releases += [{'tag_name': 'center-v0.1.41', 'draft': True, 'published_at': None}]
+        for component, prefix in (('agent', 'java-'), ('center', 'center-'), ('console', 'console-')):
+            self.assertEqual([prefix + 'v0.1.40'], detect.published_component_tags(component, releases))
+            self.assertTrue(detect.matches(component, 'scripts/prepare-component-release.py'))
+
     def test_agent_baseline_uses_published_releases_only(self):
         self.assertEqual(['java-v0.1.38', 'java-v0.1.39-beta.1'], detect.published_agent_tags([
             {'tag_name':'java-v0.1.38', 'draft':False, 'published_at':'2026-10-05'},
@@ -32,7 +41,7 @@ class DetectComponentChangesTest(unittest.TestCase):
         self.assertFalse(detect.matches("center", "web/src/views/TasksView.tsx"))
 
     def test_canceled_center_release_is_included_after_console_only_push(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'GITHUB_REPOSITORY': ''}):
             old_cwd = os.getcwd()
             try:
                 os.chdir(directory)
@@ -66,7 +75,7 @@ class DetectComponentChangesTest(unittest.TestCase):
                 os.chdir(old_cwd)
 
     def test_published_console_source_prevents_rebuild_on_unrelated_push(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'GITHUB_REPOSITORY': ''}):
             old_cwd = os.getcwd()
             try:
                 os.chdir(directory)

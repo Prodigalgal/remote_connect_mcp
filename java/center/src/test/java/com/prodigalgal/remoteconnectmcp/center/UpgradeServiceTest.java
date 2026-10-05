@@ -23,6 +23,25 @@ class UpgradeServiceTest {
     private static final String SHA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     @Test
+    void automaticComponentProofUsesReportedCompletionInsteadOfJustAgentVersion() {
+        var registry = AgentRegistry.forTest("enroll");
+        var machine = registry.register(registration("current", "v2.0.0"), "enroll");
+        var upgrades = new UpgradeService(registry, new TaskService(registry), new UpgradeConfig(true, ""));
+        var updater = new UpgradeComponentPlan("agent-updater", "v1.0.0+abc", "linux", "amd64",
+                "https://example.test/updater.zip", SHA, 100L, "manual");
+        var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                List.of(machine.machineId()),
+                Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent.zip", SHA)),
+                false, Map.of("linux/amd64", List.of(updater))));
+        assertTrue(upgrades.completedComponents("v2.0.0").isEmpty());
+        var offered = upgrades.offer(machine.machineId(), new PollRequest(List.of(), 1, List.of("command")));
+        assertNotNull(offered);
+        upgrades.updateStatus(machine.machineId(), new UpgradeStatusRequest(campaign.id(),
+                UpgradeService.COMPLETED, null, offered.attempt(), Map.of("agent-updater", "already-current")));
+        assertEquals(List.of(updater), upgrades.completedComponents("v2.0.0").get(machine.machineId()));
+    }
+
+    @Test
     void companionBundlesAreOfferedOnlyToMachinesThatUseThem() {
         var registry = AgentRegistry.forTest("enroll");
         var commandOnly = registry.register(registration("command-only", "v1.0.0"), "enroll");

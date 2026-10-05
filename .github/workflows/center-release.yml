@@ -29,7 +29,7 @@ permissions:
   artifact-metadata: write
 
 concurrency:
-  group: rcm-center-release-${{ github.ref }}
+  group: rcm-center-release
   cancel-in-progress: false
 
 jobs:
@@ -45,6 +45,7 @@ jobs:
       - id: filter
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           SHA: ${{ github.sha }}
@@ -79,37 +80,16 @@ jobs:
         id: coordinates
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
           INPUT_DEPLOY: ${{ inputs.deploy }}
-        run: |
-          set -euo pipefail
-          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            version="${INPUT_VERSION#center-}"
-            prerelease="${INPUT_PRERELEASE:-false}"
-            deploy="${INPUT_DEPLOY:-true}"
-          elif [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == center-v* ]]; then
-            version="${REF_NAME#center-}"
-            prerelease=false
-            deploy=true
-          else
-            version="v0.0.0-center.${RUN_ID}"
-            prerelease=true
-            deploy=true
-          fi
-          [[ "${version}" =~ ^v[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$ ]] || {
-            echo 'Center version must start with v and contain only release-safe characters' >&2
-            exit 2
-          }
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "tag=center-${version}" >> "${GITHUB_OUTPUT}"
-          echo 'publish=true' >> "${GITHUB_OUTPUT}"
-          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
-          echo "deploy=${deploy}" >> "${GITHUB_OUTPUT}"
+        run: python3 scripts/prepare-component-release.py center --output "$GITHUB_OUTPUT"
 
   center-tests:
     name: Center JVM and PostgreSQL gate
@@ -288,6 +268,9 @@ jobs:
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: release
@@ -310,14 +293,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git fetch origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "${GITHUB_SHA}"
           mapfile -d '' assets < <(find release -maxdepth 1 -type f \( -name '*.zip' -o -name '*.zip.sha256' -o -name '*.spdx.json' -o -name '*.sigstore.json' \) -print0 | sort -z)
           ((${#assets[@]} > 0))
-          args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "Center ${RELEASE_VERSION}" --generate-notes)
+          args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --verify-tag --title "Center ${RELEASE_VERSION}" --generate-notes)
           if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then args+=(--prerelease); fi
           gh release create "${args[@]}"
-          marker="center-published-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-            -f "ref=refs/tags/${marker}" -f "sha=${GITHUB_SHA}" >/dev/null
 
   gitops-deploy:
     name: Promote Center through GitOps
@@ -426,5 +408,15 @@ jobs:
             echo "Source: \`${GITHUB_SHA}\`"
             echo "Image: \`${CENTER_DIGEST}\`"
             echo "GitOps commit: \`$(git -C gitops rev-parse HEAD)\`"
-            echo 'GitOps pin verified; runtime readiness and version require a live check.'
+            echo 'GitOps pin verified; live version and readiness are checked next.'
           } >> "${GITHUB_STEP_SUMMARY}"
+      - name: Verify live Center after automatic deployment
+        env:
+          PRODUCTION_URL: ${{ vars.RCM_CENTER_PRODUCTION_URL }}
+          STAGING_URL: ${{ vars.RCM_CENTER_STAGING_URL }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_PRERELEASE" == 'true' ]]; then RUNTIME_URL="$STAGING_URL"; else RUNTIME_URL="$PRODUCTION_URL"; fi
+          test -n "$RUNTIME_URL"
+          python3 scripts/verify-release.py center "$RELEASE_VERSION" --url "$RUNTIME_URL" --wait-seconds 600
+          echo 'Live Center version and readiness verified.' >> "$GITHUB_STEP_SUMMARY"

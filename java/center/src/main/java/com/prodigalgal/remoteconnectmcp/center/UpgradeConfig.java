@@ -11,6 +11,7 @@ public final class UpgradeConfig {
     private final String releasesApiUrl;
     private final boolean automatic;
     private final boolean includePrerelease;
+    private final java.util.Set<String> excludedMachineIds;
 
     public UpgradeConfig() {
         enabled = Boolean.parseBoolean(env("RCM_CENTER_AGENT_UPGRADES_ENABLED", "true"));
@@ -21,8 +22,9 @@ public final class UpgradeConfig {
         validateHttps(releaseBaseUrl, "RCM_CENTER_RELEASE_BASE_URL");
         releasesApiUrl = trimTrailingSlash(env("RCM_CENTER_RELEASES_API_URL", defaultReleasesApi(releaseBaseUrl)));
         validateHttps(releasesApiUrl, "RCM_CENTER_RELEASES_API_URL");
-        automatic = Boolean.parseBoolean(env("RCM_CENTER_AGENT_AUTO_UPGRADE_ENABLED", "false"));
+        automatic = Boolean.parseBoolean(env("RCM_CENTER_AGENT_AUTO_UPGRADE_ENABLED", "true"));
         includePrerelease = Boolean.parseBoolean(env("RCM_CENTER_AGENT_AUTO_UPGRADE_INCLUDE_PRERELEASE", "false"));
+        excludedMachineIds = parseExcludedMachineIds(env("RCM_CENTER_AGENT_AUTO_UPGRADE_EXCLUDED_MACHINE_IDS", ""));
     }
 
     UpgradeConfig(boolean enabled, String releaseBaseUrl) {
@@ -40,6 +42,7 @@ public final class UpgradeConfig {
         this.releasesApiUrl = trimTrailingSlash(releasesApiUrl == null ? "" : releasesApiUrl.trim());
         this.automatic = false;
         this.includePrerelease = false;
+        this.excludedMachineIds = java.util.Set.of();
         validateTagPrefix(this.releaseTagPrefix);
         validateHttps(this.releaseBaseUrl, "RCM_CENTER_RELEASE_BASE_URL");
         validateHttps(this.releasesApiUrl, "RCM_CENTER_RELEASES_API_URL");
@@ -73,6 +76,23 @@ public final class UpgradeConfig {
 
     public boolean includePrerelease() {
         return includePrerelease;
+    }
+
+    public java.util.Set<String> excludedMachineIds() {
+        return excludedMachineIds;
+    }
+
+    static java.util.Set<String> parseExcludedMachineIds(String value) {
+        var result = new java.util.LinkedHashSet<String>();
+        for (var item : value.split(",")) {
+            var id = item.trim();
+            if (id.isEmpty()) continue;
+            if (!id.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}") || result.size() >= 100) {
+                throw new IllegalArgumentException("automatic upgrade exclusion list is invalid");
+            }
+            result.add(id);
+        }
+        return java.util.Set.copyOf(result);
     }
 
     private static String env(String key, String fallback) {
