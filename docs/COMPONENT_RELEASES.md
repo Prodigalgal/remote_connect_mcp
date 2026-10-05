@@ -9,7 +9,11 @@
 | `web/` | Console | GitOps 只更新 Console |
 | `java/protocol` 或 Gradle 公共配置 | Center 和 Agent | 两个组件各自完整测试和构建 |
 
-主分支构建通过后自动发布正式版，Center/Console 的 GitOps 自动部署生产，Agent 正式版由 Center 自动调谐。组件版本各自递增，不需要人工打 Tag 或再点一次生产发布。版本分配按已有正式 Tag 的数字顺序增加 patch，失败构建已预留的版本也不会覆盖；同一源码重试复用预留版本。PR 运行 `change-checks.yml` 变更检查，不重复执行主分支的发布构建。手动预发布仍可用于 staging；Tag 和手动入口保留给异常恢复。沿用 `java-vX.Y.Z` Agent Tag 和现有资产名，避免中断 Center 升级目录及已安装 Agent。Agent 发布前核对 9 个平台组件 ZIP 及对应 SHA-256 文件；缺失或不匹配就停止发布。
+主分支构建通过后自动发布正式版，Center/Console 的 GitOps 自动部署生产，Agent 正式版由 Center 自动调谐。组件版本各自递增，不需要人工打 Tag 或再点一次生产发布。版本分配按已有正式 Tag 的数字顺序增加 patch，失败构建已预留的版本也不会覆盖；同一源码重试复用预留版本。PR 运行 `change-checks.yml` 变更检查，不重复执行主分支的发布构建。手动预发布仍可用于 staging；Tag 和手动入口保留给异常恢复。沿用 `java-vX.Y.Z` Agent Tag，新资产统一使用 `remote-control-mcp-*` 名称；Center 仅在新名称不存在时兼容历史资产名称。Agent 发布前核对 9 个平台组件 ZIP 及对应 SHA-256 文件；缺失或不匹配就停止发布。
+
+生产由 Argo CD Application `remote-control-mcp-production` 管理，期望配置位于私有 GitOps 仓库 `Prodigalgal/ircs-prod-config` 的 `remote-control-mcp-production/`，部署到 `remote-control-mcp` 命名空间。Argo CD 自动同步并修复配置漂移，管理 Center、Console、数据库、持久卷声明、HTTPRoute 和监控资源；数据库迁移成功后才启动应用。工作流只更新相关组件的不可变镜像摘要。Agent 运行在各自宿主机上，由 Center 发现 Release 并调用本机 Helper 更新。
+
+生产入口为 `https://remote-control-mcp-center.fantong.eu.org/mcp`，控制台为 `https://remote-control-mcp-console.fantong.eu.org/console/`。旧域名暂时转发到同一服务，供现有客户端迁移；新增客户端和安装命令使用新域名。更换项目名称不重写历史数据库迁移标识或任务记录，也不重新创建机器身份和凭证。
 
 Agent 在构建前固定源码 Tag，发布时验证该 Tag，不再次请求以旧提交创建版本。若只有发布阶段失败，仍使用同一 Agent 工作流，填写原运行的 `resume_run_id`：它核对本仓库、源码 Tag、所有组件测试与构建结果及制品有效期，复用通过验收的制品，重新生成清单并签名发布。已发布版本不能覆盖；这条恢复路径不重新构建，也不改变日常推送入口。
 
