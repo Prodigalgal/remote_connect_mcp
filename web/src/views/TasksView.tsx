@@ -41,7 +41,7 @@ export function TasksView({
   const [showComposer, setShowComposer] = useState(false)
   const [createdTaskId, setCreatedTaskId] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
-  const paged = usePagedTail(rows, 100, (offset, limit) => listTasksPage(adminToken, offset, limit))
+  const paged = usePagedTail(rows, 50, (offset, limit) => listTasksPage(adminToken, offset, limit))
 
   const taskList = paged.rows ?? []
   const filteredTasks = taskList

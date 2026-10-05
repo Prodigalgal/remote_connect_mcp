@@ -201,7 +201,11 @@ async function request<T>(path: string, token: string, init?: RequestInit, timeo
         ...(init?.headers ?? {}),
       },
     })
-    const body = await response.json().catch(() => ({}))
+    // An aborted or malformed successful response is not an empty result.
+    // Let it fail so refresh keeps the last valid task list on screen.
+    const body = response.status === 204 || response.status === 205
+      ? {}
+      : response.ok ? await response.json() : await response.json().catch(() => ({}))
     if (!response.ok) {
       throw new AdminApiError(response.status, body.error ?? `请求失败（${response.status}）`)
     }
@@ -209,6 +213,9 @@ async function request<T>(path: string, token: string, init?: RequestInit, timeo
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new AdminApiError(0, 'Center 请求超时')
+    }
+    if (error instanceof SyntaxError) {
+      throw new AdminApiError(0, 'Center 返回的数据不完整，请重试')
     }
     throw error
   } finally {
@@ -357,13 +364,13 @@ export async function rollbackMachineConfig(token: string, machineId: string): P
 }
 
 export async function listTasks(token: string): Promise<Task[]> {
-  return (await listTasksPage(token, 0, 200)).items
+  return (await listTasksPage(token, 0, 50)).items
 }
 
-export async function listTasksPage(token: string, offset = 0, limit = 200): Promise<PageResult<Task>> {
+export async function listTasksPage(token: string, offset = 0, limit = 50): Promise<PageResult<Task>> {
   const boundedOffset = Math.max(0, Math.trunc(offset))
   const boundedLimit = Math.min(200, Math.max(1, Math.trunc(limit)))
-  const response = await request<{ items: Array<Record<string, unknown>>; offset?: number; limit?: number; total?: number; has_more?: boolean }>(`/api/v1/admin/tasks?offset=${boundedOffset}&limit=${boundedLimit}`, token)
+  const response = await request<{ items: Array<Record<string, unknown>>; offset?: number; limit?: number; total?: number; has_more?: boolean }>(`/api/v1/admin/tasks?offset=${boundedOffset}&limit=${boundedLimit}`, token, undefined, 15000)
   const items = (response.items ?? []).map(mapTask)
   return pageResult(items, response, boundedOffset, boundedLimit)
 }
