@@ -14,7 +14,8 @@ param(
     [string]$DesktopUser = "",
     [string]$BrowserProfileDir = "",
     [ValidateSet("0", "1")]
-    [string]$BrowserHeadless = "1"
+    [string]$BrowserHeadless = "1",
+    [switch]$RuntimeOnly
 )
 
 Set-StrictMode -Version Latest
@@ -92,9 +93,14 @@ function Download-Verified {
     return $zip
 }
 
-$agentZip = Download-Verified "remote-connect-mcp-agent-$Version-windows-amd64.zip"
-$desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-windows-amd64.zip"
-$browserZip = Download-Verified "remote-connect-mcp-browser-$Version-windows-amd64.zip"
+$agentZip = $null
+$desktopZip = $null
+$browserZip = $null
+if (-not $RuntimeOnly) {
+    $agentZip = Download-Verified "remote-connect-mcp-agent-$Version-windows-amd64.zip"
+    $desktopZip = Download-Verified "remote-connect-mcp-desktop-$Version-windows-amd64.zip"
+    $browserZip = Download-Verified "remote-connect-mcp-browser-$Version-windows-amd64.zip"
+}
 $installer = Join-Path $StageRoot "install-agent.ps1"
 # Prefer the checked-out installer when this script is run from the repository;
 # this keeps local recovery aligned with the current PowerShell/MSIX fixes. A
@@ -137,10 +143,22 @@ if ($npm) {
     & $node $npmCli ci --prefix $runtime --no-audit --no-fund --ignore-scripts
 }
 if ($LASTEXITCODE -ne 0) { throw "Camoufox npm install failed with exit $LASTEXITCODE" }
-& $node --input-type=module -e "await import('@camoufox/camoufox')"
-if ($LASTEXITCODE -ne 0) { throw 'Camoufox runtime package could not be loaded.' }
-& $node (Join-Path $runtime 'node_modules\@camoufox\camoufox\dist\__main__.js') fetch
+$camoufoxCli = Join-Path $runtime 'node_modules\@camoufox\camoufox\dist\__main__.js'
+& $node $camoufoxCli fetch
+if ($LASTEXITCODE -ne 0) { & $node $camoufoxCli fetch }
 if ($LASTEXITCODE -ne 0) { throw "Camoufox browser install failed with exit $LASTEXITCODE" }
+$camoufoxInstallDir = [string](& $node $camoufoxCli path)
+if ($LASTEXITCODE -ne 0) { throw 'Camoufox install path could not be resolved.' }
+$camoufoxInstallDir = $camoufoxInstallDir.Trim()
+$camoufoxExecutable = Join-Path $camoufoxInstallDir 'camoufox.exe'
+if (-not (Test-Path -LiteralPath $camoufoxExecutable -PathType Leaf)) { throw 'Camoufox executable is missing.' }
+$adapterWrapper = Join-Path $runtime 'browser-adapter.cmd'
+$adapterContent = "@echo off`r`nset `"CAMOUFOX_EXECUTABLE_PATH=$camoufoxExecutable`"`r`n`"$node`" `"$worker`"`r`n"
+Set-Content -LiteralPath $adapterWrapper -Value $adapterContent -Encoding ASCII -Force
+if ($RuntimeOnly) {
+    [ordered]@{ status = 'completed'; worker = $worker; worker_sha256 = (Get-FileHash -LiteralPath $worker -Algorithm SHA256).Hash.ToLowerInvariant(); browser_adapter = $adapterWrapper; camoufox_executable = $camoufoxExecutable } | ConvertTo-Json
+    return
+}
 
 function ConvertTo-PSLiteral {
     param([AllowEmptyString()][string]$Value)
@@ -167,6 +185,7 @@ $applyLines = @(
     ('$stateDir = {0}' -f (ConvertTo-PSLiteral $StateDir)),
     ('$nodePath = {0}' -f (ConvertTo-PSLiteral $node)),
     ('$camoufoxInstallDir = {0}' -f (ConvertTo-PSLiteral $camoufoxInstallDir)),
+    ('$camoufoxExecutable = {0}' -f (ConvertTo-PSLiteral $camoufoxExecutable)),
     ('$desktopUser = {0}' -f (ConvertTo-PSLiteral $DesktopUser)),
     ('$browserProfileDir = {0}' -f (ConvertTo-PSLiteral $BrowserProfileDir)),
     ('$browserHeadless = {0}' -f (ConvertTo-PSLiteral $BrowserHeadless)),
@@ -184,7 +203,7 @@ $applyLines = @(
     # shim is stable inside the staged runtime directory and retains normal
     # quoted paths for Node and the Worker.
     '  $adapterWrapper = Join-Path $stage "browser-runtime\browser-adapter.cmd"',
-    '  $adapterContent = "@echo off`r`n`"$node`" `"$worker`"`r`n"',
+    '  $adapterContent = "@echo off`r`nset `"CAMOUFOX_EXECUTABLE_PATH=$camoufoxExecutable`"`r`n`"$node`" `"$worker`"`r`n"',
     '  Set-Content -LiteralPath $adapterWrapper -Value $adapterContent -Encoding ASCII -Force',
     '  $adapter = $adapterWrapper',
     '  $installer = Join-Path $stage "install-agent.ps1"',

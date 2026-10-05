@@ -441,9 +441,9 @@ public class McpConfiguration {
             var branch = operationBranch(properties, "action", action, required, fields,
                     List.of("timeout_ms", "include_snapshot", "detail"));
             if (fields.contains("ref")) branch.put("oneOf", exclusiveFields("ref", "selector"));
-            branches.add(branch);
+            branches.add(whenOperation("action", action, branch));
         }
-        result.put("oneOf", branches);
+        result.put("allOf", branches);
         return result;
     }
 
@@ -465,9 +465,9 @@ public class McpConfiguration {
                 Map.entry("offset", modelInteger("zero-based page offset", 0, 1000000)),
                 Map.entry("limit", modelInteger("page size", 1, MAX_MACHINE_PAGE)));
         var result = modelSchema(properties, List.of("operation"));
-        result.put("oneOf", List.of(
-                operationBranch(properties, "operation", "list", List.of(), List.of("offset", "limit"), List.of()),
-                operationBranch(properties, "operation", "detail", List.of("machine_id"), List.of("machine_id"), List.of())));
+        result.put("allOf", List.of(
+                whenOperation("operation", "list", operationBranch(properties, "operation", "list", List.of(), List.of("offset", "limit"), List.of())),
+                whenOperation("operation", "detail", operationBranch(properties, "operation", "detail", List.of("machine_id"), List.of("machine_id"), List.of()))));
         return result;
     }
 
@@ -533,9 +533,9 @@ public class McpConfiguration {
             if ("shortcut".equals(operation)) branch.put("oneOf", exclusiveFields("keys", "key"));
             if ("type".equals(operation)) branch.put("properties", Map.of(
                     "operation", Map.of("const", operation), "text", modelString("text to type", 1, 16384)));
-            branches.add(branch);
+            branches.add(whenOperation("operation", operation, branch));
         }
-        result.put("oneOf", branches);
+        result.put("allOf", branches);
         return result;
     }
 
@@ -598,6 +598,13 @@ public class McpConfiguration {
     private static List<Map<String, Object>> exclusiveFields(String first, String second) {
         return List.of(Map.of("required", List.of(first), "not", Map.of("required", List.of(second))),
                 Map.of("required", List.of(second), "not", Map.of("required", List.of(first))));
+    }
+
+    private static Map<String, Object> whenOperation(String field, String value, Map<String, Object> branch) {
+        // Validate only the selected operation. A union makes the SDK expand
+        // errors from every other operation, obscuring the actionable cause.
+        return Map.of("if", Map.of("properties", Map.of(field, Map.of("const", value)),
+                        "required", List.of(field)), "then", branch);
     }
 
     private static Map<String, Object> operationBranch(Map<String, Object> properties, String discriminator,

@@ -170,14 +170,19 @@ try {
         if ($nodeVersion -lt [version]'22.15.0') { throw 'Camoufox requires Node.js 22.15 or newer.' }
         & $npm ci --prefix $runtime --no-audit --no-fund --ignore-scripts
         if ($LASTEXITCODE -ne 0) { throw "Camoufox npm install failed with exit $LASTEXITCODE" }
-        & $NodePath --input-type=module -e "await import('@camoufox/camoufox')"
-        if ($LASTEXITCODE -ne 0) { throw 'Camoufox runtime package could not be loaded.' }
         $env:CAMOUFOX_INSTALL_DIR = $camoufoxInstallDir
-        & $NodePath (Join-Path $runtime 'node_modules\@camoufox\camoufox\dist\__main__.js') fetch
+        $camoufoxCli = Join-Path $runtime 'node_modules\@camoufox\camoufox\dist\__main__.js'
+        & $NodePath $camoufoxCli fetch
+        if ($LASTEXITCODE -ne 0) { & $NodePath $camoufoxCli fetch }
         if ($LASTEXITCODE -ne 0) { throw "Camoufox browser install failed with exit $LASTEXITCODE" }
+        $camoufoxInstallDir = [string](& $NodePath $camoufoxCli path)
+        if ($LASTEXITCODE -ne 0) { throw 'Camoufox install path could not be resolved.' }
+        $camoufoxInstallDir = $camoufoxInstallDir.Trim()
+        $camoufoxExecutable = Join-Path $camoufoxInstallDir 'camoufox.exe'
+        if (-not (Test-Path -LiteralPath $camoufoxExecutable -PathType Leaf)) { throw 'Camoufox executable is missing.' }
         $env:REMOTE_CONNECT_MCP_AGENT_CAMOUFOX_INSTALL_DIR = $camoufoxInstallDir
         $adapter = Join-Path $runtime 'browser-adapter.cmd'
-        Set-Content -LiteralPath $adapter -Value "@echo off`r`n`"$NodePath`" `"$worker`"`r`n" -Encoding ASCII -Force
+        Set-Content -LiteralPath $adapter -Value "@echo off`r`nset `"CAMOUFOX_EXECUTABLE_PATH=$camoufoxExecutable`"`r`n`"$NodePath`" `"$worker`"`r`n" -Encoding ASCII -Force
     }
 
     $capabilities = 'command,durable_tasks,file_transfer'
