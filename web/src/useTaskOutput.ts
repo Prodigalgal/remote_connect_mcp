@@ -5,7 +5,7 @@ const PREVIEW_LIMIT = 64 * 1024
 const isTerminal = (task: Task) => ['completed', 'failed', 'canceled', 'succeeded'].includes(task.status)
 
 /** One bounded, cursor-based subscription per expanded task. */
-export function useTaskOutput(token: string, listedTask: Task, enabled: boolean) {
+export function useTaskOutput(token: string, listedTask: Task, enabled: boolean, encoding = 'utf-8') {
   const [snapshot, setSnapshot] = useState<Task | null>(null)
   const [output, setOutput] = useState('')
   const [more, setMore] = useState(false)
@@ -17,7 +17,8 @@ export function useTaskOutput(token: string, listedTask: Task, enabled: boolean)
   const [readRequest, setReadRequest] = useState({ version: 0, reset: false })
   const appliedRequest = useRef(0)
   const cursor = useRef(0)
-  const decoder = useRef(new TextDecoder())
+  const decoder = useRef(new TextDecoder(encoding))
+  const appliedEncoding = useRef(encoding)
   const loaded = useRef(false)
 
   const task = snapshot?.id === listedTask.id
@@ -35,11 +36,13 @@ export function useTaskOutput(token: string, listedTask: Task, enabled: boolean)
     const controller = new AbortController()
     let retryTimer: number | undefined
     let finishRetry: (() => void) | undefined
-    if (appliedRequest.current !== readRequest.version) {
+    if (appliedRequest.current !== readRequest.version || appliedEncoding.current !== encoding) {
+      const reset = readRequest.reset || appliedEncoding.current !== encoding
       appliedRequest.current = readRequest.version
-      if (readRequest.reset) {
+      appliedEncoding.current = encoding
+      if (reset) {
         cursor.current = 0
-        decoder.current = new TextDecoder()
+        decoder.current = new TextDecoder(encoding)
         loaded.current = false
         setOutput('')
         setCropped(false)
@@ -64,9 +67,9 @@ export function useTaskOutput(token: string, listedTask: Task, enabled: boolean)
             following ||= !isTerminal(page.task)
             // Open a noisy running command at its recent output rather than
             // downloading its entire history before showing current activity.
-            if (!loaded.current && !isTerminal(page.task) && page.task.outputBytes > PREVIEW_LIMIT) {
+            if (!loaded.current && encoding === 'utf-8' && !isTerminal(page.task) && page.task.outputBytes > PREVIEW_LIMIT) {
               cursor.current = page.task.outputBytes - PREVIEW_LIMIT
-              decoder.current = new TextDecoder()
+              decoder.current = new TextDecoder(encoding)
               loaded.current = true
               trimLeadingBytes = true
               setCropped(true)
@@ -84,7 +87,8 @@ export function useTaskOutput(token: string, listedTask: Task, enabled: boolean)
               bytes = bytes.subarray(start)
               trimLeadingBytes = false
             }
-            // Agent chunks and HTTP pages may split a UTF-8 character.
+            // Decode retained bytes, including legacy Windows encodings,
+            // across pages. Changing encoding rereads from byte zero.
             text = decoder.current.decode(bytes, { stream: !terminal || unread })
           }
           if (text) {
@@ -141,7 +145,7 @@ export function useTaskOutput(token: string, listedTask: Task, enabled: boolean)
       window.clearTimeout(retryTimer)
       finishRetry?.()
     }
-  }, [enabled, token, listedTask.id, readRequest])
+  }, [enabled, token, listedTask.id, readRequest, encoding])
 
   return {
     task, output, more, loading, error, live, cropped, receivedAt,

@@ -7,6 +7,14 @@ if (process.env.GITHUB_ACTIONS !== 'true') {
 }
 
 const command = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+const tests = spawnSync(process.execPath, ['--experimental-strip-types', '--test', 'tests/commandDisplay.test.mjs'], {
+  stdio: 'inherit',
+})
+if (tests.error || tests.status !== 0) {
+  if (tests.error) console.error(tests.error.message)
+  process.exit(tests.status ?? 1)
+}
+
 for (const args of [['exec', 'tsc', '-b'], ['exec', 'vite', 'build']]) {
   // Windows exposes pnpm as a .cmd shim; Node cannot spawn that shim
   // directly without a shell and reports EINVAL. The argument list is fixed

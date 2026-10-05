@@ -4,6 +4,37 @@
 
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,400;0,500;1,400&family=Inter:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap');
 
+/* Scoped permission matrix: compact rows, explicit batch scope, shared paging. */
+.permission-picker { margin: 16px 0 20px; }
+.permission-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.permission-toolbar .form-input { flex: 1 1 220px; width: auto; }
+.permission-toolbar .form-select { flex: 0 1 140px; width: auto; }
+.permission-selection { margin-left: auto; color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
+.permission-selection strong { color: var(--accent-sky); }
+.permission-hint, .command-view-hint { margin: 10px 0; color: var(--text-tertiary); font-size: 12px; }
+table.permission-matrix { min-width: 760px; }
+table.permission-matrix th, table.permission-matrix td { padding: 12px 10px; text-align: center; }
+table.permission-matrix th:first-child, table.permission-matrix td:first-child {
+  position: sticky; left: 0; z-index: 1; width: 260px; text-align: left; background: var(--bg-card);
+}
+table.permission-matrix thead th:first-child { background: var(--bg-elevated); }
+table.permission-matrix tbody tr[data-selected='true'] td { background: var(--bg-elevated); }
+.permission-picker table.permission-matrix tbody tr:hover td:first-child { background: var(--bg-elevated); }
+.permission-machine, .permission-machine-heading, .permission-tool-heading { display: flex; align-items: center; gap: 10px; }
+.permission-tool-heading { justify-content: center; gap: 6px; white-space: nowrap; }
+.permission-matrix input[type='checkbox'] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent-primary); cursor: pointer; }
+.permission-matrix input:disabled { cursor: default; opacity: 0.3; }
+.permission-machine strong { display: block; max-width: 240px; overflow-wrap: anywhere; color: var(--text-primary); font-size: 13px; }
+.permission-machine span { display: block; margin-top: 3px; color: var(--text-tertiary); font-size: 11px; }
+.permission-machine span.permission-online { color: var(--accent-emerald); }
+.permission-empty { height: 100px; color: var(--text-secondary); }
+.credential-permissions summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; }
+.command-view-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.command-view-toolbar > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.command-text { margin: 0 0 10px; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.terminal-actions select.terminal-encoding { width: auto; max-width: 150px; min-height: 28px; padding: 4px 24px 4px 8px; font-size: 11px; }
+.terminal-window .terminal-titlebar, .terminal-window .terminal-actions { flex-wrap: wrap; gap: 8px; }
+
 :root {
   /* Color Palette - Deep Slate / Obsidian */
   --bg-canvas: #090a0f;

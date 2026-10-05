@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CopyButton } from '../components/CopyButton'
+import { MachinePermissionPicker, TOOL_OPTIONS } from '../components/MachinePermissionPicker'
 import {
   issueMcpToken,
   listMcpTokens,
@@ -12,15 +13,6 @@ interface AccessControlViewProps {
   token: string
   machines: Machine[]
 }
-
-const TOOL_OPTIONS = [
-  { id: 'command', label: '命令' },
-  { id: 'desktop', label: '桌面' },
-  { id: 'browser', label: '浏览器' },
-  { id: 'artifact', label: '文件' },
-  { id: 'task_read', label: '读取任务' },
-  { id: 'task_cancel', label: '取消任务' },
-] as const
 
 const TOOL_LABELS = Object.fromEntries(TOOL_OPTIONS.map((tool) => [tool.id, tool.label])) as Record<string, string>
 
@@ -48,15 +40,6 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
     Object.entries(permissions).filter(([, tools]) => tools.length > 0),
   ), [permissions])
   const selectedCount = Object.values(selected).reduce((count, tools) => count + tools.length, 0)
-
-  const toggleTool = (machineId: string, toolId: string) => {
-    setPermissions((current) => {
-      const tools = new Set(current[machineId] ?? [])
-      if (tools.has(toolId)) tools.delete(toolId)
-      else tools.add(toolId)
-      return { ...current, [machineId]: [...tools] }
-    })
-  }
 
   const issue = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -106,7 +89,7 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
         <div>
           <h2 style={{ margin: 0, fontSize: '20px', color: '#fff' }}>连接凭证</h2>
           <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)' }}>
-            为 MCP 客户端创建凭证，并逐台选择可访问的机器和工具。
+            为 MCP 客户端创建凭证，选择可访问的机器和工具；支持批量勾选。
           </p>
         </div>
         <button type="button" className="btn btn-secondary btn-sm" onClick={() => void refresh()} disabled={busy}>刷新</button>
@@ -134,41 +117,8 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
           <div style={{ margin: '8px 0 12px', color: 'var(--text-secondary)', fontSize: '13px' }}>
             授权后，此凭证只会看到所选机器；任务读取和取消权限也按任务所在机器校验。
           </div>
-          <div style={{ display: 'grid', gap: '10px', marginBottom: '18px' }}>
-            {machines.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>当前没有已注册机器。</p>}
-            {machines.map((machine) => (
-              <div key={machine.id} className="card" style={{ padding: '14px 16px', background: 'var(--bg-subtle)' }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
-                  <strong style={{ color: '#fff' }}>{machine.name}</strong>
-                  <code style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>{machine.id}</code>
-                  <span style={{ color: machine.online ? 'var(--success)' : 'var(--text-tertiary)', fontSize: '12px' }}>
-                    {machine.online ? '在线' : '离线'}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 18px' }}>
-                  {TOOL_OPTIONS.map((tool) => {
-                    const requiredCapability = tool.id === 'artifact' ? 'file_transfer'
-                      : tool.id === 'desktop' || tool.id === 'browser' ? tool.id : undefined
-                    const unsupported = requiredCapability !== undefined
-                      && !machine.capabilities.includes(requiredCapability)
-                    const checked = (permissions[machine.id] ?? []).includes(tool.id)
-                    return (
-                      <label key={tool.id} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', color: unsupported ? 'var(--text-tertiary)' : 'var(--text-secondary)', fontSize: '13px' }}>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={busy || unsupported}
-                          onChange={() => toggleTool(machine.id, tool.id)}
-                        />
-                        {tool.label}
-                      </label>
-                    )
-                  })}
-                  <span style={{ color: 'var(--text-tertiary)', fontSize: '12px', alignSelf: 'center' }}>查看机器信息自动包含</span>
-                </div>
-              </div>
-            ))}
-          </div>
+          <MachinePermissionPicker machines={machines} token={token} permissions={permissions}
+            onChange={setPermissions} disabled={busy} />
           <button className="btn btn-primary" type="submit" disabled={busy || !displayName.trim() || !token.trim() || selectedCount === 0}>
             创建连接凭证
           </button>
@@ -192,14 +142,17 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
               <div style={{ color: 'var(--text-tertiary)', fontSize: '12px', margin: '3px 0 8px' }}>
                 {item.principalId} · {item.revokedAt ? '已撤销' : item.expiresAt ? `到期 ${new Date(item.expiresAt).toLocaleDateString()}` : '不过期'}
               </div>
-              <div style={{ display: 'grid', gap: '4px' }}>
+              <details className="credential-permissions">
+                <summary>{Object.keys(item.machinePermissions).length} 台机器 · {Object.values(item.machinePermissions).reduce((count, tools) => count + tools.length, 0)} 项工具权限</summary>
+                <div style={{ display: 'grid', gap: '4px', marginTop: '8px' }}>
                 {Object.entries(item.machinePermissions).map(([machineId, tools]) => {
                   const machine = machines.find((value) => value.id === machineId)
                   return <div key={machineId} style={{ color: 'var(--text-secondary)', fontSize: '12px', overflowWrap: 'anywhere' }}>
                     {machine?.name ?? machineId}：{tools.map((tool) => TOOL_LABELS[tool] ?? tool).join('、')}
                   </div>
                 })}
-              </div>
+                </div>
+              </details>
             </div>
             {!item.revokedAt && <button type="button" className="btn btn-danger btn-sm" onClick={() => void revoke(item.tokenId)} disabled={busy}>撤销</button>}
           </div>

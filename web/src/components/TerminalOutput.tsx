@@ -11,6 +11,8 @@ interface TerminalOutputProps {
   hasMore?: boolean
   live?: boolean
   receivedAt?: number | null
+  encoding?: string
+  onEncodingChange?: (encoding: string) => void
 }
 
 export function TerminalOutput({
@@ -23,6 +25,8 @@ export function TerminalOutput({
   hasMore = false,
   live = false,
   receivedAt,
+  encoding = 'utf-8',
+  onEncodingChange,
 }: TerminalOutputProps) {
   const [autoScroll, setAutoScroll] = useState(true)
   const bodyRef = useRef<HTMLPreElement>(null)
@@ -46,6 +50,13 @@ export function TerminalOutput({
         </div>
 
         <div className="terminal-actions">
+          {onEncodingChange && <select className="form-select terminal-encoding" aria-label="日志编码"
+            title="乱码时可切换编码；将从头重新读取日志" value={encoding}
+            onChange={(event) => onEncodingChange(event.target.value)}>
+            <option value="utf-8">UTF-8</option>
+            <option value="gb18030">GB18030 / GBK</option>
+            <option value="utf-16le">UTF-16LE</option>
+          </select>}
           {onRefresh && (
             <button
               type="button"

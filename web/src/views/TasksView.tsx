@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   AlertCircleIcon,
   ChevronDownIcon,
@@ -22,6 +22,7 @@ import {
 } from '../api'
 import { usePagedTail, usePagination } from '../utils'
 import { useTaskOutput } from '../useTaskOutput'
+import { commandForDisplay } from '../commandDisplay'
 
 interface TasksViewProps {
   rows: Task[] | null
@@ -58,6 +59,7 @@ export function TasksView({
       return (
         task.id.toLowerCase().includes(q) ||
         task.command?.toLowerCase().includes(q) ||
+        commandForDisplay(task.command ?? '').toLowerCase().includes(q) ||
         task.machineId.toLowerCase().includes(q) ||
         task.kind.toLowerCase().includes(q)
       )
@@ -572,8 +574,12 @@ function TaskItem({
 }) {
   const [canceling, setCanceling] = useState(false)
   const [expanded, setExpanded] = useState(autoExpand)
-  const logs = useTaskOutput(token, listedTask, expanded)
+  const [showOriginalCommand, setShowOriginalCommand] = useState(false)
+  const [outputEncoding, setOutputEncoding] = useState('utf-8')
+  const logs = useTaskOutput(token, listedTask, expanded, outputEncoding)
   const task = logs.task
+  const readableCommand = useMemo(() => commandForDisplay(task.command || task.kind), [task.command, task.kind])
+  const hasEscapes = readableCommand !== (task.command || task.kind)
 
   useEffect(() => {
     if (autoExpand) setExpanded(true)
@@ -706,7 +712,7 @@ function TaskItem({
                 whiteSpace: 'nowrap',
               }}
             >
-              {task.command || task.kind}
+              {readableCommand}
             </div>
 
             {/* Real Progress Phase Bar */}
@@ -765,7 +771,20 @@ function TaskItem({
       {expanded && (
         <div style={{ padding: '16px 20px', background: 'var(--bg-subtle)' }}>
           <div style={{ marginBottom: '12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-            <pre className="font-mono" style={{ margin: '0 0 6px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{task.command || task.kind}</pre>
+            <div className="command-view-toolbar">
+              <strong>{task.kind === 'command' ? '命令' : '请求'} · {hasEscapes && !showOriginalCommand ? '可读显示' : '原文'}</strong>
+              <div>
+                {hasEscapes && <button type="button" className="btn btn-secondary btn-sm"
+                  aria-pressed={showOriginalCommand} onClick={() => setShowOriginalCommand((value) => !value)}>
+                  {showOriginalCommand ? '显示可读文本' : '显示原文'}
+                </button>}
+                <CopyButton text={task.command || task.kind} label={task.kind === 'command' ? '复制原始命令' : '复制原始请求'} size="sm" />
+              </div>
+            </div>
+            {hasEscapes && !showOriginalCommand && <p className="command-view-hint">可读显示仅用于查看；复制保留原始命令。</p>}
+            <pre className="font-mono command-text" data-command-view={showOriginalCommand ? 'original' : 'readable'}>
+              {showOriginalCommand ? task.command || task.kind : readableCommand}
+            </pre>
             {task.cwd && <span>工作目录：{task.cwd} · </span>}
             {task.startedAt && <span>开始：{new Date(task.startedAt).toLocaleTimeString()} · </span>}
             {task.exitCode != null && <span>退出码：{task.exitCode}</span>}
@@ -781,6 +800,8 @@ function TaskItem({
             onRefresh={logs.refresh}
             onLoadMore={logs.loadMore}
             hasMore={logs.more && !logs.live}
+            encoding={outputEncoding}
+            onEncodingChange={setOutputEncoding}
           />
 
           {logs.cropped && (
