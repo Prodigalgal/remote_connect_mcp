@@ -1,5 +1,6 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -207,8 +208,15 @@ public final class McpOAuthController {
         fields.forEach((key, value) -> hidden.append("<input type=\"hidden\" name=\"")
                 .append(htmlEscape(key)).append("\" value=\"")
                 .append(htmlEscape(value)).append("\">"));
+        // Chromium checks form-action across the POST's redirect as well.
+        // Validation has already allowed this callback; use only its origin,
+        // so callback paths and query parameters cannot alter the policy.
+        var callbackUri = URI.create(redirectUri);
+        var callbackOrigin = callbackUri.getScheme() + "://" + callbackUri.getHost()
+                + (callbackUri.getPort() < 0 ? "" : ":" + callbackUri.getPort());
         return "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>连接 Remote Connect MCP</title>"
-                + "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'\">"
+                + "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; form-action 'self' "
+                + htmlEscape(callbackOrigin) + "; base-uri 'none'\">"
                 + "<style>body{font-family:system-ui,sans-serif;max-width:560px;margin:12vh auto;padding:0 24px;color:#172033}main{border:1px solid #d8dee9;border-radius:16px;padding:28px;box-shadow:0 8px 30px #17203318}label{display:block;font-weight:600;margin:18px 0 8px}input{box-sizing:border-box;width:100%;padding:12px;border:1px solid #aeb8c8;border-radius:8px;font-size:16px}button{margin-top:22px;width:100%;padding:12px;border:0;border-radius:8px;background:#1463d8;color:#fff;font-size:16px;cursor:pointer}.muted{color:#5b6575;font-size:14px}</style></head><body><main><h1>连接 Remote Connect MCP</h1><p>ChatGPT 正在请求访问你的 Remote Connect 终端。请输入已分配给你的 RCM Token；Token 只用于本次授权，不会发送给 ChatGPT。</p><form method=\"post\" action=\"/oauth/authorize\">"
                 + hidden + "<label for=\"rcm_token\">RCM Token</label><input id=\"rcm_token\" name=\"rcm_token\" type=\"password\" autocomplete=\"off\" required maxlength=1024><p class=\"muted\">授权后 ChatGPT 将使用短期 OAuth 令牌调用 MCP。你可以在 Center 中撤销该令牌。</p><button type=\"submit\">授权并返回 ChatGPT</button></form></main></body></html>";
     }
