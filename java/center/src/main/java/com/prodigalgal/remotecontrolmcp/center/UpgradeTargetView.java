@@ -1,5 +1,7 @@
 package com.prodigalgal.remotecontrolmcp.center;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.Instant;
 import java.util.Map;
 
@@ -20,5 +22,11 @@ public record UpgradeTargetView(
 
     public UpgradeTargetView {
         componentStatuses = componentStatuses == null ? Map.of() : Map.copyOf(componentStatuses);
+    }
+
+    @JsonProperty(value = "retry_at", access = JsonProperty.Access.READ_ONLY)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public Instant retryAt() {
+        return UpgradeService.RETRYING.equals(status) ? leaseUntil : null;
     }
 }

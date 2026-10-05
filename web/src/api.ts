@@ -102,7 +102,20 @@ export type UpgradeTarget = {
   updatedAt?: string
   finishedAt?: string
   leaseUntil?: string
+  retryAt?: string
   componentStatuses?: Record<string, string>
+}
+
+export type UpgradeSummary = {
+  selected: number
+  eligible: number
+  completed: number
+  failed: number
+  deferred: number
+  retrying: number
+  canaryVerified: boolean
+  maxAutoAttempts: number
+  fullyUpdated: boolean
 }
 
 export type UpgradeCampaign = {
@@ -114,6 +127,7 @@ export type UpgradeCampaign = {
   activeLimit: number
   componentPlans?: Record<string, Array<{ component: string; version: string; os: string; arch: string; restartPolicy?: string }>>
   targets: UpgradeTarget[]
+  summary?: UpgradeSummary
   createdAt?: string
   updatedAt?: string
   finishedAt?: string
@@ -485,11 +499,13 @@ function mapUpgradeTarget(item: Record<string, unknown>): UpgradeTarget {
     updatedAt: item.updated_at as string | undefined,
     finishedAt: item.finished_at as string | undefined,
     leaseUntil: item.lease_until as string | undefined,
+    retryAt: item.retry_at as string | undefined,
     componentStatuses: item.component_statuses && typeof item.component_statuses === 'object' ? item.component_statuses as Record<string, string> : undefined,
   }
 }
 
 function mapUpgrade(item: Record<string, unknown>): UpgradeCampaign {
+  const summary = item.summary as Record<string, unknown> | undefined
   return {
     id: String(item.id ?? ''),
     version: String(item.version ?? ''),
@@ -499,6 +515,13 @@ function mapUpgrade(item: Record<string, unknown>): UpgradeCampaign {
     activeLimit: Number(item.active_limit ?? 0),
     componentPlans: (item.component_plans && typeof item.component_plans === 'object') ? item.component_plans as UpgradeCampaign['componentPlans'] : undefined,
     targets: Array.isArray(item.targets) ? item.targets.map((target) => mapUpgradeTarget(target as Record<string, unknown>)) : [],
+    summary: summary ? {
+      selected: Number(summary.selected ?? 0), eligible: Number(summary.eligible ?? 0),
+      completed: Number(summary.completed ?? 0), failed: Number(summary.failed ?? 0),
+      deferred: Number(summary.deferred ?? 0), retrying: Number(summary.retrying ?? 0),
+      canaryVerified: summary.canary_verified === true, maxAutoAttempts: Number(summary.max_auto_attempts ?? 3),
+      fullyUpdated: summary.fully_updated === true,
+    } : undefined,
     createdAt: item.created_at as string | undefined,
     updatedAt: item.updated_at as string | undefined,
     finishedAt: item.finished_at as string | undefined,

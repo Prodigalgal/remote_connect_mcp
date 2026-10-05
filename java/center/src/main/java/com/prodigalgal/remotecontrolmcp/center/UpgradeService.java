@@ -52,6 +52,10 @@ public final class UpgradeService {
     public static final String DOWNLOADING = "downloading";
     public static final String INSTALLING = "installing";
     public static final String FAILED = "failed";
+    public static final String RETRYING = "retrying";
+    public static final String VERIFYING = "verifying";
+    public static final String DEFERRED = "deferred";
+    static final int MAX_AUTO_ATTEMPTS = 3;
 
     private static final Pattern VERSION = Pattern.compile("v[0-9A-Za-z][0-9A-Za-z._+-]{0,127}");
     private static final Pattern ORDERED_VERSION = Pattern.compile("^v(\\d+)\\.(\\d+)\\.(\\d+)(?:-([0-9A-Za-z.-]+))?(?:\\+[0-9A-Za-z.-]+)?$");
@@ -68,6 +72,7 @@ public final class UpgradeService {
     private static final Duration OFFER_LEASE = Duration.ofMinutes(5);
     private static final Duration STATUS_LEASE = Duration.ofMinutes(20);
     private static final Duration DOWNLOAD_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration VERIFICATION_LEASE = Duration.ofMinutes(2);
 
     private final AgentRegistry agents;
     private final TaskService tasks;
@@ -127,6 +132,10 @@ public final class UpgradeService {
         var artifacts = resolveArtifacts(version, selected, request == null ? Map.of() : request.artifacts());
         var componentPlans = resolveComponentPlans(version, selected,
                 request == null ? Map.of() : request.componentPlans());
+        var knownProof = completedComponents(version);
+        // Offline registrations remain visible, but cannot occupy a canary or a batch slot.
+        selected = selected.stream().sorted(Comparator.comparingInt(machine -> !machine.online() ? 2
+                : version.equals(machine.version()) && componentsForMachine(componentPlans, machine).isEmpty() ? 1 : 0)).toList();
         var canary = normalizePositive(request == null ? null : request.canaryCount(), 1, selected.size());
         var batch = normalizePositive(request == null ? null : request.batchSize(), 3, 200);
         var now = Instant.now();
@@ -134,10 +143,15 @@ public final class UpgradeService {
                 RUNNING, canary, batch, Math.min(canary, selected.size()), artifacts, componentPlans,
                 new ArrayList<>(), now, now, null);
         for (var machine : selected) {
-            var hasComponentWork = !componentsForMachine(componentPlans, machine).isEmpty();
-            var status = version.equals(machine.version()) && !hasComponentWork ? COMPLETED : PENDING;
+            var applicable = componentsForMachine(componentPlans, machine);
+            var proved = applicable.stream().filter(plan -> knownProof.getOrDefault(machine.id(), List.of()).contains(plan)).toList();
+            var hasComponentWork = proved.size() != applicable.size();
+            var status = !machine.online() ? DEFERRED
+                    : version.equals(machine.version()) && !hasComponentWork ? COMPLETED : PENDING;
             var finished = COMPLETED.equals(status) ? now : null;
-            campaign.targets.add(new Target(machine.id(), status, "", 0, now, finished, null));
+            var proof = new LinkedHashMap<String, String>();
+            proved.forEach(plan -> proof.put(plan.component(), COMPLETED));
+            campaign.targets.add(new Target(machine.id(), status, "", 0, now, finished, null, proof));
         }
         if (jdbc != null) {
             var result = createJdbc(campaign);
@@ -209,6 +223,31 @@ public final class UpgradeService {
         return Map.copyOf(result);
     }
 
+    /** Exhausted or unsafe failures stay blocked for this release across later campaigns. */
+    java.util.Set<String> failedMachines(String version) {
+        if (jdbc != null) {
+            return java.util.Set.copyOf(jdbc.query("""
+                    SELECT agent_id FROM (
+                        SELECT DISTINCT ON (t.agent_id) t.agent_id, t.status
+                        FROM rcm_upgrade_target t JOIN rcm_upgrade_campaign c ON c.campaign_id=t.campaign_id
+                        WHERE c.version=? ORDER BY t.agent_id, c.created_at DESC, c.campaign_id DESC
+                    ) latest WHERE status=?
+                    """, ps -> { ps.setString(1, version); ps.setString(2, FAILED); },
+                    (rs, row) -> rs.getString("agent_id")));
+        }
+        memoryLock.lock();
+        try {
+            var latest = new LinkedHashMap<String, String>();
+            memory.values().stream().filter(campaign -> version.equals(campaign.version))
+                    .sorted(Comparator.comparing((Campaign campaign) -> campaign.createdAt).reversed())
+                    .forEach(campaign -> campaign.targets.forEach(target -> latest.putIfAbsent(target.machineId, target.status)));
+            return latest.entrySet().stream().filter(entry -> FAILED.equals(entry.getValue()))
+                    .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toUnmodifiableSet());
+        } finally {
+            memoryLock.unlock();
+        }
+    }
+
     /** Total campaign count for the paginated operations view. */
     public int count() {
         if (jdbc != null) {
@@ -259,6 +298,7 @@ public final class UpgradeService {
             var campaign = requiredMemory(id);
             var now = Instant.now();
             if ("resume".equals(normalizedAction)) {
+                ensureNoOtherActiveMemory(campaign.id);
                 if (COMPLETED.equals(campaign.status) || CANCELED.equals(campaign.status)) {
                     throw new IllegalArgumentException("upgrade campaign is already terminal");
                 }
@@ -266,7 +306,6 @@ public final class UpgradeService {
                     if (FAILED.equals(target.status)) {
                         target.status = PENDING;
                         target.error = "";
-                        target.componentStatuses = Map.of();
                         target.leaseUntil = null;
                         target.finishedAt = null;
                         target.updatedAt = now;
@@ -323,9 +362,9 @@ public final class UpgradeService {
             if (target == null) throw new IllegalArgumentException("machine is not part of the upgrade campaign");
             if (!FAILED.equals(target.status)) throw new IllegalArgumentException("only a failed target can be requeued");
             var now = Instant.now();
+            ensureNoOtherActiveMemory(campaign.id);
             target.status = PENDING;
             target.error = "";
-            target.componentStatuses = Map.of();
             target.leaseUntil = null;
             target.finishedAt = null;
             target.updatedAt = now;
@@ -344,6 +383,7 @@ public final class UpgradeService {
     }
 
     private UpgradeCampaignView retryTargetJdbc(String campaignId, String machineId) {
+        ensureNoOtherActiveJdbc(campaignId);
         var campaign = requiredJdbc(campaignId, true);
         if (COMPLETED.equals(campaign.status) || CANCELED.equals(campaign.status)) {
             throw new IllegalArgumentException("upgrade campaign is already terminal");
@@ -464,19 +504,19 @@ public final class UpgradeService {
     private UpgradePlan offerFromCampaign(Campaign campaign, MachineView machine, Instant now) {
         var index = campaign.targets.indexOf(campaign.targets.stream().filter(value -> value.machineId.equals(machine.id())).findFirst().orElse(null));
         if (index < 0 || index >= campaign.activeLimit) return null;
+        var eligible = campaign.targets.stream().filter(value -> !DEFERRED.equals(value.status)).toList();
+        var canaries = eligible.subList(0, Math.min(campaign.canaryCount, eligible.size()));
+        if (canaries.stream().anyMatch(value -> !COMPLETED.equals(value.status)) && !canaries.contains(campaign.targets.get(index))) return null;
         var target = campaign.targets.get(index);
-        if (COMPLETED.equals(target.status)) return null;
-        if (target.leaseUntil != null && now.isBefore(target.leaseUntil) && !PENDING.equals(target.status)) {
-            if (!OFFERED.equals(target.status) || Duration.between(target.updatedAt, now).compareTo(OFFER_LEASE) < 0) return null;
-        }
+        if (!PENDING.equals(target.status)) return null;
         var artifact = campaign.artifacts.get(platform(machine.os(), machine.arch()));
         if (artifact == null) {
             target.status = FAILED;
             target.error = "artifact is unavailable for " + platform(machine.os(), machine.arch());
             target.finishedAt = now;
             target.leaseUntil = null;
-            campaign.status = PAUSED;
             campaign.updatedAt = now;
+            reconcile(campaign, machinesById(agents.listAllMachines(now)), now);
             return null;
         }
         target.status = OFFERED;
@@ -484,7 +524,11 @@ public final class UpgradeService {
         target.updatedAt = now;
         target.leaseUntil = now.plus(OFFER_LEASE);
         campaign.updatedAt = now;
-        var components = componentsForMachine(campaign.componentPlans, machine);
+        var components = componentsForMachine(campaign.componentPlans, machine).stream()
+                .filter(component -> !installed(target.componentStatuses.get(component.component()))).toList();
+        var proof = new LinkedHashMap<>(target.componentStatuses);
+        components.forEach(component -> proof.put(component.component(), PENDING));
+        target.componentStatuses = Map.copyOf(proof);
         return new UpgradePlan(campaign.id, campaign.version, artifact.url(), artifact.sha256(), target.attempts, components);
     }
 
@@ -501,6 +545,7 @@ public final class UpgradeService {
     private UpgradeCampaignView createJdbc(Campaign campaign) {
         return transactions.execute(status -> {
             ensureNoActiveJdbc();
+            reconcile(campaign, machinesById(agents.listAllMachines(campaign.createdAt)), campaign.createdAt);
             var artifacts = new String(JsonCodec.write(campaign.artifacts.values()), StandardCharsets.UTF_8);
             var componentPlans = new String(JsonCodec.write(campaign.componentPlans), StandardCharsets.UTF_8);
             jdbc.update("""
@@ -524,6 +569,7 @@ public final class UpgradeService {
     }
 
     private UpgradeCampaignView controlJdbc(String id, String action) {
+        if ("resume".equals(action)) ensureNoOtherActiveJdbc(id);
         var campaign = requiredJdbc(id, true);
         var now = Instant.now();
         if ("resume".equals(action)) {
@@ -531,7 +577,6 @@ public final class UpgradeService {
             for (var target : campaign.targets) {
                 if (FAILED.equals(target.status)) {
                     target.status = PENDING; target.error = ""; target.leaseUntil = null; target.finishedAt = null; target.updatedAt = now;
-                    target.componentStatuses = Map.of();
                     updateTargetJdbc(campaign.id, target);
                 }
             }
@@ -556,8 +601,7 @@ public final class UpgradeService {
         if (CANCELED.equals(campaign.status)) return view(campaign);
         var target = target(campaign, machineId);
         if (target == null) throw new IllegalArgumentException("machine is not part of the upgrade campaign");
-        if ((attempt == null && target.attempts > 1)
-                || (attempt != null && attempt != target.attempts)) {
+        if (attempt == null || attempt != target.attempts) {
             return view(campaign);
         }
         var now = Instant.now();
@@ -654,12 +698,24 @@ public final class UpgradeService {
     }
 
     private void ensureNoActiveJdbc() {
-        var count = jdbc.queryForObject("SELECT COUNT(*) FROM rcm_upgrade_campaign WHERE status IN (?, ?)", Integer.class, RUNNING, PAUSED);
+        ensureNoOtherActiveJdbc("");
+    }
+
+    private void ensureNoOtherActiveJdbc(String campaignId) {
+        // Creation and an explicit retry of an older campaign share one allocation lock.
+        jdbc.execute("SELECT pg_advisory_xact_lock(1380142401)");
+        var count = jdbc.queryForObject("SELECT COUNT(*) FROM rcm_upgrade_campaign WHERE status IN (?, ?) AND campaign_id <> ?",
+                Integer.class, RUNNING, PAUSED, campaignId);
         if (count != null && count > 0) throw new IllegalArgumentException("another upgrade campaign is still active");
     }
 
     private void ensureNoActiveMemory() {
-        if (memory.values().stream().anyMatch(value -> RUNNING.equals(value.status) || PAUSED.equals(value.status))) {
+        ensureNoOtherActiveMemory("");
+    }
+
+    private void ensureNoOtherActiveMemory(String campaignId) {
+        if (memory.values().stream().anyMatch(value -> !value.id.equals(campaignId)
+                && (RUNNING.equals(value.status) || PAUSED.equals(value.status)))) {
             throw new IllegalArgumentException("another upgrade campaign is still active");
         }
     }
@@ -693,8 +749,13 @@ public final class UpgradeService {
         UpgradeCampaignView changed;
         if (jdbc != null) {
             changed = transactions.execute(tx -> {
-                var ids = jdbc.query("SELECT campaign_id FROM rcm_upgrade_campaign WHERE status IN (?, ?) ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED",
-                        ps -> { ps.setString(1, RUNNING); ps.setString(2, PAUSED); },
+                var ids = jdbc.query("""
+                        SELECT c.campaign_id FROM rcm_upgrade_campaign c
+                         WHERE c.status IN (?, ?) OR (c.status = ? AND EXISTS (
+                             SELECT 1 FROM rcm_upgrade_target t WHERE t.campaign_id = c.campaign_id AND t.status = ?))
+                         ORDER BY c.created_at LIMIT 1 FOR UPDATE SKIP LOCKED
+                        """,
+                        ps -> { ps.setString(1, RUNNING); ps.setString(2, PAUSED); ps.setString(3, FAILED); ps.setString(4, VERIFYING); },
                         (rs, row) -> rs.getString(1));
                 if (ids.isEmpty()) return null;
                 var campaign = loadJdbc(ids.getFirst(), true);
@@ -710,7 +771,8 @@ public final class UpgradeService {
             try {
                 changed = null;
                 for (var campaign : memory.values().stream()
-                        .filter(value -> RUNNING.equals(value.status) || PAUSED.equals(value.status))
+                        .filter(value -> RUNNING.equals(value.status) || PAUSED.equals(value.status)
+                                || FAILED.equals(value.status) && value.targets.stream().anyMatch(target -> VERIFYING.equals(target.status)))
                         .sorted(Comparator.comparing(value -> value.createdAt)).toList()) {
                     var before = view(campaign);
                     reconcile(campaign, machinesById(agents.listAllMachines(now)), now);
@@ -729,19 +791,31 @@ public final class UpgradeService {
     private void applyStatus(Campaign campaign, Target target, String status, String error, Instant now,
                              Map<String, String> componentStatuses) {
         if (componentStatuses != null && !componentStatuses.isEmpty()) {
-            target.componentStatuses = componentStatuses.entrySet().stream()
-                    .filter(entry -> entry.getKey() != null && entry.getKey().matches("[a-z][a-z0-9-]{1,63}")
+            var proof = new LinkedHashMap<>(target.componentStatuses);
+            componentStatuses.entrySet().stream()
+                    .filter(entry -> entry.getKey() != null && proof.containsKey(entry.getKey())
                             && entry.getValue() != null)
                     .limit(16)
-                    .collect(java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey,
-                            entry -> compactComponentStatus(entry.getValue())));
+                    .forEach(entry -> proof.put(entry.getKey(), compactComponentStatus(entry.getValue())));
+            target.componentStatuses = Map.copyOf(proof);
         }
         if (DOWNLOADING.equals(status) || INSTALLING.equals(status)) {
             target.status = status; target.error = ""; target.leaseUntil = now.plus(STATUS_LEASE);
         } else if (FAILED.equals(status)) {
-            target.status = FAILED; target.error = compactError(error); target.leaseUntil = null; target.finishedAt = now; campaign.status = PAUSED;
+            var previous = target.status;
+            target.error = compactError(error);
+            if ((OFFERED.equals(previous) || DOWNLOADING.equals(previous))
+                    && target.attempts < MAX_AUTO_ATTEMPTS && retryableDownloadError(target.error)) {
+                target.status = RETRYING;
+                target.leaseUntil = now.plusSeconds(target.attempts <= 1 ? 30 : 120);
+                target.finishedAt = null;
+            } else {
+                target.status = FAILED; target.leaseUntil = null; target.finishedAt = now;
+            }
         } else {
-            target.status = COMPLETED; target.error = ""; target.leaseUntil = null; target.finishedAt = now;
+            // Installation acknowledgement alone is not proof that the replacement Agent is alive.
+            if (!VERIFYING.equals(target.status)) target.leaseUntil = now.plus(VERIFICATION_LEASE);
+            target.status = VERIFYING; target.error = ""; target.finishedAt = null;
         }
         target.updatedAt = now;
         campaign.updatedAt = now;
@@ -752,16 +826,34 @@ public final class UpgradeService {
         return normalized.length() <= 32 ? normalized : normalized.substring(0, 32);
     }
 
+    private static boolean installed(String status) {
+        return COMPLETED.equals(status) || "already-current".equals(status);
+    }
+
+    static boolean retryableDownloadError(String error) {
+        var value = error == null ? "" : error.toLowerCase(java.util.Locale.ROOT);
+        if (value.contains("sha256") || value.contains("sha-256") || value.contains("checksum") || value.contains("signature")
+                || value.contains("permission") || value.contains("401") || value.contains("403")
+                || value.contains("404") || value.contains("invalid")) return false;
+        return value.contains("timed out") || value.contains("timeout") || value.contains("connection reset")
+                || value.contains("connection refused") || value.contains("network down")
+                || value.contains("network is unreachable") || value.contains("unknownhost")
+                || value.contains("could not resolve") || value.contains("temporary failure")
+                || value.contains("temporarily unavailable")
+                || value.contains("stalled") || value.contains("429") || value.contains("502")
+                || value.contains("503") || value.contains("504");
+    }
+
     /**
      * Reject out-of-order helper reports. A completed target is immutable for
      * the current attempt, and an expired offer cannot be resurrected by a
-     * delayed HTTP response; the next poll will receive a fresh attempt.
+     * delayed progress response. Expiry requires an explicit operator retry;
+     * a late completion can still be accepted with current runtime proof.
      */
     private static boolean statusMayAdvance(Target target, String status, Instant now) {
         if (target == null || status == null || now == null) return false;
-        if (COMPLETED.equals(target.status)) return COMPLETED.equals(status);
-        if (FAILED.equals(target.status)) return FAILED.equals(status)
-                || (target.error.startsWith("upgrade status lease expired") && COMPLETED.equals(status));
+        if (COMPLETED.equals(target.status)) return false;
+        if (FAILED.equals(target.status)) return target.error.startsWith("upgrade status lease expired") && COMPLETED.equals(status);
         if (target.leaseUntil != null && !now.isBefore(target.leaseUntil)) return false;
         if (Objects.equals(target.status, status)) return true;
         return switch (target.status) {
@@ -769,51 +861,97 @@ public final class UpgradeService {
                     || COMPLETED.equals(status) || FAILED.equals(status);
             case DOWNLOADING -> INSTALLING.equals(status) || COMPLETED.equals(status) || FAILED.equals(status);
             case INSTALLING -> COMPLETED.equals(status) || FAILED.equals(status);
+            case VERIFYING -> COMPLETED.equals(status) || FAILED.equals(status);
             case PENDING -> false;
             default -> false;
         };
     }
 
     private void reconcile(Campaign campaign, Map<String, MachineView> machines, Instant now) {
-        if (CANCELED.equals(campaign.status)) return;
-        var allCompleted = true;
+        if (CANCELED.equals(campaign.status) || COMPLETED.equals(campaign.status) || DEFERRED.equals(campaign.status)) return;
+        var alreadyFailed = FAILED.equals(campaign.status);
         for (var target : campaign.targets) {
             var machine = machines.get(target.machineId);
-            var componentWork = machine == null ? List.<UpgradeComponentPlan>of()
-                    : componentsForMachine(campaign.componentPlans, machine);
-            if (machine != null && campaign.version.equals(machine.version()) && componentWork.isEmpty()
-                    && !COMPLETED.equals(target.status)) {
-                target.status = COMPLETED; target.error = ""; target.leaseUntil = null; target.updatedAt = now; target.finishedAt = now;
+            if (COMPLETED.equals(target.status)) continue;
+            if (verified(campaign, target, machine)) {
+                settle(target, COMPLETED, "", now);
+                continue;
+            }
+            if (!alreadyFailed && (PENDING.equals(target.status) || RETRYING.equals(target.status))) {
+                if (machine == null || !machine.online()) {
+                    // A machine that disappears before dispatch uses no attempt or batch slot.
+                    target.status = DEFERRED; target.leaseUntil = null; target.updatedAt = now;
+                } else if (RETRYING.equals(target.status) && target.leaseUntil != null && !now.isBefore(target.leaseUntil)) {
+                    target.status = PENDING; target.leaseUntil = null; target.updatedAt = now;
+                }
+            } else if (!alreadyFailed && DEFERRED.equals(target.status) && machine != null && machine.online()) {
+                target.status = PENDING; target.updatedAt = now;
             }
             if ((OFFERED.equals(target.status) || DOWNLOADING.equals(target.status) || INSTALLING.equals(target.status))
                     && target.leaseUntil != null && !now.isBefore(target.leaseUntil)) {
-                target.error = "upgrade status lease expired during " + target.status
-                        + "; check machine state before retry";
-                target.status = FAILED;
-                target.leaseUntil = null;
-                target.updatedAt = now;
-                target.finishedAt = now;
+                // An absent receipt does not prove the helper has stopped. Never launch a duplicate.
+                settle(target, FAILED, "upgrade status lease expired during " + target.status
+                        + "; check machine state before retry", now);
+            } else if (VERIFYING.equals(target.status) && target.leaseUntil != null && !now.isBefore(target.leaseUntil)) {
+                var missing = target.componentStatuses.entrySet().stream()
+                        .filter(entry -> !installed(entry.getValue())).map(Map.Entry::getKey).sorted().toList();
+                settle(target, FAILED, "upgrade verification timed out: "
+                        + (machine == null || !machine.online() ? "Agent is offline"
+                        : !campaign.version.equals(machine.version()) ? "Agent version does not match " + campaign.version
+                        : "missing component completion proof " + String.join(",", missing)), now);
             }
-            if (FAILED.equals(target.status)) campaign.status = PAUSED;
-            if (!COMPLETED.equals(target.status)) allCompleted = false;
         }
-        if (allCompleted) {
-            campaign.status = COMPLETED; campaign.activeLimit = campaign.targets.size(); campaign.finishedAt = now; campaign.updatedAt = now; return;
+
+        if (campaign.targets.stream().anyMatch(target -> now.equals(target.updatedAt))) campaign.updatedAt = now;
+
+        var eligible = campaign.targets.stream().filter(target -> !DEFERRED.equals(target.status)).toList();
+        if (eligible.isEmpty()) {
+            campaign.status = DEFERRED; campaign.activeLimit = 0; campaign.finishedAt = now; campaign.updatedAt = now;
+            return;
         }
-        if (PAUSED.equals(campaign.status) && campaign.targets.stream().noneMatch(value -> FAILED.equals(value.status))) {
-            campaign.status = RUNNING;
-            campaign.updatedAt = now;
+        var canaries = eligible.subList(0, Math.min(campaign.canaryCount, eligible.size()));
+        if (!alreadyFailed && canaries.stream().anyMatch(target -> FAILED.equals(target.status))) {
+            if (!PAUSED.equals(campaign.status)) campaign.updatedAt = now;
+            campaign.status = PAUSED; campaign.finishedAt = null;
+            return;
         }
-        if (!RUNNING.equals(campaign.status)) return;
+        if (eligible.stream().allMatch(target -> COMPLETED.equals(target.status) || FAILED.equals(target.status))) {
+            campaign.status = eligible.stream().anyMatch(target -> FAILED.equals(target.status)) ? FAILED : COMPLETED;
+            campaign.finishedAt = now; campaign.updatedAt = now;
+            return;
+        }
+        if (alreadyFailed) return; // Only settle a delayed receipt; never redispatch a terminal campaign.
+        campaign.status = RUNNING;
+        campaign.finishedAt = null;
+        var canaryEnd = campaign.targets.indexOf(canaries.getLast()) + 1;
+        if (campaign.activeLimit < canaryEnd) {
+            campaign.activeLimit = canaryEnd; campaign.updatedAt = now;
+        }
+        if (canaries.stream().anyMatch(target -> !COMPLETED.equals(target.status))) return;
+
+        // Batches count available machines, not deferred registrations or already settled targets.
         while (campaign.activeLimit < campaign.targets.size()) {
-            var completedWave = true;
-            for (int index = 0; index < campaign.activeLimit; index++) {
-                if (!COMPLETED.equals(campaign.targets.get(index).status)) { completedWave = false; break; }
+            var wavePending = campaign.targets.subList(0, campaign.activeLimit).stream()
+                    .anyMatch(target -> !DEFERRED.equals(target.status) && !COMPLETED.equals(target.status) && !FAILED.equals(target.status));
+            if (wavePending) break;
+            var admitted = 0;
+            while (campaign.activeLimit < campaign.targets.size() && admitted < campaign.batchSize) {
+                var next = campaign.targets.get(campaign.activeLimit++);
+                if (!DEFERRED.equals(next.status) && !COMPLETED.equals(next.status) && !FAILED.equals(next.status)) admitted++;
             }
-            if (!completedWave) break;
-            campaign.activeLimit = Math.min(campaign.activeLimit + campaign.batchSize, campaign.targets.size());
             campaign.updatedAt = now;
         }
+    }
+
+    private static void settle(Target target, String status, String error, Instant now) {
+        target.status = status; target.error = error; target.leaseUntil = null; target.updatedAt = now; target.finishedAt = now;
+    }
+
+    private static boolean verified(Campaign campaign, Target target, MachineView machine) {
+        if (machine == null || !machine.online() || !campaign.version.equals(machine.version())) return false;
+        if (target.componentStatuses.values().stream().anyMatch(status -> !installed(status))) return false;
+        return VERIFYING.equals(target.status) || !target.componentStatuses.isEmpty()
+                || componentsForMachine(campaign.componentPlans, machine).isEmpty();
     }
 
     private Map<String, UpgradeArtifact> resolveArtifacts(String version, List<MachineView> machines, Map<String, UpgradeArtifact> supplied) {
@@ -878,8 +1016,8 @@ public final class UpgradeService {
         if (requested == null || requested.isEmpty()) {
             // Offline Agents are deliberately included in the durable target
             // set by default.  They cannot receive an offer until their next
-            // heartbeat, but the campaign remains resumable and the target
-            // is not silently lost when a machine is temporarily powered off.
+            // heartbeat. The deferred target remains visible in this round;
+            // automatic discovery creates a catch-up round after reconnect.
             return includeOffline ? List.copyOf(machines)
                     : machines.stream().filter(MachineView::online).toList();
         }

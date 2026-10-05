@@ -14,6 +14,10 @@ import com.prodigalgal.remotecontrolmcp.protocol.AgentRuntimeDescriptor;
 import com.prodigalgal.remotecontrolmcp.protocol.TaskCommand;
 import com.prodigalgal.remotecontrolmcp.protocol.TaskKind;
 import com.prodigalgal.remotecontrolmcp.protocol.TaskUpdateRequest;
+import com.prodigalgal.remotecontrolmcp.protocol.UpgradeArtifact;
+import com.prodigalgal.remotecontrolmcp.protocol.UpgradeComponentPlan;
+import com.prodigalgal.remotecontrolmcp.protocol.UpgradeStatusRequest;
+import com.prodigalgal.remotecontrolmcp.protocol.RegisterResponse;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import java.io.ByteArrayInputStream;
@@ -474,6 +478,210 @@ class PostgresIntegrationTest {
         System.arraycopy(first, 0, result, 0, first.length);
         System.arraycopy(second, 0, result, first.length, second.length);
         return result;
+    }
+
+    @Test
+    void upgradeRetryBudgetAndPartialProofSurviveRestartWithoutBlockingOtherBatches() throws Exception {
+        var registry = AgentRegistry.forTest("upgrade-enroll", jdbc);
+        var prefix = "upgrade-it-" + UUID.randomUUID().toString().replace("-", "");
+        var first = registry.register(upgradeRegistration(prefix + "-a", "v1.0.0"), "upgrade-enroll");
+        var flaky = registry.register(upgradeRegistration(prefix + "-b", "v1.0.0"), "upgrade-enroll");
+        var third = registry.register(upgradeRegistration(prefix + "-c", "v1.0.0"), "upgrade-enroll");
+        var offline = registry.register(upgradeRegistration(prefix + "-offline", "v1.0.0"), "upgrade-enroll");
+        var ids = List.of(first.machineId(), flaky.machineId(), third.machineId(), offline.machineId());
+        String campaignId = null;
+        String otherCampaignId = null;
+        try {
+            jdbc.update("UPDATE rcm_agent SET last_seen_at = CURRENT_TIMESTAMP - INTERVAL '2 minutes' WHERE agent_id = ?", offline.machineId());
+            var service = postgresUpgrades(registry);
+            var updater = new UpgradeComponentPlan("agent-updater", "v1.0.0", "linux", "amd64",
+                    "https://example.test/updater.zip", "a".repeat(64), 100L, "manual");
+            var campaign = service.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1, ids,
+                    upgradeArtifacts(), true, Map.of("linux/amd64", List.of(updater))));
+            campaignId = campaign.id();
+            assertEquals(3L, campaign.summary().get("eligible"));
+            assertEquals(1L, campaign.summary().get("deferred"));
+            assertEquals(0, upgradeTarget(campaign, offline.machineId()).attempts());
+            var poll = new PollRequest(List.of(), 1, List.of("command"));
+            var firstPlan = service.offer(first.machineId(), poll);
+            assertNotNull(firstPlan);
+            assertNull(service.offer(flaky.machineId(), poll));
+            upgradeHeartbeat(registry, first, prefix + "-a", "v2.0.0");
+            service.updateStatus(first.machineId(), new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED,
+                    null, firstPlan.attempt(), Map.of("agent-updater", "completed")));
+
+            var plan = service.offer(flaky.machineId(), poll);
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                assertEquals(attempt, plan.attempt());
+                var failedAt = Instant.now();
+                var result = service.updateStatus(flaky.machineId(), new UpgradeStatusRequest(campaign.id(),
+                        UpgradeService.FAILED, "download HTTP connect timed out", plan.attempt(),
+                        attempt == 1 ? Map.of("agent-updater", "already-current") : Map.of()));
+                assertEquals(UpgradeService.RUNNING, result.status());
+                var target = upgradeTarget(result, flaky.machineId());
+                assertEquals("already-current", target.componentStatuses().get("agent-updater"));
+                if (attempt == 3) {
+                    assertEquals(UpgradeService.FAILED, target.status());
+                    assertNull(target.retryAt());
+                    break;
+                }
+                assertEquals(UpgradeService.RETRYING, target.status());
+                assertTrue(target.retryAt().isAfter(failedAt.plusSeconds(attempt == 1 ? 29 : 119)));
+                // A replacement Center observes the same deadline and budget from PostgreSQL.
+                service = postgresUpgrades(registry);
+                assertNull(service.offer(flaky.machineId(), poll));
+                jdbc.update("UPDATE rcm_upgrade_target SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE campaign_id = ? AND agent_id = ?",
+                        campaign.id(), flaky.machineId());
+                var allocator = service;
+                try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+                    var start = new CountDownLatch(1);
+                    var left = workers.submit(() -> { start.await(); return allocator.offer(flaky.machineId(), poll); });
+                    var right = workers.submit(() -> { start.await(); return allocator.offer(flaky.machineId(), poll); });
+                    start.countDown();
+                    var a = left.get(); var b = right.get();
+                    assertTrue((a == null) != (b == null), "concurrent polls must issue exactly one offer");
+                    plan = a == null ? b : a;
+                }
+                assertTrue(plan.components().isEmpty(), "verified components must not be reinstalled on a retry");
+                var stale = service.updateStatus(flaky.machineId(), new UpgradeStatusRequest(campaign.id(),
+                        UpgradeService.COMPLETED, null, attempt, Map.of()));
+                assertEquals(UpgradeService.OFFERED, upgradeTarget(stale, flaky.machineId()).status());
+            }
+            assertNull(service.offer(flaky.machineId(), poll), "the exhausted target must not receive a fourth automatic attempt");
+            var thirdPlan = service.offer(third.machineId(), poll);
+            assertNotNull(thirdPlan, "a later batch proceeds after the failed regular target settles");
+            upgradeHeartbeat(registry, third, prefix + "-c", "v2.0.0");
+            var finished = service.updateStatus(third.machineId(), new UpgradeStatusRequest(campaign.id(),
+                    UpgradeService.COMPLETED, null, thirdPlan.attempt(), Map.of("agent-updater", "completed")));
+            assertEquals(UpgradeService.FAILED, finished.status());
+            assertEquals(2L, finished.summary().get("completed"));
+            assertEquals(1L, finished.summary().get("failed"));
+            assertEquals(1L, finished.summary().get("deferred"));
+            assertEquals(Boolean.FALSE, finished.summary().get("fully_updated"));
+            assertEquals(Set.of(flaky.machineId()), postgresUpgrades(registry).failedMachines("v2.0.0"));
+
+            var other = service.create(new CreateUpgradeCampaignRequest("v3.0.0", 1, 1,
+                    List.of(third.machineId()), upgradeArtifacts()));
+            otherCampaignId = other.id();
+            var currentService = service;
+            assertThrows(IllegalArgumentException.class, () -> currentService.retryTarget(campaign.id(), flaky.machineId()),
+                    "an operator retry must not create two simultaneous active campaigns");
+        } finally {
+            deleteUpgradeCampaign(otherCampaignId);
+            deleteUpgradeCampaign(campaignId);
+            ids.forEach(id -> jdbc.update("DELETE FROM rcm_agent WHERE agent_id = ?", id));
+        }
+    }
+
+    @Test
+    void allOfflineUpgradeIsDeferredAndDoesNotOccupyAnActiveCampaign() {
+        var registry = AgentRegistry.forTest("upgrade-enroll", jdbc);
+        var name = "upgrade-offline-" + UUID.randomUUID().toString().replace("-", "");
+        var machine = registry.register(upgradeRegistration(name, "v1.0.0"), "upgrade-enroll");
+        String campaignId = null;
+        String catchupId = null;
+        try {
+            jdbc.update("UPDATE rcm_agent SET last_seen_at = CURRENT_TIMESTAMP - INTERVAL '2 minutes' WHERE agent_id = ?", machine.machineId());
+            var service = postgresUpgrades(registry);
+            var campaign = service.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                    List.of(machine.machineId()), upgradeArtifacts()));
+            campaignId = campaign.id();
+            assertEquals(UpgradeService.DEFERRED, campaign.status());
+            assertEquals(0, campaign.activeLimit());
+            assertEquals(0L, campaign.summary().get("eligible"));
+            assertEquals(Boolean.FALSE, campaign.summary().get("fully_updated"));
+            assertEquals(Boolean.FALSE, campaign.summary().get("canary_verified"));
+            assertEquals(false, postgresUpgrades(registry).hasActiveCampaign());
+            upgradeHeartbeat(registry, machine, name, "v1.0.0");
+            var catchup = postgresUpgrades(registry).create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                    List.of(machine.machineId()), upgradeArtifacts()));
+            catchupId = catchup.id();
+            var plan = service.offer(machine.machineId(), new PollRequest(List.of(), 1, List.of("command")));
+            assertNotNull(plan);
+            var verifying = service.updateStatus(machine.machineId(), new UpgradeStatusRequest(catchup.id(),
+                    UpgradeService.COMPLETED, null, plan.attempt(), Map.of()));
+            assertEquals(UpgradeService.VERIFYING, verifying.targets().getFirst().status());
+            jdbc.update("UPDATE rcm_upgrade_target SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE campaign_id = ?", catchup.id());
+            postgresUpgrades(registry).reconcileActive();
+            var failed = service.list(0, 100).stream().filter(row -> row.id().equals(catchup.id())).findFirst().orElseThrow();
+            assertEquals(UpgradeService.PAUSED, failed.status());
+            assertTrue(failed.targets().getFirst().error().contains("Agent version does not match"));
+            assertEquals(UpgradeService.DEFERRED, service.list(0, 100).stream().filter(row -> row.id().equals(campaign.id())).findFirst().orElseThrow().status(),
+                    "a historical deferred round is immutable when a new catch-up round starts");
+        } finally {
+            deleteUpgradeCampaign(catchupId);
+            deleteUpgradeCampaign(campaignId);
+            jdbc.update("DELETE FROM rcm_agent WHERE agent_id = ?", machine.machineId());
+        }
+    }
+
+    @Test
+    void disconnectBeforeDispatchReleasesCanarySlotAndReconnectDoesNotBypassValidation() {
+        var registry = AgentRegistry.forTest("upgrade-enroll", jdbc);
+        var prefix = "upgrade-slot-" + UUID.randomUUID().toString().replace("-", "");
+        var first = registry.register(upgradeRegistration(prefix + "-a", "v1.0.0"), "upgrade-enroll");
+        var second = registry.register(upgradeRegistration(prefix + "-b", "v1.0.0"), "upgrade-enroll");
+        var third = registry.register(upgradeRegistration(prefix + "-c", "v1.0.0"), "upgrade-enroll");
+        String campaignId = null;
+        try {
+            var service = postgresUpgrades(registry);
+            var campaign = service.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                    List.of(first.machineId(), second.machineId(), third.machineId()), upgradeArtifacts()));
+            campaignId = campaign.id();
+            jdbc.update("UPDATE rcm_agent SET last_seen_at = CURRENT_TIMESTAMP - INTERVAL '2 minutes' WHERE agent_id = ?", first.machineId());
+            var poll = new PollRequest(List.of(), 1, List.of("command"));
+            var secondPlan = service.offer(second.machineId(), poll);
+            assertNotNull(secondPlan, "an offline, undispatched canary must not occupy the slot");
+            var deferred = upgradeTarget(service.list(0, 100).getFirst(), first.machineId());
+            assertEquals(UpgradeService.DEFERRED, deferred.status());
+            assertEquals(0, deferred.attempts());
+            assertNull(service.offer(third.machineId(), poll));
+            upgradeHeartbeat(registry, second, prefix + "-b", "v2.0.0");
+            service.updateStatus(second.machineId(), new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED,
+                    null, secondPlan.attempt(), Map.of()));
+            upgradeHeartbeat(registry, first, prefix + "-a", "v1.0.0");
+            assertNull(service.offer(third.machineId(), poll), "a returning first target must be verified before admitting the next batch");
+            var firstPlan = service.offer(first.machineId(), poll);
+            assertNotNull(firstPlan);
+            upgradeHeartbeat(registry, first, prefix + "-a", "v2.0.0");
+            service.updateStatus(first.machineId(), new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED,
+                    null, firstPlan.attempt(), Map.of()));
+            assertNotNull(service.offer(third.machineId(), poll));
+        } finally {
+            deleteUpgradeCampaign(campaignId);
+            List.of(first, second, third).forEach(machine -> jdbc.update("DELETE FROM rcm_agent WHERE agent_id = ?", machine.machineId()));
+        }
+    }
+
+    private UpgradeService postgresUpgrades(AgentRegistry registry) {
+        var beans = new StaticListableBeanFactory();
+        beans.addBean("jdbc", jdbc); beans.addBean("transactions", transactions);
+        return new UpgradeService(registry, new TaskService(registry), new UpgradeConfig(true, ""),
+                beans.getBeanProvider(JdbcTemplate.class), beans.getBeanProvider(TransactionTemplate.class),
+                beans.getBeanProvider(TaskChangeRegistry.class), beans.getBeanProvider(AgentWakeRegistry.class),
+                beans.getBeanProvider(AuditService.class), beans.getBeanProvider(ReleaseManifestService.class));
+    }
+
+    private static RegisterRequest upgradeRegistration(String name, String version) {
+        return new RegisterRequest(name, name, name, "linux", "amd64", version, "/", List.of("command", "durable_tasks"));
+    }
+
+    private static Map<String, UpgradeArtifact> upgradeArtifacts() {
+        return Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent.zip", "a".repeat(64)));
+    }
+
+    private static void upgradeHeartbeat(AgentRegistry registry, RegisterResponse machine, String name, String version) {
+        registry.poll(machine.machineId(), machine.token(), new PollRequest(List.of(), 1, List.of("command"), upgradeRegistration(name, version).metadata()));
+    }
+
+    private static UpgradeTargetView upgradeTarget(UpgradeCampaignView campaign, String id) {
+        return campaign.targets().stream().filter(target -> target.machineId().equals(id)).findFirst().orElseThrow();
+    }
+
+    private void deleteUpgradeCampaign(String id) {
+        if (id == null) return;
+        jdbc.update("DELETE FROM rcm_upgrade_target WHERE campaign_id = ?", id);
+        jdbc.update("DELETE FROM rcm_upgrade_campaign WHERE campaign_id = ?", id);
     }
 
     private static String required(String name) {

@@ -36,7 +36,7 @@ Agent 默认使用事件唤醒的 HTTPS 长轮询：任务或升级出现时 Cen
 
 ## 更新
 
-日常入口是推送代码到 GitHub `main`。Center、Agent、Console 各自只在相关路径变化时构建，通过组件检查后自动发布正式版；Center/Console 自动经 GitOps 部署生产并核验实际版本和就绪状态。Center 定期发现 Agent 新版本，为在线且落后的机器创建先单台、后分批的升级活动；离线机器重连后自动补更。Agent 收到唤醒后由本机 Helper 安装；下载或安装超时会明确失败并暂停活动，确认机器状态后可单机重试。日常更新无需人工创建活动或逐机部署。显式手动预发布仍进入 staging。运行中的版本、就绪状态和机器覆盖率按[组件发布](docs/COMPONENT_RELEASES.md)复核。
+日常入口是推送代码到 GitHub `main`。Center、Agent、Console 各自只在相关路径变化时构建，通过组件检查后自动发布正式版；Center/Console 自动经 GitOps 部署生产并核验实际版本和就绪状态。Center 定期发现 Agent 新版本，先验证首批机器，再分批推进。每台机器最多自动派发 3 次，仅对明确的临时下载故障等待 30 秒、2 分钟后重试；首批失败暂停，后续批次记录单机失败并继续其他机器。离线机器单列为待补更，不占批次名额，上线后自动补更。成功须有新 Agent 在线、目标版本及适用组件的完成证据；本轮完成不代表离线机器已更新。日常更新无需人工创建活动或逐机部署。显式手动预发布仍进入 staging。运行中的版本、就绪状态和机器覆盖率按[组件发布](docs/COMPONENT_RELEASES.md)复核。
 
 首次安装仍须在目标机器执行；现有 Playwright 浏览器安装迁移到 Camoufox 时，使用 `scripts/deploy-desktop-browser.ps1` 更新浏览器运行时。Native Agent 的普通自动升级目前只替换 Native 组件，不会替换 Node 浏览器包。
 

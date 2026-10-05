@@ -47,11 +47,14 @@ public final class AgentReleaseWatcher {
                     || candidate.assets().stream().anyMatch(asset -> !asset.available() || !asset.checksumAvailable())) return;
             var plans = manifests.allComponents(candidate.version());
             var proof = upgrades.completedComponents(candidate.version());
-            var targets = selectTargets(agents.listAllMachines(Instant.now()), candidate,
-                    config.excludedMachineIds(), plans, proof);
-            if (targets.isEmpty()) return;
+            var machines = agents.listAllMachines(Instant.now());
+            var excluded = new java.util.HashSet<>(config.excludedMachineIds());
+            // A fresh campaign must not silently reset a machine's exhausted or unsafe attempt budget.
+            excluded.addAll(upgrades.failedMachines(candidate.version()));
+            var targets = selectTargets(machines, candidate, excluded, plans, proof, true);
+            if (targets.isEmpty() || machines.stream().noneMatch(machine -> machine.online() && targets.contains(machine.id()))) return;
             upgrades.create(new CreateUpgradeCampaignRequest(candidate.version(), 1, 3,
-                    targets, null, false, plans));
+                    targets, null, true, plans));
             LOG.log(System.Logger.Level.INFO, "Started Agent upgrade for " + candidate.version()
                     + " on " + targets.size() + " machine(s)");
         } catch (RuntimeException exception) {
@@ -76,9 +79,15 @@ public final class AgentReleaseWatcher {
     static List<String> selectTargets(List<MachineView> machines, ReleaseCatalogService.ReleaseView release,
             Set<String> excludedMachineIds, Map<String, List<UpgradeComponentPlan>> plans,
             Map<String, List<UpgradeComponentPlan>> proof) {
+        return selectTargets(machines, release, excludedMachineIds, plans, proof, false);
+    }
+
+    static List<String> selectTargets(List<MachineView> machines, ReleaseCatalogService.ReleaseView release,
+            Set<String> excludedMachineIds, Map<String, List<UpgradeComponentPlan>> plans,
+            Map<String, List<UpgradeComponentPlan>> proof, boolean includeOffline) {
         var result = new ArrayList<String>();
         for (var machine : machines.stream()
-                .filter(MachineView::online)
+                .filter(machine -> includeOffline || machine.online())
                 .filter(machine -> !excludedMachineIds.contains(machine.id()))
                 .sorted(Comparator.comparing(MachineView::id)).toList()) {
             var os = machine.os() == null ? "" : machine.os().toLowerCase(Locale.ROOT);

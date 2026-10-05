@@ -39,7 +39,7 @@ export function UpgradesView({
   const notify = useToast()
   const [version, setVersion] = useState('')
   const [canary, setCanary] = useState('1')
-  const [batch, setBatch] = useState('2')
+  const [batch, setBatch] = useState('3')
   const [componentMode, setComponentMode] = useState<'all' | 'command' | 'selected'>('all')
   const [componentCatalog, setComponentCatalog] = useState<UpgradeComponentCatalog | null>(null)
   const [selectedComponents, setSelectedComponents] = useState<Record<string, boolean>>({})
@@ -164,10 +164,10 @@ export function UpgradesView({
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '14px' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 800, color: '#fff', letterSpacing: '-0.02em' }}>
-            自动化升级编排与灰度发布
+            机器升级
           </h2>
           <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
-            通过金丝雀金字塔进行分批次平滑升级，支持组件清单过滤、一键中止与单机重试。
+            GitHub 发布后自动更新。先验证首批机器，再分批推进；离线机器上线后补更。
           </p>
         </div>
 
@@ -188,10 +188,10 @@ export function UpgradesView({
       {/* Upgrade Composer Card */}
       <div className="card" style={{ padding: '24px', marginBottom: '24px', background: 'var(--bg-elevated)' }}>
         <h3 style={{ margin: '0 0 6px', fontSize: '16px', fontWeight: 700, color: '#fff' }}>
-          发起全集群金丝雀升级 (Canary Release)
+          手动发起升级
         </h3>
         <p style={{ margin: '0 0 16px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
-          GitHub Actions 发布的新版本会出现在目录中。Center 按目标机器平台重新校验资产与 SHA-256，先 canary，成功后按批次推进。
+          临时下载故障最多自动尝试 3 次，等待 30 秒、2 分钟后重试。首批失败会暂停；后续批次保留失败记录并继续其他机器。
         </p>
 
         <form onSubmit={submit}>
@@ -218,7 +218,7 @@ export function UpgradesView({
             </div>
 
             <div className="form-group">
-              <label className="form-label">首批金丝雀节点数 (canary_count)</label>
+              <label className="form-label">首批验证机器数</label>
               <input
                 type="number"
                 className="form-input"
@@ -229,7 +229,7 @@ export function UpgradesView({
             </div>
 
             <div className="form-group">
-              <label className="form-label">后续推进批次大小 (batch_size)</label>
+              <label className="form-label">后续每批机器数</label>
               <input
                 type="number"
                 className="form-input"
@@ -332,7 +332,10 @@ export function UpgradesView({
 
             const done = campaign.targets.filter((target) => target.status === 'completed').length
             const failed = campaign.targets.filter((target) => target.status === 'failed').length
-            const percent = campaign.targets.length ? Math.round((done * 100) / campaign.targets.length) : 0
+            const deferred = campaign.summary?.deferred ?? campaign.targets.filter((target) => target.status === 'deferred').length
+            const eligible = campaign.summary?.eligible ?? campaign.targets.length - deferred
+            const retrying = campaign.summary?.retrying ?? campaign.targets.filter((target) => target.status === 'retrying').length
+            const percent = eligible ? Math.round((done * 100) / eligible) : 0
             const retryAllowed = campaign.status !== 'completed' && campaign.status !== 'canceled'
 
             return (
@@ -357,20 +360,20 @@ export function UpgradesView({
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#fff' }}>
-                          全集群升级 → {campaign.version}
+                          机器升级 → {campaign.version}
                         </h3>
                         <span className="font-mono" style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                           {campaign.id.slice(0, 10)}
                         </span>
                       </div>
                       <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                        canary {campaign.canaryCount} · 每批 {campaign.batchSize} · 总目标 {campaign.targets.length} 台 (成功 {done} / 失败 {failed})
+                        首批验证 {campaign.canaryCount} · 每批 {campaign.batchSize} · 已选 {campaign.targets.length} 台 · 验证成功 {done} · 失败 {failed} · 待补更 {deferred}{retrying > 0 ? ` · 等待重试 ${retrying}` : ''}
                       </span>
                     </div>
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <StatusBadge label={campaign.status} tone={tone} pulse={isRunning} />
+                    <StatusBadge label={isCompleted && deferred > 0 ? '本轮完成 · 尚有待补更' : upgradeStatusLabel(campaign.status)} tone={tone} pulse={isRunning} />
 
                     {campaign.status === 'paused' && (
                       <button
@@ -400,9 +403,9 @@ export function UpgradesView({
                 <div style={{ marginBottom: '14px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px' }}>
                     <span>
-                      执行进度 ({done} / {campaign.targets.length} 完成)
+                      {eligible ? `本轮验收 ${done} / ${eligible} 台` : '暂无在线机器可执行'}{deferred > 0 ? ` · ${deferred} 台待补更，不计入本轮` : ''}
                     </span>
-                    <strong style={{ color: '#fff' }}>{percent}%</strong>
+                    <strong style={{ color: '#fff' }}>{eligible ? `${percent}%` : '—'}</strong>
                   </div>
                   <div className="progress-rail" style={{ height: '8px' }}>
                     <div className="progress-fill" style={{ width: `${percent}%` }} />
@@ -424,8 +427,8 @@ export function UpgradesView({
         </div>
       ) : (
         <EmptyState
-          title="暂无升级编排活动"
-          description="选择 Release 版本即可创建第一批 canary 升级流水线"
+          title="暂无升级活动"
+          description="新版本发布后会自动创建，也可手动选择版本发起。"
         />
       )}
 
@@ -444,7 +447,7 @@ export function UpgradesView({
         serverLoading={paged.loadingMore}
         serverError={paged.loadError}
         onServerLoadMore={paged.loadMore}
-        unit="个编排"
+        unit="个活动"
       />
     </div>
   )
@@ -485,14 +488,21 @@ function CampaignTargetGrid({
               fontSize: '11px',
             }}
           >
-            <div style={{ minWidth: 0 }}>
+            <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
               <strong style={{ color: '#fff', display: 'block' }}>{names[target.machineId] ?? target.machineId}</strong>
               <span style={{ fontSize: '10px', color: target.status === 'failed' ? 'var(--accent-rose)' : 'var(--text-tertiary)' }}>
-                {target.status}{target.error ? ` · ${target.error}` : ''}
+                {upgradeStatusLabel(target.status)}{target.error ? ` · ${target.error}` : ''}
               </span>
+              {target.retryAt && <div style={{ color: 'var(--text-secondary)', marginTop: '3px' }}>下次尝试：{new Date(target.retryAt).toLocaleTimeString()}</div>}
+              {target.status === 'verifying' && <div style={{ color: 'var(--text-secondary)', marginTop: '3px' }}>等待新 Agent 上线及组件核验</div>}
+              {target.componentStatuses && Object.keys(target.componentStatuses).length > 0 && (
+                <div style={{ color: 'var(--text-tertiary)', marginTop: '3px' }}>
+                  {Object.entries(target.componentStatuses).map(([name, status]) => `${componentLabel(name)}：${upgradeStatusLabel(status)}`).join(' · ')}
+                </div>
+              )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span className="font-mono" style={{ fontSize: '10px' }}>{target.attempts}次</span>
+              <span className="font-mono" style={{ fontSize: '10px', whiteSpace: 'nowrap' }}>尝试 {target.attempts}/{campaign.summary?.maxAutoAttempts ?? 3}{target.attempts > 3 ? '（含人工重试）' : ''}</span>
               {target.status === 'failed' && retryAllowed && (
                 <button
                   type="button"
@@ -523,4 +533,14 @@ function CampaignTargetGrid({
       )}
     </div>
   )
+}
+
+function upgradeStatusLabel(status: string): string {
+  return ({ running: '进行中', paused: '首批失败 · 已暂停', completed: '已验证完成', canceled: '已取消',
+    failed: '失败', deferred: '离线待补更', pending: '待执行', offered: '已派发', downloading: '下载中',
+    installing: '安装中', verifying: '核验中', retrying: '等待重试', 'already-current': '已是目标版本' } as Record<string, string>)[status] ?? status
+}
+
+function componentLabel(component: string): string {
+  return ({ 'agent-updater': '升级器', 'desktop-companion': '桌面', 'browser-agent': '浏览器' } as Record<string, string>)[component] ?? component
 }

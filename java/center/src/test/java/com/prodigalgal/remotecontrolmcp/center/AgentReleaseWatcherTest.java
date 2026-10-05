@@ -69,6 +69,12 @@ class AgentReleaseWatcherTest {
 
         assertEquals(List.of("online-a", "online-b"),
                 AgentReleaseWatcher.selectTargets(machines, release("v0.2.0", false)));
+        assertEquals(List.of("offline", "online-a", "online-b"),
+                AgentReleaseWatcher.selectTargets(machines, release("v0.2.0", false), Set.of(), Map.of(), Map.of(), true),
+                "automatic campaigns retain offline registrations for a truthful fleet summary");
+        assertEquals(List.of("online-a"),
+                AgentReleaseWatcher.selectTargets(machines, release("v0.2.0", false), Set.of("offline", "online-b"), Map.of(), Map.of(), true),
+                "deferred maintenance and failed budgets are excluded from automatic dispatch");
     }
 
     private static ReleaseCatalogService.ReleaseView release(String version, boolean prerelease) {

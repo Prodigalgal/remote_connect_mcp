@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remotecontrolmcp.protocol.PollRequest;
 import com.prodigalgal.remotecontrolmcp.protocol.RegisterRequest;
+import com.prodigalgal.remotecontrolmcp.protocol.RegisterResponse;
 import com.prodigalgal.remotecontrolmcp.protocol.TaskCommand;
 import com.prodigalgal.remotecontrolmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remotecontrolmcp.protocol.UpgradeArtifact;
@@ -61,6 +62,7 @@ class UpgradeServiceTest {
         var commandPlan = upgrades.offer(commandOnly.machineId(), poll);
         assertNotNull(commandPlan);
         assertTrue(commandPlan.components().isEmpty());
+        heartbeat(registry, commandOnly, "command-only", "v2.0.0");
         upgrades.updateStatus(commandOnly.machineId(), new UpgradeStatusRequest(
                 campaign.id(), UpgradeService.COMPLETED, null, commandPlan.attempt(), Map.of()));
         var fullPlan = upgrades.offer(full.machineId(), poll);
@@ -119,7 +121,12 @@ class UpgradeServiceTest {
         assertNotNull(firstPlan);
         assertNull(upgrades.offer(second.machineId(), request), "second target waits for canary completion");
 
-        var afterFirst = upgrades.updateStatus(first.machineId(), new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, 1, Map.of()));
+        var acknowledged = upgrades.updateStatus(first.machineId(), new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, 1, Map.of()));
+        assertEquals(UpgradeService.VERIFYING, acknowledged.targets().getFirst().status());
+        assertNull(upgrades.offer(second.machineId(), request), "a helper receipt alone must not promote the next batch");
+        heartbeat(registry, first, "one", "v2.0.0");
+        upgrades.reconcileActive(Instant.now());
+        var afterFirst = upgrades.list(0, 10).getFirst();
         assertEquals(UpgradeService.RUNNING, afterFirst.status());
         assertNotNull(upgrades.offer(second.machineId(), request));
     }
@@ -135,7 +142,7 @@ class UpgradeServiceTest {
         var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
                 List.of(), Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
 
-        assertEquals(2, campaign.targets().size(), "offline registrations must remain durable campaign targets");
+        assertEquals(2, campaign.targets().size(), "all registrations must remain durable campaign targets");
     }
 
     @Test
@@ -148,7 +155,7 @@ class UpgradeServiceTest {
                 List.of(registration.machineId()), Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
         upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command")));
         assertEquals(UpgradeService.PAUSED, upgrades.updateStatus(registration.machineId(),
-                new UpgradeStatusRequest(campaign.id(), UpgradeService.FAILED, "network down", 1, Map.of())).status());
+                new UpgradeStatusRequest(campaign.id(), UpgradeService.FAILED, "SHA-256 mismatch", 1, Map.of())).status());
         assertNull(upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))));
         assertEquals(UpgradeService.RUNNING, upgrades.control(campaign.id(), "resume").status());
         assertNotNull(upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))));
@@ -254,6 +261,7 @@ class UpgradeServiceTest {
         assertTrue(settled.targets().getFirst().error().contains("lease expired"));
         assertNull(upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command"))));
 
+        heartbeat(registry, registration, "one", "v2.0.0");
         var late = upgrades.updateStatus(registration.machineId(), new UpgradeStatusRequest(
                 campaign.id(), UpgradeService.COMPLETED, null, plan.attempt(), Map.of()));
         assertEquals(UpgradeService.COMPLETED, late.status());
@@ -270,11 +278,81 @@ class UpgradeServiceTest {
                         new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
         var plan = upgrades.offer(registration.machineId(), new PollRequest(List.of(), 1, List.of("command")));
         assertNotNull(plan);
+        heartbeat(registry, registration, "one", "v2.0.0");
         assertEquals(UpgradeService.COMPLETED, upgrades.updateStatus(registration.machineId(),
                 new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, plan.attempt(), Map.of())).status());
         var late = upgrades.updateStatus(registration.machineId(),
                 new UpgradeStatusRequest(campaign.id(), UpgradeService.DOWNLOADING, null, plan.attempt(), Map.of()));
         assertEquals(UpgradeService.COMPLETED, late.targets().getFirst().status());
+        assertEquals(UpgradeService.COMPLETED, upgrades.updateStatus(registration.machineId(),
+                new UpgradeStatusRequest(campaign.id(), UpgradeService.COMPLETED, null, plan.attempt(), Map.of())).status());
+    }
+
+    @Test
+    void temporaryDownloadFailureWaitsBeforeRetryAndInstallationFailureDoesNotRetry() {
+        var registry = AgentRegistry.forTest("enroll");
+        var machine = registry.register(registration("one", "v1.0.0"), "enroll");
+        var upgrades = new UpgradeService(registry, new TaskService(registry), new UpgradeConfig(true, ""));
+        var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                List.of(machine.machineId()), Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA))));
+        var poll = new PollRequest(List.of(), 1, List.of("command"));
+        var plan = upgrades.offer(machine.machineId(), poll);
+        var failedAt = Instant.now();
+        var waiting = upgrades.updateStatus(machine.machineId(), new UpgradeStatusRequest(campaign.id(),
+                UpgradeService.FAILED, "download HTTP connect timed out", plan.attempt(), Map.of()));
+        assertEquals(UpgradeService.RUNNING, waiting.status());
+        assertEquals(UpgradeService.RETRYING, waiting.targets().getFirst().status());
+        assertTrue(waiting.targets().getFirst().retryAt().isAfter(failedAt.plusSeconds(29)));
+        assertNull(upgrades.offer(machine.machineId(), poll));
+        upgrades.reconcileActive(waiting.targets().getFirst().retryAt().plusMillis(1));
+        var retry = upgrades.offer(machine.machineId(), poll);
+        assertEquals(2, retry.attempt());
+        upgrades.updateStatus(machine.machineId(), new UpgradeStatusRequest(campaign.id(), UpgradeService.INSTALLING, null, retry.attempt(), Map.of()));
+        var installationFailure = upgrades.updateStatus(machine.machineId(), new UpgradeStatusRequest(campaign.id(),
+                UpgradeService.FAILED, "network down", retry.attempt(), Map.of()));
+        assertEquals(UpgradeService.PAUSED, installationFailure.status());
+        assertEquals(UpgradeService.FAILED, installationFailure.targets().getFirst().status());
+        assertNull(installationFailure.targets().getFirst().retryAt());
+        assertEquals(java.util.Set.of(machine.machineId()), upgrades.failedMachines("v2.0.0"));
+        assertTrue(upgrades.failedMachines("v3.0.0").isEmpty());
+    }
+
+    @Test
+    void incompleteComponentProofCannotCompleteAnOtherwiseCurrentAgent() {
+        var registry = AgentRegistry.forTest("enroll");
+        var machine = registry.register(registration("one", "v2.0.0"), "enroll");
+        var upgrades = new UpgradeService(registry, new TaskService(registry), new UpgradeConfig(true, ""));
+        var updater = new UpgradeComponentPlan("agent-updater", "v1.0.0", "linux", "amd64",
+                "https://example.test/updater.zip", SHA, 100L, "manual");
+        var campaign = upgrades.create(new CreateUpgradeCampaignRequest("v2.0.0", 1, 1,
+                List.of(machine.machineId()), Map.of("linux/amd64", new UpgradeArtifact("linux", "amd64", "https://example.test/agent", SHA)),
+                true, Map.of("linux/amd64", List.of(updater))));
+        var plan = upgrades.offer(machine.machineId(), new PollRequest(List.of(), 1, List.of("command")));
+        var waiting = upgrades.updateStatus(machine.machineId(), new UpgradeStatusRequest(campaign.id(),
+                UpgradeService.COMPLETED, null, plan.attempt(), Map.of()));
+        assertEquals(UpgradeService.VERIFYING, waiting.targets().getFirst().status());
+        assertEquals(Boolean.FALSE, waiting.summary().get("fully_updated"));
+        var duplicate = upgrades.updateStatus(machine.machineId(), new UpgradeStatusRequest(campaign.id(),
+                UpgradeService.COMPLETED, null, plan.attempt(), Map.of()));
+        assertEquals(waiting.targets().getFirst().leaseUntil(), duplicate.targets().getFirst().leaseUntil(),
+                "duplicate receipts must not extend the verification deadline");
+        var completed = upgrades.updateStatus(machine.machineId(), new UpgradeStatusRequest(campaign.id(),
+                UpgradeService.COMPLETED, null, plan.attempt(), Map.of("agent-updater", "completed")));
+        assertEquals(UpgradeService.COMPLETED, completed.status());
+        assertEquals(Boolean.TRUE, completed.summary().get("fully_updated"));
+    }
+
+    @Test
+    void digestAndAuthenticationFailuresNeverBecomeAutomaticNetworkRetries() {
+        assertFalse(UpgradeService.retryableDownloadError("SHA-256 mismatch after timeout"));
+        assertFalse(UpgradeService.retryableDownloadError("HTTP 403 temporarily unavailable"));
+        assertFalse(UpgradeService.retryableDownloadError("permission denied"));
+        assertTrue(UpgradeService.retryableDownloadError("HTTP 503"));
+        assertTrue(UpgradeService.retryableDownloadError("connection reset"));
+    }
+
+    private static void heartbeat(AgentRegistry registry, RegisterResponse agent, String name, String version) {
+        registry.poll(agent.machineId(), agent.token(), new PollRequest(List.of(), 1, List.of("command"), registration(name, version).metadata()));
     }
 
     @Test
