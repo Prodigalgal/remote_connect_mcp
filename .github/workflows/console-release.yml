@@ -59,6 +59,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.changed == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.coordinates.outputs.version }}
       tag: ${{ steps.coordinates.outputs.tag }}
