@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 012-audit-events
-      author: remote-control-mcp
+      author: remote-connect-mcp
       changes:
         - sql:
             splitStatements: false

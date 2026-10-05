@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 008-agent-name-unique
-      author: remote-control-mcp
+      author: remote-connect-mcp
       labels: agent-identity
       contexts: postgres
       runInTransaction: true

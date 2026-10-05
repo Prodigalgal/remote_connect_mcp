@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 014-agent-config-history
-      author: remote-control-mcp
+      author: remote-connect-mcp
       changes:
         - sql:
             splitStatements: false

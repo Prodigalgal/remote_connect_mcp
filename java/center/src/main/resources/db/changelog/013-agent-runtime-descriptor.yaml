@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 013-agent-runtime-descriptor
-      author: remote-control-mcp
+      author: remote-connect-mcp
       changes:
         - sql:
             splitStatements: false

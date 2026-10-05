@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 024-transfer-progress
-      author: remote-control-mcp
+      author: remote-connect-mcp
       labels: artifact,transport
       contexts: postgres
       runInTransaction: true

@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 027-artifact-lifecycle-policy
-      author: remote-control-mcp
+      author: remote-connect-mcp
       labels: artifact,lifecycle
       contexts: postgres
       runInTransaction: true

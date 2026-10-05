@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 004-artifact-data
-      author: remote-control-mcp
+      author: remote-connect-mcp
       labels: artifact
       contexts: postgres
       runInTransaction: true

@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 003-task-state-fields
-      author: remote-control-mcp
+      author: remote-connect-mcp
       labels: task-state
       contexts: postgres
       runInTransaction: true

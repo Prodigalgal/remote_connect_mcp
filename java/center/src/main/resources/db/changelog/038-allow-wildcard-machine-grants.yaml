@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 038-allow-wildcard-machine-grants
-      author: remote-control-mcp
+      author: remote-connect-mcp
       labels: acl,cleanup
       contexts: postgres
       runInTransaction: true

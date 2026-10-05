@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 001-core
-      author: remote-control-mcp
+      author: remote-connect-mcp
       labels: core
       contexts: postgres
       runInTransaction: true

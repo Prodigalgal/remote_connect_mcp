@@ -1,7 +1,7 @@
 databaseChangeLog:
   - changeSet:
       id: 029-artifact-gc-index
-      author: remote-control-mcp
+      author: remote-connect-mcp
       labels: artifact,lifecycle,gc
       contexts: postgres
       runInTransaction: true
