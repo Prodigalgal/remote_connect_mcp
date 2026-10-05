@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.prodigalgal.remoteconnectmcp.protocol.PollRequest;
@@ -22,6 +23,8 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Base64;
+import java.util.Set;
 import java.util.UUID;
 import java.util.HashSet;
 import java.util.concurrent.CountDownLatch;
@@ -33,6 +36,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -85,6 +89,55 @@ class PostgresIntegrationTest {
         }
         if (dataSource != null) {
             dataSource.close();
+        }
+    }
+
+    @Test
+    void durableOAuthRefreshRetainsSourceCredentialAndHonorsRevocation() throws Exception {
+        var beans = new StaticListableBeanFactory();
+        beans.addBean("jdbc", jdbc);
+        beans.addBean("transactions", transactions);
+        beans.addBean("access", new McpAccessService(jdbc));
+        var principals = new McpPrincipalService(beans.getBeanProvider(JdbcTemplate.class),
+                beans.getBeanProvider(TransactionTemplate.class), beans.getBeanProvider(McpAccessService.class));
+        var resource = "https://remote-connect-mcp-center.example.com";
+        var clientId = "https://chatgpt.com/oauth/client.json";
+        var redirect = "https://chatgpt.com/connector_platform_oauth_redirect";
+        var config = new CenterOAuthConfig(Map.of("RCM_CENTER_OAUTH_ENABLED", "true",
+                "RCM_CENTER_OAUTH_ISSUER", resource, "RCM_CENTER_OAUTH_RESOURCE", resource));
+        var principalId = "oauth_it_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            var source = principals.issue(new McpPrincipalService.IssueRequest(principalId, "OAuth integration",
+                    3600L, Set.of("mcp:read", "mcp:execute"), Map.of("oauth-it-machine", Set.of("command", "task_read"))));
+            var service = new McpOAuthService(config, principals, beans.getBeanProvider(JdbcTemplate.class),
+                    beans.getBeanProvider(TransactionTemplate.class));
+            var verifier = "postgres-oauth-verifier-with-more-than-forty-three-characters";
+            var challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    MessageDigest.getInstance("SHA-256").digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+            var code = service.issueAuthorizationCode(clientId, redirect, challenge, "S256",
+                    "mcp:read mcp:execute offline_access", resource, source.token());
+            var issued = service.exchangeAuthorizationCode(clientId, redirect, code.code(), verifier, resource);
+
+            // A new facade must rotate the durable refresh token without an
+            // in-memory code or token cache, and preserve its source ACL.
+            var restarted = new McpOAuthService(config, principals, beans.getBeanProvider(JdbcTemplate.class),
+                    beans.getBeanProvider(TransactionTemplate.class));
+            var refreshed = restarted.refresh(clientId, issued.refreshToken(), resource);
+            assertEquals(source.tokenId(), restarted.resolve(refreshed.accessToken()).orElseThrow().tokenId());
+            assertThrows(McpOAuthService.OAuthException.class,
+                    () -> restarted.refresh(clientId, issued.refreshToken(), resource));
+            var pending = restarted.issueAuthorizationCode(clientId, redirect, challenge, "S256",
+                    "mcp:read", resource, source.token());
+
+            assertTrue(principals.revoke(source.tokenId()));
+            assertTrue(restarted.resolve(issued.accessToken()).isEmpty());
+            assertTrue(restarted.resolve(refreshed.accessToken()).isEmpty());
+            assertThrows(McpOAuthService.OAuthException.class,
+                    () -> restarted.refresh(clientId, refreshed.refreshToken(), resource));
+            assertThrows(McpOAuthService.OAuthException.class,
+                    () -> restarted.exchangeAuthorizationCode(clientId, redirect, pending.code(), verifier, resource));
+        } finally {
+            jdbc.update("DELETE FROM rcm_principal WHERE principal_id = ?", principalId);
         }
     }
 

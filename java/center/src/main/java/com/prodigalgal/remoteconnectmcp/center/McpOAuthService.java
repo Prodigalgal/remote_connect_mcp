@@ -275,7 +275,7 @@ public final class McpOAuthService {
                       FROM rcm_oauth_refresh_token t
                       JOIN rcm_principal p ON p.principal_id = t.principal_id
                       JOIN rcm_mcp_token source ON source.token_id = t.source_token_id
-                     WHERE token_hash = ? AND revoked_at IS NULL AND p.status = 'active'
+                     WHERE t.token_hash = ? AND t.revoked_at IS NULL AND p.status = 'active'
                        AND source.revoked_at IS NULL
                        AND (source.expires_at IS NULL OR source.expires_at > CURRENT_TIMESTAMP)
                        AND t.expires_at > CURRENT_TIMESTAMP AND t.resource = ?
