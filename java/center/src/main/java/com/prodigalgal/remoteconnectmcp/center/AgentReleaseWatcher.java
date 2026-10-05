@@ -36,10 +36,11 @@ public final class AgentReleaseWatcher {
             var catalog = releases.list(100, config.includePrerelease());
             if (!catalog.available() || catalog.stale()) return;
             if (catalog.items().isEmpty()) return;
-            var candidate = catalog.items().get(0);
+            var candidate = selectRelease(catalog.items(), config.includePrerelease());
+            if (candidate == null) return;
             if (candidate.assets().isEmpty()
                     || candidate.assets().stream().anyMatch(asset -> !asset.available() || !asset.checksumAvailable())) return;
-            var targets = selectTargets(agents.listAllMachines(Instant.now()), candidate);
+            var targets = selectTargets(agents.listAllMachines(Instant.now()), candidate, config.excludedMachineIds());
             if (targets.isEmpty()) return;
             upgrades.create(new CreateUpgradeCampaignRequest(candidate.version(), 1, 3,
                     targets, null, false));
@@ -56,9 +57,15 @@ public final class AgentReleaseWatcher {
     }
 
     static List<String> selectTargets(List<MachineView> machines, ReleaseCatalogService.ReleaseView release) {
+        return selectTargets(machines, release, java.util.Set.of());
+    }
+
+    static List<String> selectTargets(List<MachineView> machines, ReleaseCatalogService.ReleaseView release,
+                                      java.util.Set<String> excludedMachineIds) {
         var result = new ArrayList<String>();
         for (var machine : machines.stream()
                 .filter(MachineView::online)
+                .filter(machine -> !excludedMachineIds.contains(machine.id()))
                 .sorted(Comparator.comparing(MachineView::id)).toList()) {
             var os = machine.os() == null ? "" : machine.os().toLowerCase(Locale.ROOT);
             var arch = machine.arch() == null ? "" : machine.arch().toLowerCase(Locale.ROOT);
@@ -67,6 +74,26 @@ public final class AgentReleaseWatcher {
             if (behind(machine.version(), release.version(), release.prerelease())) result.add(machine.id());
         }
         return List.copyOf(result);
+    }
+
+    /** A late recovery publication must not hide a newer stable release. */
+    static ReleaseCatalogService.ReleaseView selectRelease(List<ReleaseCatalogService.ReleaseView> releases,
+                                                            boolean includePrerelease) {
+        if (includePrerelease) return releases.isEmpty() ? null : releases.get(0);
+        return releases.stream().filter(release -> !release.prerelease()
+                        && STABLE_VERSION.matcher(release.version()).matches())
+                .max((left, right) -> compareStableVersions(left.version(), right.version())).orElse(null);
+    }
+
+    private static int compareStableVersions(String left, String right) {
+        var a = STABLE_VERSION.matcher(left);
+        var b = STABLE_VERSION.matcher(right);
+        if (!a.matches() || !b.matches()) throw new IllegalArgumentException("stable release version is invalid");
+        for (int index = 1; index <= 3; index++) {
+            var difference = Integer.compare(Integer.parseInt(a.group(index)), Integer.parseInt(b.group(index)));
+            if (difference != 0) return difference;
+        }
+        return 0;
     }
 
     private static boolean behind(String current, String candidate, boolean prerelease) {

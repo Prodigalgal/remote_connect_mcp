@@ -7,6 +7,14 @@ import org.junit.jupiter.api.Test;
 
 class UpgradeConfigTest {
     @Test
+    void exclusionListAcceptsMachineIdsWithoutChangingManualUpgradePolicy() {
+        assertEquals(java.util.Set.of("machine-ly", "machine-pve"),
+                UpgradeConfig.parseExcludedMachineIds(" machine-ly, machine-pve,machine-ly "));
+        assertThrows(IllegalArgumentException.class,
+                () -> UpgradeConfig.parseExcludedMachineIds("machine-ly,/invalid"));
+    }
+
+    @Test
     void keepsJavaTagPrefixSeparateFromPublicVersion() {
         var config = new UpgradeConfig(true, "https://releases.example.test/download", "java-");
 

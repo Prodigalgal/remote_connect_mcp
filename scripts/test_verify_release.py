@@ -11,6 +11,21 @@ spec.loader.exec_module(verify)
 
 
 class VerifyReleaseTest(unittest.TestCase):
+    def test_post_release_wait_retries_until_live_version_is_ready(self):
+        with patch.object(verify, 'verify_runtime', side_effect=[
+                verify.VerificationError('old version'), {'verified': True, 'version': 'v0.1.40'}]) as runtime, \
+                patch.object(verify.time, 'sleep'), patch.object(verify.time, 'monotonic', return_value=0):
+            result = verify.wait_for_runtime('center', 'v0.1.40', 'https://center.example', None,
+                                             None, False, False, 30)
+            self.assertTrue(result['verified'])
+            self.assertEqual(2, runtime.call_count)
+
+    def test_post_release_wait_stops_on_deadline_without_claiming_success(self):
+        with patch.object(verify, 'verify_runtime', return_value={'verified': False}), \
+                patch.object(verify.time, 'monotonic', side_effect=[0, 30]):
+            self.assertFalse(verify.wait_for_runtime('agent', 'v0.1.40', 'https://center.example', None,
+                                                     'token', True, True, 10)['verified'])
+
     def test_current_updater_is_verified_without_reinstallation(self):
         machines = [{"id":"one", "os":"linux", "arch":"amd64", "version":"v2.0.0", "online":True,
                      "capabilities":["command"]}]

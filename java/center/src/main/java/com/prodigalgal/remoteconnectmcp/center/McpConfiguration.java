@@ -839,7 +839,7 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult artifactModel(AgentRegistry agents, TaskService tasks,
+    static McpSchema.CallToolResult artifactModel(AgentRegistry agents, TaskService tasks,
                                                           McpAccessService access, ArtifactTransferService transfers,
                                                           TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
@@ -869,7 +869,8 @@ public class McpConfiguration {
             }
             var normalized = new LinkedHashMap<String, Object>();
             normalized.put("machine_id", requiredModelString(arguments, "machine_id"));
-            normalized.put("idempotency_key", modelRetryKey(arguments));
+            var retryKey = modelRetryKey(arguments);
+            normalized.put("idempotency_key", retryKey.isBlank() ? java.util.UUID.randomUUID().toString() : retryKey);
             if ("put".equals(operation)) {
                 rejectModelFields(arguments, operation, "source_path", "artifact_id", "transfer_id", "delivery_mode");
                 normalized.put("file", requiredModelMap(arguments, "file"));

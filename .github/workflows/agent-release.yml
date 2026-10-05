@@ -30,7 +30,7 @@ permissions:
   artifact-metadata: write
 
 concurrency:
-  group: rcm-agent-release-${{ github.ref }}
+  group: rcm-agent-release
   cancel-in-progress: false
 
 jobs:
@@ -80,6 +80,7 @@ jobs:
         id: coordinates
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
@@ -87,42 +88,7 @@ jobs:
           SHA: ${{ github.sha }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
-        run: |
-          set -euo pipefail
-          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            version="${INPUT_VERSION#java-}"
-            prerelease="${INPUT_PRERELEASE:-false}"
-          elif [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == java-v* ]]; then
-            version="${REF_NAME#java-}"
-            prerelease=false
-          else
-            version="v0.0.0-main.${RUN_NUMBER}.${SHA:0:12}"
-            prerelease=true
-          fi
-          [[ "${version}" =~ ^v[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$ ]] || {
-            echo 'Agent version must start with v and contain only release-safe characters' >&2
-            exit 2
-          }
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "tag=java-${version}" >> "${GITHUB_OUTPUT}"
-          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
-
-      - name: Pin release source before building
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.coordinates.outputs.tag }}
-          RELEASE_SOURCE_SHA: ${{ github.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          existing="$(git ls-remote origin "refs/tags/${RELEASE_TAG}" | cut -f1)"
-          if [[ -n "${existing}" ]]; then
-            git fetch origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
-            test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "${RELEASE_SOURCE_SHA}"
-          else
-            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f "ref=refs/tags/${RELEASE_TAG}" -f "sha=${RELEASE_SOURCE_SHA}" >/dev/null
-          fi
+        run: python3 scripts/prepare-component-release.py agent --output "$GITHUB_OUTPUT"
 
   agent-tests:
     name: Agent and updater JVM component gate

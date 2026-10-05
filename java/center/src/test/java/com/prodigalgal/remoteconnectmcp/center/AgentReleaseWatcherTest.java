@@ -8,6 +8,21 @@ import org.junit.jupiter.api.Test;
 
 class AgentReleaseWatcherTest {
     @Test
+    void latePublicationOfOldReleaseCannotReplaceDesiredStableVersion() {
+        assertEquals("v0.1.40", AgentReleaseWatcher.selectRelease(List.of(
+                release("v0.1.38", false), release("v0.1.40", false),
+                release("v0.1.39", false), release("v0.2.0-beta.1", true)), false).version());
+    }
+
+    @Test
+    void excludedMachinesDoNotBlockHealthyTargets() {
+        assertEquals(List.of("healthy"), AgentReleaseWatcher.selectTargets(List.of(
+                machine("deferred", "windows", "amd64", "v0.1.38"),
+                machine("healthy", "linux", "amd64", "v0.1.38")), release("v0.1.39", false),
+                java.util.Set.of("deferred")));
+    }
+
+    @Test
     void stableReleaseOnlyTargetsSupportedOlderMachines() {
         var release = release("v0.2.0", false);
         var machines = List.of(machine("older", "linux", "amd64", "v0.1.9"),

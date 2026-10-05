@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from urllib.request import Request, urlopen
 
 
@@ -143,6 +144,22 @@ def verify_runtime(component: str, version: str, url: str, source_sha: str | Non
     return result
 
 
+def wait_for_runtime(component: str, version: str, url: str, source_sha: str | None,
+                     token: str | None, online_only: bool, native_only: bool,
+                     wait_seconds: int) -> dict:
+    deadline = time.monotonic() + wait_seconds
+    last = None
+    while True:
+        try:
+            last = verify_runtime(component, version, url, source_sha, token, online_only, native_only)
+            if last.get("verified") or time.monotonic() >= deadline:
+                return last
+        except (OSError, ValueError, VerificationError):
+            if time.monotonic() >= deadline:
+                raise
+        time.sleep(min(10, max(0, deadline - time.monotonic())))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("component", choices=("center", "console", "agent"))
@@ -151,10 +168,14 @@ def main() -> int:
     parser.add_argument("--digest", help="immutable image digest expected in the GitOps manifest")
     parser.add_argument("--url", help="live Center or Console base URL")
     parser.add_argument("--source-sha", help="expected Console source commit")
+    parser.add_argument("--wait-seconds", type=int, default=0,
+                        help="bounded post-release wait for the live version and readiness (0..1800)")
     parser.add_argument("--online-only", action="store_true", help="Agent: verify reachable machines only")
     parser.add_argument("--native-only", action="store_true",
                         help="Agent: explicitly accept Native components without Camoufox runtime verification")
     args = parser.parse_args()
+    if not 0 <= args.wait_seconds <= 1800 or args.wait_seconds and not args.url:
+        parser.error("--wait-seconds requires --url and must be between 0 and 1800")
     if (args.manifest is None) != (args.digest is None):
         parser.error("--manifest and --digest must be supplied together")
     if args.component == "agent" and not args.url:
@@ -172,9 +193,9 @@ def main() -> int:
         if args.manifest:
             result["gitops"] = verify_manifest(args.component, args.version, args.manifest, args.digest)
         if args.url:
-            result["runtime"] = verify_runtime(args.component, args.version, args.url,
+            result["runtime"] = wait_for_runtime(args.component, args.version, args.url,
                                                args.source_sha, os.environ.get("RCM_VERIFY_ADMIN_TOKEN"),
-                                               args.online_only, args.native_only)
+                                               args.online_only, args.native_only, args.wait_seconds)
     except (OSError, ValueError, VerificationError) as error:
         result["error"] = str(error)
         print(json.dumps(result, ensure_ascii=False, indent=2))

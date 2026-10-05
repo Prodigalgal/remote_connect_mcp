@@ -22,6 +22,30 @@ import org.junit.jupiter.api.Test;
 
 class McpToolContractTest {
     @Test
+    void artifactCallsWithoutRetryKeyCreateFreshTransfersAndExplicitRetriesReuseThem() {
+        var fixture = fixture();
+        var tokens = new CenterTokenConfig() {
+            @Override
+            public String artifactDownloadSecret() { return "artifact-contract-signing-secret"; }
+        };
+        var transfers = new ArtifactTransferService(null, null, null, fixture.tasks(), tokens);
+        var args = Map.<String, Object>of("operation", "get", "machine_id", fixture.machineId(),
+                "source_path", "/srv/data.txt");
+        var first = McpConfiguration.artifactModel(fixture.registry(), fixture.tasks(), new McpAccessService(),
+                transfers, TaskOrigin.configured(), request("artifact", args));
+        var second = McpConfiguration.artifactModel(fixture.registry(), fixture.tasks(), new McpAccessService(),
+                transfers, TaskOrigin.configured(), request("artifact", args));
+        assertNotEquals(taskId(first), taskId(second));
+        var retry = new java.util.LinkedHashMap<String, Object>(args);
+        retry.put("idempotency_key", "artifact-contract-retry");
+        var third = McpConfiguration.artifactModel(fixture.registry(), fixture.tasks(), new McpAccessService(),
+                transfers, TaskOrigin.configured(), request("artifact", retry));
+        var repeated = McpConfiguration.artifactModel(fixture.registry(), fixture.tasks(), new McpAccessService(),
+                transfers, TaskOrigin.configured(), request("artifact", retry));
+        assertEquals(taskId(third), taskId(repeated));
+    }
+
+    @Test
     void invalidActionReportsOnlyItsOwnMissingField() {
         var error = McpJsonDefaults.getSchemaValidator().validate(McpConfiguration.desktopModelSchema(),
                 Map.of("operation", "click", "machine_id", "m", "x", 1));
@@ -194,7 +218,7 @@ class McpToolContractTest {
     private static Fixture fixture() {
         var registry = AgentRegistry.forTest("enroll-test");
         var machine = registry.register(new RegisterRequest("tool-agent", "host-tool", "host-tool", "linux", "amd64",
-                "dev", "/srv", List.of("command", "browser", "desktop")), "enroll-test");
+                "dev", "/srv", List.of("command", "browser", "desktop", "file_transfer")), "enroll-test");
         return new Fixture(registry, new TaskService(registry), machine.machineId());
     }
 
