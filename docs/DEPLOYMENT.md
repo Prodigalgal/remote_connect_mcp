@@ -119,11 +119,12 @@ Origin；它用于签名 Artifact URL 和 MCP Apps Viewer 的 CSP 元数据。`R
 
 启用混合认证后，Center 提供 `/.well-known/oauth-protected-resource`、
 `/.well-known/oauth-authorization-server`、`/oauth/authorize` 和 `/oauth/token`。
-ChatGPT Web 通过 Authorization Code + PKCE（S256）打开授权页；用户在授权页输入已有
-RCM Token，服务端只把它换成短期 OAuth access/refresh token。Codex/CLI 仍直接携带
-`Authorization: Bearer <RCM_TOKEN>`，两条路径最终都解析为相同的 Principal/ACL。不要把
-`REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN` 填入 ChatGPT 的自定义 API Key 字段；当前 ChatGPT
-连接器不支持自定义 API Key，且生产授权元数据不提供 DCR registration endpoint，优先走
+ChatGPT Web 通过 Authorization Code + PKCE（S256）打开授权页；用户在 Console“连接凭证”
+创建 MCP 凭证时选择可访问的机器及每台机器上的工具，再在授权页输入该凭证。Center 只把它换成短期 OAuth access/refresh token，并继续按源凭证的权限矩阵校验调用。Codex/CLI 可直接携带
+`Authorization: Bearer <Console-issued MCP credential>`，仍使用同一权限矩阵。撤销源凭证会使其
+OAuth access/refresh token 失效。Center 不读取或接受进程级共享 MCP Bearer 环境变量；
+`REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN` 仅用于 Console 管理 API，与 MCP 凭证用途分开。
+ChatGPT 连接器不支持自定义 API Key，且生产授权元数据不提供 DCR registration endpoint，优先走
 CIMD（`https://chatgpt.com/oauth/client.json`）。
 
 Artifact signing supports a current and previous key simultaneously. New URLs
@@ -245,26 +246,12 @@ Authorization: Bearer <Admin Token>
 
 接口最多处理 5000 条/次，返回删除数量；任务、工件和机器数据不会因审计清理被删除。
 
-### 用户 Token 的机器/项目授权
+### MCP 凭证与权限
 
-`018-principal-access` 后，普通用户 Token 默认没有任何机器或项目权限。
-由 Admin Token 显式授予最小权限；机器范围使用 `read`、`execute`、`admin`，项目范围使用
-`read`、`write`、`admin`。`expires_in_seconds=0` 表示不过期，其他值限制为 1 小时至 3650 天：
+在 Console“连接凭证”创建凭证时，逐台勾选 `command`、`desktop`、`browser`、`artifact`、
+`task_read`、`task_cancel`。机器清单/详情在某台机器至少有一项授权时自动可见；任务读取、取消和工件访问会再次根据任务所属机器校验。明文凭证只在创建时返回一次，Center 只保存其哈希；撤销凭证会同时撤销由它换出的 OAuth 令牌。
 
-```text
-POST /api/v1/admin/access/machines
-Authorization: Bearer <Admin Token>
-{"principal_id":"user-a","machine_id":"machine-1","scopes":["read","execute"],"expires_in_seconds":0}
-
-POST /api/v1/admin/access/projects
-Authorization: Bearer <Admin Token>
-{"principal_id":"user-a","project_id":"project-1","scopes":["write"],"expires_in_seconds":2592000}
-```
-
-撤销分别对 `/api/v1/admin/access/machines` 和 `/api/v1/admin/access/projects` 发送同形状
-`DELETE` 请求。MCP 的机器列表、机器详情、项目列表、任务创建和 Git/Worktree 操作会在
-Center 侧先执行 ACL。明文 MCP Token 只在发放时返回，
-不写入 ACL 或日志。
+当前单人管理使用同一个 Principal `owner`，凭证名称只用于区分客户端，不会创建额外用户。Admin Token 仅用于 Console 管理 API；不再配置全局 MCP Bearer。`expires_in_seconds=0` 表示不过期，其他值限制为 1 小时至 3650 天。迁移会把原 Principal 的有效机器授权转换为每张凭证的工具矩阵；旧通配授权只展开到当前已注册机器，重叠授权按最早期限收口，避免权限被意外延长。无法确认来源凭证的旧 OAuth 会话会撤销；ChatGPT 需要重新授权一次。
 
 执行会话可通过 `GET /api/v1/admin/execution-sessions` 查看有界摘要，并用
 `POST /api/v1/admin/execution-sessions/close`（提交 `principal_id` 与 `session_id`）显式关闭；
@@ -276,7 +263,7 @@ Center 侧先执行 ACL。明文 MCP Token 只在发放时返回，
 
 `deploy/k8s/java-center` 是 Java Center 的模板：
 
-1. 复制 `secret.example.yaml` 到集群外的 Secret 管理流程，填入 MCP/Admin Token 与 PostgreSQL 连接信息；不要把一次性 Enrollment Token 写入 Center Secret，也不要直接提交替换后的 Secret。
+1. 复制 `secret.example.yaml` 到集群外的 Secret 管理流程，只填入 Console 管理用 Admin Token、Artifact 签名密钥和 PostgreSQL 连接信息；MCP 凭证由 Console 按客户端签发，不配置全局 MCP Bearer。不要把一次性 Enrollment Token 写入 Center Secret，也不要直接提交替换后的 Secret。
 2. 在 `kustomization.yaml` 中把镜像改成实际签名的 Center Native Image 镜像。
 3. 先运行 Argo CD `PreSync` migration Job，再滚动 Center Deployment。
 4. 验收 `/api/v1/healthz`、`/api/v1/readyz`、MCP `initialize`/`tools/list`、Agent 注册/轮询、长任务超时和断线恢复。

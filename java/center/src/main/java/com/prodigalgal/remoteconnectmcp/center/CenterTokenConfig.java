@@ -9,15 +9,12 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class CenterTokenConfig {
-    private final String mcpToken;
     private final String adminToken;
     private final String artifactSigningSecret;
     private final String artifactSigningSecretPrevious;
     private final String artifactSigningKid;
     private final String artifactSigningKidPrevious;
     public CenterTokenConfig() {
-        var mcp = System.getenv("REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN");
-        mcpToken = mcp == null || mcp.isBlank() ? null : mcp.trim();
         var admin = System.getenv("REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN");
         adminToken = admin == null || admin.isBlank() ? null : admin.trim();
         var artifact = System.getenv("REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_SECRET");
@@ -26,14 +23,6 @@ public class CenterTokenConfig {
         artifactSigningSecretPrevious = previousArtifact == null || previousArtifact.isBlank() ? null : previousArtifact.trim();
         artifactSigningKid = safeKid(System.getenv("REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID"), "v1");
         artifactSigningKidPrevious = safeKid(System.getenv("REMOTE_CONNECT_MCP_CENTER_ARTIFACT_SIGNING_KID_PREVIOUS"), "v0");
-    }
-
-    public Optional<String> mcpToken() {
-        return Optional.ofNullable(mcpToken);
-    }
-
-    public boolean acceptsMcp(String candidate) {
-        return accepts(mcpToken, candidate);
     }
 
     public Optional<String> adminToken() {

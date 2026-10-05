@@ -17,7 +17,6 @@ if (-not (Test-Path -LiteralPath $center -PathType Leaf)) { throw "Center native
 if (-not (Test-Path -LiteralPath $agent -PathType Leaf)) { throw "Agent native binary not found: $agent" }
 
 $base = "http://127.0.0.1:$Port"
-$mcpToken = 'smoke-mcp-token'
 $adminToken = 'smoke-admin-token'
 $enrollmentToken = $null
 $tempState = Join-Path ([IO.Path]::GetTempPath()) ('rcm-java-agent-smoke-' + [guid]::NewGuid().ToString('N'))
@@ -112,7 +111,6 @@ try {
     $centerProcess = New-ManagedProcess $center @("--server.port=$Port") @{
         RCM_CENTER_PERSISTENCE_MODE = 'memory'
         RCM_CENTER_VERSION = 'native-agent-smoke'
-        REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN = $mcpToken
         REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN = $adminToken
     }
     $centerProc = $centerProcess.Process

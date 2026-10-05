@@ -39,7 +39,6 @@ command -v curl >/dev/null || { echo "curl is required" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 2; }
 
 BASE="http://127.0.0.1:${PORT}"
-MCP_TOKEN="smoke-mcp-token"
 ADMIN_TOKEN="smoke-admin-token"
 STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rcm-java-agent-smoke.XXXXXX")"
 CENTER_LOG="$STATE_DIR/center.log"
@@ -156,7 +155,6 @@ fail_with_logs() {
 
 export RCM_CENTER_PERSISTENCE_MODE=memory
 export RCM_CENTER_VERSION=native-agent-smoke
-export REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN="$MCP_TOKEN"
 export REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN="$ADMIN_TOKEN"
 "$CENTER_BINARY" "--server.port=$PORT" >"$CENTER_LOG" 2>&1 &
 CENTER_PID=$!

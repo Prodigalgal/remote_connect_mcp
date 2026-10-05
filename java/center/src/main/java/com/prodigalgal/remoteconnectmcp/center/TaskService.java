@@ -1162,7 +1162,7 @@ public final class TaskService {
         }
         var laneMode = requestedLaneMode;
         // The contract carries identity, scheduling and resource lifetime;
-        // authorization is the machine grant and the Agent runs full-host.
+        // Center has already checked this credential's per-machine tool grant.
         var contract = new ExecutionContract(machine.id(), machine.hostId(), laneMode, sessionId, capability, budget, expiresAt,
                 request.idempotencyKey(), risk, request.elevationRequired(), null);
         if (contract.expired(createdAt)) throw new IllegalArgumentException("execution contract expires before task creation");

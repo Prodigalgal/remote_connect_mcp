@@ -1,57 +1,73 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.time.Instant;
+import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class McpAccessServiceTest {
     @Test
-    void userNeedsExplicitMachineGrant() {
+    void credentialCanUseOnlyItsSelectedToolsOnEachMachine() {
         var access = new McpAccessService();
         var origin = new TaskOrigin("user-a", "token-a", "conversation-a");
+        access.grantTokenMachines("token-a", Map.of(
+                "machine-a", Set.of("command", "task_read"),
+                "machine-b", Set.of("browser")));
 
-        assertThrows(SecurityException.class, () -> access.authorizeMachine(origin, "machine-a", "read"));
-        access.grantMachine("user-a", "machine-a", Set.of("read"), null);
-        assertDoesNotThrow(() -> access.authorizeMachine(origin, "machine-a", "read"));
-        assertThrows(SecurityException.class, () -> access.authorizeMachine(origin, "machine-a", "execute"));
-
-        access.grantMachine("user-a", "machine-a", Set.of("read", "execute"), null);
-        assertDoesNotThrow(() -> access.authorizeExecution(origin, "machine-a"));
+        assertTrue(access.canReadMachine(origin, "machine-a"));
+        assertTrue(access.canReadMachine(origin, "machine-b"));
+        assertFalse(access.canReadMachine(origin, "machine-c"));
+        assertDoesNotThrow(() -> access.authorizeTool(origin, "machine-a", "command"));
+        assertThrows(SecurityException.class, () -> access.authorizeTool(origin, "machine-a", "desktop"));
+        assertThrows(SecurityException.class, () -> access.authorizeTool(origin, "machine-a", "browser"));
+        assertDoesNotThrow(() -> access.authorizeTool(origin, "machine-b", "browser"));
+        assertThrows(SecurityException.class, () -> access.authorizeTool(origin, "machine-b", "command"));
     }
 
     @Test
-    void wildcardMachineGrantAuthorizesAnyMachine() {
+    void legacyWildcardGrantCanBeAppliedToAnyMachine() {
         var access = new McpAccessService();
         var origin = new TaskOrigin("user-wildcard", "token-w", "conversation-w");
+        access.grantTokenMachines("token-w", Map.of("*", Set.of("command", "task_read")));
 
-        assertThrows(SecurityException.class, () -> access.authorizeExecution(origin, "machine-1"));
-        assertThrows(SecurityException.class, () -> access.authorizeExecution(origin, "machine-2"));
-
-        access.grantMachine("user-wildcard", "*", Set.of("read", "execute"), null);
-        assertDoesNotThrow(() -> access.authorizeMachine(origin, "machine-1", "read"));
-        assertDoesNotThrow(() -> access.authorizeExecution(origin, "machine-1"));
-        assertDoesNotThrow(() -> access.authorizeExecution(origin, "machine-2"));
+        assertDoesNotThrow(() -> access.authorizeTool(origin, "machine-1", "command"));
+        assertDoesNotThrow(() -> access.authorizeTool(origin, "machine-2", "command"));
+        assertThrows(SecurityException.class, () -> access.authorizeTool(origin, "machine-2", "browser"));
     }
 
     @Test
-    void grantsExpireAndConfiguredPrincipalRemainsExplicitlyGlobal() {
+    void permissionsDoNotLeakBetweenCredentialsOwnedByTheSamePrincipal() {
         var access = new McpAccessService();
-        var origin = new TaskOrigin("user-b", "token-b", "conversation-b");
-        access.grantMachine("user-b", "machine-b", Set.of("admin"), Instant.now().minusSeconds(1));
-        assertThrows(SecurityException.class, () -> access.authorizeMachine(origin, "machine-b", "read"));
+        var first = new TaskOrigin("owner", "token-chatgpt", "conversation-a");
+        var second = new TaskOrigin("owner", "token-cli", "conversation-b");
+        access.grantTokenMachines("token-chatgpt", Map.of("machine-a", Set.of("command")));
+        access.grantTokenMachines("token-cli", Map.of("machine-a", Set.of("browser")));
 
-        assertDoesNotThrow(() -> access.authorizeExecution(TaskOrigin.configured(), "machine-b"));
-        assertEquals(1, access.machineCount("user-b"));
+        assertDoesNotThrow(() -> access.authorizeTool(first, "machine-a", "command"));
+        assertThrows(SecurityException.class, () -> access.authorizeTool(first, "machine-a", "browser"));
+        assertDoesNotThrow(() -> access.authorizeTool(second, "machine-a", "browser"));
+        assertThrows(SecurityException.class, () -> access.authorizeTool(second, "machine-a", "command"));
     }
 
     @Test
-    void invalidGrantScopesFailBeforeStorage() {
-        var access = new McpAccessService();
+    void machinePermissionsRejectUnsupportedToolsAndEmptySelections() {
         assertThrows(IllegalArgumentException.class,
-                () -> access.grantMachine("user-c", "machine-c", Set.of("invalid_scope"), null));
+                () -> McpAccessService.normalizeMachinePermissions(Map.of("machine-a", Set.of("admin")), false));
+        assertThrows(IllegalArgumentException.class,
+                () -> McpAccessService.normalizeMachinePermissions(Map.of(), false));
+        assertThrows(IllegalArgumentException.class,
+                () -> McpAccessService.normalizeMachinePermissions(Map.of("machine-a", Set.of()), false));
+        assertThrows(IllegalArgumentException.class,
+                () -> McpAccessService.normalizeMachinePermissions(Map.of("*", Set.of("command")), false));
+    }
+
+    @Test
+    void serverCreatedTasksKeepTheirInternalPermissionPath() {
+        var access = new McpAccessService();
+        assertDoesNotThrow(() -> access.authorizeTool(TaskOrigin.configured(), "machine-b", "command"));
     }
 }

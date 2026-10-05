@@ -127,20 +127,28 @@ class PostgresIntegrationTest {
         var sessions = new ExecutionSessionService(jdbc, transactions);
         var taskService = new TaskService(registry, jdbc, transactions, sessions);
 
-        // ACL rows are explicit: a user Token can see/use this machine only
-        // after the Admin grants it. Supports explicit machine grants and wildcard '*' grants.
+        // Permissions belong to each issued credential and are bounded to a
+        // machine/tool pair rather than shared by every token for a principal.
         aclPrincipalId = "acl_it_" + UUID.randomUUID().toString().replace("-", "");
         jdbc.update("""
                 INSERT INTO rcm_principal(principal_id, kind, display_name, status, created_at, updated_at)
                 VALUES (?, 'user', ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """, aclPrincipalId, "ACL integration user");
-        var access = new McpAccessService(jdbc, transactions);
+        var access = new McpAccessService(jdbc);
+        jdbc.update("""
+                INSERT INTO rcm_mcp_token(token_id, principal_id, token_hash, display_name, scope_json,
+                                          expires_at, revoked_at, created_at)
+                VALUES ('acl-token', ?, ?, 'ACL token', '[\"mcp:read\",\"mcp:execute\"]'::jsonb,
+                        NULL, NULL, CURRENT_TIMESTAMP)
+                """, aclPrincipalId, UUID.randomUUID().toString().replace("-", "").repeat(2));
         var aclOrigin = new TaskOrigin(aclPrincipalId, "acl-token", "acl-conversation");
         org.junit.jupiter.api.Assertions.assertThrows(SecurityException.class,
-                () -> access.authorizeMachine(aclOrigin, agentId, "read"));
-        access.grantMachine(aclPrincipalId, agentId, java.util.Set.of("read", "execute"), null);
-        access.authorizeExecution(aclOrigin, agentId);
-        org.junit.jupiter.api.Assertions.assertEquals(1, access.machineCount(aclPrincipalId));
+                () -> access.authorizeTool(aclOrigin, agentId, "command"));
+        access.grantTokenMachines("acl-token", java.util.Map.of(agentId,
+                java.util.Set.of("command", "task_read")));
+        access.authorizeTool(aclOrigin, agentId, "command");
+        org.junit.jupiter.api.Assertions.assertThrows(SecurityException.class,
+                () -> access.authorizeTool(aclOrigin, agentId, "browser"));
 
         // Test wildcard machine grant
         var wildcardPrincipal = "acl_wc_" + UUID.randomUUID().toString().replace("-", "");
@@ -148,10 +156,15 @@ class PostgresIntegrationTest {
                 INSERT INTO rcm_principal(principal_id, kind, display_name, status, created_at, updated_at)
                 VALUES (?, 'user', ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """, wildcardPrincipal, "Wildcard integration user");
-        access.grantMachine(wildcardPrincipal, "*", java.util.Set.of("read", "execute"), null);
+        jdbc.update("""
+                INSERT INTO rcm_mcp_token(token_id, principal_id, token_hash, display_name, scope_json,
+                                          expires_at, revoked_at, created_at)
+                VALUES ('wc-token', ?, ?, 'Wildcard token', '[\"mcp:read\",\"mcp:execute\"]'::jsonb,
+                        NULL, NULL, CURRENT_TIMESTAMP)
+                """, wildcardPrincipal, UUID.randomUUID().toString().replace("-", "").repeat(2));
+        access.grantTokenMachines("wc-token", java.util.Map.of("*", java.util.Set.of("command", "task_read")));
         var wildcardOrigin = new TaskOrigin(wildcardPrincipal, "wc-token", "wc-conv");
-        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> access.authorizeMachine(wildcardOrigin, agentId, "read"));
-        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> access.authorizeExecution(wildcardOrigin, agentId));
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> access.authorizeTool(wildcardOrigin, agentId, "command"));
 
         var store = new JdbcTaskStore(jdbc, transactions);
         var taskId = "task_it_" + UUID.randomUUID().toString().replace("-", "");

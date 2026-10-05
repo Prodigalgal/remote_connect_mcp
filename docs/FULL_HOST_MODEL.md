@@ -5,13 +5,13 @@
 ## 一个最小执行模型
 
 ```text
-Principal (Bearer/OAuth)
+Console-issued MCP credential (Bearer/OAuth)
         │
         ├── MCP connection / conversation
         │       └── Center ExecutionSession
         │               └── durable Task + lease + result channel
         │
-        └── machine grant ──> registered Agent (full host)
+        └── per-machine tool grants ──> registered Agent (full host)
                               ├── command
                               ├── desktop companion (user session)
                               └── browser adapter (on demand)
@@ -19,12 +19,12 @@ Principal (Bearer/OAuth)
 
 权限只有两层：
 
-1. Center 判断当前主体能否使用某台机器，以及能否读/执行某类操作；
+1. Center 判断当前 MCP 凭证能否使用某台机器上的指定工具；
 2. 目标机操作系统决定 Agent 运行账户实际拥有的权限。
 
 Agent 不再解析或执行任何 `scope_mode`、`scope_root`、`workspace_policy`、`project_id` 或 `worktree_id`。任务中的 `cwd` 只是工作目录提示，文件传输中的路径是目标机真实路径。
 
-这里的 OAuth/MCP `scope` 只表示“这个主体能否调用 MCP 或使用某台机器”的授权，不表示文件系统范围；它不会被翻译成 Agent 的路径白名单。
+OAuth/MCP `scope` 只控制协议级读/执行能力；Console 凭证上的机器/工具矩阵进一步决定具体机器上可调用的工具。两者都不表示文件系统范围，也不会被翻译成 Agent 的路径白名单。
 
 ## 并发与结果隔离
 
@@ -51,7 +51,7 @@ Tool schema 只保留模型需要的意图：机器句柄、操作枚举、命�
 
 ## 认证
 
-Bearer 与 OAuth 只是获取 Principal 的两条入口。两者在 Center 内统一成 Principal → Connection → ExecutionSession → Task，不改变 Agent 注册 Token、机器授权、配额或结果隔离模型。
+直接 Bearer 与 OAuth 是同一张 Console 凭证的两种连接方式。OAuth 页面用该凭证换取短期令牌；Center 仍根据源凭证逐机器校验工具权限，撤销源凭证会同时使 OAuth 令牌失效。管理 API 的 Admin Token 与 MCP 凭证分开保存。
 
 ## 数据库清理
 

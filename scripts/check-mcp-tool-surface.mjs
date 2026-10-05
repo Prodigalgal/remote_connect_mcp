@@ -30,6 +30,8 @@ const runtimeFiles = [
   'scripts/smoke-java-websocket.sh',
   'scripts/build-native.ps1',
   'scripts/build-native.sh',
+  'deploy/k8s/java-center/deployment.yaml',
+  'deploy/k8s/java-center/secret.example.yaml',
   'java/agent/build.gradle.kts',
   'java/center/build.gradle.kts',
   'java/desktop/build.gradle.kts',
@@ -90,6 +92,7 @@ for (const forbidden of ['legacyToolSpecs', 'rcm.mcp.legacy-tools', 'onToolOutpu
   if (source.includes(forbidden)) errors.push(`forbidden compatibility path remains in Center source: ${forbidden}`);
 }
 for (const forbidden of [
+  'REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN',
   'REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN',
   'RCM_CENTER_ALLOW_SHARED_ENROLLMENT',
   'RCM_BROWSER_TASK_COMMAND',

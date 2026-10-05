@@ -24,26 +24,23 @@ class McpOAuthServiceTest {
                 "RCM_CENTER_OAUTH_RESOURCE", RESOURCE,
                 "RCM_CENTER_OAUTH_ACCESS_TOKEN_TTL_SECONDS", "900",
                 "RCM_CENTER_OAUTH_REFRESH_TOKEN_TTL_SECONDS", "3600"));
-        var tokenConfig = new CenterTokenConfig() {
-            @Override
-            public boolean acceptsMcp(String candidate) {
-                return "bootstrap-token".equals(candidate);
-            }
-        };
-        var principals = new McpPrincipalService(tokenConfig);
+        var principals = new McpPrincipalService();
+        var bootstrap = principals.issue(new McpPrincipalService.IssueRequest("owner", "owner", 3600L,
+                Set.of("mcp:read", "mcp:execute"), Map.of("machine-a", Set.of("command", "task_read"))));
         var service = new McpOAuthService(config, principals);
         var verifier = "correct-horse-battery-staple-verifier";
         var challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(sha256(verifier));
 
         var authorizationCode = service.issueAuthorizationCode(CLIENT_ID, REDIRECT, challenge, "S256",
-                "mcp:read offline_access", RESOURCE, "bootstrap-token");
+                "mcp:read offline_access", RESOURCE, bootstrap.token());
         assertTrue(authorizationCode.code().startsWith("rcm_code_"));
-        assertTrue(!authorizationCode.code().equals("bootstrap-token"));
+        assertTrue(!authorizationCode.code().equals(bootstrap.token()));
+        assertEquals(bootstrap.tokenId(), authorizationCode.sourceTokenId());
 
         var response = service.exchangeAuthorizationCode(CLIENT_ID, REDIRECT, authorizationCode.code(), verifier, RESOURCE);
         assertEquals("Bearer", response.tokenType());
         assertTrue(response.accessToken().startsWith("rcm_at_"));
-        assertTrue(service.resolve(response.accessToken()).isPresent());
+        assertEquals(bootstrap.tokenId(), service.resolve(response.accessToken()).orElseThrow().tokenId());
 
         assertThrows(McpOAuthService.OAuthException.class,
                 () -> service.exchangeAuthorizationCode(CLIENT_ID, REDIRECT, authorizationCode.code(), verifier, RESOURCE));
@@ -51,6 +48,15 @@ class McpOAuthServiceTest {
         assertTrue(refreshed.accessToken().startsWith("rcm_at_"));
         assertThrows(McpOAuthService.OAuthException.class,
                 () -> service.refresh(CLIENT_ID, response.refreshToken(), RESOURCE));
+
+        var pendingCode = service.issueAuthorizationCode(CLIENT_ID, REDIRECT, challenge, "S256",
+                "mcp:read", RESOURCE, bootstrap.token());
+        assertTrue(principals.revoke(bootstrap.tokenId()));
+        assertTrue(service.resolve(refreshed.accessToken()).isEmpty());
+        assertThrows(McpOAuthService.OAuthException.class,
+                () -> service.refresh(CLIENT_ID, refreshed.refreshToken(), RESOURCE));
+        assertThrows(McpOAuthService.OAuthException.class,
+                () -> service.exchangeAuthorizationCode(CLIENT_ID, REDIRECT, pendingCode.code(), verifier, RESOURCE));
     }
 
     @Test
@@ -59,15 +65,12 @@ class McpOAuthServiceTest {
                 "RCM_CENTER_OAUTH_ENABLED", "true",
                 "RCM_CENTER_OAUTH_ISSUER", RESOURCE,
                 "RCM_CENTER_OAUTH_RESOURCE", RESOURCE));
-        var tokenConfig = new CenterTokenConfig() {
-            @Override
-            public boolean acceptsMcp(String candidate) {
-                return "bootstrap-token".equals(candidate);
-            }
-        };
-        var service = new McpOAuthService(config, new McpPrincipalService(tokenConfig));
+        var principals = new McpPrincipalService();
+        var bootstrap = principals.issue(new McpPrincipalService.IssueRequest("owner", "owner", 3600L,
+                Set.of("mcp:read", "mcp:execute"), Map.of("machine-a", Set.of("command"))));
+        var service = new McpOAuthService(config, principals);
         assertThrows(McpOAuthService.OAuthException.class, () -> service.issueAuthorizationCode(
-                CLIENT_ID, REDIRECT, "challenge", "S256", "mcp:admin", RESOURCE, "bootstrap-token"));
+                CLIENT_ID, REDIRECT, "challenge", "S256", "mcp:admin", RESOURCE, bootstrap.token()));
     }
 
     @Test
@@ -77,14 +80,10 @@ class McpOAuthServiceTest {
                 "RCM_CENTER_OAUTH_ISSUER", RESOURCE,
                 "RCM_CENTER_OAUTH_RESOURCE", RESOURCE,
                 "RCM_CENTER_OAUTH_SCOPES", "mcp:read mcp:execute mcp:project"));
-        var principals = new McpPrincipalService(new CenterTokenConfig() {
-            @Override
-            public boolean acceptsMcp(String candidate) {
-                return false;
-            }
-        });
+        var principals = new McpPrincipalService();
         var issued = principals.issue(new McpPrincipalService.IssueRequest(
-                "owner", "owner", 3600L, Set.of("mcp:read", "mcp:execute")));
+                "owner", "owner", 3600L, Set.of("mcp:read", "mcp:execute"),
+                Map.of("machine-a", Set.of("command", "task_read"))));
         var service = new McpOAuthService(config, principals);
 
         var authorizationCode = service.issueAuthorizationCode(CLIENT_ID, REDIRECT, "challenge", "S256",

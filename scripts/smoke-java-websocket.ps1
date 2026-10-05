@@ -28,7 +28,6 @@ function New-CenterProcess {
     $psi.Environment['RCM_CENTER_PERSISTENCE_MODE'] = 'memory'
     $psi.Environment['RCM_CENTER_VERSION'] = 'websocket-smoke'
     $psi.Environment['RCM_CENTER_AGENT_WEBSOCKET_ENABLED'] = 'true'
-    $psi.Environment['REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN'] = 'smoke-mcp-token'
     $psi.Environment['REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN'] = $adminToken
     $value = [System.Diagnostics.Process]::new()
     $value.StartInfo = $psi

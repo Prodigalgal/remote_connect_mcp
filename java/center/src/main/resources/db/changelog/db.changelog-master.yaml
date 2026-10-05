@@ -73,3 +73,5 @@ databaseChangeLog:
       file: db/changelog/037-remove-audit-scope-column.yaml
   - include:
       file: db/changelog/038-allow-wildcard-machine-grants.yaml
+  - include:
+      file: db/changelog/039-token-machine-tool-permissions.yaml

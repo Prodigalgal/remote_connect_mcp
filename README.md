@@ -1,20 +1,20 @@
 # Remote Connect MCP
 
-RCM 让一个人通过 MCP 客户端管理自己的远程机器。Center 负责身份、机器授权、任务和结果；每台机器上的 Agent 按本机账户权限执行命令。需要图形界面时，再启用桌面或浏览器能力。
+RCM 让一个人通过 MCP 客户端管理自己的远程机器。Center 负责身份、逐凭证的机器/工具授权、任务和结果；每台机器上的 Agent 按本机账户权限执行命令。需要图形界面时，再启用桌面或浏览器能力。
 
 MCP 地址是 `https://<center-domain>/mcp`。当前公开 7 个工具：`machines`、`command`、`desktop`、`browser`、`artifact`、`task_read`、`task_cancel`。
 
 ## 日常使用
 
 1. 在 Console 的“添加机器”生成一次性安装命令，并在目标机器执行。默认只安装命令能力；需要图形操作时选择桌面/浏览器。
-2. 在“连接凭证”为自己的 MCP 客户端创建凭证。页面会同时授权该账户访问全部机器；Center 仍逐次验证身份和机器权限。
+2. 在“连接凭证”为 MCP 客户端创建凭证，逐台选择可访问的机器和工具。凭证明文只显示一次；Center 每次调用都会校验这张凭证的机器/工具权限。
 3. 让客户端先用 `machines` 选择机器，再调用所需能力。长任务使用返回的任务 ID 继续读取，不重复提交。
 
 ### 在 ChatGPT 网页端连接
 
-1. 在 ChatGPT 的 Apps/开发者模式中新建 MCP 应用，服务地址填写 `https://remote-connect-mcp-center.fantong.eu.org/mcp`，认证选择 **OAuth**。
-2. 点击扫描/创建后，ChatGPT 会打开 Center 的授权页。此时到 Console“连接凭证”创建一条新的 RCM Token，并把它填在 **Center 授权页**，点击“授权并返回 ChatGPT”。不要把 RCM Token 填进 ChatGPT 的 URL 或作为 OAuth access token。
-3. 授权成功后浏览器会回到 ChatGPT，等待工具扫描完成再保存应用。RCM Token 只用于换取 OAuth 令牌；日后在 ChatGPT 重新授权时再从 Console 创建新 Token。
+1. 在 ChatGPT 的 Apps/开发者模式中新建 MCP 应用，服务地址填写 `https://<center-domain>/mcp`，认证选择 **OAuth**。
+2. 点击扫描/创建后，ChatGPT 会打开 Center 的授权页。此时到 Console“连接凭证”创建一条新的 RCM 凭证，选择机器和工具，再把它填在 **Center 授权页**，点击“授权并返回 ChatGPT”。不要把 RCM 凭证填进 ChatGPT 的 URL 或作为 OAuth access token。
+3. 授权成功后浏览器会回到 ChatGPT，等待工具扫描完成再保存应用。Console 凭证只用于换取 OAuth 令牌；OAuth 和直接 Bearer 调用都受这张凭证的机器/工具权限约束。撤销凭证会使其 OAuth 令牌失效。
 
 完整 MCP 写操作需要 ChatGPT 工作区支持自定义 MCP 应用和相应权限；入口可能因账户方案不同而显示在个人设置或工作区设置中。
 
@@ -37,7 +37,7 @@ Agent 默认使用事件唤醒的 HTTPS 长轮询：任务或升级出现时 Cen
 ## 边界
 
 - Agent 拥有运行账户的宿主机权限。`cwd` 是工作目录，不是沙箱或授权边界。
-- Center 管理主体、机器授权和任务归属；操作系统决定 Agent 实际能做什么。
+- Console 签发 MCP 凭证并配置逐机器工具授权；Center 校验凭证和任务归属，操作系统决定 Agent 实际能做什么。
 - 并发、超时、输出和资源限制用于稳定运行，不提供文件路径隔离。
 - 本机和目标机不构建发布二进制；测试、Native Image 和镜像构建由 GitHub Actions 执行。
 

@@ -1,0 +1,132 @@
+databaseChangeLog:
+  - changeSet:
+      id: 039-token-machine-tool-permissions
+      author: remote-connect-mcp
+      labels: principals,authorization
+      contexts: postgres
+      runInTransaction: true
+      preConditions:
+        - dbms:
+            type: postgresql
+      changes:
+        - createTable:
+            tableName: rcm_mcp_token_machine_grant
+            columns:
+              - column:
+                  name: token_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: agent_id
+                  type: varchar(180)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: tools_json
+                  type: jsonb
+                  constraints:
+                    nullable: false
+              - column:
+                  name: expires_at
+                  type: timestamptz
+              - column:
+                  name: created_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: timestamptz
+                  constraints:
+                    nullable: false
+        - addPrimaryKey:
+            tableName: rcm_mcp_token_machine_grant
+            columnNames: token_id, agent_id
+            constraintName: pk_rcm_mcp_token_machine_grant
+        - addForeignKeyConstraint:
+            baseTableName: rcm_mcp_token_machine_grant
+            baseColumnNames: token_id
+            constraintName: fk_rcm_mcp_machine_grant_token
+            referencedTableName: rcm_mcp_token
+            referencedColumnNames: token_id
+            onDelete: CASCADE
+        - createIndex:
+            indexName: idx_rcm_mcp_machine_grant_agent
+            tableName: rcm_mcp_token_machine_grant
+            columns:
+              - column:
+                  name: agent_id
+              - column:
+                  name: token_id
+        - sql:
+            sql: |
+              INSERT INTO rcm_mcp_token_machine_grant
+                  (token_id, agent_id, tools_json, expires_at, created_at, updated_at)
+              SELECT t.token_id, a.agent_id,
+                     COALESCE(jsonb_agg(DISTINCT permission.tool_name ORDER BY permission.tool_name)
+                         FILTER (WHERE permission.allowed), '[]'::jsonb),
+                     NULLIF(MIN(COALESCE(g.expires_at, 'infinity'::timestamptz))
+                         FILTER (WHERE permission.allowed), 'infinity'::timestamptz),
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM rcm_mcp_token t
+                JOIN rcm_machine_grant g ON g.principal_id = t.principal_id
+                JOIN rcm_agent a ON g.agent_id = '*' OR a.agent_id = g.agent_id
+                CROSS JOIN LATERAL (VALUES
+                    ('command', jsonb_exists(g.scope_json, 'execute') OR jsonb_exists(g.scope_json, 'admin')),
+                    ('desktop', jsonb_exists(g.scope_json, 'execute') OR jsonb_exists(g.scope_json, 'admin')),
+                    ('browser', jsonb_exists(g.scope_json, 'execute') OR jsonb_exists(g.scope_json, 'admin')),
+                    ('artifact', jsonb_exists(g.scope_json, 'read') OR jsonb_exists(g.scope_json, 'execute') OR jsonb_exists(g.scope_json, 'admin')),
+                    ('task_read', jsonb_exists(g.scope_json, 'read') OR jsonb_exists(g.scope_json, 'execute') OR jsonb_exists(g.scope_json, 'admin')),
+                    ('task_cancel', jsonb_exists(g.scope_json, 'execute') OR jsonb_exists(g.scope_json, 'admin'))
+                ) AS permission(tool_name, allowed)
+               WHERE g.expires_at IS NULL OR g.expires_at > CURRENT_TIMESTAMP
+               GROUP BY t.token_id, a.agent_id
+              HAVING COUNT(*) FILTER (WHERE permission.allowed) > 0
+        - addColumn:
+            tableName: rcm_oauth_authorization_code
+            columns:
+              - column:
+                  name: source_token_id
+                  type: varchar(180)
+        - addColumn:
+            tableName: rcm_oauth_access_token
+            columns:
+              - column:
+                  name: source_token_id
+                  type: varchar(180)
+        - addColumn:
+            tableName: rcm_oauth_refresh_token
+            columns:
+              - column:
+                  name: source_token_id
+                  type: varchar(180)
+        - addForeignKeyConstraint:
+            baseTableName: rcm_oauth_authorization_code
+            baseColumnNames: source_token_id
+            constraintName: fk_rcm_oauth_code_source_token
+            referencedTableName: rcm_mcp_token
+            referencedColumnNames: token_id
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: rcm_oauth_access_token
+            baseColumnNames: source_token_id
+            constraintName: fk_rcm_oauth_access_source_token
+            referencedTableName: rcm_mcp_token
+            referencedColumnNames: token_id
+            onDelete: CASCADE
+        - addForeignKeyConstraint:
+            baseTableName: rcm_oauth_refresh_token
+            baseColumnNames: source_token_id
+            constraintName: fk_rcm_oauth_refresh_source_token
+            referencedTableName: rcm_mcp_token
+            referencedColumnNames: token_id
+            onDelete: CASCADE
+        # Old OAuth grants did not remember which Console credential was used.
+        # Re-authorize once rather than attribute those grants to broader user ACLs.
+        - sql:
+            sql: UPDATE rcm_oauth_authorization_code SET consumed_at = CURRENT_TIMESTAMP WHERE consumed_at IS NULL
+        - sql:
+            sql: UPDATE rcm_oauth_access_token SET revoked_at = CURRENT_TIMESTAMP WHERE revoked_at IS NULL
+        - sql:
+            sql: UPDATE rcm_oauth_refresh_token SET revoked_at = CURRENT_TIMESTAMP WHERE revoked_at IS NULL

@@ -70,7 +70,7 @@ center/
 
 Spring MVC/Tomcat 负责 HTTP、SSE 和 WebSocket，生产打开虚拟线程；MCP、Agent 和 Admin 控制器均返回异步结果，JDBC 等阻塞集成在可关闭的虚拟线程执行器中运行。虚拟线程用于高并发等待，不替代数据库连接池、并发上限或任务租约。长时间命令不占用 MCP HTTP 请求，仍然走持久化异步任务。
 
-MCP 层使用官方 Java SDK 的 Streamable HTTP 传输，固定挂载 `/mcp`。MCP Token 继续使用 Bearer；Admin Token 只用于控制台/API，Agent Token 和一次性 Enrollment Token 分开。升级 Center、数据库或前端不得改变 `/mcp` URL 和既有工具契约。
+MCP 层使用官方 Java SDK 的 Streamable HTTP 传输，固定挂载 `/mcp`。MCP Bearer 凭证由 Console 按客户端签发，并在 Center 侧按机器/工具授权；ChatGPT OAuth 由同一凭证换取短期令牌。Admin Token 只用于控制台/API，Agent Token 和一次性 Enrollment Token 分开。Center 不配置共享 MCP Bearer。升级 Center、数据库或前端不得改变 `/mcp` URL 和既有工具契约。
 
 ### 3.2 持久化和一致性
 

@@ -11,7 +11,7 @@ if (-not $binary) { throw 'Center Native Image path is required; pass -CenterBin
 if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Center native binary not found: $binary" }
 
 $base = "http://127.0.0.1:$Port"
-$mcpToken = 'smoke-mcp-token'
+$mcpToken = ''
 $adminToken = 'smoke-admin-token'
 $process = $null
 $stdoutTask = $null
@@ -104,7 +104,6 @@ try {
     $psi.RedirectStandardError = $true
     $psi.Environment['RCM_CENTER_PERSISTENCE_MODE'] = 'memory'
     $psi.Environment['RCM_CENTER_VERSION'] = 'smoke'
-    $psi.Environment['REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN'] = $mcpToken
     $psi.Environment['REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN'] = $adminToken
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $psi
@@ -134,6 +133,28 @@ try {
         $client.Dispose()
     }
 
+    $tokenRequest = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$base/api/v1/admin/mcp-tokens")
+    [void]$tokenRequest.Headers.TryAddWithoutValidation('Authorization', "Bearer $adminToken")
+    $tokenPayload = @{
+        principal_id = 'smoke'
+        display_name = 'native-smoke'
+        expires_in_seconds = 3600
+        scopes = @('mcp:read', 'mcp:execute')
+        machine_permissions = @{ 'smoke-machine' = @('command') }
+    } | ConvertTo-Json -Depth 8 -Compress
+    $tokenRequest.Content = [System.Net.Http.StringContent]::new($tokenPayload, [System.Text.Encoding]::UTF8, 'application/json')
+    $tokenClient = [System.Net.Http.HttpClient]::new()
+    try {
+        $tokenResponse = $tokenClient.SendAsync($tokenRequest).GetAwaiter().GetResult()
+        if (-not $tokenResponse.IsSuccessStatusCode) { throw "Console token request returned HTTP $([int]$tokenResponse.StatusCode)" }
+        $tokenBody = $tokenResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
+        $mcpToken = [string]$tokenBody.token
+        if ([string]::IsNullOrWhiteSpace($mcpToken)) { throw 'Console did not issue an MCP credential' }
+    } finally {
+        $tokenRequest.Dispose()
+        $tokenClient.Dispose()
+    }
+
     $initialize = Invoke-JsonRpc 'initialize' 1 $null
     if ($initialize.Body -notmatch '"result"') { throw 'MCP initialize did not return a JSON-RPC result' }
     $tools = Invoke-JsonRpc 'tools/list' 2 $initialize.SessionId
@@ -149,7 +170,7 @@ try {
             throw "metrics returned HTTP $([int]$metricsResponse.StatusCode)"
         }
         $metricsBody = $metricsResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-        if ($metricsBody -notmatch 'remote_connect_mcp_machines_total' -or $metricsBody -match 'smoke-mcp-token') {
+        if ($metricsBody -notmatch 'remote_connect_mcp_machines_total' -or $metricsBody.Contains($mcpToken)) {
             throw 'metrics response is missing counters or contains a secret'
         }
         $badMetricsRequest = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, "$base/metrics")

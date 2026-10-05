@@ -11,10 +11,10 @@ import org.springframework.stereotype.Component;
  * Runtime OAuth configuration for the ChatGPT-facing MCP resource.
  *
  * <p>OAuth is deliberately opt-in.  The Center can therefore keep serving
- * existing opaque Bearer clients while a deployment rolls out the OAuth
- * metadata and republishes the ChatGPT app.  Once enabled, all model-facing
- * tools advertise OAuth; the static Bearer path remains an internal/client
- * compatibility path and is never advertised as a ChatGPT security scheme.</p>
+ * existing Console-issued Bearer clients while a deployment rolls out the
+ * OAuth metadata and republishes the ChatGPT app. Once enabled, model-facing
+ * tools advertise OAuth; direct clients may still use their own Console-issued
+ * credential, and no process-wide MCP Bearer secret is used.</p>
  */
 @Component
 public final class CenterOAuthConfig {

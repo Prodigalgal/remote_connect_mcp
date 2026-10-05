@@ -9,9 +9,10 @@ import org.junit.jupiter.api.Test;
 class McpPrincipalServiceTest {
     @Test
     void issuesResolvesAndRevokesAnOpaqueMemoryToken() {
-        var service = new McpPrincipalService(new CenterTokenConfig());
+        var service = new McpPrincipalService();
         var issued = service.issue(new McpPrincipalService.IssueRequest(
-                "user-a", "User A", 3600L, Set.of("mcp:read", "mcp:execute")));
+                "user-a", "User A", 3600L, Set.of("mcp:read", "mcp:execute"),
+                java.util.Map.of("machine-a", Set.of("command"))));
 
         var resolved = service.resolve(issued.token()).orElseThrow();
         assertEquals("user-a", resolved.principalId());
@@ -23,12 +24,18 @@ class McpPrincipalServiceTest {
 
     @Test
     void rejectsInvalidPrincipalAndTtlBeforeIssuing() {
-        var service = new McpPrincipalService(new CenterTokenConfig());
+        var service = new McpPrincipalService();
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-                () -> service.issue(new McpPrincipalService.IssueRequest("bad id", "", 3600L, Set.of())));
+                () -> service.issue(new McpPrincipalService.IssueRequest("bad id", "", 3600L, Set.of(),
+                        java.util.Map.of("machine-a", Set.of("command")))));
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-                () -> service.issue(new McpPrincipalService.IssueRequest(TaskOrigin.CONFIGURED_PRINCIPAL, "", 3600L, Set.of())));
+                () -> service.issue(new McpPrincipalService.IssueRequest(TaskOrigin.CONFIGURED_PRINCIPAL, "", 3600L, Set.of(),
+                        java.util.Map.of("machine-a", Set.of("command")))));
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-                () -> service.issue(new McpPrincipalService.IssueRequest("user-b", "", 60L, Set.of())));
+                () -> service.issue(new McpPrincipalService.IssueRequest("user-b", "", 60L, Set.of(),
+                        java.util.Map.of("machine-a", Set.of("command")))));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> service.issue(new McpPrincipalService.IssueRequest("user-b", "", 3600L, Set.of(),
+                        java.util.Map.of("*", Set.of("command")))));
     }
 }

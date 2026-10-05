@@ -594,18 +594,11 @@ export type McpToken = {
   principalId: string
   displayName: string
   scopes: string[]
+  machinePermissions: Record<string, string[]>
   expiresAt?: string
   revokedAt?: string
   createdAt?: string
 }
-
-export type MachineGrant = {
-  principalId: string
-  machineId: string
-  scopes: string[]
-  expiresAt?: string
-}
-
 
 export type ExecutionSession = {
   principalId: string
@@ -690,7 +683,12 @@ export async function extendArtifactRetention(token: string, artifactId: string,
 }
 
 function mapToken(item: Record<string, unknown>): McpToken {
-  return { tokenId: String(item.token_id ?? ''), principalId: String(item.principal_id ?? ''), displayName: String(item.display_name ?? ''), scopes: Array.isArray(item.scopes) ? item.scopes.map(String) : [], expiresAt: item.expires_at as string | undefined, revokedAt: item.revoked_at as string | undefined, createdAt: item.created_at as string | undefined }
+  const rawPermissions = item.machine_permissions ?? item.machinePermissions
+  const machinePermissions = rawPermissions && typeof rawPermissions === 'object' && !Array.isArray(rawPermissions)
+    ? Object.fromEntries(Object.entries(rawPermissions as Record<string, unknown>)
+      .map(([machineId, values]) => [machineId, Array.isArray(values) ? values.map(String) : []]))
+    : {}
+  return { tokenId: String(item.token_id ?? ''), principalId: String(item.principal_id ?? ''), displayName: String(item.display_name ?? ''), scopes: Array.isArray(item.scopes) ? item.scopes.map(String) : [], machinePermissions, expiresAt: item.expires_at as string | undefined, revokedAt: item.revoked_at as string | undefined, createdAt: item.created_at as string | undefined }
 }
 
 export async function listMcpTokens(token: string, offset = 0, limit = 200): Promise<PageResult<McpToken>> {
@@ -699,7 +697,7 @@ export async function listMcpTokens(token: string, offset = 0, limit = 200): Pro
   return pageResult((body.items ?? []).map(mapToken), body, boundedOffset, boundedLimit)
 }
 
-export async function issueMcpToken(token: string, payload: { principal_id?: string; display_name?: string; expires_in_seconds?: number; scopes?: string[] }): Promise<McpToken & { token: string }> {
+export async function issueMcpToken(token: string, payload: { principal_id?: string; display_name?: string; expires_in_seconds?: number; scopes?: string[]; machine_permissions: Record<string, string[]> }): Promise<McpToken & { token: string }> {
   const body = await request<Record<string, unknown>>('/api/v1/admin/mcp-tokens', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
   return { ...mapToken(body), token: String(body.token ?? '') }
 }
@@ -708,12 +706,8 @@ export async function revokeMcpToken(token: string, tokenId: string): Promise<vo
   await request(`/api/v1/admin/mcp-tokens/${encodeURIComponent(tokenId)}/revoke`, token, { method: 'POST' })
 }
 
-function mapMachineGrant(item: Record<string, unknown>): MachineGrant { return { principalId: String(item.principal_id ?? ''), machineId: String(item.machine_id ?? item.agent_id ?? ''), scopes: Array.isArray(item.scopes) ? item.scopes.map(String) : [], expiresAt: item.expires_at as string | undefined } }
 function mapSession(item: Record<string, unknown>): ExecutionSession { return { principalId: String(item.principal_id ?? ''), sessionId: String(item.session_id ?? ''), conversationId: String(item.conversation_id ?? ''), machineId: String(item.machine_id ?? ''), status: String(item.status ?? ''), lastSeenAt: item.last_seen_at as string | undefined, expiresAt: item.expires_at as string | undefined, capability: item.capability as string | undefined, laneMode: item.lane_mode as string | undefined } }
 
-export async function listMachineGrants(token: string, principalId = ''): Promise<MachineGrant[]> { const suffix = principalId.trim() ? `&principalId=${encodeURIComponent(principalId.trim())}` : ''; const body = await request<{ items?: Array<Record<string, unknown>> }>(`/api/v1/admin/access/machines?offset=0&limit=100${suffix}`, token); return (body.items ?? []).map(mapMachineGrant) }
-export async function grantMachine(token: string, payload: unknown): Promise<MachineGrant> { return mapMachineGrant(await request<Record<string, unknown>>('/api/v1/admin/access/machines', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })) }
-export async function revokeMachine(token: string, payload: unknown): Promise<void> { await request('/api/v1/admin/access/machines', token, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
 export async function listExecutionSessions(token: string, principalId = ''): Promise<ExecutionSession[]> { const suffix = principalId.trim() ? `&principalId=${encodeURIComponent(principalId.trim())}` : ''; const body = await request<{ items?: Array<Record<string, unknown>> }>(`/api/v1/admin/execution-sessions?offset=0&limit=200${suffix}`, token); return (body.items ?? []).map(mapSession) }
 export async function closeExecutionSession(token: string, principalId: string, sessionId: string): Promise<void> { await request('/api/v1/admin/execution-sessions/close', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ principal_id: principalId, session_id: sessionId }) }) }
 export async function getQuota(token: string, principalId: string): Promise<Quota> { const body = await request<Record<string, unknown>>(`/api/v1/admin/quotas/${encodeURIComponent(principalId)}`, token); return { principalId: String(body.principal_id ?? principalId), activeTasks: Number(body.active_tasks ?? 0), maxActiveTasks: Number(body.max_active_tasks ?? 0), queuedTasks: Number(body.queued_tasks ?? 0), maxQueuedTasks: Number(body.max_queued_tasks ?? 0), activeSessions: Number(body.active_sessions ?? 0), maxSessions: Number(body.max_sessions ?? 0), transferBytes: Number(body.transfer_bytes ?? body.reserved_transfer_bytes ?? 0), maxTransferBytes: Number(body.max_transfer_bytes ?? 0), reservedTransferBytes: Number(body.reserved_transfer_bytes ?? body.transfer_bytes ?? 0), transferredTransferBytes: Number(body.transferred_transfer_bytes ?? 0) } }

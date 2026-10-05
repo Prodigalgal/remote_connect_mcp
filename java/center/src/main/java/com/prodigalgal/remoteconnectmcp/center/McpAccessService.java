@@ -1,9 +1,9 @@
 package com.prodigalgal.remoteconnectmcp.center;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.prodigalgal.remoteconnectmcp.protocol.JsonCodec;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -13,279 +13,203 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.support.TransactionTemplate;
 
-/**
- * Principal-to-machine authorization for MCP calls.
- *
- * <p>The configured MCP principal is deliberately the only implicit global
- * grant. User principals require a machine grant (either for a specific machine
- * or the wildcard '*' for all machines) before they can see or execute on a target.
- * PostgreSQL is authoritative in production; the bounded maps are only used by
- * protocol tests and memory mode.</p>
- */
+/** Per-credential machine and MCP-tool authorization. */
 @Service
 public final class McpAccessService {
-    private static final int MAX_RESOURCE_ID = 180;
-    private static final int MAX_SCOPE = 32;
-    private static final Set<String> MACHINE_SCOPES = Set.of("read", "execute", "admin");
+    private static final int MAX_ID = 180;
+    private static final Set<String> TOOLS = Set.of(
+            "command", "desktop", "browser", "artifact", "task_read", "task_cancel");
 
     private final JdbcTemplate jdbc;
-    private final TransactionTemplate transactions;
-    private final Map<String, Grant> machineMemory = new ConcurrentHashMap<>();
+    private final Map<String, Grant> memory = new ConcurrentHashMap<>();
 
     @org.springframework.beans.factory.annotation.Autowired
-    public McpAccessService(ObjectProvider<JdbcTemplate> jdbcProvider,
-                            ObjectProvider<TransactionTemplate> transactionProvider) {
-        this(jdbcProvider == null ? null : jdbcProvider.getIfAvailable(),
-                transactionProvider == null ? null : transactionProvider.getIfAvailable());
+    public McpAccessService(ObjectProvider<JdbcTemplate> jdbcProvider) {
+        this(jdbcProvider == null ? null : jdbcProvider.getIfAvailable());
     }
 
     McpAccessService() {
-        this((JdbcTemplate) null, (TransactionTemplate) null);
+        this((JdbcTemplate) null);
     }
 
-    McpAccessService(JdbcTemplate jdbc, TransactionTemplate transactions) {
+    McpAccessService(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
-        this.transactions = transactions;
     }
 
-    /** Require a machine grant for a user principal. */
-    public void authorizeMachine(TaskOrigin origin, String machineId, String action) {
-        var principalId = principalId(origin);
-        var resource = requiredResource(machineId, "machine_id");
-        var required = requiredMachineScope(action);
-        if (TaskOrigin.CONFIGURED_PRINCIPAL.equals(principalId)) return;
-        if (!hasMachineGrant(principalId, resource, required)) {
-            throw new SecurityException("MCP principal is not granted " + required + " access to machine");
+    /** Persist the selected permissions in the same transaction as token issuance. */
+    void grantTokenMachines(String tokenId, Map<String, Set<String>> permissions) {
+        var token = requiredId(tokenId, "token_id");
+        var normalized = normalizeMachinePermissions(permissions, true);
+        if (jdbc == null) {
+            normalized.forEach((machine, tools) -> memory.put(key(token, machine),
+                    new Grant(token, machine, tools, null)));
+            return;
+        }
+        normalized.forEach((machine, tools) -> jdbc.update("""
+                INSERT INTO rcm_mcp_token_machine_grant(token_id, agent_id, tools_json, expires_at, created_at, updated_at)
+                VALUES (?, ?, CAST(? AS jsonb), NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (token_id, agent_id) DO UPDATE SET tools_json = EXCLUDED.tools_json,
+                    expires_at = EXCLUDED.expires_at, updated_at = CURRENT_TIMESTAMP
+                """, token, machine, json(tools)));
+    }
+
+    /** Enforce one selected tool on one machine for the authenticated credential. */
+    public void authorizeTool(TaskOrigin origin, String machineId, String tool) {
+        if (origin != null && origin.isConfigured()) return; // server-created/admin tasks only
+        var tokenId = requiredId(origin == null ? null : origin.tokenId(), "token_id");
+        var machine = requiredId(machineId, "machine_id");
+        var requestedTool = requiredTool(tool);
+        if (!hasGrant(tokenId, machine, requestedTool)) {
+            throw new SecurityException("MCP credential is not granted tool " + requestedTool + " on this machine");
         }
     }
 
-    /** Require the machine execution permission of a task contract. */
-    public void authorizeExecution(TaskOrigin origin, String machineId) {
-        authorizeMachine(origin, machineId, "execute");
-    }
-
-    /** Whether a principal may see a machine in a bounded inventory page. */
+    /** Machine discovery is available for machines with at least one selected tool. */
     public boolean canReadMachine(TaskOrigin origin, String machineId) {
-        var principalId = principalId(origin);
-        if (TaskOrigin.CONFIGURED_PRINCIPAL.equals(principalId)) return true;
-        return hasMachineGrant(principalId, requiredResource(machineId, "machine_id"), "read");
+        if (origin != null && origin.isConfigured()) return true;
+        var tokenId = requiredId(origin == null ? null : origin.tokenId(), "token_id");
+        var machine = requiredId(machineId, "machine_id");
+        return hasGrant(tokenId, machine, "machines");
     }
 
-    /** Grant machine scopes. Supports specific machine ID or '*' for all machines. */
-    public MachineGrantView grantMachine(String principalId, String machineId,
-                                         Set<String> scopes, Instant expiresAt) {
-        var principal = requiredPrincipal(principalId);
-        var machine = requiredResource(machineId, "machine_id");
-        var normalized = normalizeScopes(scopes, MACHINE_SCOPES, Set.of("read", "execute"));
-        var grant = new Grant(principal, machine, normalized, expiresAt, Instant.now());
+    /** Non-secret permission summaries for one bounded Console credential page. */
+    Map<String, Map<String, Set<String>>> listTokenMachinePermissions(List<String> tokenIds) {
+        if (tokenIds == null || tokenIds.isEmpty()) return Map.of();
+        var tokens = tokenIds.stream().map(token -> requiredId(token, "token_id")).distinct().toList();
         if (jdbc == null) {
-            machineMemory.put(key(principal, machine), grant);
-        } else {
-            runInTransaction(() -> jdbc.update("""
-                    INSERT INTO rcm_machine_grant(principal_id, agent_id, scope_json, expires_at, created_at, updated_at)
-                    VALUES (?, ?, CAST(? AS jsonb), ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    ON CONFLICT (principal_id, agent_id) DO UPDATE SET scope_json = EXCLUDED.scope_json,
-                        expires_at = EXCLUDED.expires_at, updated_at = CURRENT_TIMESTAMP
-                    """, principal, machine, json(normalized), timestamp(expiresAt)));
-        }
-        return new MachineGrantView(principal, machine, normalized, expiresAt, grant.createdAt(), grant.createdAt());
-    }
-
-    public boolean revokeMachine(String principalId, String machineId) {
-        var principal = requiredPrincipal(principalId);
-        var machine = requiredResource(machineId, "machine_id");
-        var changed = machineMemory.remove(key(principal, machine)) != null;
-        if (jdbc != null) {
-            changed |= jdbc.update("DELETE FROM rcm_machine_grant WHERE principal_id = ? AND agent_id = ?",
-                    principal, machine) > 0;
-        }
-        return changed;
-    }
-
-    public List<MachineGrantView> listMachine(String principalId, int offset, int limit) {
-        validatePage(offset, limit);
-        var principal = principalId == null || principalId.isBlank() ? "" : requiredPrincipal(principalId);
-        if (jdbc == null) {
-            return machineMemory.values().stream()
-                    .filter(value -> principal.isBlank() || value.principalId().equals(principal))
-                    .sorted(java.util.Comparator.comparing(Grant::resourceId))
-                    .skip(offset).limit(limit).map(this::machineView).toList();
-        }
-        var sql = """
-                SELECT principal_id, agent_id, scope_json, expires_at, created_at, updated_at
-                  FROM rcm_machine_grant %s ORDER BY agent_id, principal_id OFFSET ? LIMIT ?
-                """.formatted(principal.isBlank() ? "" : "WHERE principal_id = ?");
-        return jdbc.query(sql, ps -> {
-            var i = 1;
-            if (!principal.isBlank()) ps.setString(i++, principal);
-            ps.setInt(i++, offset);
-            ps.setInt(i, limit);
-        }, (rs, row) -> new MachineGrantView(rs.getString("principal_id"), rs.getString("agent_id"),
-                parseScopes(rs.getString("scope_json")), instant(rs.getTimestamp("expires_at")),
-                instant(rs.getTimestamp("created_at")), instant(rs.getTimestamp("updated_at"))));
-    }
-
-    public int machineCount(String principalId) {
-        return count("rcm_machine_grant", "agent_id", principalId);
-    }
-
-    private boolean hasMachineGrant(String principal, String machine, String required) {
-        if (jdbc == null) {
-            var grant = machineMemory.get(key(principal, machine));
-            if (grant != null && grant.active() && grants(grant.scopes(), required, MACHINE_SCOPES)) {
-                return true;
-            }
-            var wildcard = machineMemory.get(key(principal, "*"));
-            return wildcard != null && wildcard.active() && grants(wildcard.scopes(), required, MACHINE_SCOPES);
+            var result = new LinkedHashMap<String, Map<String, Set<String>>>();
+            memory.values().stream().filter(value -> tokens.contains(value.tokenId()))
+                    .sorted(java.util.Comparator.comparing(Grant::machineId))
+                    .forEach(value -> result.computeIfAbsent(value.tokenId(), ignored -> new LinkedHashMap<>())
+                            .put(value.machineId(), value.tools()));
+            return immutablePermissions(result);
         }
         try {
-            var value = jdbc.queryForObject("""
-                    SELECT EXISTS (
-                        SELECT 1 FROM rcm_machine_grant
-                         WHERE principal_id = ? AND (agent_id = ? OR agent_id = '*')
-                           AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-                           AND (jsonb_exists(scope_json, ?) OR jsonb_exists(scope_json, 'admin'))
-                    )
-                    """, Boolean.class, principal, machine, required);
-            return Boolean.TRUE.equals(value);
+            var placeholders = String.join(",", java.util.Collections.nCopies(tokens.size(), "?"));
+            var rows = jdbc.query("""
+                    SELECT token_id, agent_id, tools_json
+                      FROM rcm_mcp_token_machine_grant
+                     WHERE token_id IN (%s) ORDER BY token_id, agent_id
+                    """.formatted(placeholders), tokens.toArray(), (rs, row) -> new PermissionRow(
+                    rs.getString("token_id"), rs.getString("agent_id"), parseTools(rs.getString("tools_json"))));
+            var byToken = new LinkedHashMap<String, Map<String, Set<String>>>();
+            rows.forEach(row -> byToken.computeIfAbsent(row.tokenId(), ignored -> new LinkedHashMap<>())
+                    .put(row.machineId(), row.tools()));
+            return immutablePermissions(byToken);
         } catch (DataAccessException failure) {
-            throw new SecurityException("machine access policy is unavailable", failure);
+            throw new IllegalStateException("credential permissions are unavailable", failure);
         }
     }
 
-    private int count(String table, String ignored, String principalId) {
-        var principal = principalId == null || principalId.isBlank() ? "" : requiredPrincipal(principalId);
-        if (jdbc == null) {
-            var values = machineMemory.values();
-            return Math.toIntExact(values.stream().filter(value -> principal.isBlank() || value.principalId().equals(principal)).count());
+    private static Map<String, Map<String, Set<String>>> immutablePermissions(
+            Map<String, ? extends Map<String, Set<String>>> permissions) {
+        var result = new LinkedHashMap<String, Map<String, Set<String>>>();
+        permissions.forEach((token, machines) -> result.put(token, Map.copyOf(machines)));
+        return Map.copyOf(result);
+    }
+
+    static Map<String, Set<String>> normalizeMachinePermissions(Map<String, Set<String>> permissions,
+                                                                 boolean allowWildcard) {
+        if (permissions == null || permissions.isEmpty()) {
+            throw new IllegalArgumentException("machine_permissions must grant at least one tool on one machine");
         }
-        var sql = principal.isBlank() ? "SELECT COUNT(*) FROM " + table
-                : "SELECT COUNT(*) FROM " + table + " WHERE principal_id = ?";
-        var value = principal.isBlank() ? jdbc.queryForObject(sql, Long.class)
-                : jdbc.queryForObject(sql, Long.class, principal);
-        return value == null ? 0 : Math.toIntExact(value);
-    }
-
-    private void runInTransaction(Runnable operation) {
-        if (transactions == null) {
-            operation.run();
-        } else {
-            transactions.executeWithoutResult(status -> operation.run());
-        }
-    }
-
-    private static boolean grants(Set<String> values, String required, Set<String> supported) {
-        if (values.contains("admin")) return true;
-        if ("read".equals(required)) return values.contains("read") || values.contains("write");
-        return values.contains(required);
-    }
-
-    private static String principalId(TaskOrigin origin) {
-        return requiredPrincipal(origin == null ? null : origin.principalId());
-    }
-
-    private static String requiredPrincipal(String value) {
-        if (value == null || value.isBlank()) throw new SecurityException("MCP principal is missing");
-        var normalized = value.trim();
-        if (normalized.length() > MAX_RESOURCE_ID || normalized.indexOf('\u0000') >= 0
-                || normalized.indexOf('\r') >= 0 || normalized.indexOf('\n') >= 0) {
-            throw new SecurityException("invalid MCP principal identifier");
-        }
-        return normalized;
-    }
-
-    private static String requiredResource(String value, String name) {
-        if (value == null || value.isBlank()) throw new IllegalArgumentException(name + " is required");
-        var normalized = value.trim();
-        if (normalized.length() > MAX_RESOURCE_ID || normalized.indexOf('\u0000') >= 0
-                || normalized.indexOf('\r') >= 0 || normalized.indexOf('\n') >= 0) {
-            throw new IllegalArgumentException("invalid " + name);
-        }
-        return normalized;
-    }
-
-    private static String requiredMachineScope(String action) {
-        if (action == null || action.isBlank()) throw new IllegalArgumentException("action is required");
-        var normalized = action.trim().toLowerCase();
-        if (!MACHINE_SCOPES.contains(normalized)) {
-            throw new IllegalArgumentException("unsupported machine action: " + action);
-        }
-        return normalized;
-    }
-
-    private static Set<String> normalizeScopes(Set<String> scopes, Set<String> supported, Set<String> fallback) {
-        var values = scopes == null || scopes.isEmpty() ? fallback : scopes;
-        var normalized = new LinkedHashSet<String>();
-        for (var scope : values) {
-            if (scope == null || scope.isBlank()) continue;
-            var value = scope.trim().toLowerCase();
-            if (value.length() > MAX_SCOPE || !supported.contains(value)) {
-                throw new IllegalArgumentException("unsupported scope: " + scope);
+        var normalized = new LinkedHashMap<String, Set<String>>();
+        permissions.forEach((rawMachine, rawTools) -> {
+            var machine = requiredId(rawMachine, "machine_id");
+            if ("*".equals(machine) && !allowWildcard) {
+                throw new IllegalArgumentException("machine_permissions must name machines explicitly");
             }
-            normalized.add(value);
-        }
+            if (rawTools == null || rawTools.isEmpty()) return;
+            var tools = new LinkedHashSet<String>();
+            for (var rawTool : rawTools) tools.add(requiredTool(rawTool));
+            if (!tools.isEmpty()) normalized.put(machine, Set.copyOf(tools));
+        });
         if (normalized.isEmpty()) {
-            throw new IllegalArgumentException("at least one valid scope is required");
+            throw new IllegalArgumentException("machine_permissions must grant at least one tool on one machine");
         }
-        return Set.copyOf(normalized);
+        return Map.copyOf(normalized);
     }
 
-    private static void validatePage(int offset, int limit) {
-        if (offset < 0) throw new IllegalArgumentException("offset must be non-negative");
-        if (limit < 1 || limit > 100) throw new IllegalArgumentException("limit must be between 1 and 100");
+    private boolean hasGrant(String tokenId, String machineId, String tool) {
+        if (jdbc == null) {
+            var direct = memory.get(key(tokenId, machineId));
+            if (active(direct) && grants(direct, tool)) return true;
+            var wildcard = memory.get(key(tokenId, "*"));
+            return active(wildcard) && grants(wildcard, tool);
+        }
+        try {
+            var sql = """
+                    SELECT EXISTS (
+                        SELECT 1
+                          FROM rcm_mcp_token_machine_grant g
+                          JOIN rcm_mcp_token t ON t.token_id = g.token_id
+                          JOIN rcm_principal p ON p.principal_id = t.principal_id
+                         WHERE g.token_id = ? AND (g.agent_id = ? OR g.agent_id = '*')
+                           AND (g.expires_at IS NULL OR g.expires_at > CURRENT_TIMESTAMP)
+                           AND t.revoked_at IS NULL
+                           AND (t.expires_at IS NULL OR t.expires_at > CURRENT_TIMESTAMP)
+                           AND p.status = 'active'
+                           AND %s
+                    )
+                    """.formatted("machines".equals(tool)
+                    ? "jsonb_array_length(g.tools_json) > 0"
+                    : "jsonb_exists(g.tools_json, ?)");
+            var granted = "machines".equals(tool)
+                    ? jdbc.queryForObject(sql, Boolean.class, tokenId, machineId)
+                    : jdbc.queryForObject(sql, Boolean.class, tokenId, machineId, tool);
+            return Boolean.TRUE.equals(granted);
+        } catch (DataAccessException failure) {
+            throw new SecurityException("credential access policy is unavailable", failure);
+        }
     }
 
-    private static String key(String principal, String resource) {
-        return principal + "\u0000" + resource;
+    private static boolean grants(Grant grant, String tool) {
+        return "machines".equals(tool) ? !grant.tools().isEmpty() : grant.tools().contains(tool);
+    }
+
+    private static boolean active(Grant grant) {
+        return grant != null && (grant.expiresAt() == null || grant.expiresAt().isAfter(Instant.now()));
+    }
+
+    private static String requiredTool(String value) {
+        if (value == null || !TOOLS.contains(value.trim().toLowerCase(java.util.Locale.ROOT))) {
+            throw new IllegalArgumentException("unsupported machine tool: " + value);
+        }
+        return value.trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private static String requiredId(String value, String field) {
+        if (value == null || value.isBlank()) throw new IllegalArgumentException(field + " is required");
+        var normalized = value.trim();
+        if (normalized.length() > MAX_ID || normalized.indexOf('\u0000') >= 0
+                || normalized.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException(field + " is invalid");
+        }
+        return normalized;
+    }
+
+    private static String key(String tokenId, String machineId) {
+        return tokenId + "\u0000" + machineId;
     }
 
     private static String json(Set<String> values) {
         return new String(JsonCodec.write(values), StandardCharsets.UTF_8);
     }
 
-    private static Set<String> parseScopes(String value) {
+    private static Set<String> parseTools(String value) {
         if (value == null || value.isBlank()) return Set.of();
         try {
-            var list = JsonCodec.read(value.getBytes(StandardCharsets.UTF_8), List.class);
+            var values = JsonCodec.read(value.getBytes(StandardCharsets.UTF_8), List.class);
             var result = new LinkedHashSet<String>();
-            for (var item : list) if (item != null) result.add(String.valueOf(item));
+            for (var item : values) if (item != null) result.add(String.valueOf(item));
             return Set.copyOf(result);
         } catch (RuntimeException ignored) {
             return Set.of();
         }
     }
 
-    private static java.sql.Timestamp timestamp(Instant instant) {
-        return instant == null ? null : java.sql.Timestamp.from(instant);
-    }
+    private record Grant(String tokenId, String machineId, Set<String> tools, Instant expiresAt) { }
 
-    private static Instant instant(java.sql.Timestamp timestamp) {
-        return timestamp == null ? null : timestamp.toInstant();
-    }
-
-    private MachineGrantView machineView(Grant grant) {
-        return new MachineGrantView(grant.principalId(), grant.resourceId(), grant.scopes(),
-                grant.expiresAt(), grant.createdAt(), grant.updatedAt());
-    }
-
-    private record Grant(String principalId, String resourceId, Set<String> scopes,
-                         Instant expiresAt, Instant createdAt, Instant updatedAt) {
-        Grant(String principalId, String resourceId, Set<String> scopes, Instant expiresAt, Instant createdAt) {
-            this(principalId, resourceId, scopes, expiresAt, createdAt, createdAt);
-        }
-
-        boolean active() {
-            return expiresAt == null || expiresAt.isAfter(Instant.now());
-        }
-    }
-
-    public record MachineGrantView(@JsonProperty("principal_id") String principalId,
-                                   @JsonProperty("machine_id") String machineId,
-                                   @JsonProperty("scopes") Set<String> scopes,
-                                   @JsonProperty("expires_at") Instant expiresAt,
-                                   @JsonProperty("created_at") Instant createdAt,
-                                   @JsonProperty("updated_at") Instant updatedAt) {
-    }
+    private record PermissionRow(String tokenId, String machineId, Set<String> tools) { }
 }

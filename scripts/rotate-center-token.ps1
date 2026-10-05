@@ -1,18 +1,14 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)]
-    [ValidateSet("mcp", "admin")]
-    [string]$Kind,
-
     [Security.SecureString]$NewToken,
 
     [string]$EnvFile = "center.env",
 
     [string]$Namespace = "remote-connect-mcp",
 
-    [string]$SecretName = "remote-connect-mcp-secrets",
+    [string]$SecretName = "remote-connect-mcp-java-secrets",
 
-    [string]$DeploymentName = "remote-connect-mcp-center",
+    [string]$DeploymentName = "remote-connect-mcp-java-center",
 
     [string]$ConsoleUrl = "https://console.example.invalid",
 
@@ -22,10 +18,6 @@ param(
 $ErrorActionPreference = "Stop"
 
 $keys = @{
-    mcp = @{
-        Env = "REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN"
-        Secret = "mcp-token"
-    }
     admin = @{
         Env = "REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN"
         Secret = "admin-token"
@@ -53,12 +45,28 @@ function Read-EnvValues([string]$Path) {
 }
 
 function Write-EnvValues([string]$Path, [hashtable]$Values) {
-    $content = @(
-        "REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN=$($Values.REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN)"
-        "REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN=$($Values.REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN)"
-    ) -join [Environment]::NewLine
+    $name = "REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN"
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $adminWritten = $false
+    foreach ($line in [IO.File]::ReadAllLines($Path)) {
+        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=') {
+            $variable = $matches[1]
+            if ($variable -in @("REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN", "REMOTE_CONNECT_MCP_CENTER_ENROLLMENT_TOKEN")) {
+                continue
+            }
+            if ($variable -eq $name) {
+                if (-not $adminWritten) {
+                    $lines.Add("$name=$($Values[$name])")
+                    $adminWritten = $true
+                }
+                continue
+            }
+        }
+        $lines.Add($line)
+    }
+    if (-not $adminWritten) { $lines.Add("$name=$($Values[$name])") }
     $temp = "$Path.tmp"
-    [IO.File]::WriteAllText($temp, $content + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllLines($temp, $lines.ToArray(), [Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath $temp -Destination $Path -Force
 }
 
@@ -74,41 +82,15 @@ function Set-LiveSecretValue([string]$SecretKey, [string]$Value) {
     }
 }
 
-function Test-NewCredential([string]$TokenKind, [string]$Token) {
-    if ($TokenKind -eq "admin") {
-        Invoke-RestMethod -Uri "$ConsoleUrl/api/v1/machines" -Headers @{ Authorization = "Bearer $Token" } | Out-Null
-        return
-    }
-    if ($TokenKind -eq "mcp") {
-        $meta = @{
-            "io.modelcontextprotocol/protocolVersion" = "2026-07-28"
-            "io.modelcontextprotocol/clientInfo" = @{ name = "token-rotation-probe"; version = "1" }
-            "io.modelcontextprotocol/clientCapabilities" = @{}
-        }
-        $body = @{
-            jsonrpc = "2.0"
-            id = 1
-            method = "server/discover"
-            params = @{ _meta = $meta }
-        } | ConvertTo-Json -Depth 10 -Compress
-        $headers = @{
-            Authorization = "Bearer $Token"
-            Accept = "application/json, text/event-stream"
-            "Mcp-Protocol-Version" = "2026-07-28"
-            "Mcp-Method" = "server/discover"
-        }
-        $response = Invoke-WebRequest -Method Post -Uri "$McpUrl/mcp" -Headers $headers -ContentType "application/json" -Body $body
-        if ($response.StatusCode -ne 200 -or $response.Content -notmatch '"resultType":"complete"') {
-            throw "The new MCP token failed the public server/discover probe."
-        }
-    }
+function Test-NewCredential([string]$Token) {
+    Invoke-RestMethod -Uri "$ConsoleUrl/api/v1/admin/machines" -Headers @{ Authorization = "Bearer $Token" } | Out-Null
 }
 
 if (-not (Test-Path -LiteralPath $EnvFile)) {
     throw "Center env file was not found: $EnvFile"
 }
 if (-not $NewToken) {
-    $NewToken = Read-Host "Enter the new $Kind token" -AsSecureString
+    $NewToken = Read-Host "Enter the new Admin token" -AsSecureString
 }
 $plainToken = ConvertFrom-SecureValue $NewToken
 if ($plainToken.Length -lt 32 -or $plainToken -match '[\r\n]' -or $plainToken.Contains("REMOTE_CONNECT_MCP_CENTER_")) {
@@ -121,7 +103,7 @@ foreach ($entry in $keys.Values) {
         throw "Missing $($entry.Env) in $EnvFile."
     }
 }
-$selected = $keys[$Kind]
+$selected = $keys.admin
 $oldEnvContent = [IO.File]::ReadAllText($EnvFile)
 $oldSecret = kubectl -n $Namespace get secret $SecretName -o json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or -not $oldSecret) {
@@ -142,7 +124,7 @@ try {
     if ($health.status -ne "ok") {
         throw "Center health check failed."
     }
-    Test-NewCredential $Kind $plainToken
+    Test-NewCredential $plainToken
 }
 catch {
     Set-LiveSecretValue $selected.Secret $oldSecretValue
@@ -156,10 +138,5 @@ finally {
     $oldSecretValue = $null
 }
 
-Write-Host "$Kind token was updated in the private env file and Kubernetes Secret."
-if ($Kind -eq "mcp") {
-    Write-Host "Update the ChatGPT Web connector with REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN from the private env file."
-}
-elseif ($Kind -eq "admin") {
-    Write-Host "Sign in to the control console again with the new admin token."
-}
+Write-Host "Admin token was updated in the private env file and Kubernetes Secret."
+Write-Host "Sign in to the control console again with the new Admin token."

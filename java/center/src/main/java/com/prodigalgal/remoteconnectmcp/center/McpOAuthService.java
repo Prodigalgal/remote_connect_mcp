@@ -22,7 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * Small OAuth 2.1 authorization-code provider for the ChatGPT MCP connection.
  *
- * <p>The authorization page accepts an already-issued RCM opaque token as the
+ * <p>The authorization page accepts an already-issued Console MCP credential as the
  * bootstrap credential.  It never returns that token to ChatGPT; it exchanges
  * it for a short-lived OAuth access token and a rotating refresh token.  This
  * preserves the operator's existing token workflow while satisfying the
@@ -66,7 +66,8 @@ public final class McpOAuthService {
         var hash = sha256(value);
         var memory = accessTokens.get(hash);
         if (memory != null) {
-            if (memory.revokedAt() == null && Instant.now().isBefore(memory.expiresAt())) {
+            if (memory.revokedAt() == null && Instant.now().isBefore(memory.expiresAt())
+                    && principals.isTokenActive(memory.sourceTokenId())) {
                 return Optional.of(memory.principal());
             }
             return Optional.empty();
@@ -74,15 +75,18 @@ public final class McpOAuthService {
         if (jdbc == null) return Optional.empty();
         try {
             return jdbc.query("""
-                    SELECT t.token_id, t.principal_id, COALESCE(t.display_name, p.display_name) AS display_name,
+                    SELECT t.source_token_id, t.principal_id, COALESCE(t.display_name, p.display_name) AS display_name,
                            t.scope_json, t.expires_at
                       FROM rcm_oauth_access_token t
                       JOIN rcm_principal p ON p.principal_id = t.principal_id
+                      JOIN rcm_mcp_token source ON source.token_id = t.source_token_id
                      WHERE t.token_hash = ? AND t.revoked_at IS NULL AND p.status = 'active'
+                       AND source.revoked_at IS NULL
+                       AND (source.expires_at IS NULL OR source.expires_at > CURRENT_TIMESTAMP)
                        AND t.expires_at > CURRENT_TIMESTAMP AND t.resource = ?
                      LIMIT 1
                     """, ps -> { ps.setString(1, hash); ps.setString(2, config.resource()); }, (rs, row) -> new McpPrincipal(
-                    rs.getString("principal_id"), rs.getString("token_id"), rs.getString("display_name"),
+                    rs.getString("principal_id"), rs.getString("source_token_id"), rs.getString("display_name"),
                     parseScopes(rs.getString("scope_json")), false, rs.getTimestamp("expires_at").toInstant()))
                     .stream().findFirst();
         } catch (DataAccessException | NullPointerException ignored) {
@@ -103,22 +107,22 @@ public final class McpOAuthService {
         var plaintext = "rcm_code_" + randomToken();
         var created = Instant.now();
         var value = new AuthorizationCode(sha256(plaintext), clientId, redirectUri, codeChallenge,
-                principal.principalId(), principal.displayName(), scopes, created,
+                principal.principalId(), principal.tokenId(), principal.displayName(), scopes, created,
                 created.plus(config.authorizationCodeTtl()));
         if (jdbc != null && transactions != null) {
             transactions.executeWithoutResult(status -> jdbc.update("""
                     INSERT INTO rcm_oauth_authorization_code
                         (code_hash, client_id, redirect_uri, code_challenge, code_challenge_method,
-                         principal_id, display_name, scope_json, resource, created_at, expires_at, consumed_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, NULL)
+                         principal_id, source_token_id, display_name, scope_json, resource, created_at, expires_at, consumed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, NULL)
                     """, value.codeHash(), value.clientId(), value.redirectUri(), value.codeChallenge(),
-                    "S256", value.principalId(), value.displayName(), json(value.scopes()), config.resource(),
+                    "S256", value.principalId(), value.sourceTokenId(), value.displayName(), json(value.scopes()), config.resource(),
                     timestamp(value.createdAt()), timestamp(value.expiresAt())));
         } else {
             codes.put(value.codeHash(), value);
         }
         return new AuthorizationCode(plaintext, value.clientId(), value.redirectUri(), value.codeChallenge(),
-                value.principalId(), value.displayName(), value.scopes(), value.createdAt(), value.expiresAt());
+                value.principalId(), value.sourceTokenId(), value.displayName(), value.scopes(), value.createdAt(), value.expiresAt());
     }
 
     public TokenResponse exchangeAuthorizationCode(String clientId, String redirectUri,
@@ -188,11 +192,12 @@ public final class McpOAuthService {
     }
 
     private TokenResponse issueDatabaseTokens(AuthorizationCode code) {
-        return issueDatabaseTokens(new OAuthToken("", code.clientId(), code.principalId(), code.displayName(),
+        return issueDatabaseTokens(new OAuthToken("", code.clientId(), code.principalId(), code.sourceTokenId(), code.displayName(),
                 code.scopes(), Instant.now(), Instant.now().plus(config.refreshTokenTtl()), null));
     }
 
     private TokenResponse issueDatabaseTokens(OAuthToken source) {
+        ensureSourceTokenActive(source.sourceTokenId());
         var access = "rcm_at_" + randomToken();
         var refresh = "rcm_rt_" + randomToken();
         var now = Instant.now();
@@ -200,39 +205,46 @@ public final class McpOAuthService {
         var refreshExpiry = now.plus(config.refreshTokenTtl());
         jdbc.update("""
                 INSERT INTO rcm_oauth_access_token
-                    (token_id, token_hash, principal_id, display_name, client_id, scope_json, resource,
+                    (token_id, token_hash, principal_id, source_token_id, display_name, client_id, scope_json, resource,
                      created_at, expires_at, revoked_at)
-                VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, NULL)
-                """, "oauth_at_" + randomHex(16), sha256(access), source.principalId(), source.displayName(),
+                VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, NULL)
+                """, "oauth_at_" + randomHex(16), sha256(access), source.principalId(), source.sourceTokenId(), source.displayName(),
                 source.clientId(), json(source.scopes()), config.resource(), timestamp(now), timestamp(accessExpiry));
         jdbc.update("""
                 INSERT INTO rcm_oauth_refresh_token
-                    (token_id, token_hash, principal_id, display_name, client_id, scope_json, resource,
+                    (token_id, token_hash, principal_id, source_token_id, display_name, client_id, scope_json, resource,
                      created_at, expires_at, revoked_at)
-                VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, NULL)
-                """, "oauth_rt_" + randomHex(16), sha256(refresh), source.principalId(), source.displayName(),
+                VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, NULL)
+                """, "oauth_rt_" + randomHex(16), sha256(refresh), source.principalId(), source.sourceTokenId(), source.displayName(),
                 source.clientId(), json(source.scopes()), config.resource(), timestamp(now), timestamp(refreshExpiry));
         return response(access, refresh, accessExpiry, source.scopes());
     }
 
     private TokenResponse issueMemoryTokens(AuthorizationCode code) {
-        return issueMemoryTokens(new OAuthToken("", code.clientId(), code.principalId(), code.displayName(),
+        return issueMemoryTokens(new OAuthToken("", code.clientId(), code.principalId(), code.sourceTokenId(), code.displayName(),
                 code.scopes(), Instant.now(), Instant.now().plus(config.refreshTokenTtl()), null));
     }
 
     private TokenResponse issueMemoryTokens(OAuthToken source) {
+        ensureSourceTokenActive(source.sourceTokenId());
         var access = "rcm_at_" + randomToken();
         var refresh = "rcm_rt_" + randomToken();
         var now = Instant.now();
         var accessExpiry = now.plus(config.accessTokenTtl());
         var refreshExpiry = now.plus(config.refreshTokenTtl());
-        var principal = new McpPrincipal(source.principalId(), "oauth_at_" + randomHex(16),
+        var principal = new McpPrincipal(source.principalId(), source.sourceTokenId(),
                 source.displayName(), source.scopes(), false, accessExpiry);
         accessTokens.put(sha256(access), new OAuthToken(access, source.clientId(), source.principalId(),
-                source.displayName(), source.scopes(), now, accessExpiry, null, principal));
+                source.sourceTokenId(), source.displayName(), source.scopes(), now, accessExpiry, null, principal));
         refreshTokens.put(sha256(refresh), new OAuthToken(refresh, source.clientId(), source.principalId(),
-                source.displayName(), source.scopes(), now, refreshExpiry, null, principal));
+                source.sourceTokenId(), source.displayName(), source.scopes(), now, refreshExpiry, null, principal));
         return response(access, refresh, accessExpiry, source.scopes());
+    }
+
+    private void ensureSourceTokenActive(String sourceTokenId) {
+        if (sourceTokenId == null || sourceTokenId.isBlank() || !principals.isTokenActive(sourceTokenId)) {
+            throw new OAuthException("invalid_grant", "source Console credential is no longer active");
+        }
     }
 
     private Optional<AuthorizationCode> loadCode(String hash) {
@@ -241,13 +253,13 @@ public final class McpOAuthService {
         if (jdbc == null) return Optional.empty();
         try {
             return jdbc.query("""
-                    SELECT code_hash, client_id, redirect_uri, code_challenge, principal_id, display_name,
+                    SELECT code_hash, client_id, redirect_uri, code_challenge, principal_id, source_token_id, display_name,
                            scope_json, created_at, expires_at
                       FROM rcm_oauth_authorization_code
                      WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP
                     """, ps -> ps.setString(1, hash), (rs, row) -> new AuthorizationCode(
                     rs.getString("code_hash"), rs.getString("client_id"), rs.getString("redirect_uri"),
-                    rs.getString("code_challenge"), rs.getString("principal_id"), rs.getString("display_name"),
+                    rs.getString("code_challenge"), rs.getString("principal_id"), rs.getString("source_token_id"), rs.getString("display_name"),
                     parseScopes(rs.getString("scope_json")), rs.getTimestamp("created_at").toInstant(),
                     rs.getTimestamp("expires_at").toInstant())).stream().findFirst();
         } catch (DataAccessException | NullPointerException ignored) {
@@ -259,13 +271,16 @@ public final class McpOAuthService {
         if (jdbc == null) return Optional.empty();
         try {
             return jdbc.query("""
-                    SELECT token_hash, client_id, principal_id, display_name, scope_json, expires_at
+                    SELECT t.token_hash, t.client_id, t.principal_id, t.source_token_id, t.display_name, t.scope_json, t.expires_at
                       FROM rcm_oauth_refresh_token t
                       JOIN rcm_principal p ON p.principal_id = t.principal_id
+                      JOIN rcm_mcp_token source ON source.token_id = t.source_token_id
                      WHERE token_hash = ? AND revoked_at IS NULL AND p.status = 'active'
+                       AND source.revoked_at IS NULL
+                       AND (source.expires_at IS NULL OR source.expires_at > CURRENT_TIMESTAMP)
                        AND t.expires_at > CURRENT_TIMESTAMP AND t.resource = ?
                     """, ps -> { ps.setString(1, hash); ps.setString(2, config.resource()); }, (rs, row) -> new OAuthToken(
-                    rs.getString("token_hash"), rs.getString("client_id"), rs.getString("principal_id"),
+                    rs.getString("token_hash"), rs.getString("client_id"), rs.getString("principal_id"), rs.getString("source_token_id"),
                     rs.getString("display_name"), parseScopes(rs.getString("scope_json")), Instant.now(),
                     rs.getTimestamp("expires_at").toInstant(), null)).stream().findFirst();
         } catch (DataAccessException | NullPointerException ignored) {
@@ -383,17 +398,17 @@ public final class McpOAuthService {
     }
 
     public record AuthorizationCode(String code, String clientId, String redirectUri, String codeChallenge,
-                                    String principalId, String displayName, Set<String> scopes,
+                                    String principalId, String sourceTokenId, String displayName, Set<String> scopes,
                                     Instant createdAt, Instant expiresAt) {
         public String codeHash() { return code; }
     }
 
-    private record OAuthToken(String token, String clientId, String principalId, String displayName,
+    private record OAuthToken(String token, String clientId, String principalId, String sourceTokenId, String displayName,
                               Set<String> scopes, Instant createdAt, Instant expiresAt, Instant revokedAt,
                               McpPrincipal principal) {
-        private OAuthToken(String token, String clientId, String principalId, String displayName,
+        private OAuthToken(String token, String clientId, String principalId, String sourceTokenId, String displayName,
                            Set<String> scopes, Instant createdAt, Instant expiresAt, Instant revokedAt) {
-            this(token, clientId, principalId, displayName, scopes, createdAt, expiresAt, revokedAt, null);
+            this(token, clientId, principalId, sourceTokenId, displayName, scopes, createdAt, expiresAt, revokedAt, null);
         }
     }
 

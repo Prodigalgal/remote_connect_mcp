@@ -130,7 +130,7 @@ class McpToolContractTest {
         var entered = new CountDownLatch(1);
         var waiting = CompletableFuture.supplyAsync(() -> {
             entered.countDown();
-            return McpConfiguration.taskReadModel(fixture.tasks(), TaskOrigin.configured(),
+            return McpConfiguration.taskReadModel(fixture.tasks(), new McpAccessService(), TaskOrigin.configured(),
                     request("task_read", Map.of("task_id", created.id(), "change_seq", current.changeSequence(), "wait_ms", 5000)));
         });
         assertTrue(entered.await(1, TimeUnit.SECONDS));

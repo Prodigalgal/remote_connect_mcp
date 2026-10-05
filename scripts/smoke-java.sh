@@ -22,6 +22,7 @@ port="${RCM_SMOKE_PORT:-18180}"
 center_binary="${1:-${RCM_SMOKE_CENTER_BINARY:-}}"
 [[ -n "$center_binary" ]] || { echo "Center Native Image path is required; pass a GitHub Actions artifact as the first argument." >&2; exit 2; }
 [[ -f "$center_binary" ]] || { echo "Center native binary not found: $center_binary" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 2; }
 
 tmp="$(mktemp -d)"
 pid=""
@@ -46,7 +47,6 @@ trap finish EXIT
 
 RCM_CENTER_PERSISTENCE_MODE=memory \
 RCM_CENTER_VERSION=smoke \
-REMOTE_CONNECT_MCP_CENTER_MCP_TOKEN=smoke-mcp-token \
 REMOTE_CONNECT_MCP_CENTER_ADMIN_TOKEN=smoke-admin-token \
 "$center_binary" "--server.port=$port" >"$tmp/out" 2>"$tmp/err" &
 pid=$!
@@ -66,6 +66,13 @@ for _ in {1..120}; do
 done
 [[ "$healthy" == "true" ]] || { echo "Java Center health check timed out" >&2; exit 1; }
 curl --silent --fail --max-time 5 "http://127.0.0.1:$port/api/v1/healthz" >/dev/null 2>&1
+issued_token="$(curl --silent --show-error --fail --max-time 5 \
+  -X POST "http://127.0.0.1:$port/api/v1/admin/mcp-tokens" \
+  -H 'Authorization: Bearer smoke-admin-token' \
+  -H 'Content-Type: application/json' \
+  --data '{"principal_id":"smoke","display_name":"native-smoke","expires_in_seconds":3600,"scopes":["mcp:read","mcp:execute"],"machine_permissions":{"smoke-machine":["command"]}}')"
+mcp_token="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("token", ""))' <<<"$issued_token")"
+[[ -n "$mcp_token" ]] || { echo "Console did not issue an MCP credential" >&2; exit 1; }
 
 rpc() {
   local id="$1" method="$2" session="${3:-}"
@@ -79,7 +86,7 @@ rpc() {
     payload="{\"jsonrpc\":\"2.0\",\"id\":$id,\"method\":\"$method\",\"params\":{}}"
   fi
   curl --silent --show-error --fail --max-time 5 \
-    -H 'Authorization: Bearer smoke-mcp-token' \
+    -H "Authorization: Bearer $mcp_token" \
     -H 'Accept: application/json, text/event-stream' \
     -H 'Content-Type: application/json' \
     "${session_header[@]}" \
@@ -99,8 +106,8 @@ metrics="$(curl --silent --show-error --fail --max-time 5 \
   -H 'Accept: text/plain' \
   "http://127.0.0.1:$port/metrics")"
 grep -q 'remote_connect_mcp_machines_total' <<<"$metrics"
-if grep -q 'smoke-mcp-token' <<<"$metrics"; then
-  echo 'metrics response contains a secret' >&2
+if grep -Fq "$mcp_token" <<<"$metrics"; then
+  echo 'metrics response contains an MCP credential' >&2
   exit 1
 fi
 bad_metrics_status="$(curl --silent --show-error --max-time 5 -o /dev/null -w '%{http_code}' \

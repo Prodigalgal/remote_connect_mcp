@@ -11,9 +11,10 @@ Before a production sync:
 2. Replace the two image tags in `java-production/kustomization.yaml` and the
    Center version in `java-production/center-production-patch.yaml` with the
    verified release version. For production, prefer an immutable image digest.
-3. Create `remote-connect-mcp-java-secrets` outside Git with the MCP/Admin
-   tokens and PostgreSQL connection values. Do not store an Enrollment Token
-   in the Center Secret; issue one per machine through the Admin API and use it
+3. Create `remote-connect-mcp-java-secrets` outside Git with the Console Admin
+   token and PostgreSQL connection values. MCP client credentials are issued
+   per client in Console and are not Center-wide secrets. Do not store an
+   Enrollment Token in the Center Secret; issue one per machine through Console and use it
    only during that Agent registration.
    The base also enables `RCM_CENTER_REQUIRE_DURABLE_STORAGE=true`; keep this
    guard in the private overlay so an accidental memory-mode deployment stays

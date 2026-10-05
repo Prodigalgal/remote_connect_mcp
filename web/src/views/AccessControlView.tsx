@@ -1,14 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CopyButton } from '../components/CopyButton'
 import {
-  grantMachine,
   issueMcpToken,
-  listMachineGrants,
   listMcpTokens,
-  revokeMachine,
   revokeMcpToken,
   type Machine,
-  type MachineGrant,
   type McpToken,
 } from '../api'
 
@@ -17,82 +13,74 @@ interface AccessControlViewProps {
   machines: Machine[]
 }
 
+const TOOL_OPTIONS = [
+  { id: 'command', label: '命令' },
+  { id: 'desktop', label: '桌面' },
+  { id: 'browser', label: '浏览器' },
+  { id: 'artifact', label: '文件' },
+  { id: 'task_read', label: '读取任务' },
+  { id: 'task_cancel', label: '取消任务' },
+] as const
+
+const TOOL_LABELS = Object.fromEntries(TOOL_OPTIONS.map((tool) => [tool.id, tool.label])) as Record<string, string>
+
 export function AccessControlView({ token, machines }: AccessControlViewProps) {
-  const [principal, setPrincipal] = useState('owner')
+  const [displayName, setDisplayName] = useState('ChatGPT')
   const [expires, setExpires] = useState('2592000')
   const [tokens, setTokens] = useState<McpToken[]>([])
-  const [grants, setGrants] = useState<MachineGrant[]>([])
+  const [permissions, setPermissions] = useState<Record<string, string[]>>({})
   const [issued, setIssued] = useState('')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const refresh = useCallback(async (principalId = principal) => {
+  const refresh = useCallback(async () => {
     if (!token.trim()) return
     try {
-      const [tokenPage, machineGrants] = await Promise.all([
-        listMcpTokens(token),
-        listMachineGrants(token, principalId),
-      ])
-      setTokens(tokenPage.items)
-      setGrants(machineGrants)
+      setTokens((await listMcpTokens(token)).items)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '读取连接凭证失败')
     }
-  }, [token, principal])
+  }, [token])
 
   useEffect(() => { void refresh() }, [refresh])
 
-  const hasAllMachines = grants.some((grant) => grant.principalId === principal.trim()
-    && grant.machineId === '*' && grant.scopes.includes('execute'))
+  const selected = useMemo(() => Object.fromEntries(
+    Object.entries(permissions).filter(([, tools]) => tools.length > 0),
+  ), [permissions])
+  const selectedCount = Object.values(selected).reduce((count, tools) => count + tools.length, 0)
+
+  const toggleTool = (machineId: string, toolId: string) => {
+    setPermissions((current) => {
+      const tools = new Set(current[machineId] ?? [])
+      if (tools.has(toolId)) tools.delete(toolId)
+      else tools.add(toolId)
+      return { ...current, [machineId]: [...tools] }
+    })
+  }
 
   const issue = async (event: React.FormEvent) => {
     event.preventDefault()
-    if (!token.trim() || !principal.trim()) return
+    if (!token.trim() || !displayName.trim() || selectedCount === 0) {
+      setMessage('至少为一台机器选择一个工具。')
+      return
+    }
     setBusy(true)
     setIssued('')
     setMessage('')
     try {
       const result = await issueMcpToken(token, {
-        principal_id: principal.trim(),
-        display_name: principal.trim(),
+        principal_id: 'owner',
+        display_name: displayName.trim(),
         expires_in_seconds: Number(expires),
         scopes: ['mcp:read', 'mcp:execute'],
+        machine_permissions: selected,
       })
       setIssued(result.token)
-      try {
-        await grantMachine(token, {
-          principal_id: result.principalId,
-          machine_id: '*',
-          scopes: ['read', 'execute'],
-        })
-        setMessage('连接凭证已创建，并可访问所有机器。明文仅显示一次，请立即复制。')
-      } catch (error) {
-        setMessage(`凭证已创建，但机器授权失败：${error instanceof Error ? error.message : String(error)}。请使用下方按钮重试。`)
-      }
-      await refresh(result.principalId)
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : '创建连接凭证失败')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const changeGrant = async () => {
-    if (!principal.trim()) return
-    setBusy(true)
-    setMessage('')
-    try {
-      const payload = { principal_id: principal.trim(), machine_id: '*' }
-      if (hasAllMachines) {
-        await revokeMachine(token, payload)
-        setMessage('已撤销所有机器的访问权限。')
-      } else {
-        await grantMachine(token, { ...payload, scopes: ['read', 'execute'] })
-        setMessage('已授权访问所有机器，包括之后加入的机器。')
-      }
+      setMessage(`凭证已创建：授权 ${Object.keys(selected).length} 台机器、${selectedCount} 项工具权限。明文仅显示一次，请立即复制。`)
+      setPermissions({})
       await refresh()
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '修改机器授权失败')
+      setMessage(error instanceof Error ? error.message : '创建连接凭证失败')
     } finally {
       setBusy(false)
     }
@@ -118,7 +106,7 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
         <div>
           <h2 style={{ margin: 0, fontSize: '20px', color: '#fff' }}>连接凭证</h2>
           <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)' }}>
-            为自己的 MCP 客户端创建凭证，统一访问 {machines.length} 台机器。
+            为 MCP 客户端创建凭证，并逐台选择可访问的机器和工具。
           </p>
         </div>
         <button type="button" className="btn btn-secondary btn-sm" onClick={() => void refresh()} disabled={busy}>刷新</button>
@@ -130,8 +118,8 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
         <form onSubmit={issue}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: '16px' }}>
             <div className="form-group">
-              <label className="form-label">我的账户</label>
-              <input className="form-input font-mono" value={principal} onChange={(event) => setPrincipal(event.target.value)} required />
+              <label className="form-label">凭证名称</label>
+              <input className="form-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} required />
             </div>
             <div className="form-group">
               <label className="form-label">有效期</label>
@@ -142,8 +130,47 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
               </select>
             </div>
           </div>
-          <button className="btn btn-primary" type="submit" disabled={busy || !principal.trim() || !token.trim()}>
-            创建连接凭证并授权所有机器
+
+          <div style={{ margin: '8px 0 12px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+            授权后，此凭证只会看到所选机器；任务读取和取消权限也按任务所在机器校验。
+          </div>
+          <div style={{ display: 'grid', gap: '10px', marginBottom: '18px' }}>
+            {machines.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>当前没有已注册机器。</p>}
+            {machines.map((machine) => (
+              <div key={machine.id} className="card" style={{ padding: '14px 16px', background: 'var(--bg-subtle)' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                  <strong style={{ color: '#fff' }}>{machine.name}</strong>
+                  <code style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>{machine.id}</code>
+                  <span style={{ color: machine.online ? 'var(--success)' : 'var(--text-tertiary)', fontSize: '12px' }}>
+                    {machine.online ? '在线' : '离线'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 18px' }}>
+                  {TOOL_OPTIONS.map((tool) => {
+                    const requiredCapability = tool.id === 'artifact' ? 'file_transfer'
+                      : tool.id === 'desktop' || tool.id === 'browser' ? tool.id : undefined
+                    const unsupported = requiredCapability !== undefined
+                      && !machine.capabilities.includes(requiredCapability)
+                    const checked = (permissions[machine.id] ?? []).includes(tool.id)
+                    return (
+                      <label key={tool.id} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', color: unsupported ? 'var(--text-tertiary)' : 'var(--text-secondary)', fontSize: '13px' }}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={busy || unsupported}
+                          onChange={() => toggleTool(machine.id, tool.id)}
+                        />
+                        {tool.label}
+                      </label>
+                    )
+                  })}
+                  <span style={{ color: 'var(--text-tertiary)', fontSize: '12px', alignSelf: 'center' }}>查看机器信息自动包含</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button className="btn btn-primary" type="submit" disabled={busy || !displayName.trim() || !token.trim() || selectedCount === 0}>
+            创建连接凭证
           </button>
         </form>
         {issued && (
@@ -155,25 +182,23 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
         )}
       </div>
 
-      <div className="card" style={{ padding: '20px', marginBottom: '20px' }}>
-        <strong style={{ color: '#fff' }}>机器访问</strong>
-        <p style={{ color: 'var(--text-secondary)' }}>
-          {principal.trim() || '当前账户'}：{hasAllMachines ? '已授权全部机器' : '尚未授权全部机器'}
-        </p>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={() => void changeGrant()} disabled={busy || !principal.trim()}>
-          {hasAllMachines ? '撤销全部机器授权' : '授权全部机器'}
-        </button>
-      </div>
-
       <div className="card" style={{ padding: '20px' }}>
         <h3 style={{ margin: '0 0 12px', color: '#fff' }}>已有凭证</h3>
         {tokens.length === 0 && <p style={{ color: 'var(--text-secondary)' }}>还没有连接凭证。</p>}
         {tokens.map((item) => (
-          <div key={item.tokenId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '12px 0', borderTop: '1px solid var(--border-subtle)' }}>
-            <div>
+          <div key={item.tokenId} style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', padding: '12px 0', borderTop: '1px solid var(--border-subtle)' }}>
+            <div style={{ minWidth: 0 }}>
               <strong style={{ color: '#fff' }}>{item.displayName || item.principalId}</strong>
-              <div style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>
+              <div style={{ color: 'var(--text-tertiary)', fontSize: '12px', margin: '3px 0 8px' }}>
                 {item.principalId} · {item.revokedAt ? '已撤销' : item.expiresAt ? `到期 ${new Date(item.expiresAt).toLocaleDateString()}` : '不过期'}
+              </div>
+              <div style={{ display: 'grid', gap: '4px' }}>
+                {Object.entries(item.machinePermissions).map(([machineId, tools]) => {
+                  const machine = machines.find((value) => value.id === machineId)
+                  return <div key={machineId} style={{ color: 'var(--text-secondary)', fontSize: '12px', overflowWrap: 'anywhere' }}>
+                    {machine?.name ?? machineId}：{tools.map((tool) => TOOL_LABELS[tool] ?? tool).join('、')}
+                  </div>
+                })}
               </div>
             </div>
             {!item.revokedAt && <button type="button" className="btn btn-danger btn-sm" onClick={() => void revoke(item.tokenId)} disabled={busy}>撤销</button>}

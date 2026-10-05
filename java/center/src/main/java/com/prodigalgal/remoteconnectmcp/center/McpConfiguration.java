@@ -95,10 +95,9 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         CreateTaskRequest.class, AdminCreateTaskRequest.class, CreateUpgradeCampaignRequest.class,
         AuditEventView.class,
         AdminController.IssueEnrollmentRequest.class, AdminController.IssueMcpTokenRequest.class,
-        AdminController.MachineGrantRequest.class,
         AdminController.SessionCloseRequest.class,
         McpPrincipalService.IssueRequest.class, McpPrincipalService.IssuedToken.class,
-        McpTokenView.class, McpAccessService.MachineGrantView.class,
+        McpTokenView.class,
         ExecutionSessionService.SessionView.class,
         McpQuotaService.QuotaView.class,
         ArtifactTransferService.TransferCreated.class, ArtifactTransferService.TransferDescriptor.class,
@@ -302,10 +301,10 @@ public class McpConfiguration {
                             return artifactModel(agents, tasks, access, transfers, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("task_read", "Observe one durable task. include_output=false reads status only; cursor reads new logs; tail_bytes reads the end. include_artifact=true fetches an image; detail=true includes execution details.",
                         taskReadModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, origin(exchange, conversations), request); }, scheduler, oauth),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, access, origin(exchange, conversations), request); }, scheduler, oauth),
                 tool("task_cancel", "Cancel one queued or running task owned by the current principal and session.",
                         taskCancelModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancelModel(tasks, transfers, origin(exchange, conversations), request); }, scheduler, oauth));
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancelModel(tasks, access, transfers, origin(exchange, conversations), request); }, scheduler, oauth));
     }
 
     private static McpServerFeatures.AsyncToolSpecification tool(String name, String description, Map<String, Object> schema,
@@ -862,7 +861,7 @@ public class McpConfiguration {
                 copyIfPresent(arguments, normalized, "delivery_mode");
                 copyIfPresent(arguments, normalized, "cursor");
                 copyIfPresent(arguments, normalized, "limit");
-                return artifactReadCore(transfers, origin, modelRequest("artifact", normalized));
+                return artifactReadCore(access, transfers, origin, modelRequest("artifact", normalized));
             }
             if (!"put".equals(operation) && !"get".equals(operation)) {
                 throw new IllegalArgumentException("operation must be put, get, or read");
@@ -892,8 +891,8 @@ public class McpConfiguration {
         }
     }
 
-    static McpSchema.CallToolResult taskReadModel(TaskService tasks, TaskOrigin origin,
-                                                           McpSchema.CallToolRequest request) {
+    static McpSchema.CallToolResult taskReadModel(TaskService tasks, McpAccessService access,
+                                                  TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var arguments = modelArguments(request);
             var taskId = requiredModelString(arguments, "task_id");
@@ -915,6 +914,7 @@ public class McpConfiguration {
                 throw new IllegalArgumentException("include_output=false cannot be combined with output selectors");
             var includeArtifact = Boolean.TRUE.equals(arguments.get("include_artifact"));
             var current = tasks.findFor(origin, taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
+            access.authorizeTool(origin, current.machineId(), "task_read");
             // State/progress observation must not replay or be woken by old logs.
             var waitCursor = !includeOutput ? Long.MAX_VALUE : tailBytes > 0 ? current.outputBytes() : cursor;
             var view = waitMs == 0 ? new TaskView(current)
@@ -930,11 +930,12 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult taskCancelModel(TaskService tasks, ArtifactTransferService transfers,
+    private static McpSchema.CallToolResult taskCancelModel(TaskService tasks, McpAccessService access,
+                                                            ArtifactTransferService transfers,
                                                             TaskOrigin origin, McpSchema.CallToolRequest request) {
         var arguments = modelArguments(request);
         var normalized = Map.<String, Object>of("task_id", requiredModelString(arguments, "task_id"));
-        return taskCancelCore(tasks, transfers, origin, modelRequest("task_cancel", normalized));
+        return taskCancelCore(tasks, access, transfers, origin, modelRequest("task_cancel", normalized));
     }
 
     private static Map<String, Object> modelArguments(McpSchema.CallToolRequest request) {
@@ -1017,7 +1018,7 @@ public class McpConfiguration {
             var args = args(request, ArtifactPutCoreArgs.class);
             if (args.file() == null) throw new IllegalArgumentException("file is required");
             var waitMs = executionWaitMs(args.waitMs(), 25000);
-            access.authorizeExecution(origin, args.machineId());
+            access.authorizeTool(origin, args.machineId(), "artifact");
             var cwd = resolveCwd(agents, args.machineId(), args.cwd());
             var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, cwd, Map.of(), 0, null, Instant.now(), null, 0, null);
             var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
@@ -1051,7 +1052,7 @@ public class McpConfiguration {
             var args = args(request, ArtifactGetCoreArgs.class);
             var deliveryMode = normalizeDeliveryMode(args.deliveryMode());
             var waitMs = artifactWaitMs(deliveryMode, args.waitMs());
-            access.authorizeExecution(origin, args.machineId());
+            access.authorizeTool(origin, args.machineId(), "artifact");
             var cwd = resolveCwd(agents, args.machineId(), args.cwd());
             var command = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, cwd, Map.of(), 0, null, Instant.now(), null, 0, null);
             var create = new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
@@ -1079,7 +1080,8 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult artifactReadCore(ArtifactTransferService transfers, TaskOrigin origin,
+    private static McpSchema.CallToolResult artifactReadCore(McpAccessService access, ArtifactTransferService transfers,
+                                                         TaskOrigin origin,
                                                          McpSchema.CallToolRequest request) {
         try {
             var args = args(request, ArtifactReadCoreArgs.class);
@@ -1087,6 +1089,7 @@ public class McpConfiguration {
             var descriptor = args.artifactId() == null || args.artifactId().isBlank()
                     ? transfers.findByTransfer(args.transferId(), origin).orElseThrow(() -> new IllegalArgumentException("artifact or transfer id is required"))
                     : transfers.findByArtifact(args.artifactId(), origin).orElseThrow(() -> new IllegalArgumentException("artifact not found"));
+            access.authorizeTool(origin, descriptor.machineId(), "artifact");
             var payload = new LinkedHashMap<String, Object>();
             payload.put("transfer", transferDetailMap(descriptor, descriptor.downloadUrl() != null
                     && !descriptor.downloadUrl().isBlank()));
@@ -1292,7 +1295,9 @@ public class McpConfiguration {
                                                         TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, MachineInfoCoreArgs.class);
-            access.authorizeMachine(origin, args.machineId(), "read");
+            if (!access.canReadMachine(origin, args.machineId())) {
+                throw new SecurityException("MCP credential cannot access this machine");
+            }
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             return json(machineMap(machine));
         } catch (Exception exception) {
@@ -1308,7 +1313,7 @@ public class McpConfiguration {
             var args = args(request, CommandCoreArgs.class);
             var waitMs = executionWaitMs(args.waitMs());
             var limit = initialOutputLimit(args.limit());
-            access.authorizeExecution(origin, args.machineId());
+            access.authorizeTool(origin, args.machineId(), "command");
             var timeout = args.timeoutSeconds() == null ? 0 : args.timeoutSeconds();
             var cwd = resolveCwd(agents, args.machineId(), args.cwd());
             var command = new com.prodigalgal.remoteconnectmcp.protocol.TaskCommand("", com.prodigalgal.remoteconnectmcp.protocol.TaskKind.COMMAND,
@@ -1334,7 +1339,7 @@ public class McpConfiguration {
             var args = args(request, BrowserCoreArgs.class);
             var waitMs = executionWaitMs(args.waitMs());
             var limit = initialOutputLimit(args.limit());
-            access.authorizeExecution(origin, args.machineId());
+            access.authorizeTool(origin, args.machineId(), "browser");
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             if (!machine.capabilities().contains("browser")) throw new IllegalArgumentException("machine does not advertise browser capability");
             var timeout = args.timeoutSeconds() == null ? 300 : args.timeoutSeconds();
@@ -1370,7 +1375,7 @@ public class McpConfiguration {
                     && !"clipboard_write".equals(operation) && !"focus".equals(operation)) {
                 throw new IllegalArgumentException("unsupported desktop operation");
             }
-            access.authorizeExecution(origin, args.machineId());
+            access.authorizeTool(origin, args.machineId(), "desktop");
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
             if (!machine.capabilities().contains("desktop")) throw new IllegalArgumentException("machine does not advertise desktop capability");
             var timeout = args.timeoutSeconds() == null ? 30 : args.timeoutSeconds();
@@ -1401,10 +1406,13 @@ public class McpConfiguration {
         }
     }
 
-    private static McpSchema.CallToolResult taskCancelCore(TaskService tasks, ArtifactTransferService transfers,
+    private static McpSchema.CallToolResult taskCancelCore(TaskService tasks, McpAccessService access,
+                                                       ArtifactTransferService transfers,
                                                        TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var args = args(request, TaskCancelCoreArgs.class);
+            var task = tasks.findFor(origin, args.taskId()).orElseThrow(() -> new IllegalArgumentException("task not found"));
+            access.authorizeTool(origin, task.machineId(), "task_cancel");
             var canceled = tasks.cancel(origin, args.taskId());
             if (transfers != null && TaskStatus.CANCELED.equals(canceled.status())) {
                 transfers.cancelForTask(canceled.id());
