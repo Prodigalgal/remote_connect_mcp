@@ -32,7 +32,8 @@ def matches(component: str, path: str) -> bool:
                                     "scripts/deploy-desktop-browser", "scripts/browser-worker",
                                     "scripts/smoke-browser-runtime", "scripts/normalize-native-isa",
                                     "scripts/verify-native-bundle", "scripts/browser-runtime/", "deploy/systemd/"))
-                or path == ".github/workflows/agent-release.yml")
+                or path in {".github/workflows/agent-release.yml", ".github/workflows/agent-publish.yml",
+                            "scripts/verify-release-recovery.py"})
     if component == "console":
         return path.startswith("web/") or path == ".github/workflows/console-release.yml"
     raise ValueError(f"unknown component: {component}")

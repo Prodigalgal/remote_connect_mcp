@@ -1,0 +1,152 @@
+name: Publish verified Agent assets
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      prerelease:
+        required: true
+        type: boolean
+      source_sha:
+        required: true
+        type: string
+      artifact_run_id:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish Agent release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          run-id: ${{ inputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          path: release
+          pattern: rcm-agent-*
+          merge-multiple: true
+      - name: Verify pinned release source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "${RELEASE_SOURCE_SHA}"
+          if gh release view "${RELEASE_TAG}" --json tagName >/dev/null 2>&1; then
+            echo 'This release already exists; refusing to replace published assets.' >&2
+            exit 2
+          fi
+      - name: Generate component release manifest
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re
+          root = pathlib.Path('release')
+          version = os.environ['RELEASE_VERSION']
+          tag = os.environ['RELEASE_TAG']
+          repo = os.environ['RELEASE_REPOSITORY']
+          import subprocess
+          updater_revision = subprocess.check_output(
+              ['git', 'log', '-1', '--format=%h', '--',
+               'java/updater/src/main/java', 'java/updater/src/main/resources',
+               'java/updater/build.gradle.kts', 'java/Dockerfile.updater.native',
+               'java/build.gradle.kts', 'java/settings.gradle.kts', 'java/gradle.properties',
+               'java/gradle', 'java/gradlew', 'java/gradlew.bat',
+               'java/protocol/src/main/java/com/prodigalgal/remoteconnectmcp/protocol/JsonCodec.java'],
+              text=True, encoding='utf-8').strip()
+          if not updater_revision:
+              raise SystemExit('could not resolve the standalone updater build revision')
+          updater_version = f'v1.0.0+{updater_revision}'
+          minimum_agent_version = pathlib.Path('java/updater/minimum-agent-version.txt').read_text(encoding='utf-8').strip()
+          components = []
+          pattern = re.compile(r'^remote-connect-mcp-(desktop|browser|updater)-' + re.escape(version) + r'-(linux|windows)-(amd64|arm64)\.zip$')
+          expected = {(kind, os_name, arch) for kind in ('desktop', 'browser', 'updater')
+                      for os_name, arch in (('linux', 'amd64'), ('linux', 'arm64'), ('windows', 'amd64'))}
+          found = set()
+          for path in sorted(root.glob('remote-connect-mcp-*.zip')):
+              match = pattern.match(path.name)
+              if not match: continue
+              kind, os_name, arch = match.groups()
+              found.add((kind, os_name, arch))
+              checksum = path.with_name(path.name + '.sha256')
+              actual_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+              if not checksum.is_file() or checksum.read_text(encoding='utf-8').split()[0].lower() != actual_sha:
+                  raise SystemExit(f'missing or mismatched checksum: {checksum.name}')
+              component = 'desktop-companion' if kind == 'desktop' else 'browser-agent' if kind == 'browser' else 'agent-updater'
+              component_version = updater_version if kind == 'updater' else version
+              plan = {'component': component, 'version': component_version, 'os': os_name, 'arch': arch,
+                  'url': f'https://github.com/{repo}/releases/download/{tag}/{path.name}',
+                  'sha256': actual_sha, 'bytes': path.stat().st_size,
+                  'restart_policy': 'manual' if kind == 'updater' else 'drain-and-restart'}
+              if kind in ('desktop', 'browser', 'updater'):
+                  plan['min_agent_version'] = minimum_agent_version
+              components.append(plan)
+          if found != expected:
+              raise SystemExit(f'component bundle matrix incomplete: missing={sorted(expected - found)}, unexpected={sorted(found - expected)}')
+          for os_name, arch in (('linux', 'amd64'), ('linux', 'arm64'), ('windows', 'amd64')):
+              archive = root / f'remote-connect-mcp-agent-{version}-{os_name}-{arch}.zip'
+              checksum = archive.with_name(archive.name + '.sha256')
+              if not archive.is_file() or not checksum.is_file() or checksum.read_text(encoding='utf-8').split()[0].lower() != hashlib.sha256(archive.read_bytes()).hexdigest():
+                  raise SystemExit(f'missing or mismatched command-agent bundle: {archive.name}')
+          target = root / f'remote-connect-mcp-manifest-{version}.json'
+          target.write_text(json.dumps({'version': version, 'components': components}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          PY
+      - name: Sign Agent assets
+        uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
+        with:
+          inputs: |
+            release/*.zip
+            release/*.zip.sha256
+            release/*.tar.gz
+            release/*.tar.gz.sha256
+            release/*.spdx.json
+            release/remote-connect-mcp-manifest-*.json
+          release-signing-artifacts: false
+      - name: Publish GitHub Agent release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' assets < <(find release -maxdepth 1 -type f \( -name '*.zip' -o -name '*.zip.sha256' -o -name '*.tar.gz' -o -name '*.tar.gz.sha256' -o -name '*.spdx.json' -o -name '*.sigstore.json' -o -name 'remote-connect-mcp-manifest-*.json' \) -print0 | sort -z)
+          ((${#assets[@]} > 0))
+          args=("${RELEASE_TAG}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --verify-tag --title "Agent ${RELEASE_VERSION}" --generate-notes)
+          if [[ "${RELEASE_PRERELEASE}" == 'true' ]]; then args+=(--prerelease); fi
+          gh release create "${args[@]}"
+          marker="agent-published-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/tags/${marker}" -f "sha=${RELEASE_SOURCE_SHA}" >/dev/null
+          {
+            echo "### Agent ${RELEASE_VERSION}"
+            echo "Source: \`${RELEASE_SOURCE_SHA}\`"
+            echo "Published tag: \`${RELEASE_TAG}\`"
+            echo "Manifest SHA-256: \`$(sha256sum "release/remote-connect-mcp-manifest-${RELEASE_VERSION}.json" | cut -d' ' -f1)\`"
+            echo 'Release assets are published; fleet completion requires Center campaign and machine-version verification.'
+          } >> "${GITHUB_STEP_SUMMARY}"
