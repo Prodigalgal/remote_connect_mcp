@@ -76,6 +76,7 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           RUN_NUMBER: ${{ github.run_number }}
           SHA: ${{ github.sha }}
+          VERSION_FLOOR: ${{ vars.RCM_CONSOLE_VERSION_FLOOR }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
           INPUT_DEPLOY: ${{ inputs.deploy }}

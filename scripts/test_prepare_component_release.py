@@ -12,6 +12,12 @@ OTHER = "b" * 40
 
 
 class ComponentReleaseTest(unittest.TestCase):
+    def test_legacy_deployed_version_without_tag_cannot_be_downgraded(self):
+        self.assertEqual('v0.1.36', release.next_stable_version('console',
+            {'console-v0.1.32': OTHER}, SHA, 'v0.1.35'))
+        self.assertEqual('v0.1.41', release.next_stable_version('console',
+            {'console-v0.1.40': OTHER}, SHA, 'v0.1.35'))
+
     def test_main_automatically_publishes_stable_per_component(self):
         tags = {"java-v0.1.38": OTHER, "center-v0.1.39": OTHER,
                 "console-v0.1.32": OTHER, "java-v0.0.0-main.40": OTHER}

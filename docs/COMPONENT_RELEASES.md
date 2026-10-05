@@ -30,3 +30,5 @@ RCM_VERIFY_ADMIN_TOKEN=<管理员令牌> python3 scripts/verify-release.py agent
 Center 校验 `/api/v1/version` 与 `/api/v1/readyz`；Console 校验镜像内的 `/release.json` 版本及源码 SHA；Agent 分页读取实际注册机器版本和适用于各机器能力的 Native 组件状态。默认只有**全部机器在线、版本一致且启用 Browser 的机器已验证 Camoufox 运行时**才算完整通过。当前尚无 Camoufox 运行时的自动更新与版本证明，因此这类机器会明确显示 `browser_runtime.verified=false`；若只需要验收 Agent 和 Native 组件，可显式加 `--native-only`，结果的 `coverage` 会标明缩小的范围。要单独确认可达机器，再加 `--online-only`。尚未填写 `--url` 的 GitOps 校验只证明已固定摘要，输出中运行态仍是 `unverified`。
 
 Browser 的 Camoufox Node 包和浏览器本体在首次安装或 `deploy-desktop-browser.ps1` 迁移时安装。当前 Helper 的普通组件升级只处理 Native ZIP；浏览器运行时更新还需要单独完成，不能把 Native 升级成功等同于整个 Camoufox 运行时已更新。
+
+历史 Console 流程可能已经部署了比版本 Tag 更高的镜像版本。切换前核对实际 `/release.json`，必要时一次性设置 `RCM_CONSOLE_VERSION_FLOOR` 为已部署的正式版本，确保自动分配的首个版本不会倒退；新版本 Tag 建立后，后续分配以更高的 Tag 为准。

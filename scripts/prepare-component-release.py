@@ -12,15 +12,21 @@ PREFIXES = {"agent": "java-", "center": "center-", "console": "console-"}
 SAFE_VERSION = re.compile(r"v[0-9A-Za-z][0-9A-Za-z._+-]{0,127}")
 
 
-def next_stable_version(component: str, tags: dict[str, str], sha: str) -> str:
+def next_stable_version(component: str, tags: dict[str, str], sha: str, floor: str = "") -> str:
     pattern = re.compile(re.escape(PREFIXES[component]) + r"v(\d{1,9})\.(\d{1,9})\.(\d{1,9})")
     versions = [(tuple(map(int, match.groups())), tag, source)
                 for tag, source in tags.items() if (match := pattern.fullmatch(tag))]
+    minimum = (0, 1, 0)
+    if floor:
+        match = re.fullmatch(r"v(\d{1,9})\.(\d{1,9})\.(\d{1,9})", floor)
+        if not match:
+            raise ValueError("legacy component version floor is invalid")
+        minimum = tuple(map(int, match.groups()))
     # A retried prepare job must use its previously reserved version.
-    own = [version for version, _, source in versions if source == sha]
+    own = [version for version, _, source in versions if source == sha and version > minimum]
     if own:
         return "v" + ".".join(map(str, max(own)))
-    major, minor, patch = max((version for version, _, _ in versions), default=(0, 1, 0))
+    major, minor, patch = max([minimum, *[version for version, _, _ in versions]])
     if patch >= 999_999_999:
         raise ValueError("component patch version exhausted")
     return f"v{major}.{minor}.{patch + 1}"
@@ -64,7 +70,7 @@ def coordinates(component: str, env: dict[str, str], tags: dict[str, str]) -> di
             raise ValueError("tag does not belong to this component")
         version, prerelease, deploy = ref.removeprefix(prefix), "false", "true"
     elif event == "push" and env.get("REF_NAME") == "main":
-        version = next_stable_version(component, tags, env["SHA"])
+        version = next_stable_version(component, tags, env["SHA"], env.get("VERSION_FLOOR", ""))
         prerelease, deploy = "false", "true"
     else:
         raise ValueError("only main, component tags or an explicit dispatch can publish")
