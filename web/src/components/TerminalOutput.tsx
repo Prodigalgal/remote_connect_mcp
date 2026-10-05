@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { CopyButton } from './CopyButton'
+import { useToast } from './ToastProvider'
 
 interface TerminalOutputProps {
   title?: string
@@ -28,8 +29,18 @@ export function TerminalOutput({
   encoding = 'utf-8',
   onEncodingChange,
 }: TerminalOutputProps) {
+  const notify = useToast()
+  const lastError = useRef('')
   const [autoScroll, setAutoScroll] = useState(true)
   const bodyRef = useRef<HTMLPreElement>(null)
+
+  useEffect(() => { lastError.current = '' }, [receivedAt])
+  useEffect(() => {
+    if (error && error !== lastError.current) {
+      notify(error, 'error')
+      lastError.current = error
+    }
+  }, [error, notify])
 
   useEffect(() => {
     if (autoScroll && bodyRef.current) {
@@ -97,20 +108,6 @@ export function TerminalOutput({
         {live ? '实时接收 · 等待宿主机回传' : '日志记录'}
         {receivedAt != null && ` · 最近接收 ${new Date(receivedAt).toLocaleTimeString()}`}
       </div>
-
-      {error ? (
-        <div
-          style={{
-            padding: '12px 16px',
-            background: 'var(--accent-rose-soft)',
-            color: 'var(--accent-rose)',
-            fontSize: '12px',
-            borderBottom: '1px solid rgba(244, 63, 94, 0.2)',
-          }}
-        >
-          {error}
-        </div>
-      ) : null}
 
       <pre
         ref={bodyRef}

@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CheckIcon, CopyIcon } from '../icons/Icons'
+import { useToast } from './ToastProvider'
 
 interface CopyButtonProps {
   text: string
@@ -9,24 +10,33 @@ interface CopyButtonProps {
 }
 
 export function CopyButton({ text, label, className = '', size = 'sm' }: CopyButtonProps) {
+  const notify = useToast()
   const [copied, setCopied] = useState(false)
+  const timer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(timer.current), [])
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation()
     try {
-      await navigator.clipboard.writeText(text)
+      try {
+        await navigator.clipboard.writeText(text)
+      } catch {
+        const textarea = document.createElement('textarea')
+        textarea.value = text
+        document.body.appendChild(textarea)
+        try {
+          textarea.select()
+          if (!document.execCommand('copy')) throw new Error('Clipboard unavailable')
+        } finally {
+          textarea.remove()
+        }
+      }
       setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      window.clearTimeout(timer.current)
+      timer.current = window.setTimeout(() => setCopied(false), 2000)
+      notify('已复制到剪贴板', 'success')
     } catch {
-      // fallback
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      document.body.appendChild(textarea)
-      textarea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textarea)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      notify('复制失败，请手动选择并复制内容', 'error')
     }
   }
 

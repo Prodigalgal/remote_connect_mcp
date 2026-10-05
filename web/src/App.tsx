@@ -16,6 +16,7 @@ import {
 import { PageId, Sidebar } from './components/Sidebar'
 import { Topbar } from './components/Topbar'
 import { AuthGate } from './components/AuthGate'
+import { useToast } from './components/ToastProvider'
 import { OverviewView } from './views/OverviewView'
 import { MachinesView } from './views/MachinesView'
 import { TasksView } from './views/TasksView'
@@ -27,6 +28,7 @@ import { UpgradesView } from './views/UpgradesView'
 import { SettingsView } from './views/SettingsView'
 
 export default function App() {
+  const notify = useToast()
   const [page, setPage] = useState<PageId>('overview')
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -38,10 +40,11 @@ export default function App() {
   const [liveAudit, setLiveAudit] = useState<AuditEvent[] | null>(null)
   const [liveUpgrades, setLiveUpgrades] = useState<UpgradeCampaign[] | null>(null)
   const [liveReleases, setLiveReleases] = useState<ReleaseCatalog | null>(null)
-  const [apiMessage, setApiMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const refreshInFlight = useRef<{ key: string; promise: Promise<void> } | null>(null)
   const authenticatedRef = useRef(false)
+  const centerReachableRef = useRef(false)
+  const lastConnectionError = useRef('')
 
   const markAuthenticated = useCallback((value: boolean) => {
     authenticatedRef.current = value
@@ -76,10 +79,13 @@ export default function App() {
 
   // Refresh handler
   const refresh = useCallback(
-    (token = adminToken, forceReleases = false): Promise<void> => {
+    (token = adminToken, forceReleases = false, announceSuccess = false): Promise<void> => {
       const normalizedToken = token.trim()
       const key = `${normalizedToken}\u0000${forceReleases ? 'refresh' : 'cached'}`
-      if (refreshInFlight.current?.key === key) return refreshInFlight.current.promise
+      const announceRefresh = () => {
+        if (announceSuccess && centerReachableRef.current) notify(forceReleases ? '数据已刷新，版本目录已重新检查' : '数据已刷新', 'success')
+      }
+      if (refreshInFlight.current?.key === key) return refreshInFlight.current.promise.then(announceRefresh)
 
       const operation = (async () => {
         if (!normalizedToken) {
@@ -90,12 +96,12 @@ export default function App() {
           setLiveAudit(null)
           setLiveUpgrades(null)
           setLiveReleases(null)
-          setApiMessage('')
+          centerReachableRef.current = false
+          lastConnectionError.current = ''
           return
         }
 
         setLoading(true)
-        setApiMessage('')
         try {
           const [machines, tasks, upgrades, releases, audit] = await Promise.all([
             listMachines(normalizedToken),
@@ -116,13 +122,16 @@ export default function App() {
           setLiveUpgrades(upgrades)
           setLiveReleases(releases)
           setLiveAudit(audit)
+          if (!centerReachableRef.current) notify(authenticatedRef.current ? 'Center 连接已恢复' : '已连接 Center', 'success')
+          centerReachableRef.current = true
+          lastConnectionError.current = ''
           markAuthenticated(true)
           setCenterReachable(true)
-          setApiMessage(`已接入 Center · 活跃同步中 (${new Date().toLocaleTimeString()})`)
         } catch (error) {
           const message = error instanceof AdminApiError ? error.message : 'Center 暂时不可达'
           const authRejected = error instanceof AdminApiError && (error.status === 401 || error.status === 403)
           setCenterReachable(false)
+          centerReachableRef.current = false
           if (authRejected || !authenticatedRef.current) {
             markAuthenticated(false)
             setLiveMachines(null)
@@ -131,7 +140,9 @@ export default function App() {
             setLiveReleases(null)
             setLiveAudit(null)
           }
-          setApiMessage(authRejected ? 'Admin Token 无效或已过期，请重新登录' : message)
+          const feedback = authRejected ? 'Admin Token 无效或已过期，请重新登录' : message
+          if (announceSuccess || lastConnectionError.current !== feedback) notify(feedback, 'error')
+          lastConnectionError.current = feedback
         } finally {
           setLoading(false)
         }
@@ -141,15 +152,17 @@ export default function App() {
         if (refreshInFlight.current?.promise === tracked) refreshInFlight.current = null
       })
       refreshInFlight.current = { key, promise: tracked }
-      return tracked
+      return tracked.then(announceRefresh)
     },
-    [adminToken, markAuthenticated]
+    [adminToken, markAuthenticated, notify]
   )
 
   // Authenticate before exposing any business page. The request only starts
   // after the user submits a token from AuthGate.
   useEffect(() => {
     if (!adminToken.trim()) {
+      centerReachableRef.current = false
+      lastConnectionError.current = ''
       markAuthenticated(false)
       setCenterReachable(false)
       setLiveMachines(null)
@@ -215,10 +228,9 @@ export default function App() {
       <AuthGate
         initialToken={adminToken}
         loading={loading}
-        message={apiMessage}
         onSubmit={(token) => {
-          setApiMessage('')
-          setAdminToken(token)
+          if (token === adminToken) void refresh(token, false, true)
+          else setAdminToken(token)
         }}
       />
     )
@@ -244,20 +256,10 @@ export default function App() {
           connectionState={connectionState}
           connectionLabel={connectionLabel}
           loading={loading}
-          onRefresh={() => void refresh(adminToken, true)}
+          onRefresh={() => void refresh(adminToken, true, true)}
         />
 
         <div className="page-container">
-          {apiMessage && (
-            <div
-              className={`toast-bar ${
-                liveMachines ? 'success' : adminToken.trim() ? 'warning' : 'info'
-              }`}
-            >
-              <span>{apiMessage}</span>
-            </div>
-          )}
-
           {page === 'overview' && (
             <OverviewView
               onNavigate={navigate}
@@ -326,7 +328,7 @@ export default function App() {
               releases={liveReleases}
               machines={liveMachines ?? []}
               onRefresh={() => void refresh()}
-              onRefreshReleases={() => void refresh(adminToken, true)}
+              onRefreshReleases={() => void refresh(adminToken, true, true)}
               query={search}
             />
           )}

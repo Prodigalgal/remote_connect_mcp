@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  AlertCircleIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   FileCodeIcon,
@@ -12,6 +11,7 @@ import { CopyButton } from '../components/CopyButton'
 import { TerminalOutput } from '../components/TerminalOutput'
 import { EmptyState } from '../components/EmptyState'
 import { PaginationBar } from '../components/PaginationBar'
+import { useToast } from '../components/ToastProvider'
 import {
   cancelTask,
   createTask,
@@ -200,6 +200,7 @@ function TaskComposer({
   token: string
   onCreated: (task: Task) => void
 }) {
+  const notify = useToast()
   const [kind, setKind] = useState<'command' | 'desktop' | 'browser'>('command')
   const eligibleMachines = machines.filter((m) => m.online && m.capabilities.includes(kind))
   const [machineId, setMachineId] = useState(eligibleMachines[0]?.id ?? '')
@@ -229,52 +230,50 @@ function TaskComposer({
   const [desktopWindowTitle, setDesktopWindowTitle] = useState('')
 
   const [submitting, setSubmitting] = useState(false)
-  const [message, setMessage] = useState('')
 
   const parseNumber = (val: string) => (val !== '' && !isNaN(Number(val)) ? Number(val) : undefined)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!token.trim()) {
-      setMessage('请在系统设置中配置 Admin Token')
+      notify('请在系统设置中配置 Admin Token', 'warning')
       return
     }
     if (!machineId || !selectedMachineIsEligible) {
-      setMessage('请选择一个在线且具备该能力的 Agent')
+      notify('请选择一个在线且具备该能力的 Agent', 'warning')
       return
     }
     if (!command.trim() && kind !== 'desktop') {
-      setMessage('请填写要下发的命令或请求内容')
+      notify('请填写要下发的命令或请求内容', 'warning')
       return
     }
     if (kind === 'desktop') {
       if (desktopOperation === 'launch' && !desktopExecutable.trim()) {
-        setMessage('启动桌面应用需要填写可执行文件路径')
+        notify('启动桌面应用需要填写可执行文件路径', 'warning')
         return
       }
       if (desktopOperation === 'key' && !desktopText.trim()) {
-        setMessage('模拟按键操作需要填写键位名称（如 Return, Tab, BackSpace, Control_L+c 等）')
+        notify('模拟按键操作需要填写键位名称（如 Return, Tab, BackSpace, Control_L+c 等）', 'warning')
         return
       }
       if (desktopOperation === 'type' && !desktopText) {
-        setMessage('文本输入操作需要填写输入文本')
+        notify('文本输入操作需要填写输入文本', 'warning')
         return
       }
       if (['click', 'double_click', 'right_click', 'move'].includes(desktopOperation) && (desktopX === '' || desktopY === '')) {
-        setMessage(`${desktopOperation} 需要填写 X 和 Y 坐标`)
+        notify(`${desktopOperation} 需要填写 X 和 Y 坐标`, 'warning')
         return
       }
       if (['drag', 'screenshot_region'].includes(desktopOperation) && (desktopX === '' || desktopY === '' || desktopX2 === '' || desktopY2 === '')) {
-        setMessage(`${desktopOperation} 需要填写起始 (X, Y) 与目标 (X2, Y2) 坐标`)
+        notify(`${desktopOperation} 需要填写起始 (X, Y) 与目标 (X2, Y2) 坐标`, 'warning')
         return
       }
       if (desktopOperation === 'focus' && !desktopWindowTitle.trim()) {
-        setMessage('激活置顶窗口需要填写窗口匹配标题')
+        notify('激活置顶窗口需要填写窗口匹配标题', 'warning')
         return
       }
     }
     setSubmitting(true)
-    setMessage('')
     try {
       const taskCommand = kind === 'browser' ? command.trim() || '{"operation":"snapshot"}' : command.trim()
       const isKeyOp = desktopOperation === 'key'
@@ -311,12 +310,12 @@ function TaskComposer({
       }
 
       const task = await createTask(token, basePayload)
-      setMessage(`已提交任务 ${task.id}，等待机器执行`)
+      notify(`已提交任务 ${task.id}，等待机器执行`, 'success')
       setCommand('')
       setIdempotencyKey(`console-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
       onCreated(task)
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : '创建任务失败')
+      notify(err instanceof Error ? err.message : '创建任务失败', 'error')
     } finally {
       setSubmitting(false)
     }
@@ -334,13 +333,6 @@ function TaskComposer({
           </span>
         </div>
       </div>
-
-      {message && (
-        <div className={`toast-bar ${message.includes('失败') ? 'error' : 'success'}`}>
-          <AlertCircleIcon size={15} />
-          <span>{message}</span>
-        </div>
-      )}
 
       <form onSubmit={handleSubmit}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: '16px', marginBottom: '16px' }}>
@@ -572,6 +564,7 @@ function TaskItem({
   token: string
   onRefresh: () => void
 }) {
+  const notify = useToast()
   const [canceling, setCanceling] = useState(false)
   const [expanded, setExpanded] = useState(autoExpand)
   const [showOriginalCommand, setShowOriginalCommand] = useState(false)
@@ -591,7 +584,6 @@ function TaskItem({
   const [artifactSha256, setArtifactSha256] = useState(task.artifactSha256 ?? '')
   const [artifactBytes, setArtifactBytes] = useState(task.artifactBytes)
   const [artifactText, setArtifactText] = useState<string | null>(null)
-  const [artifactError, setArtifactError] = useState('')
   const [loadingArtifact, setLoadingArtifact] = useState(false)
 
   const terminal = ['completed', 'failed', 'canceled', 'succeeded'].includes(task.status)
@@ -603,7 +595,6 @@ function TaskItem({
 
   const loadArtifact = async () => {
     setLoadingArtifact(true)
-    setArtifactError('')
     try {
       const res = await readTaskArtifact(token, task.id)
       const nextUrl = URL.createObjectURL(res.blob)
@@ -621,7 +612,7 @@ function TaskItem({
       })
       setExpanded(true)
     } catch (err) {
-      setArtifactError(err instanceof Error ? err.message : '读取工件失败')
+      notify(err instanceof Error ? err.message : '读取工件失败', 'error')
     } finally {
       setLoadingArtifact(false)
     }
@@ -632,7 +623,10 @@ function TaskItem({
     setCanceling(true)
     try {
       await cancelTask(token, task.id)
+      notify('已提交任务取消请求', 'success')
       onRefresh()
+    } catch (err) {
+      notify(err instanceof Error ? err.message : '取消任务失败', 'error')
     } finally {
       setCanceling(false)
     }
@@ -817,12 +811,6 @@ function TaskItem({
           )}
 
           {/* Artifact Preview Card */}
-          {artifactError && (
-            <div className="toast-bar error" style={{ marginTop: '12px' }}>
-              {artifactError}
-            </div>
-          )}
-
           {artifactUrl && (
             <div className="card" style={{ padding: '16px', marginTop: '16px', background: 'var(--bg-elevated)' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CopyButton } from '../components/CopyButton'
+import { useToast } from '../components/ToastProvider'
 import { MachinePermissionPicker, TOOL_OPTIONS } from '../components/MachinePermissionPicker'
 import {
   issueMcpToken,
@@ -17,22 +18,23 @@ interface AccessControlViewProps {
 const TOOL_LABELS = Object.fromEntries(TOOL_OPTIONS.map((tool) => [tool.id, tool.label])) as Record<string, string>
 
 export function AccessControlView({ token, machines }: AccessControlViewProps) {
+  const notify = useToast()
   const [displayName, setDisplayName] = useState('ChatGPT')
   const [expires, setExpires] = useState('2592000')
   const [tokens, setTokens] = useState<McpToken[]>([])
   const [permissions, setPermissions] = useState<Record<string, string[]>>({})
   const [issued, setIssued] = useState('')
-  const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (announceSuccess = false) => {
     if (!token.trim()) return
     try {
       setTokens((await listMcpTokens(token)).items)
+      if (announceSuccess) notify('连接凭证已刷新', 'success')
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '读取连接凭证失败')
+      notify(error instanceof Error ? error.message : '读取连接凭证失败', 'error')
     }
-  }, [token])
+  }, [token, notify])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -44,12 +46,11 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
   const issue = async (event: React.FormEvent) => {
     event.preventDefault()
     if (!token.trim() || !displayName.trim() || selectedCount === 0) {
-      setMessage('至少为一台机器选择一个工具。')
+      notify('至少为一台机器选择一个工具。', 'warning')
       return
     }
     setBusy(true)
     setIssued('')
-    setMessage('')
     try {
       const result = await issueMcpToken(token, {
         principal_id: 'owner',
@@ -59,11 +60,11 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
         machine_permissions: selected,
       })
       setIssued(result.token)
-      setMessage(`凭证已创建：授权 ${Object.keys(selected).length} 台机器、${selectedCount} 项工具权限。明文仅显示一次，请立即复制。`)
+      notify(`凭证已创建：授权 ${Object.keys(selected).length} 台机器、${selectedCount} 项工具权限。明文仅显示一次，请立即复制。`, 'success')
       setPermissions({})
       await refresh()
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '创建连接凭证失败')
+      notify(error instanceof Error ? error.message : '创建连接凭证失败', 'error')
     } finally {
       setBusy(false)
     }
@@ -75,9 +76,9 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
     try {
       await revokeMcpToken(token, tokenId)
       await refresh()
-      setMessage('凭证已撤销。')
+      notify('凭证已撤销。', 'success')
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '撤销凭证失败')
+      notify(error instanceof Error ? error.message : '撤销凭证失败', 'error')
     } finally {
       setBusy(false)
     }
@@ -92,10 +93,8 @@ export function AccessControlView({ token, machines }: AccessControlViewProps) {
             为 MCP 客户端创建凭证，选择可访问的机器和工具；支持批量勾选。
           </p>
         </div>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={() => void refresh()} disabled={busy}>刷新</button>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => void refresh(true)} disabled={busy}>刷新</button>
       </div>
-
-      {message && <div className={`toast-bar ${message.includes('失败') ? 'error' : 'success'}`}><span>{message}</span></div>}
 
       <div className="card" style={{ padding: '24px', marginBottom: '20px' }}>
         <form onSubmit={issue}>

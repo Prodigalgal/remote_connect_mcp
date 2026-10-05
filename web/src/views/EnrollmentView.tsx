@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { CheckCircleIcon, KeyIcon, TerminalIcon } from '../icons/Icons'
+import { KeyIcon, TerminalIcon } from '../icons/Icons'
 import { CopyButton } from '../components/CopyButton'
+import { useToast } from '../components/ToastProvider'
 import { issueEnrollment, type ReleaseCatalog } from '../api'
 import { psLiteral, shLiteral } from '../utils'
 
@@ -10,13 +11,13 @@ interface EnrollmentViewProps {
 }
 
 export function EnrollmentView({ adminToken, releases }: EnrollmentViewProps) {
+  const notify = useToast()
   const [name, setName] = useState('')
   const [centerUrl, setCenterUrl] = useState(() => import.meta.env.VITE_RCM_CENTER_URL ?? window.location.origin.replace(/-console(?=\.)/, '-center'))
   const [lifetime, setLifetime] = useState('86400')
   const [version, setVersion] = useState('')
   const [mode, setMode] = useState<'command' | 'full'>('command')
   const [issued, setIssued] = useState<{ tokenId: string; token: string; expiresAt: string } | null>(null)
-  const [message, setMessage] = useState('')
   const [commandTab, setCommandTab] = useState<'powershell' | 'bash'>('powershell')
   const [submitting, setSubmitting] = useState(false)
 
@@ -33,21 +34,20 @@ export function EnrollmentView({ adminToken, releases }: EnrollmentViewProps) {
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!adminToken.trim()) {
-      setMessage('请在系统设置中配置 Admin Token')
+      notify('请在系统设置中配置 Admin Token', 'warning')
       return
     }
     if (!name.trim()) {
-      setMessage('请指定 Agent 标识名称')
+      notify('请指定 Agent 标识名称', 'warning')
       return
     }
     setSubmitting(true)
-    setMessage('')
     try {
       const result = await issueEnrollment(adminToken, name.trim(), Number(lifetime))
       setIssued(result)
-      setMessage('令牌生成成功！一次性令牌仅显示本次会话，请立即复制或下载。')
+      notify('令牌生成成功！一次性令牌仅显示本次会话，请立即复制或下载。', 'success')
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : '生成注册令牌失败')
+      notify(err instanceof Error ? err.message : '生成注册令牌失败', 'error')
     } finally {
       setSubmitting(false)
     }
@@ -83,6 +83,7 @@ REMOTE_CONNECT_MCP_AGENT_MODE="${mode}"
     link.download = `remote-connect-mcp-agent-${name || 'node'}.env`
     link.click()
     URL.revokeObjectURL(url)
+    notify('已生成配置文件并开始下载', 'success')
   }
 
   const selectedRelease = releases?.items.find((release) => release.version === version)
@@ -107,13 +108,6 @@ REMOTE_CONNECT_MCP_AGENT_MODE="${mode}"
           为新终端签发与名称绑定的一次性接入凭证，生成全自动首次安装脚本，支持轻量与完整模式。
         </p>
       </div>
-
-      {message && (
-        <div className={`toast-bar ${message.includes('失败') ? 'error' : 'success'}`}>
-          <CheckCircleIcon size={15} />
-          <span>{message}</span>
-        </div>
-      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: '24px' }}>
         {/* Form Card */}

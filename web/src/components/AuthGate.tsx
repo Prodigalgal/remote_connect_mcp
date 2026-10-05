@@ -1,15 +1,14 @@
 import { useEffect, useState } from 'react'
-import { KeyIcon, LockIcon } from '../icons/Icons'
+import { KeyIcon } from '../icons/Icons'
 
 interface AuthGateProps {
   initialToken: string
   loading: boolean
-  message: string
   onSubmit: (token: string) => void
 }
 
 /** Public shell for the console; business data is unavailable until Center auth succeeds. */
-export function AuthGate({ initialToken, loading, message, onSubmit }: AuthGateProps) {
+export function AuthGate({ initialToken, loading, onSubmit }: AuthGateProps) {
   const [draft, setDraft] = useState(initialToken)
 
   useEffect(() => {
@@ -50,12 +49,6 @@ export function AuthGate({ initialToken, loading, message, onSubmit }: AuthGateP
               required
             />
           </div>
-          {message && (
-            <div className="auth-error" role="alert">
-              <LockIcon size={14} aria-hidden="true" />
-              <span>{message}</span>
-            </div>
-          )}
           <button type="submit" className="auth-submit" disabled={loading || !draft.trim()}>
             {loading ? '正在验证…' : '登录并连接 Center'}
           </button>

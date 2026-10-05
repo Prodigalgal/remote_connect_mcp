@@ -3,6 +3,7 @@ import { AlertCircleIcon, PlayIcon, PlusIcon, RefreshCwIcon, RocketIcon, XIcon }
 import { StatusBadge, StatusTone } from '../components/StatusBadge'
 import { EmptyState } from '../components/EmptyState'
 import { PaginationBar } from '../components/PaginationBar'
+import { useToast } from '../components/ToastProvider'
 import {
   controlUpgrade,
   createUpgrade,
@@ -35,6 +36,7 @@ export function UpgradesView({
   onRefreshReleases,
   query,
 }: UpgradesViewProps) {
+  const notify = useToast()
   const [version, setVersion] = useState('')
   const [canary, setCanary] = useState('1')
   const [batch, setBatch] = useState('2')
@@ -43,7 +45,6 @@ export function UpgradesView({
   const [selectedComponents, setSelectedComponents] = useState<Record<string, boolean>>({})
   const [componentLoading, setComponentLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [message, setMessage] = useState('')
   const [manualOpen, setManualOpen] = useState(false)
 
   const paged = usePagedTail(rows, 50, (offset, limit) => listUpgradesPage(token, offset, limit))
@@ -81,15 +82,14 @@ export function UpgradesView({
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!token.trim()) {
-      setMessage('未配置 Admin Token，无法启动升级')
+      notify('未配置 Admin Token，无法启动升级', 'warning')
       return
     }
     if (!version.trim()) {
-      setMessage('请选择或指定目标升级版本')
+      notify('请选择或指定目标升级版本', 'warning')
       return
     }
     setSubmitting(true)
-    setMessage('')
     try {
       const payload: Record<string, unknown> = {
         version: version.trim(),
@@ -116,10 +116,10 @@ export function UpgradesView({
         }
       }
       await createUpgrade(token, payload)
-      setMessage('升级活动已创建并下发，Agent 将在下一次心跳中领取任务。')
+      notify('升级活动已创建并下发，Agent 将在下一次心跳中领取任务。', 'success')
       onRefresh()
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : '创建升级失败')
+      notify(err instanceof Error ? err.message : '创建升级失败', 'error')
     } finally {
       setSubmitting(false)
     }
@@ -129,9 +129,10 @@ export function UpgradesView({
     if (!window.confirm(`确认执行 [${value}] 操作吗？`)) return
     try {
       await controlUpgrade(token, upgradeId, value)
+      notify(value === 'resume' ? '升级活动已恢复' : '升级活动已取消', 'success')
       onRefresh()
     } catch (err) {
-      alert(`控制操作失败: ${err instanceof Error ? err.message : String(err)}`)
+      notify(`控制操作失败: ${err instanceof Error ? err.message : String(err)}`, 'error')
     }
   }
 
@@ -139,10 +140,10 @@ export function UpgradesView({
     if (!window.confirm('确认只重新排队该失败 Agent？已成功的目标不会重复升级。')) return
     try {
       await retryUpgradeTarget(token, campaign.id, machineId)
-      setMessage(`已重新排队 ${names[machineId] ?? machineId}`)
+      notify(`已重新排队 ${names[machineId] ?? machineId}`, 'success')
       onRefresh()
     } catch (err) {
-      alert(`重试失败: ${err instanceof Error ? err.message : String(err)}`)
+      notify(`重试失败: ${err instanceof Error ? err.message : String(err)}`, 'error')
     }
   }
 
@@ -183,12 +184,6 @@ export function UpgradesView({
           </button>
         </div>
       </div>
-
-      {message && (
-        <div className={`toast-bar ${message.includes('失败') ? 'error' : 'success'}`}>
-          {message}
-        </div>
-      )}
 
       {/* Upgrade Composer Card */}
       <div className="card" style={{ padding: '24px', marginBottom: '24px', background: 'var(--bg-elevated)' }}>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AlertCircleIcon, ClockIcon, FileCodeIcon, RefreshCwIcon, TrashIcon } from '../icons/Icons'
 import { CopyButton } from '../components/CopyButton'
+import { useToast } from '../components/ToastProvider'
 import { StatusBadge, StatusTone } from '../components/StatusBadge'
 import { EmptyState } from '../components/EmptyState'
 import { PaginationBar } from '../components/PaginationBar'
@@ -20,22 +21,22 @@ interface ArtifactsViewProps {
 }
 
 export function ArtifactsView({ token, machines, query }: ArtifactsViewProps) {
+  const notify = useToast()
   const [selectedMachineId, setSelectedMachineId] = useState<string>('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [loading, setLoading] = useState(false)
-  const [errorMsg, setErrorMsg] = useState('')
   const [initialRows, setInitialRows] = useState<ArtifactAdmin[] | null>(null)
 
-  const loadInitial = async (mId = selectedMachineId) => {
+  const loadInitial = async (mId = selectedMachineId, announceSuccess = false) => {
     if (!token.trim()) return
     setLoading(true)
-    setErrorMsg('')
     try {
       const filters = mId ? { machineId: mId } : {}
       const res = await listArtifacts(token, filters, 0, 50)
       setInitialRows(res.items)
+      if (announceSuccess) notify('工件列表已刷新', 'success')
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : '获取工件列表失败')
+      notify(err instanceof Error ? err.message : '获取工件列表失败', 'error')
       setInitialRows([])
     } finally {
       setLoading(false)
@@ -55,9 +56,10 @@ export function ArtifactsView({ token, machines, query }: ArtifactsViewProps) {
     if (!window.confirm('确定要删除此工件吗？此操作无法撤销。')) return
     try {
       await deleteArtifact(token, artifactId)
+      notify('工件已删除', 'success')
       await loadInitial(selectedMachineId)
     } catch (err) {
-      alert(`删除失败: ${err instanceof Error ? err.message : String(err)}`)
+      notify(`删除失败: ${err instanceof Error ? err.message : String(err)}`, 'error')
     }
   }
 
@@ -65,13 +67,16 @@ export function ArtifactsView({ token, machines, query }: ArtifactsViewProps) {
     const hoursStr = window.prompt('延长保留时间（小时）：', '24')
     if (!hoursStr) return
     const seconds = parseInt(hoursStr, 10) * 3600
-    if (isNaN(seconds) || seconds <= 0) return
+    if (isNaN(seconds) || seconds <= 0) {
+      notify('请输入大于 0 的保留小时数', 'warning')
+      return
+    }
     try {
       await extendArtifactRetention(token, artifactId, seconds)
+      notify('保留期已延长', 'success')
       await loadInitial(selectedMachineId)
-      alert('延长保留期成功')
     } catch (err) {
-      alert(`延长失败: ${err instanceof Error ? err.message : String(err)}`)
+      notify(`延长失败: ${err instanceof Error ? err.message : String(err)}`, 'error')
     }
   }
 
@@ -137,7 +142,7 @@ export function ArtifactsView({ token, machines, query }: ArtifactsViewProps) {
           <button
             type="button"
             className="icon-btn"
-            onClick={() => void loadInitial(selectedMachineId)}
+            onClick={() => void loadInitial(selectedMachineId, true)}
             disabled={loading}
             title="刷新工件列表"
           >
@@ -145,10 +150,6 @@ export function ArtifactsView({ token, machines, query }: ArtifactsViewProps) {
           </button>
         </div>
       </div>
-
-      {errorMsg && (
-        <div className="toast-bar error">{errorMsg}</div>
-      )}
 
       {/* Artifacts Table */}
       <div className="table-wrapper">

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { AlertCircleIcon, ShieldIcon, TrashIcon } from '../icons/Icons'
 import { CopyButton } from '../components/CopyButton'
+import { useToast } from '../components/ToastProvider'
 import { EmptyState } from '../components/EmptyState'
 import { PaginationBar } from '../components/PaginationBar'
 import { listAuditPage, purgeAudit, type AuditEvent, type Machine } from '../api'
@@ -15,6 +16,7 @@ interface AuditViewProps {
 }
 
 export function AuditView({ rows, machines, token, onRefresh, query }: AuditViewProps) {
+  const notify = useToast()
   const paged = usePagedTail(rows, 100, (offset, limit) => listAuditPage(token, offset, limit))
   const [purging, setPurging] = useState(false)
   const [riskFilter, setRiskFilter] = useState('all')
@@ -42,7 +44,10 @@ export function AuditView({ rows, machines, token, onRefresh, query }: AuditView
     const daysStr = window.prompt('清除多少天之前的安全审计日志？', '30')
     if (!daysStr) return
     const days = parseInt(daysStr, 10)
-    if (isNaN(days) || days < 0) return
+    if (isNaN(days) || days < 0) {
+      notify('请输入不小于 0 的天数', 'warning')
+      return
+    }
 
     if (!window.confirm(`确认清理 ${days} 天前的所有安全审计记录吗？`)) return
 
@@ -50,9 +55,9 @@ export function AuditView({ rows, machines, token, onRefresh, query }: AuditView
     try {
       await purgeAudit(token, days, 500)
       onRefresh()
-      alert('审计日志清理完成')
+      notify('审计日志清理完成', 'success')
     } catch (err) {
-      alert(`清理失败: ${err instanceof Error ? err.message : String(err)}`)
+      notify(`清理失败: ${err instanceof Error ? err.message : String(err)}`, 'error')
     } finally {
       setPurging(false)
     }

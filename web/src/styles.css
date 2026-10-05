@@ -1330,47 +1330,85 @@ button {
 /* ==========================================================================
    Floating Alert / Toast
    ========================================================================== */
-.toast-bar {
+.toast-viewport {
+  position: fixed;
+  z-index: 1000;
+  top: calc(var(--topbar-height) + 12px);
+  right: 20px;
+  width: min(384px, calc(100vw - 40px));
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 10px;
-  padding: 10px 16px;
-  border-radius: var(--radius-md);
-  font-size: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: none;
+}
+
+.toast-bubble {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  font-size: 13px;
+  line-height: 1.6;
   font-weight: 500;
-  margin-bottom: 20px;
   border: 1px solid transparent;
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  background: var(--bg-elevated);
+  pointer-events: auto;
   animation: toast-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+.toast-bubble > svg { flex-shrink: 0; margin-top: 2px; }
+.toast-message { flex: 1; min-width: 0; overflow-wrap: anywhere; max-height: 30vh; overflow-y: auto; }
+.toast-close {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.toast-close:hover { background: rgba(255, 255, 255, 0.08); }
+.toast-close:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(-6px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-.toast-bar.info {
-  background: rgba(99, 102, 241, 0.1);
+.toast-bubble.info {
   color: #a5b4fc;
   border-color: rgba(99, 102, 241, 0.25);
 }
 
-.toast-bar.success {
-  background: var(--accent-emerald-soft);
+.toast-bubble.success {
   color: #6ee7b7;
   border-color: rgba(16, 185, 129, 0.25);
 }
 
-.toast-bar.warning {
-  background: var(--accent-amber-soft);
+.toast-bubble.warning {
   color: #fde047;
   border-color: rgba(245, 158, 11, 0.25);
 }
 
-.toast-bar.error {
-  background: var(--accent-rose-soft);
+.toast-bubble.error {
   color: #fca5a5;
   border-color: rgba(244, 63, 94, 0.25);
+}
+
+@media (max-width: 600px) {
+  .toast-viewport { right: 12px; width: calc(100vw - 24px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast-bubble { animation: none; }
 }
 
 /* ==========================================================================

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { CheckCircleIcon, KeyIcon, SettingsIcon } from '../icons/Icons'
+import { KeyIcon, SettingsIcon } from '../icons/Icons'
+import { useToast } from '../components/ToastProvider'
 import {
   getMachineConfig,
   rollbackMachineConfig,
@@ -21,13 +22,13 @@ export function SettingsView({
   onTokenChange,
   onRefresh,
 }: SettingsViewProps) {
+  const notify = useToast()
   const [localToken, setLocalToken] = useState(token)
   const [revealed, setRevealed] = useState(false)
   const [selectedMachineId, setSelectedMachineId] = useState(machines[0]?.id ?? '')
   const [machineConfig, setMachineConfig] = useState<AgentConfig | null>(null)
   const [loadingConfig, setLoadingConfig] = useState(false)
   const [savingConfig, setSavingConfig] = useState(false)
-  const [message, setMessage] = useState('')
 
   useEffect(() => {
     if (machines.length > 0 && (!selectedMachineId || !machines.some((m) => m.id === selectedMachineId))) {
@@ -42,21 +43,19 @@ export function SettingsView({
   const handleSaveToken = (e: React.FormEvent) => {
     e.preventDefault()
     onTokenChange(localToken.trim())
-    onRefresh()
-    setMessage('Admin Token 已更新并尝试重新连接 Center')
+    notify('正在使用更新后的 Admin Token 连接 Center', 'info')
   }
 
   const loadConfig = async (mId = selectedMachineId) => {
     if (!token.trim() || !mId) return
     setLoadingConfig(true)
-    setMessage('')
     try {
       const cfg = await getMachineConfig(token, mId)
       setMachineConfig(cfg)
       setPollIntervalMs(cfg.pollIntervalMs)
       setMaxConcurrency(cfg.maxConcurrency)
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : '获取机器配置失败')
+      notify(err instanceof Error ? err.message : '获取机器配置失败', 'error')
       setMachineConfig(null)
     } finally {
       setLoadingConfig(false)
@@ -73,7 +72,6 @@ export function SettingsView({
     e.preventDefault()
     if (!token.trim() || !selectedMachineId) return
     setSavingConfig(true)
-    setMessage('')
     try {
       const updated = await updateMachineConfig(token, selectedMachineId, {
         poll_interval_ms: Number(pollIntervalMs),
@@ -81,10 +79,10 @@ export function SettingsView({
         expected_generation: machineConfig?.generation,
       })
       setMachineConfig(updated)
-      setMessage(`配置已更新至代际 g${updated.generation}`)
+      notify(`配置已更新至代际 g${updated.generation}`, 'success')
       onRefresh()
     } catch (err) {
-      setMessage(`更新失败: ${err instanceof Error ? err.message : String(err)}`)
+      notify(`更新失败: ${err instanceof Error ? err.message : String(err)}`, 'error')
     } finally {
       setSavingConfig(false)
     }
@@ -92,7 +90,7 @@ export function SettingsView({
 
   const handleRollback = async () => {
     if (!machineConfig || machineConfig.generation <= 1) {
-      alert('当前已是初代配置，无法进一步回滚')
+      notify('当前已是初代配置，无法进一步回滚', 'warning')
       return
     }
     if (!window.confirm(`确认将配置回滚到上一代配置吗？`)) return
@@ -101,10 +99,10 @@ export function SettingsView({
       setMachineConfig(res)
       setPollIntervalMs(res.pollIntervalMs)
       setMaxConcurrency(res.maxConcurrency)
-      setMessage(`已成功回滚至代际 g${res.generation}`)
+      notify(`已成功回滚至代际 g${res.generation}`, 'success')
       onRefresh()
     } catch (err) {
-      alert(`回滚失败: ${err instanceof Error ? err.message : String(err)}`)
+      notify(`回滚失败: ${err instanceof Error ? err.message : String(err)}`, 'error')
     }
   }
 
@@ -119,13 +117,6 @@ export function SettingsView({
           配置 Center 通信凭证、修改 Agent 动态轮询与并发限制，保障集群稳定高可用。
         </p>
       </div>
-
-      {message && (
-        <div className={`toast-bar ${message.includes('失败') ? 'error' : 'success'}`}>
-          <CheckCircleIcon size={15} />
-          <span>{message}</span>
-        </div>
-      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))', gap: '24px' }}>
         {/* Admin Token Card */}

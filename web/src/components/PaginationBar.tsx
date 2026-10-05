@@ -1,12 +1,12 @@
-import React from 'react'
+import { useEffect } from 'react'
 import {
-  AlertCircleIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   ChevronsLeftIcon,
   ChevronsRightIcon,
   RefreshCwIcon,
 } from '../icons/Icons'
+import { useToast } from './ToastProvider'
 
 export interface PaginationBarProps {
   currentPage: number
@@ -43,6 +43,10 @@ export function PaginationBar({
   compact = false,
   unit = '项',
 }: PaginationBarProps) {
+  const notify = useToast()
+  useEffect(() => {
+    if (serverError) notify(serverError, 'error')
+  }, [serverError, notify])
   // If no items and no server error, don't show pagination
   if (totalItems === 0 && !serverHasMore && !serverError) {
     return null
@@ -71,23 +75,6 @@ export function PaginationBar({
 
   return (
     <div className={`pagination-container ${compact ? 'compact' : ''}`}>
-      {serverError && (
-        <div className="pagination-error-banner">
-          <AlertCircleIcon size={14} />
-          <span>{serverError}</span>
-          {onServerLoadMore && (
-            <button
-              type="button"
-              className="pagination-retry-btn"
-              onClick={onServerLoadMore}
-              disabled={serverLoading}
-            >
-              重试
-            </button>
-          )}
-        </div>
-      )}
-
       <div className="pagination-inner">
         {/* Left: Item summary & page size selector */}
         <div className="pagination-summary">
@@ -112,7 +99,7 @@ export function PaginationBar({
             </div>
           )}
 
-          {serverHasMore && onServerLoadMore && (
+          {(serverHasMore || serverError) && onServerLoadMore && (
             <button
               type="button"
               className="pagination-cloud-btn"
@@ -124,7 +111,7 @@ export function PaginationBar({
                 size={12}
                 style={{ animation: serverLoading ? 'spin 1s linear infinite' : undefined }}
               />
-              <span>{serverLoading ? '云端同步中...' : '加载更多云端数据'}</span>
+              <span>{serverLoading ? '云端同步中...' : serverError ? '重试加载' : '加载更多云端数据'}</span>
             </button>
           )}
         </div>
