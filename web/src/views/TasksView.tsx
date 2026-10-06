@@ -571,7 +571,14 @@ function TaskItem({
   const [outputEncoding, setOutputEncoding] = useState('utf-8')
   const logs = useTaskOutput(token, listedTask, expanded, outputEncoding)
   const task = logs.task
-  const readableCommand = useMemo(() => commandForDisplay(task.command || task.kind), [task.command, task.kind])
+  const { readableCommand, requestSummary } = useMemo(() => {
+    const readableCommand = commandForDisplay(task.command || task.kind)
+    if (task.kind === 'files' && task.command) try {
+      const request = JSON.parse(task.command)
+      return { readableCommand: JSON.stringify(request, null, 2), requestSummary: `${request.operation}: ${request.path || '磁盘与根目录'}${request.destination_path ? ` → ${request.destination_path}` : ''}` }
+    } catch { /* Keep the original request readable if old metadata is incomplete. */ }
+    return { readableCommand, requestSummary: readableCommand }
+  }, [task.command, task.kind])
   const hasEscapes = readableCommand !== (task.command || task.kind)
 
   useEffect(() => {
@@ -706,7 +713,7 @@ function TaskItem({
                 whiteSpace: 'nowrap',
               }}
             >
-              {readableCommand}
+              {requestSummary}
             </div>
 
             {/* Real Progress Phase Bar */}

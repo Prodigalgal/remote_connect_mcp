@@ -27,6 +27,28 @@ import org.junit.jupiter.api.Test;
 
 class TaskServiceTest {
     @Test
+    void lifecycleUsesCenterObservationTimesAndKeepsTheFirstStart() {
+        var registry = AgentRegistry.forTest("enroll");
+        var machine = registry.register(new RegisterRequest("clock-agent", "clock-host", "clock-host", "linux", "amd64",
+                "test", "/tmp", List.of("command")), "enroll");
+        var tasks = new TaskService(registry);
+        var created = tasks.create(new CreateTaskRequest(machine.machineId(),
+                new TaskCommand("", TaskKind.COMMAND, "command", "echo", "/tmp", Map.of(), 30, null, null), "clock-test"));
+        var lease = tasks.poll(machine.machineId(), new PollRequest(List.of(), 1, List.of("command"))).task();
+        var skewed = created.createdAt().minusSeconds(90);
+        tasks.updateState(machine.machineId(), created.id(), new TaskUpdateRequest("running", null, null, skewed, null, false), lease.attempt());
+        var started = tasks.find(created.id()).orElseThrow().startedAt();
+        assertFalse(started.isBefore(created.createdAt()));
+        tasks.updateState(machine.machineId(), created.id(), new TaskUpdateRequest("running", null, null, skewed.plusSeconds(1), null, false), lease.attempt());
+        tasks.updateState(machine.machineId(), created.id(), new TaskUpdateRequest("completed", 0, null, null, skewed.plusSeconds(2), false), lease.attempt());
+        var completed = tasks.find(created.id()).orElseThrow();
+        assertEquals(started, completed.startedAt()); assertFalse(completed.finishedAt().isBefore(started));
+        var finished = completed.finishedAt();
+        tasks.updateState(machine.machineId(), created.id(), new TaskUpdateRequest("completed", 0, null, null, skewed, false), lease.attempt());
+        assertEquals(finished, tasks.find(created.id()).orElseThrow().finishedAt());
+    }
+
+    @Test
     void isolatesIdempotencyAndTaskReadsByPrincipal() {
         var registry = AgentRegistry.forTest("enroll-test");
         var registration = registry.register(new RegisterRequest("command-agent", "host-a", "host-a", "linux", "amd64", "dev", "/srv", List.of("command")), "enroll-test");

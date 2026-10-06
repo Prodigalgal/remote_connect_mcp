@@ -13,6 +13,7 @@ import {
   type Machine,
 } from '../api'
 import { usePagedTail, usePagination } from '../utils'
+import { FilesView } from './FilesView'
 
 interface ArtifactsViewProps {
   token: string
@@ -21,6 +22,17 @@ interface ArtifactsViewProps {
 }
 
 export function ArtifactsView({ token, machines, query }: ArtifactsViewProps) {
+  const [tab, setTab] = useState<'files' | 'artifacts'>('files')
+  return <div>
+    <div style={{ display: 'flex', gap: 8, marginBottom: 20 }} role="tablist" aria-label="文件与工件">
+      <button className="btn btn-secondary" role="tab" aria-selected={tab === 'files'} onClick={() => setTab('files')}>机器文件</button>
+      <button className="btn btn-secondary" role="tab" aria-selected={tab === 'artifacts'} onClick={() => setTab('artifacts')}>传输与工件</button>
+    </div>
+    {tab === 'files' ? <FilesView token={token} machines={machines} /> : <ArtifactRecords token={token} machines={machines} query={query} />}
+  </div>
+}
+
+function ArtifactRecords({ token, machines, query }: ArtifactsViewProps) {
   const notify = useToast()
   const [selectedMachineId, setSelectedMachineId] = useState<string>('')
   const [statusFilter, setStatusFilter] = useState<string>('all')

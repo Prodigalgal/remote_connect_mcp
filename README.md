@@ -4,13 +4,15 @@ RCM 让一个人通过 MCP 客户端管理自己的远程机器。Center 负责�
 
 项目和仓库统一使用 Remote Control MCP / `remote_control_mcp`，安装服务、镜像和配置使用 `remote-control-mcp` 与 `REMOTE_CONTROL_MCP_*`。现有安装的旧环境变量和历史 Release 资产仅在迁移兼容入口中读取，新名称优先；机器身份、凭证和任务协议保持连续。
 
-MCP 地址是 `https://<center-domain>/mcp`。当前公开 7 个工具：`machines`、`command`、`desktop`、`browser`、`artifact`、`task_read`、`task_cancel`。
+MCP 地址是 `https://<center-domain>/mcp`。当前公开 9 个工具：`machines`、`command`、`desktop`、`browser`、`files`、`artifact`、`file_card`、`task_read`、`task_cancel`。
 
 ## 日常使用
 
 1. 在 Console 的“添加机器”生成一次性安装命令，并在目标机器执行。默认只安装命令能力；需要图形操作时选择桌面/浏览器。
 2. 在“连接凭证”为 MCP 客户端创建凭证，通过机器 × 工具表格选择访问范围。默认每页 10 台，可搜索、按在线状态筛选，并按机器、工具或当前筛选范围批量勾选；翻页保留已选权限，未启用的工具不可选。凭证明文只显示一次；Center 每次调用都会校验这张凭证的机器/工具权限。
-3. 让客户端先用 `machines` 选择机器，再调用所需能力。长任务使用返回的任务 ID 继续读取，不重复提交。
+3. 让客户端先用 `machines` 选择机器；`machines(operation=list, query=...)` 可按名称、主机名或 ID 搜索已授权机器。长任务使用返回的任务 ID 继续读取，不重复提交。
+
+Console“文件与工件”提供机器文件浏览、搜索、分页、属性、文本编辑、新建目录、批量复制/移动/删除、ZIP 压缩/解压和上传/下载。文件管理与文件传输分别授权；旧凭证需要勾选新增的“文件管理”，目标 Agent 需要报告 `files` 能力。文本支持 UTF-8、GB18030、UTF-16LE/BE，保留 BOM，保存时检查读取版本；大文件通过传输功能处理。刷新页面会继续观察原任务；创建请求的响应丢失时先核对原请求，批量操作尚未提交的后续项不会自动重放。
 
 Console“任务记录”展开正在执行的任务后，会持续显示宿主机回传的新日志和进度，完成或折叠后停止跟随。Console 新建任务会自动展开输出；没有日志时显示等待回传，阶段和百分比仅在宿主机提供时显示。执行结束后以任务终态和退出码为准，宿主机最后回传的阶段与百分比仍保留在详情中。长日志优先显示最新部分，任务完成后可从头分页读取。
 
@@ -26,11 +28,15 @@ Console 的操作结果统一显示为右上角浮窗，支持关闭、自动消
 
 完整 MCP 写操作需要 ChatGPT 工作区支持自定义 MCP 应用和相应权限；入口可能因账户方案不同而显示在个人设置或工作区设置中。
 
-`command`、`desktop`、`browser` 和 `artifact(put/get)` 都创建持久任务。需要立即继续做别的事时传 `wait_ms=0`；预计很快完成时传正数，让同一次调用短等有界结果。等待到期不会取消任务，后续统一调用 `task_read(task_id)`。新调用创建新任务；重试同一次调用时显式复用 `idempotency_key`，避免再次执行。
+`command`、`desktop`、`browser`、`files` 和 `artifact(put/get)` 都创建持久任务。需要立即继续做别的事时传 `wait_ms=0`；预计很快完成时传正数，让同一次调用短等有界结果。等待到期不会取消任务，后续统一调用 `task_read(task_id)`。新调用创建新任务；重试同一次调用时显式复用 `idempotency_key`，避免再次执行。
 
 输出默认 16 KiB，可用执行工具的 `limit` 调整，后续用 `task_read(limit=...)` 或 `task_read(tail_bytes=8192)` 分页。只观察状态时用 `task_read(change_seq=..., wait_ms=...)`，默认不重复附带旧日志和图片；指定 `include_output=true` 读取日志，`include_artifact=true` 获取截图。浏览器输出为 `output.data`，`request.include_snapshot=true` 可在操作后一起观察页面；详细诊断用 `task_read(detail=true)` 读取。
 
 `artifact(get/read)` 的 `delivery_mode` 决定返回文件句柄还是内联内容，`wait_ms` 独立决定短等时长。`auto` 默认短等，`async` 默认立即返回；显式 `wait_ms` 优先。内联文本默认 16 KiB，通过 `cursor` / `limit` 继续读取，完整文件始终可下载。字段取舍与详情入口见 [MCP 结果字段](docs/MCP_RESULT_FIELDS.md)。
+
+`files` 的 `request.operation` 包括 `roots/list/search/stat/read/write/mkdir/copy/move/delete/archive/extract`，各分支只接受相关参数。目录页最多 100 项，搜索默认深度 8、最多扫描 10,000 项；文本读取按原始字节 `offset` 分页，后续传入 `result.next_cursor`，单次写入最多 64 KiB UTF-8 内容。复制、压缩和解压默认最多处理 256 MiB 数据，可显式调整到 4 GiB；操作最多 300 秒。默认不覆盖文件、不递归删除、不跟随目录链接；解压只发布到新目录。出现 `outcome_unknown=true` 时先检查目标状态，不盲目重做写操作。
+
+取回文件后已有的 `artifact_id` 可交给 `file_card` 展示紧凑卡片，无需再次执行 `artifact(get)`。普通结果保留下载链接，不自动插入大块 iframe；卡片适配宿主主题。支持 OpenAI 文件接口的宿主可由用户点击“添加到 ChatGPT”，校验大小和 SHA-256 后上传最多 32 MiB 文件，并保存宿主返回的真实 `fileId`。原生附件的最终展示仍由 ChatGPT 决定；不支持该接口或文件过大时使用标准下载链接。
 
 Agent 默认使用事件唤醒的 HTTPS 长轮询：任务或升级出现时 Center 立即唤醒等待中的连接；空闲时没有固定频率的业务查询。Browser 使用 [Camoufox 官方客户端](https://github.com/daijro/camoufox/tree/main/typescript)，固定客户端版本并下载其配套的浏览器构建，需要目标机安装 Node.js 22.15 及 npm；浏览器只在收到任务时启动，Profile 保留在目标机器。
 

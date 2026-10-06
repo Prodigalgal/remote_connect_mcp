@@ -7,7 +7,8 @@ export const TOOL_OPTIONS = [
   { id: 'command', label: '命令', capability: 'command' },
   { id: 'desktop', label: '桌面', capability: 'desktop' },
   { id: 'browser', label: '浏览器', capability: 'browser' },
-  { id: 'artifact', label: '文件', capability: 'file_transfer' },
+  { id: 'artifact', label: '文件传输', capability: 'file_transfer' },
+  { id: 'files', label: '文件管理', capability: 'files' },
   { id: 'task_read', label: '读取任务', capability: undefined },
   { id: 'task_cancel', label: '取消任务', capability: undefined },
 ] as const

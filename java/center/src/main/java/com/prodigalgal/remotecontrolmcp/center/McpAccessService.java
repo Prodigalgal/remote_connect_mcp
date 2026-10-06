@@ -19,7 +19,7 @@ import org.springframework.stereotype.Service;
 public final class McpAccessService {
     private static final int MAX_ID = 180;
     private static final Set<String> TOOLS = Set.of(
-            "command", "desktop", "browser", "artifact", "task_read", "task_cancel");
+            "command", "desktop", "browser", "artifact", "files", "task_read", "task_cancel");
 
     private final JdbcTemplate jdbc;
     private final Map<String, Grant> memory = new ConcurrentHashMap<>();

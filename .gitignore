@@ -27,5 +27,7 @@ __pycache__/
 /scripts/browser-runtime/node_modules/
 /scripts/browser-runtime/browser-worker.mjs
 /web/dist/
+/web/test-results/
+/web/playwright-report/
 /backups/
 scripts/reinstall-local-zzp-agent.ps1

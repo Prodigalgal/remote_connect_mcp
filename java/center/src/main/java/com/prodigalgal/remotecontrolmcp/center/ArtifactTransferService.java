@@ -277,6 +277,59 @@ public final class ArtifactTransferService {
         return new TransferCreated(task, descriptor);
     }
 
+    /** Bounded browser upload. It enters the same quota, storage and Agent transfer lifecycle. */
+    public TransferCreated createConsoleToAgent(TaskOrigin origin, CreateTaskRequest request, String destinationPath,
+                                                String fileName, String mimeType, InputStream input, long length, boolean overwrite) {
+        requireRequest(origin, request); requireIdempotencyKey(request); validatePath(destinationPath, "destinationPath");
+        if (!origin.isConfigured()) throw new SecurityException("Console upload requires admin origin");
+        if (length < 0 || length > 64L * 1024 * 1024) throw new IllegalArgumentException("Console upload exceeds 64 MiB");
+        var safeName = fileNameOrLeaf(fileName, destinationPath); validateFileName(safeName);
+        var safeMime = normalizeMime(mimeType, safeName);
+        var ids = ids(origin, request.machineId(), request.idempotencyKey(), "console", destinationPath);
+        if (quota != null) quota.assertTransferAdmission(origin, length, ids.transferId());
+        if (preparations.putIfAbsent(ids.transferId(), Boolean.TRUE) != null) throw new IllegalStateException("file upload preparation is already in progress");
+        Path temporary = null; String objectKey = null; TaskView createdTask = null; boolean committed = false;
+        try (var reservation = resources.reserve(origin.principalId(), request.machineId(), length)) {
+            temporary = Files.createTempFile("rcm-console-upload-", ".part");
+            var digest = java.security.MessageDigest.getInstance("SHA-256"); var buffer = new byte[64 * 1024]; long bytes = 0; int read;
+            try (var output = Files.newOutputStream(temporary)) {
+                while ((read = input.read(buffer)) >= 0) {
+                    bytes += read; if (bytes > length) throw new IOException("uploaded file exceeds its declared size");
+                    digest.update(buffer, 0, read); output.write(buffer, 0, read);
+                }
+            }
+            if (bytes != length) throw new IOException("uploaded file size does not match metadata");
+            var sha = java.util.HexFormat.of().formatHex(digest.digest());
+            var action = new FileTransferAction(FileTransferAction.WEB_TO_AGENT, ids.transferId(), ids.artifactId(), "", destinationPath, safeName, safeMime, bytes, sha, overwrite);
+            var existing = existingCreated(ids.transferId(), origin);
+            if (existing != null) {
+                // Task equality also checks overwrite and content SHA, so a retry
+                // key cannot silently stand for a different uploaded file.
+                tasks.create(withAction(request, action), "admin", origin);
+                return existing;
+            }
+            try (var stream = Files.newInputStream(temporary)) { objectKey = store.put(ids.artifactId(), sha, stream, bytes); }
+            var pending = new FileTransferAction(FileTransferAction.WEB_TO_AGENT, ids.transferId(), ids.artifactId(), "", destinationPath, safeName, safeMime, 0L, "", overwrite);
+            var task = tasks.create(withAction(request, pending), "admin", origin);
+            createdTask = task;
+            var descriptor = new TransferDescriptor(ids.transferId(), ids.artifactId(), FileTransferAction.WEB_TO_AGENT, task.id(), origin.principalId(), request.machineId(), safeName, safeMime, bytes, sha, "ready", null, publicUrl(ids.artifactId(), origin, task.executionSessionId(), "download"));
+            persistInbound(origin, descriptor, objectKey, destinationPath);
+            memory.putIfAbsent(ids.transferId(), new MemoryTransfer(descriptor, objectKey, destinationPath, ""));
+            var readyTask = tasks.updateFileTransferAction(request.machineId(), task.id(), action);
+            committed = true;
+            return new TransferCreated(readyTask, descriptor);
+        } catch (IOException | java.security.NoSuchAlgorithmException failed) { throw new IllegalArgumentException("could not ingest uploaded file", failed); }
+        finally {
+            deleteTemporary(temporary);
+            if (createdTask != null && !committed) {
+                try { markFailedByTransfer(ids.transferId(), "uploaded file metadata could not be committed"); } catch (RuntimeException ignored) { }
+                try { tasks.failPreparedFileTransfer(request.machineId(), createdTask.id(), "uploaded file metadata could not be committed"); } catch (RuntimeException ignored) { }
+            }
+            if (objectKey != null && !hasTransfer(ids.transferId())) try { store.delete(objectKey); } catch (RuntimeException ignored) { }
+            preparations.remove(ids.transferId());
+        }
+    }
+
     private TransferCreated createWebToAgentAsync(TaskOrigin origin, CreateTaskRequest request, Ids ids,
                                                    String destinationPath, String fileName, String safeMime,
                                                    boolean overwrite, URI downloadUrl, Long expectedBytes,
@@ -2074,7 +2127,7 @@ public final class ArtifactTransferService {
 
     private static String normalizeMime(String value, String fileName) {
         var candidate = value;
-        if (candidate == null || candidate.isBlank()) candidate = inferredMime(fileName);
+        if (candidate == null || candidate.isBlank() || "application/octet-stream".equalsIgnoreCase(candidate.trim())) candidate = inferredMime(fileName);
         return normalizeMime(candidate);
     }
 
@@ -2086,6 +2139,17 @@ public final class ArtifactTransferService {
         if (name.endsWith(".gif")) return "image/gif";
         if (name.endsWith(".svg")) return "image/svg+xml";
         if (name.endsWith(".pdf")) return "application/pdf";
+        if (name.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        if (name.endsWith(".xls")) return "application/vnd.ms-excel";
+        if (name.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        if (name.endsWith(".doc")) return "application/msword";
+        if (name.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        if (name.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+        if (name.endsWith(".csv")) return "text/csv";
+        if (name.endsWith(".md")) return "text/markdown";
+        if (name.endsWith(".zip")) return "application/zip";
+        if (name.endsWith(".mp3")) return "audio/mpeg";
+        if (name.endsWith(".mp4")) return "video/mp4";
         if (name.endsWith(".json")) return "application/json";
         if (name.endsWith(".txt") || name.endsWith(".log")) return "text/plain";
         return "application/octet-stream";

@@ -5,7 +5,8 @@ public enum AgentCapability {
     DURABLE_TASKS("durable_tasks"),
     DESKTOP("desktop"),
     BROWSER("browser"),
-    FILE_TRANSFER("file_transfer");
+    FILE_TRANSFER("file_transfer"),
+    FILES("files");
 
     private final String wireValue;
 

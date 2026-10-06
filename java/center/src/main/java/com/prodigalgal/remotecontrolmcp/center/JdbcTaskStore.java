@@ -127,6 +127,10 @@ final class JdbcTaskStore {
                 rs -> rs.next() ? Optional.of(readState(rs)) : Optional.empty());
     }
 
+    Optional<TaskState> findIdempotent(String machineId, String principalId, String key) {
+        return Optional.ofNullable(findByIdempotency(machineId, principalId, key, false));
+    }
+
     boolean isDurableTask(String machineId, String taskId) {
         return Boolean.TRUE.equals(jdbc.query("""
                 SELECT (agent_id = ? AND status NOT IN (?, ?, ?) AND timeout_seconds <= 0)
@@ -358,10 +362,10 @@ final class JdbcTaskStore {
             if (!allowedTransition(task.status(), next)) {
                 throw new IllegalArgumentException("invalid task transition: " + task.status() + " -> " + next);
             }
-            var started = update.startedAt() == null && TaskStatus.RUNNING.equals(next) && task.startedAt() == null
-                    ? Instant.now() : update.startedAt();
-            var finished = update.finishedAt() != null ? update.finishedAt()
-                    : (TaskStatus.terminal(next) && task.finishedAt() == null ? Instant.now() : task.finishedAt());
+            // Center observations keep task chronology independent of Agent clocks.
+            // Terminal updates usually omit started_at; preserve the first observation.
+            var started = task.startedAt() == null && TaskStatus.RUNNING.equals(next) ? Instant.now() : task.startedAt();
+            var finished = TaskStatus.terminal(next) && task.finishedAt() == null ? Instant.now() : task.finishedAt();
             var error = update.error() == null || update.error().isBlank() ? task.error() : compactError(update.error());
             var truncated = task.outputTruncated() || update.outputTruncated();
             jdbc.update("""

@@ -7,7 +7,8 @@ public enum TaskKind {
     COMMAND("command"),
     DESKTOP("desktop"),
     BROWSER("browser"),
-    FILE_TRANSFER("file_transfer");
+    FILE_TRANSFER("file_transfer"),
+    FILES("files");
 
     private final String wireValue;
 

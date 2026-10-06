@@ -146,3 +146,18 @@ jobs:
       - name: Console build
         working-directory: web
         run: pnpm install --frozen-lockfile && pnpm build
+      - name: Console filesystem browser checks
+        working-directory: web
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm exec playwright test
+      - name: Console preview and browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: console-preview-and-browser-evidence
+          path: |
+            web/dist
+            web/test-results
+            web/playwright-report
+          retention-days: 7

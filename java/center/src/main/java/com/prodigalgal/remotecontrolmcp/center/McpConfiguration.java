@@ -25,6 +25,8 @@ import com.prodigalgal.remotecontrolmcp.protocol.RegisterResponse;
 import com.prodigalgal.remotecontrolmcp.protocol.SensitiveValueRedactor;
 import com.prodigalgal.remotecontrolmcp.protocol.TaskCommand;
 import com.prodigalgal.remotecontrolmcp.protocol.TaskKind;
+import com.prodigalgal.remotecontrolmcp.protocol.FileRequest;
+import com.prodigalgal.remotecontrolmcp.protocol.JsonCodec;
 import com.prodigalgal.remotecontrolmcp.protocol.TaskUpdateRequest;
 import com.prodigalgal.remotecontrolmcp.protocol.UpgradeArtifact;
 import com.prodigalgal.remotecontrolmcp.protocol.UpgradePlan;
@@ -82,6 +84,7 @@ import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
         OutputRequest.class, OutputResponse.class, PollRequest.class, PollResponse.class,
         RegisterRequest.class, RegisterResponse.class, TaskCommand.class,
         TaskCommand.DesktopAction.class, com.prodigalgal.remotecontrolmcp.protocol.FileTransferAction.class,
+        FileRequest.class, AdminFilesController.OperationBody.class, AdminFilesController.DownloadBody.class,
         com.prodigalgal.remotecontrolmcp.protocol.FileTransferResponse.class, TaskUpdateRequest.class,
         com.prodigalgal.remotecontrolmcp.protocol.TaskProgressUpdate.class,
         UpgradeArtifact.class, UpgradePlan.class, UpgradeStatusRequest.class,
@@ -188,7 +191,7 @@ public class McpConfiguration {
                                     @Value("${rcm.version:dev}") String version) {
         var server = McpServer.async(transport)
                 .serverInfo("remote-control-mcp-center", version)
-                .instructions("Use machines to choose a stable machine ID. Execution tools create durable tasks: wait_ms=0 returns immediately; a positive value waits briefly without canceling the task at deadline. Use limit to bound initial output. New calls execute new work; use one explicit idempotency_key only for retries of the same invocation. Once a task ID is known, continue with task_read. For status-only observation use include_output=false with change_seq; for new logs pass the last next_cursor; for failure logs use tail_bytes. task_read returns image metadata by default; include_artifact=true fetches the image. Browser include_snapshot=true observes the page after the action; detail=true adds bounded diagnostics. Artifact inline text is paged with cursor/limit; file handles retain the full file. wait_ms takes precedence over delivery_mode's default wait. cwd is a working-directory hint, not a sandbox. Center enforces identity, machine authorization, task ownership and resource limits.")
+                .instructions("Use machines(list,query) to find stable machine IDs and machines(detail) for known user paths. Execution tools create durable tasks: wait_ms=0 returns immediately; positive waits briefly without canceling at deadline. Use limit to bound output. New calls execute new work; use one explicit idempotency_key only to retry the same invocation. Once task_id is known, continue with task_read. For status-only observation use include_output=false with change_seq; for new logs pass next_cursor; for failure logs use tail_bytes. Use files for native directory browsing, search, text editing and ZIP operations; mutations require explicit overwrite/recursive options. artifact(get) transfers one regular file; task_read recovers the existing transfer. To present a ready file, call file_card(artifact_id), which reuses the artifact and exposes the optional ChatGPT uploadFile action. Do not transfer it again for presentation. Artifact inline text is paged; file handles retain the full file. task_read returns image metadata; include_artifact=true fetches the image. Browser include_snapshot=true observes after the action; detail=true adds bounded diagnostics. wait_ms overrides delivery_mode's default wait. cwd is a working-directory hint, not a sandbox. Center enforces identity, machine authorization, task ownership and resource limits.")
                 .strictToolNameValidation(true)
                 .validateToolInputs(true)
                 .requestTimeout(Duration.ofSeconds(30))
@@ -293,11 +296,21 @@ public class McpConfiguration {
                 tool("browser", "Run one structured browser action. wait_ms=0 returns a task immediately; a positive wait_ms returns a bounded result if ready. Use task_read to continue.",
                         browserModelSchema(),
                         (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browserModel(agents, tasks, access, origin(exchange, conversations, request), request); }, scheduler, oauth),
-                tool("artifact", "put uploads a ChatGPT file to a machine; get retrieves one regular file, not a directory; read inspects an existing artifact_id or transfer_id. List or search directories with command first. wait_ms bounds put/get waiting; cursor and limit select inline text only.",
+                tool("files", "Native filesystem management: roots, list, search, stat, paged text read/write, mkdir, copy, move, delete, ZIP archive/extract. Use machines(detail).environment.desktop_path for the user's desktop. Paths use Agent account permissions; tree operations do not follow symlinks. Recursion and overwrite must be explicit. wait_ms=0 is asynchronous; positive wait_ms waits briefly; observe the existing task with task_read. For another directory page submit request.offset=result.next_offset; for another text page submit request.offset=result.next_cursor. task_read cursor pages task logs, not file contents.",
+                        filesModelSchema(),
+                        (exchange, request) -> { var raw = modelArguments(request).get("request"); var operation = raw instanceof Map<?, ?> value ? asString(value.get("operation")) : "";
+                            requireScope(exchange, FileRequest.READ_ONLY.contains(operation) ? "mcp:read" : "mcp:execute");
+                            return filesModel(agents, tasks, access, origin(exchange, conversations, request), request); }, scheduler, oauth),
+                tool("artifact", "put uploads a ChatGPT file to a machine; get retrieves one regular file with filename and MIME inferred by default; read inspects an existing artifact_id or transfer_id and renews its links. Use files to list/search or archive a directory. Once task_id is returned, continue with task_read; do not get the same file again to check progress. wait_ms bounds put/get waiting; cursor and limit select inline text only.",
                         artifactModelSchema(), artifactMeta,
                         (exchange, request) -> { requireScope(exchange,
                                 "read".equalsIgnoreCase(asString(modelArguments(request).get("operation"))) ? "mcp:read" : "mcp:execute");
                             return artifactModel(agents, tasks, access, transfers, origin(exchange, conversations, request), request); }, scheduler, oauth),
+                tool("file_card", "Present an already-ready artifact as a compact file card. Reuses existing file bytes; never starts another machine transfer. In ChatGPT the user can add the file through the host uploadFile capability when available. A host-native attachment is not guaranteed on other clients.",
+                        modelSchema(Map.of("artifact_id", modelString("existing artifact identifier", 1, 180)), List.of("artifact_id")),
+                        Map.of("ui", Map.of("resourceUri", ARTIFACT_VIEWER_URI, "visibility", List.of("model", "app"))),
+                        (exchange, request) -> { requireScope(exchange, "mcp:read");
+                            return fileCardModel(agents, tasks, access, transfers, origin(exchange, conversations, request), request); }, scheduler, oauth),
                 tool("task_read", "Observe one durable task. include_output=false reads status only; cursor reads new logs; tail_bytes reads the end. include_artifact=true fetches an image; detail=true includes execution details.",
                         taskReadModelSchema(),
                         (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, access, transfers, origin(exchange, conversations, request), request); }, scheduler, oauth),
@@ -319,10 +332,10 @@ public class McpConfiguration {
                                                                    reactor.core.scheduler.Scheduler scheduler,
                                                                    CenterOAuthConfig oauth) {
         var annotations = McpSchema.ToolAnnotations.builder()
-                .readOnlyHint(name.equals("machines") || name.equals("task_read"))
-                .idempotentHint(name.equals("machines") || name.equals("task_read") || name.equals("task_cancel"))
+                .readOnlyHint(name.equals("machines") || name.equals("task_read") || name.equals("file_card"))
+                .idempotentHint(name.equals("machines") || name.equals("task_read") || name.equals("task_cancel") || name.equals("file_card"))
                 .destructiveHint(name.equals("command") || name.equals("desktop") || name.equals("browser")
-                        || name.equals("task_cancel") || name.equals("artifact"))
+                        || name.equals("task_cancel") || name.equals("artifact") || name.equals("files"))
                 .openWorldHint(name.equals("command") || name.equals("browser")
                         || name.equals("artifact"))
                 .build();
@@ -343,7 +356,7 @@ public class McpConfiguration {
                 .inputSchema(schema)
                 .annotations(annotations)
                 .meta(toolMeta);
-        if (Set.of("machines", "command", "desktop", "browser", "artifact", "task_read", "task_cancel").contains(name)) {
+        if (Set.of("machines", "command", "desktop", "browser", "artifact", "files", "file_card", "task_read", "task_cancel").contains(name)) {
             toolBuilder.outputSchema(modelOutputSchema(name));
         }
         var tool = toolBuilder.build();
@@ -460,11 +473,12 @@ public class McpConfiguration {
         var properties = Map.<String, Object>ofEntries(
                 Map.entry("operation", modelEnum("inventory operation", List.of("list", "detail"))),
                 Map.entry("machine_id", modelString("stable machine identifier", 1, 180)),
+                Map.entry("query", modelString("case-insensitive name, hostname or stable ID substring; returns all authorized matches", 1, 256)),
                 Map.entry("offset", modelInteger("zero-based page offset", 0, 1000000)),
                 Map.entry("limit", modelInteger("page size", 1, MAX_MACHINE_PAGE)));
         var result = modelSchema(properties, List.of("operation"));
         result.put("allOf", List.of(
-                whenOperation("operation", "list", operationBranch(properties, "operation", "list", List.of(), List.of("offset", "limit"), List.of())),
+                whenOperation("operation", "list", operationBranch(properties, "operation", "list", List.of(), List.of("query", "offset", "limit"), List.of())),
                 whenOperation("operation", "detail", operationBranch(properties, "operation", "detail", List.of("machine_id"), List.of("machine_id"), List.of()))));
         return result;
     }
@@ -480,6 +494,50 @@ public class McpConfiguration {
                 Map.entry("limit", modelInteger("initial output byte budget; default 16384", 1, MAX_OUTPUT_PAGE)),
                 Map.entry("idempotency_key", Map.of("type", "string", "description", "optional stable retry key", "minLength", 8, "maxLength", 128, "pattern", "^[A-Za-z0-9._:-]+$"))),
                 List.of("machine_id", "command"));
+    }
+
+    static Map<String, Object> filesModelSchema() {
+        var fields = Map.<String, Object>ofEntries(
+                Map.entry("operation", modelEnum("native file operation", FileRequest.FIELDS.keySet().stream().sorted().toList())),
+                Map.entry("path", modelString("host path; use a known desktop_path, not a guessed service home", 1, 16384)),
+                Map.entry("destination_path", modelString("complete destination path; extract requires a new directory", 1, 16384)),
+                Map.entry("pattern", modelString("glob matched against file name or relative path; default *", 1, 512)),
+                Map.entry("content", modelString("text to write, at most 65536 UTF-8 bytes", 0, 65536)),
+                Map.entry("encoding", modelEnum("read default auto; write default UTF-8", List.of("auto", "UTF-8", "GB18030", "UTF-16LE", "UTF-16BE"))),
+                Map.entry("bom", modelBoolean("write byte-order mark; preserve read result bom when editing; UTF-16 default true, UTF-8 default false")),
+                Map.entry("offset", modelInteger("list/search entry offset or read byte cursor", 0, Long.MAX_VALUE)),
+                Map.entry("limit", modelInteger("list/search 1-100 entries; read 256-65536 bytes", 1, 65536)),
+                Map.entry("recursive", modelBoolean("explicitly traverse directories for copy/delete/mkdir; default false")),
+                Map.entry("overwrite", modelBoolean("explicitly replace a regular file; default false")),
+                Map.entry("expected_sha256", modelString("optional write conflict guard from the earlier read", 64, 64)),
+                Map.entry("max_depth", modelInteger("search depth; default 8", 1, 32)),
+                Map.entry("max_entries", modelInteger("scan/operation entry cap; default 10000", 1, 100000)),
+                Map.entry("max_bytes", modelInteger("copy/archive/extract byte cap; default 256 MiB", 1, 4L * 1024 * 1024 * 1024)));
+        var branches = new java.util.ArrayList<Map<String, Object>>();
+        for (var operation : FileRequest.FIELDS.keySet().stream().sorted().toList()) {
+            var properties = new LinkedHashMap<String, Object>();
+            FileRequest.FIELDS.get(operation).stream().sorted().forEach(key -> properties.put(key, fields.get(key)));
+            properties.put("operation", Map.of("const", operation));
+            if (properties.containsKey("offset") && !"read".equals(operation)) properties.put("offset", modelInteger("entry offset", 0, 100000));
+            if (properties.containsKey("limit")) properties.put("limit", modelInteger("read".equals(operation) ? "byte page size" : "entry page size", "read".equals(operation) ? 256 : 1, "read".equals(operation) ? 65536 : 100));
+            var required = new java.util.ArrayList<String>(); required.add("operation");
+            if (!"roots".equals(operation)) required.add("path");
+            if (Set.of("copy", "move", "archive", "extract").contains(operation)) required.add("destination_path");
+            if ("write".equals(operation)) required.add("content");
+            branches.add(modelSchema(properties, required));
+        }
+        return modelSchema(Map.of(
+                "machine_id", modelString("target machine identifier", 1, 180),
+                "request", Map.of("oneOf", branches),
+                "cwd", modelString("working directory for relative paths", 1, 4096),
+                "wait_ms", modelInteger("0 returns immediately; positive waits for the file result", 0, 15000),
+                "idempotency_key", modelString("stable key only when retrying this exact invocation", 8, 128)), List.of("machine_id", "request"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static FileRequest fileRequest(Map<String, Object> arguments) {
+        if (!(arguments.get("request") instanceof Map<?, ?> value)) throw new IllegalArgumentException("request is required");
+        return FileRequest.from((Map<String, Object>) value);
     }
 
     static Map<String, Object> desktopModelSchema() {
@@ -696,8 +754,10 @@ public class McpConfiguration {
             if (!"task_cancel".equals(toolName)) {
                 properties.put("output", output);
                 properties.put("artifact", Map.of("type", "object", "additionalProperties", true));
+                properties.put("result", Map.of("type", "object", "additionalProperties", true));
+                properties.put("failure", Map.of("type", "object", "additionalProperties", true));
             }
-            if ("artifact".equals(toolName) || "task_read".equals(toolName)) {
+            if ("artifact".equals(toolName) || "task_read".equals(toolName) || "file_card".equals(toolName)) {
                 properties.put("transfer", transfer);
                 properties.put("file", file);
             }
@@ -714,7 +774,7 @@ public class McpConfiguration {
             variants.add(Map.of("required", List.of("machines")));
             variants.add(Map.of("required", List.of("machine")));
         } else {
-            variants.add(Map.of("required", List.of("artifact".equals(toolName) ? "transfer" : "task")));
+            variants.add(Map.of("required", List.of(Set.of("artifact", "file_card").contains(toolName) ? "transfer" : "task")));
         }
         result.put("anyOf", variants);
         result.put("additionalProperties", true);
@@ -733,6 +793,7 @@ public class McpConfiguration {
             var normalized = new LinkedHashMap<String, Object>();
             copyIfPresent(arguments, normalized, "offset");
             copyIfPresent(arguments, normalized, "limit");
+            copyIfPresent(arguments, normalized, "query");
             return machinesListCore(agents, access, origin, modelRequest("machines", normalized));
         } catch (Exception exception) {
             return error(exception);
@@ -757,6 +818,30 @@ public class McpConfiguration {
         } catch (Exception exception) {
             return error(exception);
         }
+    }
+
+    static McpSchema.CallToolResult filesModel(AgentRegistry agents, TaskService tasks, McpAccessService access,
+                                               TaskOrigin origin, McpSchema.CallToolRequest request) {
+        try {
+            var arguments = modelArguments(request);
+            var machineId = requiredModelString(arguments, "machine_id");
+            access.authorizeTool(origin, machineId, "files");
+            var action = fileRequest(arguments);
+            var wait = optionalModelInt(arguments, "wait_ms", 0, 15000, 0);
+            var task = FileOperationService.create(agents, tasks, origin, machineId, action,
+                    asString(arguments.get("cwd")), modelRetryKey(arguments));
+            if (wait > 0) task = tasks.waitForTerminal(origin, task.id(), Duration.ofMillis(wait));
+            return taskResult(tasks, origin, task, 0, DEFAULT_OUTPUT_PAGE, false, true, false);
+        } catch (InterruptedException canceled) { Thread.currentThread().interrupt(); return error(canceled); }
+        catch (Exception failure) { return error(failure); }
+    }
+
+    static McpSchema.CallToolResult fileCardModel(AgentRegistry agents, TaskService tasks, McpAccessService access,
+                                                 ArtifactTransferService transfers, TaskOrigin origin, McpSchema.CallToolRequest request) {
+        try {
+            return artifactModel(agents, tasks, access, transfers, origin,
+                    modelRequest("artifact", Map.of("operation", "read", "artifact_id", requiredModelString(modelArguments(request), "artifact_id"))));
+        } catch (Exception failure) { return error(failure); }
     }
 
     private static McpSchema.CallToolResult desktopModel(AgentRegistry agents, TaskService tasks,
@@ -1291,7 +1376,11 @@ public class McpConfiguration {
                 throw new IllegalArgumentException("limit must be between 1 and " + MAX_MACHINE_PAGE);
             }
             var all = agents.listAllMachines(Instant.now());
-            var visible = all.stream().filter(machine -> access.canReadMachine(origin, machine.id())).toList();
+            var query = args.query() == null ? "" : args.query().trim().toLowerCase(java.util.Locale.ROOT);
+            if (query.length() > 256 || query.indexOf('\u0000') >= 0) throw new IllegalArgumentException("query is invalid");
+            var visible = all.stream().filter(machine -> access.canReadMachine(origin, machine.id()))
+                    .filter(machine -> query.isEmpty() || (machine.id() + " " + machine.name() + " " + machine.hostname())
+                            .toLowerCase(java.util.Locale.ROOT).contains(query)).toList();
             var machines = offset >= visible.size() ? List.<MachineView>of()
                     : visible.subList(offset, Math.min(visible.size(), offset + limit));
             var values = machines.stream().map(McpConfiguration::machineSummary).toList();
@@ -1482,6 +1571,15 @@ public class McpConfiguration {
                                               boolean includeOutput, boolean includeArtifact) {
         var payload = new LinkedHashMap<String, Object>();
         payload.put("task", detail ? taskDetailMap(view) : taskMap(view));
+        if (TaskStatus.FAILED.equals(view.status())) {
+            payload.put("failure", Map.of("code", "TASK_FAILED", "message", view.error() == null ? "task failed" : view.error(),
+                    "retryable", false, "outcome_unknown", view.error() != null && view.error().contains("outcome unknown")));
+        }
+        if (includeOutput && "files".equals(view.kind())) {
+            var fileResult = FileOperationService.result(tasks, origin, view);
+            if (fileResult != null) payload.put("result", fileResult);
+            return json(payload);
+        }
         if (includeOutput) {
             var structuredBrowser = "browser".equals(view.kind()) && cursor == 0;
             var page = tasks.readOutput(origin, view.id(), cursor, structuredBrowser ? MAX_OUTPUT_PAGE : Math.max(4, limit));
@@ -1580,8 +1678,8 @@ public class McpConfiguration {
 
     private static List<String> oauthScopesForTool(String name) {
         return switch (name) {
-            case "machines", "task_read" -> List.of("mcp:read");
-            case "artifact" -> List.of("mcp:read", "mcp:execute");
+            case "machines", "task_read", "file_card" -> List.of("mcp:read");
+            case "artifact", "files" -> List.of("mcp:read", "mcp:execute");
             default -> List.of("mcp:execute");
         };
     }
@@ -1873,7 +1971,7 @@ public class McpConfiguration {
         return McpJsonDefaults.getMapper().convertValue(request.arguments() == null ? Map.of() : request.arguments(), type);
     }
 
-    record MachinesCoreArgs(Integer offset, Integer limit) {
+    record MachinesCoreArgs(Integer offset, Integer limit, String query) {
     }
 
     record MachineInfoCoreArgs(@JsonProperty("machine_id") String machineId) {

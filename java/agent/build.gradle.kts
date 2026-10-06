@@ -29,6 +29,7 @@ graalvmNative {
             // Target the broad x86-64 baseline so older hosts without AVX2
             // (for example Sandy Bridge) can run the release binary.
             buildArgs.add("-march=$nativeMarch")
+            buildArgs.add("-H:+AddAllCharsets")
             // Command Agent is the always-on, headless process.  Optimize its
             // native image for size so the idle resident/private footprint is
             // kept small; Desktop and Browser are shipped as independent,

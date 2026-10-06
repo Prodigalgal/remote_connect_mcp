@@ -30,6 +30,20 @@
   (function(){
     const el=id=>document.getElementById(id),host=()=>window.openai||{};
     let latestResult=null,generation=0;
+    const savedFiles=new Map(),persisted=new Set(),uploads=new Set();
+    const notifyHeight=()=>{const bridge=host();if(typeof bridge.notifyIntrinsicHeight==='function')bridge.notifyIntrinsicHeight(document.documentElement.scrollHeight||110);};
+    const fetchFile=async(download)=>{
+      const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),60000);
+      try{
+        const response=await fetch(download,{credentials:'omit',cache:'no-store',referrerPolicy:'no-referrer',signal:controller.signal});
+        if(!response.ok)throw new Error('下载失败，请刷新文件链接');
+        if(!response.body?.getReader){const blob=await response.blob();if(blob.size>32*1024*1024)throw new Error('请直接下载大文件');return blob;}
+        const reader=response.body.getReader(),parts=[];let size=0;
+        try{while(true){const {value,done}=await reader.read();if(done)break;size+=value.byteLength;if(size>32*1024*1024)throw new Error('请直接下载大文件');parts.push(value);}}
+        finally{await reader.cancel().catch(()=>{});}
+        return new Blob(parts,{type:response.headers?.get('Content-Type')||'application/octet-stream'});
+      }finally{clearTimeout(timer);}
+    };
     const url=value=>{try{const parsed=new URL(String(value||''));return ['https:','http:'].includes(parsed.protocol)?parsed.href:'';}catch{return '';}};
     const typeLabel=file=>{
       const mime=String(file.mime_type||'').toLowerCase(),name=String(file.file_name||'').toLowerCase();
@@ -68,18 +82,45 @@
       // Registration is an explicit user action. It is not an output-file API
       // and does not promise an automatic native conversation attachment card.
       save.hidden=typeof bridge.uploadFile!=='function'||!Number.isFinite(file.bytes)||file.bytes>32*1024*1024;
+      const identity=file.artifact_id||file.file_id||download;
+      const remembered=bridge.widgetState?.privateContent?.savedFiles?.[identity];
+      if(remembered?.file_id){savedFiles.set(identity,remembered);persisted.add(identity);}
+      if(persisted.has(identity)){save.textContent='已添加到 ChatGPT';save.disabled=true;}
+      else if(savedFiles.has(identity))save.textContent='重试保存文件引用';
+      if(uploads.has(identity)){save.textContent='正在添加…';save.disabled=true;}
       save.onclick=async()=>{
+        if(persisted.has(identity)||uploads.has(identity))return;
+        uploads.add(identity);
         save.disabled=true;
         try{
-          const response=await fetch(download,{credentials:'omit'});if(!response.ok)throw new Error('下载失败');
-          const blob=await response.blob();if(blob.size>32*1024*1024)throw new Error('请直接下载大文件');
-          await bridge.uploadFile(new File([blob],file.file_name||'artifact',{type:file.mime_type||blob.type}));
-          if(current===generation)save.textContent='已保存到 ChatGPT';
-        }catch(error){if(current===generation)save.textContent=error.message||'保存失败';}
-        finally{if(current===generation)save.disabled=false;}
+          let hostFile=savedFiles.get(identity);
+          if(!hostFile){
+          const blob=await fetchFile(download);
+          if(blob.size!==file.bytes)throw new Error('文件内容不完整，请刷新链接后重试');
+          if(file.sha256&&window.crypto?.subtle){
+            const digest=Array.from(new Uint8Array(await window.crypto.subtle.digest('SHA-256',await blob.arrayBuffer())),value=>value.toString(16).padStart(2,'0')).join('');
+            if(digest!==file.sha256.toLowerCase())throw new Error('文件校验失败');
+          }
+          const uploaded=await bridge.uploadFile(new File([blob],file.file_name||'artifact',{type:file.mime_type||blob.type}));
+          if(typeof uploaded?.fileId!=='string'||!uploaded.fileId)throw new Error('ChatGPT 未返回有效文件标识');
+          hostFile={file_id:uploaded.fileId,file_name:file.file_name||'artifact',mime_type:file.mime_type||blob.type};
+          savedFiles.set(identity,hostFile);
+          while(savedFiles.size>32){const oldest=savedFiles.keys().next().value;savedFiles.delete(oldest);persisted.delete(oldest);}
+          }
+          // Keep the actual host file reference across re-renders. The signed
+          // RCM URL is deliberately not stored in model/widget state.
+          if(typeof bridge.setWidgetState==='function')await bridge.setWidgetState({
+            modelContent:{file:hostFile,status:'available_in_chatgpt'},
+            privateContent:{savedFiles:Object.fromEntries(savedFiles)},imageIds:[]
+          });
+          persisted.add(identity);
+          if(current===generation){save.textContent='已添加到 ChatGPT';el('meta').textContent=typeLabel(file)+' · 已添加到 ChatGPT';}
+        }catch(error){if(current===generation)save.textContent=savedFiles.has(identity)?'文件已上传，重试保存引用':error.message||'保存失败';}
+        finally{uploads.delete(identity);if(current===generation)save.disabled=persisted.has(identity);notifyHeight();}
       };
+      notifyHeight();
     };
-    window.addEventListener('message',event=>{const message=event.data;if(message?.method==='ui/notifications/tool-result'){latestResult=message.params||{};render();}});
+    window.addEventListener('message',event=>{if(event.source&&event.source!==window.parent)return;const message=event.data;if(message?.method==='ui/notifications/tool-result'){latestResult=message.params||{};render();}});
     window.addEventListener('openai:set_globals',()=>render());
     render();
   })();

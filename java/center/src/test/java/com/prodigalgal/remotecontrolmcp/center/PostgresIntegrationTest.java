@@ -266,7 +266,10 @@ class PostgresIntegrationTest {
         assertNotNull(poll.task());
         assertEquals(taskId, poll.task().id());
         assertEquals(1, store.find(taskId).orElseThrow().attempt(), "first lease claim must be attempt 1");
-        store.updateState(agentId, taskId, new TaskUpdateRequest("running", null, null, Instant.now(), null, false));
+        var skewedClock = first.createdAt().minusSeconds(90);
+        store.updateState(agentId, taskId, new TaskUpdateRequest("running", null, null, skewedClock, null, false));
+        var observedStart = store.find(taskId).orElseThrow().startedAt();
+        assertNotNull(observedStart); assertTrue(!observedStart.isBefore(first.createdAt()));
 
         var firstOutput = "line-1\n".getBytes(StandardCharsets.UTF_8);
         var secondOutput = "line-2\n".getBytes(StandardCharsets.UTF_8);
@@ -288,9 +291,14 @@ class PostgresIntegrationTest {
         assertNull(jdbc.queryForObject("SELECT artifact_data FROM rcm_task_artifact WHERE task_id = ?", byte[].class, taskId),
                 "new artifacts must not be written into PostgreSQL bytea");
         assertTrue(store.readArtifact(taskId).isPresent());
-        store.updateState(agentId, taskId, new TaskUpdateRequest("completed", 0, null, null, Instant.now(), false));
+        store.updateState(agentId, taskId, new TaskUpdateRequest("completed", 0, null, null, skewedClock.plusSeconds(2), false));
         assertEquals(TaskStatus.COMPLETED, store.find(taskId).orElseThrow().status());
         assertEquals(0, store.find(taskId).orElseThrow().exitCode());
+        var observedFinish = store.find(taskId).orElseThrow().finishedAt();
+        assertEquals(observedStart, store.find(taskId).orElseThrow().startedAt(), "terminal update must retain started_at in PostgreSQL");
+        assertTrue(!observedFinish.isBefore(observedStart));
+        store.updateState(agentId, taskId, new TaskUpdateRequest("completed", 0, null, null, skewedClock, false));
+        assertEquals(observedFinish, store.find(taskId).orElseThrow().finishedAt());
 
         // File-transfer v2 uses a separate streaming object and metadata row.
         // Exercise the durable state machine, an idempotent upload replay, and
