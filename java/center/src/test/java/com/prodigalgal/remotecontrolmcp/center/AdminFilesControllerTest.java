@@ -59,6 +59,44 @@ class AdminFilesControllerTest {
         }
     }
 
+    @Test void allFileOperationsCreateReusableTasksWithSupportedRisk(@TempDir Path root) throws Exception {
+        var registry = AgentRegistry.forTest("enroll");
+        var machine = registry.register(new RegisterRequest("files-agent", "files-host", "files-host", "linux", "amd64",
+                "test", root.toString(), List.of("files")), "enroll");
+        var tasks = new TaskService(registry);
+        var source = root.resolve("source").toString();
+        var target = root.resolve("target").toString();
+        var requests = List.<Map<String, Object>>of(
+                Map.of("operation", "roots"), Map.of("operation", "list", "path", source),
+                Map.of("operation", "search", "path", source, "pattern", "*.txt"),
+                Map.of("operation", "stat", "path", source), Map.of("operation", "read", "path", source),
+                Map.of("operation", "write", "path", target, "content", "中文"),
+                Map.of("operation", "mkdir", "path", target),
+                Map.of("operation", "copy", "path", source, "destination_path", target),
+                Map.of("operation", "move", "path", source, "destination_path", target),
+                Map.of("operation", "delete", "path", source),
+                Map.of("operation", "archive", "path", source, "destination_path", target),
+                Map.of("operation", "extract", "path", source, "destination_path", target));
+        var transfers = new ArtifactTransferService(null, null, new FileSystemArtifactStore(root.resolve("objects")), tasks, tokens());
+        try (var async = new CenterAsyncExecutor()) {
+            var controller = new AdminFilesController(tokens(), registry, tasks, transfers, async);
+            for (var operation : requests) {
+                var name = (String)operation.get("operation");
+                var body = new AdminFilesController.OperationBody(operation, null, "risk-" + name, 0);
+                var response = controller.operate("Bearer admin", machine.machineId(), body).get(1, TimeUnit.SECONDS);
+                assertEquals(200, response.getStatusCode().value(), name + ": " + response.getBody());
+                var task = (TaskView)((Map<?, ?>)response.getBody()).get("task");
+                var readOnly = FileRequest.READ_ONLY.contains(name);
+                assertEquals(readOnly ? "low" : "high", task.risk(), name);
+                assertEquals(readOnly ? LaneMode.READ : LaneMode.WRITE, task.laneMode(), name);
+                assertEquals("files", task.kind());
+                var retry = controller.operate("Bearer admin", machine.machineId(), body).get(1, TimeUnit.SECONDS);
+                assertEquals(task.id(), ((TaskView)((Map<?, ?>)retry.getBody()).get("task")).id(), name);
+            }
+            assertEquals(requests.size(), tasks.totalCount());
+        }
+    }
+
     private static CenterTokenConfig tokens() {
         return new CenterTokenConfig() {
             @Override public boolean acceptsAdmin(String candidate) { return "admin".equals(candidate); }
