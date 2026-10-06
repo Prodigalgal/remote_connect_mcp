@@ -156,12 +156,17 @@ jobs:
         shell: pwsh
         run: |
           if ($IsWindows) { & .\gradlew.bat -PnativeMarch=x86-64-v2 :agent:nativeCompile --no-daemon }
-          else { & bash ./gradlew -PnativeMarch=x86-64-v2 :agent:nativeCompile --no-daemon }
+          else {
+            # Validate the actual Linux release builder, including its locale,
+            # rather than the different encoding defaults of the CI runner JDK.
+            & docker build --build-arg RCM_CI_BUILD=true --build-arg RCM_NATIVE_MARCH=x86-64-v2 --file Dockerfile.agent.native --target artifact --output type=local,dest=agent/build/native/nativeCompile .
+          }
           if ($LASTEXITCODE -ne 0) { throw 'Native Agent compilation failed' }
           $binary = if ($IsWindows) { './agent/build/native/nativeCompile/rcm-agent.exe' } else { './agent/build/native/nativeCompile/rcm-agent' }
           $env:REMOTE_CONTROL_MCP_AGENT_CENTER_URL = 'https://center.invalid'
           $env:REMOTE_CONTROL_MCP_AGENT_NAME = 'ci-native-file-check'
           $env:REMOTE_CONTROL_MCP_AGENT_STATE_DIR = Join-Path $env:RUNNER_TEMP 'native-file-contracts'
+          if (-not $IsWindows) { $env:LANG = 'C'; $env:LC_ALL = 'C' }
           & $binary --check-config
           if ($LASTEXITCODE -ne 0) { throw 'Native Agent file/metadata/encoding contracts failed' }
 

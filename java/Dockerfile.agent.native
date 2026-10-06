@@ -8,6 +8,9 @@ WORKDIR /src
 RUN test "$RCM_CI_BUILD" = "true" || (echo "Native Image Docker builds are GitHub Actions-only" >&2 && exit 2)
 RUN test -n "$RCM_NATIVE_MARCH" || (echo "RCM_NATIVE_MARCH is required" >&2 && exit 2)
 ENV GITHUB_ACTIONS=${RCM_CI_BUILD}
+# Native Image copies the builder's filename encoding into the executable.
+# Use UTF-8 here so Unicode paths also work on hosts running with LANG=C.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 COPY . .
 RUN chmod +x ./gradlew && ./gradlew :agent:nativeCompile -PnativeMarch="$RCM_NATIVE_MARCH" --no-daemon --no-parallel
 

@@ -34,11 +34,18 @@ public final class RemoteControlAgentApplication {
             // Catch missing legacy charsets in the Native binary before rollout.
             var legacyCharset = java.nio.charset.Charset.forName("GB18030");
             if (!"中文".equals(new String("中文".getBytes(legacyCharset), legacyCharset))) throw new IllegalStateException("Native GB18030 codec unavailable");
+            // JSON and text codecs can work while the Native Image still has
+            // an ASCII filename encoding inherited from its build container.
+            var fileName = "中文😀文件.txt";
+            if (!fileName.equals(java.nio.file.Path.of(fileName).getFileName().toString())) {
+                throw new IllegalStateException("Native Unicode filesystem path changed during round-trip");
+            }
             LOG.info(() -> "java agent configuration valid: name=" + metadata.name() + ", hostId=" + metadata.hostId()
                     + ", os=" + metadata.os() + ", arch=" + metadata.arch() + ", capabilities=" + metadata.capabilities()
                     + ", maxConcurrency=" + config.maxConcurrency() + ", maxBrowserWorkers=" + config.maxBrowserWorkers()
                     + ", maxOutputBytes=" + config.maxOutputBytes()
-                    + ", maxAggregateOutputBytes=" + config.maxAggregateOutputBytes());
+                    + ", maxAggregateOutputBytes=" + config.maxAggregateOutputBytes()
+                    + ", filenameEncoding=" + System.getProperty("sun.jnu.encoding"));
             return;
         }
 
