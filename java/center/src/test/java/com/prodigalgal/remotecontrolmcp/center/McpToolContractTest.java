@@ -3,6 +3,7 @@ package com.prodigalgal.remotecontrolmcp.center;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.prodigalgal.remotecontrolmcp.protocol.PollRequest;
+import com.prodigalgal.remotecontrolmcp.protocol.LaneMode;
 import com.prodigalgal.remotecontrolmcp.protocol.RegisterRequest;
 import com.prodigalgal.remotecontrolmcp.protocol.TaskCommand;
 import com.prodigalgal.remotecontrolmcp.protocol.TaskKind;
