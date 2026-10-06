@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { CopyButton } from './CopyButton'
 import { useToast } from './ToastProvider'
 
@@ -26,14 +26,17 @@ export function TerminalOutput({
   hasMore = false,
   live = false,
   receivedAt,
-  encoding = 'utf-8',
+  encoding = 'auto',
   onEncodingChange,
 }: TerminalOutputProps) {
   const notify = useToast()
   const lastError = useRef('')
   const [autoScroll, setAutoScroll] = useState(true)
+  const [sourceDraft, setSourceDraft] = useState(encoding)
+  const sourceOptions = useId()
   const bodyRef = useRef<HTMLPreElement>(null)
 
+  useEffect(() => { setSourceDraft(encoding) }, [encoding])
   useEffect(() => { lastError.current = '' }, [receivedAt])
   useEffect(() => {
     if (error && error !== lastError.current) {
@@ -61,13 +64,23 @@ export function TerminalOutput({
         </div>
 
         <div className="terminal-actions">
-          {onEncodingChange && <select className="form-select terminal-encoding" aria-label="日志编码"
-            title="乱码时可切换编码；将从头重新读取日志" value={encoding}
-            onChange={(event) => onEncodingChange(event.target.value)}>
-            <option value="utf-8">UTF-8</option>
-            <option value="gb18030">GB18030 / GBK</option>
-            <option value="utf-16le">UTF-16LE</option>
-          </select>}
+          {onEncodingChange && <>
+            <input className="form-input terminal-encoding" aria-label="日志源编码" list={sourceOptions}
+              title="源编码：auto 为自动识别，也可输入字符集名称。按 Enter 或离开输入框应用，回显统一为 UTF-8。"
+              value={sourceDraft} maxLength={64} onChange={(event) => setSourceDraft(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }}
+              onBlur={() => {
+                const selected = sourceDraft.trim() || 'auto'
+                setSourceDraft(selected)
+                if (selected !== encoding) onEncodingChange(selected)
+              }} />
+            <datalist id={sourceOptions}>
+              <option value="auto" label="自动识别源编码" />
+              <option value="UTF-8" /><option value="GB18030" /><option value="GBK" />
+              <option value="UTF-16LE" /><option value="UTF-16BE" />
+              <option value="windows-1252" /><option value="Shift_JIS" /><option value="IBM850" />
+            </datalist>
+          </>}
           {onRefresh && (
             <button
               type="button"

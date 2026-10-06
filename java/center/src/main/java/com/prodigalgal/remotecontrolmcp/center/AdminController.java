@@ -241,26 +241,43 @@ public final class AdminController {
                                                        @RequestParam(defaultValue = "0") long cursor,
                                                        @RequestParam(defaultValue = "16384") int limit,
                                                        @RequestParam(value = "wait_ms", defaultValue = "0") long waitMs,
-                                                       @RequestParam(value = "change_seq", defaultValue = "-1") long changeSequence) {
+                                                       @RequestParam(value = "change_seq", defaultValue = "-1") long changeSequence,
+                                                       @RequestParam(value = "source_encoding", defaultValue = "auto") String sourceEncoding) {
         return execute(() -> {
             authenticate(authorization);
             if (cursor < 0) throw new IllegalArgumentException("cursor must be non-negative");
-            if (limit > 65536) throw new IllegalArgumentException("limit must be at most 65536");
+            if (limit < 1 || limit > 65536) throw new IllegalArgumentException("limit must be between 1 and 65536");
             if (waitMs < 0 || waitMs > 25_000L) throw new IllegalArgumentException("wait_ms must be between 0 and 25000");
             if (changeSequence < -1) throw new IllegalArgumentException("change_seq must be non-negative or -1");
+            var encoding = TaskOutputText.validateEncoding(sourceEncoding);
             // Output chunks deliberately do not invalidate the global admin
             // feed. Subscribe to this task's existing wake path instead.
-            var task = tasks.waitForChange(taskId, cursor, changeSequence, Duration.ofMillis(waitMs));
-            var page = tasks.readOutput(taskId, cursor, limit);
+            var waitCursor = cursor;
+            if (waitMs > 0) {
+                var available = tasks.readTextOutput(taskId, cursor, limit, encoding);
+                if (available.pendingBytes() > 0 && available.nextCursor() == cursor && !available.more())
+                    waitCursor = Long.MAX_VALUE;
+            }
+            var task = tasks.waitForChange(taskId, waitCursor, changeSequence, Duration.ofMillis(waitMs));
+            var page = tasks.readTextOutput(taskId, cursor, limit, encoding);
             var result = new LinkedHashMap<String, Object>();
-            result.put("data_base64", Base64.getEncoder().encodeToString(page.data()));
-            result.put("text", new String(page.data(), StandardCharsets.UTF_8));
+            result.put("data_base64", Base64.getEncoder().encodeToString(page.raw()));
+            result.put("text", page.text());
+            result.put("encoding", "UTF-8");
+            result.put("source_encoding", page.sourceEncoding());
+            if (page.decodingError()) result.put("decoding_error", true);
+            if (page.pendingBytes() > 0) result.put("pending_bytes", page.pendingBytes());
             result.put("cursor", page.cursor());
             result.put("next_cursor", page.nextCursor());
             result.put("more", page.more());
             result.put("task", task);
             return noStore(result);
         });
+    }
+
+    public CompletableFuture<ResponseEntity<?>> output(String authorization, String taskId, long cursor,
+                                                       int limit, long waitMs, long changeSequence) {
+        return output(authorization, taskId, cursor, limit, waitMs, changeSequence, "auto");
     }
 
     @GetMapping("/tasks/{taskId}/artifact")

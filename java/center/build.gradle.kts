@@ -40,6 +40,9 @@ graalvmNative {
         named("main") {
             imageName.set("rcm-center")
             buildArgs.add("-march=$nativeMarch")
+            // Decode legacy host logs before returning UTF-8, including
+            // explicitly selected OEM, Windows and stateful source charsets.
+            buildArgs.add("-H:+AddAllCharsets")
             // Keep the control-plane native image compact as well.  This does
             // not change the runtime protocol or the database implementation.
             buildArgs.add("-Os")

@@ -491,7 +491,8 @@ public class McpConfiguration {
                 Map.entry("env", Map.of("type", "object", "description", "optional non-secret environment map", "additionalProperties", modelString("environment value", 0, 8192))),
                 Map.entry("timeout_seconds", modelInteger("0 means Agent default", 0, 86400)),
                 Map.entry("wait_ms", modelInteger("0 returns a task immediately; a positive value waits briefly for bounded output without canceling the task", 0, 15000)),
-                Map.entry("limit", modelInteger("initial output byte budget; default 16384", 1, MAX_OUTPUT_PAGE)),
+                Map.entry("limit", modelInteger("initial UTF-8 text byte budget; default 16384", 1, MAX_OUTPUT_PAGE)),
+                Map.entry("source_encoding", modelString("source charset for this output read; default auto detects BOM/UTF-8 then GB18030; output text is always UTF-8. Pass again to task_read to override ambiguous bytes", 1, 64)),
                 Map.entry("idempotency_key", Map.of("type", "string", "description", "optional stable retry key", "minLength", 8, "maxLength", 128, "pattern", "^[A-Za-z0-9._:-]+$"))),
                 List.of("machine_id", "command"));
     }
@@ -698,14 +699,15 @@ public class McpConfiguration {
                 Map.entry("detail", modelBoolean("include execution timing, command context, progress counts and retention details")),
                 Map.entry("include_output", modelBoolean("read output; defaults to false for change_seq-only status observation")),
                 Map.entry("include_artifact", modelBoolean("fetch image content; defaults to metadata only")),
-                Map.entry("limit", modelInteger("output page size", 1, MAX_OUTPUT_PAGE))), List.of("task_id"));
+                Map.entry("source_encoding", modelString("source charset for command logs, e.g. GB18030, UTF-16LE, windows-1252 or auto; output text is always UTF-8; reread retained bytes without rerunning the command", 1, 64)),
+                Map.entry("limit", modelInteger("UTF-8 text page budget; cursors and tail_bytes refer to source bytes", 1, MAX_OUTPUT_PAGE))), List.of("task_id"));
         result.put("not", Map.of("anyOf", List.of(
                 Map.of("required", List.of("tail_bytes", "cursor")),
                 Map.of("required", List.of("tail_bytes", "limit")),
                 Map.of("properties", Map.of("include_output", Map.of("const", false)),
                         "required", List.of("include_output"),
                         "anyOf", List.of(Map.of("required", List.of("cursor")), Map.of("required", List.of("tail_bytes")),
-                                Map.of("required", List.of("limit")))))));
+                                Map.of("required", List.of("limit")), Map.of("required", List.of("source_encoding")))))));
         return result;
     }
 
@@ -732,7 +734,11 @@ public class McpConfiguration {
                         "additionalProperties", true),
                 "cursor", Map.of("type", "integer"),
                 "next_cursor", Map.of("type", "integer"),
-                "more", Map.of("type", "boolean")), List.of("cursor", "next_cursor", "more"));
+                "more", Map.of("type", "boolean"),
+                "encoding", Map.of("const", "UTF-8"),
+                "source_encoding", Map.of("type", "string"),
+                "decoding_error", Map.of("type", "boolean"),
+                "pending_bytes", Map.of("type", "integer")), List.of("cursor", "next_cursor", "more"));
         output.put("oneOf", exclusiveFields("text", "data"));
         var transfer = modelSchema(Map.of(
                 "transfer_id", Map.of("type", "string"),
@@ -809,6 +815,7 @@ public class McpConfiguration {
             normalized.put("machine_id", requiredModelString(arguments, "machine_id"));
             normalized.put("command", requiredModelString(arguments, "command"));
             copyIfPresent(arguments, normalized, "env");
+            copyIfPresent(arguments, normalized, "source_encoding");
             copyIfPresent(arguments, normalized, "timeout_seconds");
             copyIfPresent(arguments, normalized, "wait_ms");
             copyIfPresent(arguments, normalized, "limit");
@@ -997,8 +1004,9 @@ public class McpConfiguration {
             var changeSequence = optionalModelLong(arguments, "change_seq", 0L, Long.MAX_VALUE, -1L);
             var limit = optionalModelInt(arguments, "limit", 1, MAX_OUTPUT_PAGE, DEFAULT_OUTPUT_PAGE);
             var detail = Boolean.TRUE.equals(arguments.get("detail"));
+            var sourceEncoding = TaskOutputText.validateEncoding(asString(arguments.get("source_encoding")));
             var outputSelected = arguments.containsKey("cursor") || arguments.containsKey("tail_bytes")
-                    || arguments.containsKey("limit");
+                    || arguments.containsKey("limit") || arguments.containsKey("source_encoding");
             var includeOutput = arguments.containsKey("include_output")
                     ? Boolean.TRUE.equals(arguments.get("include_output"))
                     : changeSequence < 0 || outputSelected;
@@ -1009,11 +1017,16 @@ public class McpConfiguration {
             access.authorizeTool(origin, current.machineId(), "task_read");
             // State/progress observation must not replay or be woken by old logs.
             var waitCursor = !includeOutput ? Long.MAX_VALUE : tailBytes > 0 ? current.outputBytes() : cursor;
+            if (waitMs > 0 && includeOutput && tailBytes == 0 && "command".equals(current.command().kind().wireValue())) {
+                var available = tasks.readTextOutput(origin, taskId, cursor, limit, sourceEncoding);
+                if (available.pendingBytes() > 0 && available.nextCursor() == cursor && !available.more())
+                    waitCursor = Long.MAX_VALUE;
+            }
             var view = waitMs == 0 ? new TaskView(current)
                     : tasks.waitForChange(origin, taskId, waitCursor, changeSequence, Duration.ofMillis(waitMs));
             var outputCursor = tailBytes > 0 ? Math.max(0L, view.outputBytes() - tailBytes) : cursor;
             var result = taskResult(tasks, origin, view, outputCursor, tailBytes > 0 ? tailBytes : limit,
-                    detail, includeOutput, includeArtifact);
+                    detail, includeOutput, includeArtifact, sourceEncoding);
             if (transfers == null || !TaskKind.FILE_TRANSFER.wireValue().equals(view.kind())) return result;
             var transfer = transfers.findByTask(taskId, origin).orElse(null);
             if (transfer == null) return result;
@@ -1420,6 +1433,7 @@ public class McpConfiguration {
             var args = args(request, CommandCoreArgs.class);
             var waitMs = executionWaitMs(args.waitMs());
             var limit = initialOutputLimit(args.limit());
+            var sourceEncoding = TaskOutputText.validateEncoding(args.sourceEncoding());
             access.authorizeTool(origin, args.machineId(), "command");
             var timeout = args.timeoutSeconds() == null ? 0 : args.timeoutSeconds();
             var cwd = resolveCwd(agents, args.machineId(), args.cwd());
@@ -1427,8 +1441,11 @@ public class McpConfiguration {
                     null, args.command(), cwd, args.env(), timeout, null, Instant.now(), null, 0, null);
             var task = tasks.create(new CreateTaskRequest(args.machineId(), command, args.idempotencyKey(),
                     null, "", "low", false, origin), "mcp", origin);
-            if (waitMs > 0) return immediateTaskResult(tasks, origin,
-                    tasks.waitForTerminal(origin, task.id(), Duration.ofMillis(waitMs)), limit);
+            if (waitMs > 0) {
+                var view = tasks.waitForTerminal(origin, task.id(), Duration.ofMillis(waitMs));
+                var cursor = TaskStatus.FAILED.equals(view.status()) ? Math.max(0L, view.outputBytes() - limit) : 0L;
+                return taskResult(tasks, origin, view, cursor, limit, false, true, true, sourceEncoding);
+            }
             return json(Map.of("task", taskMap(task)));
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -1569,6 +1586,12 @@ public class McpConfiguration {
     static McpSchema.CallToolResult taskResult(TaskService tasks, TaskOrigin origin,
                                               TaskView view, long cursor, int limit, boolean detail,
                                               boolean includeOutput, boolean includeArtifact) {
+        return taskResult(tasks, origin, view, cursor, limit, detail, includeOutput, includeArtifact, "auto");
+    }
+
+    static McpSchema.CallToolResult taskResult(TaskService tasks, TaskOrigin origin,
+                                              TaskView view, long cursor, int limit, boolean detail,
+                                              boolean includeOutput, boolean includeArtifact, String sourceEncoding) {
         var payload = new LinkedHashMap<String, Object>();
         payload.put("task", detail ? taskDetailMap(view) : taskMap(view));
         if (TaskStatus.FAILED.equals(view.status())) {
@@ -1582,7 +1605,7 @@ public class McpConfiguration {
         }
         if (includeOutput) {
             var structuredBrowser = "browser".equals(view.kind()) && cursor == 0;
-            var page = tasks.readOutput(origin, view.id(), cursor, structuredBrowser ? MAX_OUTPUT_PAGE : Math.max(4, limit));
+            var page = structuredBrowser ? tasks.readOutput(origin, view.id(), cursor, MAX_OUTPUT_PAGE) : null;
             Map<String, Object> browserData = null;
             if (structuredBrowser && page.data().length > 0 && !page.more() && !view.outputTruncated()) {
                 try {
@@ -1593,11 +1616,24 @@ public class McpConfiguration {
                     // An older/custom adapter can return plain text.
                 }
             }
-            if (browserData == null) page = Utf8OutputPage.align(page, limit);
-            if (page.data().length > 0 || page.more()) {
+            if (browserData == null) {
+                var text = tasks.readTextOutput(origin, view.id(), cursor, limit,
+                        "command".equals(view.kind()) ? sourceEncoding : "UTF-8");
+                if (!text.text().isEmpty() || text.more() || text.pendingBytes() > 0 || text.nextCursor() > cursor) {
+                    var output = new LinkedHashMap<String, Object>();
+                    output.put("text", text.text());
+                    output.put("encoding", "UTF-8");
+                    output.put("source_encoding", text.sourceEncoding());
+                    if (text.decodingError()) output.put("decoding_error", true);
+                    if (text.pendingBytes() > 0) output.put("pending_bytes", text.pendingBytes());
+                    output.put("cursor", text.cursor());
+                    output.put("next_cursor", text.nextCursor());
+                    output.put("more", text.more());
+                    payload.put("output", output);
+                }
+            } else if (page.data().length > 0 || page.more()) {
                 var output = new LinkedHashMap<String, Object>();
-                if (browserData == null) output.put("text", new String(page.data(), StandardCharsets.UTF_8));
-                else output.put("data", browserData);
+                output.put("data", browserData);
                 output.put("cursor", page.cursor());
                 output.put("next_cursor", page.nextCursor());
                 output.put("more", page.more());
@@ -1985,6 +2021,7 @@ public class McpConfiguration {
                            @JsonProperty("timeout_seconds") Integer timeoutSeconds,
                            @JsonProperty("wait_ms") Integer waitMs,
                            Integer limit,
+                           @JsonProperty("source_encoding") String sourceEncoding,
                            @JsonProperty("idempotency_key") String idempotencyKey) {
     }
 

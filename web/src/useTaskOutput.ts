@@ -3,9 +3,13 @@ import { AdminApiError, readTaskOutput, type Task } from './api'
 
 const PREVIEW_LIMIT = 64 * 1024
 const isTerminal = (task: Task) => ['completed', 'failed', 'canceled', 'succeeded'].includes(task.status)
+const legacyDecoder = (encoding: string) => {
+  try { return new TextDecoder(encoding === 'auto' ? 'utf-8' : encoding) }
+  catch { return new TextDecoder('utf-8') }
+}
 
 /** One bounded, cursor-based subscription per expanded task. */
-export function useTaskOutput(token: string, listedTask: Task, enabled: boolean, encoding = 'utf-8') {
+export function useTaskOutput(token: string, listedTask: Task, enabled: boolean, encoding = 'auto') {
   const [snapshot, setSnapshot] = useState<Task | null>(null)
   const [output, setOutput] = useState('')
   const [more, setMore] = useState(false)
@@ -17,7 +21,8 @@ export function useTaskOutput(token: string, listedTask: Task, enabled: boolean,
   const [readRequest, setReadRequest] = useState({ version: 0, reset: false })
   const appliedRequest = useRef(0)
   const cursor = useRef(0)
-  const decoder = useRef(new TextDecoder(encoding))
+  const legacyEncoding = encoding === 'auto' ? 'utf-8' : encoding
+  const decoder = useRef(legacyDecoder(encoding))
   const appliedEncoding = useRef(encoding)
   const loaded = useRef(false)
 
@@ -42,7 +47,7 @@ export function useTaskOutput(token: string, listedTask: Task, enabled: boolean,
       appliedEncoding.current = encoding
       if (reset) {
         cursor.current = 0
-        decoder.current = new TextDecoder(encoding)
+        decoder.current = legacyDecoder(encoding)
         loaded.current = false
         setOutput('')
         setCropped(false)
@@ -60,26 +65,28 @@ export function useTaskOutput(token: string, listedTask: Task, enabled: boolean,
       while (!controller.signal.aborted) {
         try {
           const page = await readTaskOutput(token, listedTask.id, cursor.current, 16 * 1024,
-            { waitMs, changeSeq: sequence, signal: controller.signal })
+            { waitMs, changeSeq: sequence, sourceEncoding: encoding, signal: controller.signal })
           if (controller.signal.aborted) return
           if (page.task) {
             setSnapshot(page.task)
             following ||= !isTerminal(page.task)
             // Open a noisy running command at its recent output rather than
             // downloading its entire history before showing current activity.
-            if (!loaded.current && encoding === 'utf-8' && !isTerminal(page.task) && page.task.outputBytes > PREVIEW_LIMIT) {
+            if (!loaded.current && (page.encoding === 'UTF-8' || legacyEncoding === 'utf-8')
+              && !isTerminal(page.task) && page.task.outputBytes > PREVIEW_LIMIT) {
               cursor.current = page.task.outputBytes - PREVIEW_LIMIT
-              decoder.current = new TextDecoder(encoding)
+              decoder.current = legacyDecoder(encoding)
               loaded.current = true
-              trimLeadingBytes = true
+              trimLeadingBytes = page.encoding !== 'UTF-8'
               setCropped(true)
               continue
             }
           }
           const terminal = page.task ? isTerminal(page.task) : isTerminal(taskRef.current)
-          const unread = page.task ? page.nextCursor < page.task.outputBytes : page.more
+          const unread = page.encoding === 'UTF-8' ? page.more
+            : page.task ? page.nextCursor < page.task.outputBytes : page.more
           let text = page.text
-          if (page.dataBase64 != null) {
+          if (page.encoding !== 'UTF-8' && page.dataBase64 != null) {
             let bytes = Uint8Array.from(atob(page.dataBase64), (value) => value.charCodeAt(0))
             if (trimLeadingBytes && bytes.length > 0) {
               let start = 0
@@ -87,8 +94,8 @@ export function useTaskOutput(token: string, listedTask: Task, enabled: boolean,
               bytes = bytes.subarray(start)
               trimLeadingBytes = false
             }
-            // Decode retained bytes, including legacy Windows encodings,
-            // across pages. Changing encoding rereads from byte zero.
+            // Older Centers expose raw bytes only. Current Centers return
+            // normalized UTF-8 text; never decode that text a second time.
             text = decoder.current.decode(bytes, { stream: !terminal || unread })
           }
           if (text) {
@@ -109,7 +116,7 @@ export function useTaskOutput(token: string, listedTask: Task, enabled: boolean,
           loaded.current = true
           setMore(unread)
           setLoading(false)
-          setError('')
+          setError(page.decodingError ? '部分字节无法按当前源编码解码，请切换源编码重新读取；原始输出仍保留。' : '')
           // Older Centers return a finite page without a task snapshot. Keep
           // manual reading compatible and never turn that into a tight poll.
           if (!page.task || !following || (terminal && !unread)) {
@@ -145,7 +152,7 @@ export function useTaskOutput(token: string, listedTask: Task, enabled: boolean,
       window.clearTimeout(retryTimer)
       finishRetry?.()
     }
-  }, [enabled, token, listedTask.id, readRequest, encoding])
+  }, [enabled, token, listedTask.id, readRequest, encoding, legacyEncoding])
 
   return {
     task, output, more, loading, error, live, cropped, receivedAt,

@@ -88,6 +88,10 @@ export type Task = {
 export type TaskOutputPage = {
   text: string
   dataBase64?: string
+  encoding?: string
+  sourceEncoding?: string
+  decodingError?: boolean
+  pendingBytes?: number
   cursor: number
   nextCursor: number
   more: boolean
@@ -477,11 +481,12 @@ export async function cancelTask(token: string, taskId: string): Promise<Task> {
 
 export async function readTaskOutput(
   token: string, taskId: string, cursor = 0, limit = 16 * 1024,
-  options: { waitMs?: number; changeSeq?: number; signal?: AbortSignal } = {},
+  options: { waitMs?: number; changeSeq?: number; sourceEncoding?: string; signal?: AbortSignal } = {},
 ): Promise<TaskOutputPage> {
   const waitMs = Math.min(25_000, Math.max(0, Math.trunc(options.waitMs ?? 0)))
   const params = new URLSearchParams({ cursor: String(Math.max(0, cursor)), limit: String(Math.min(64 * 1024, Math.max(1, limit))) })
   if (waitMs > 0) params.set('wait_ms', String(waitMs))
+  if (options.sourceEncoding) params.set('source_encoding', options.sourceEncoding)
   if (options.changeSeq != null) params.set('change_seq', String(Math.max(0, Math.trunc(options.changeSeq))))
   const body = await request<Record<string, unknown>>(
     `/api/v1/admin/tasks/${encodeURIComponent(taskId)}/output?${params}`,
@@ -493,6 +498,10 @@ export async function readTaskOutput(
   return {
     text: String(body.text ?? ''),
     dataBase64: typeof body.data_base64 === 'string' ? body.data_base64 : undefined,
+    encoding: typeof body.encoding === 'string' ? body.encoding : undefined,
+    sourceEncoding: typeof body.source_encoding === 'string' ? body.source_encoding : undefined,
+    decodingError: body.decoding_error === true,
+    pendingBytes: Number(body.pending_bytes ?? 0),
     cursor: Number(body.cursor ?? cursor),
     nextCursor: Number(body.next_cursor ?? cursor),
     more: Boolean(body.more),

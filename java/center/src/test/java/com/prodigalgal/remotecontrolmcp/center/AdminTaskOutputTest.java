@@ -18,6 +18,41 @@ import org.junit.jupiter.api.Test;
 
 class AdminTaskOutputTest {
     @Test
+    void holdsPartialGbkUntilItIsCompleteAndReturnsUtf8WithoutChangingRawBytes() throws Exception {
+        var registry = AgentRegistry.forTest("enroll");
+        var machine = registry.register(new RegisterRequest("gbk-agent", "host", "host",
+                "windows", "amd64", "test", "C:/", List.of("command")), "enroll");
+        var tasks = new TaskService(registry);
+        var task = tasks.create(new CreateTaskRequest(machine.machineId(),
+                new TaskCommand("", null, null, "work", "C:/", Map.of(), 30, null, null), "gbk-output"));
+        tasks.poll(machine.machineId(), new PollRequest(List.of(), 1, List.of("command")));
+        tasks.updateState(machine.machineId(), task.id(),
+                new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false));
+        var bytes = "中".getBytes(java.nio.charset.Charset.forName("GBK"));
+        tasks.appendOutput(machine.machineId(), task.id(), 0, new byte[] {bytes[0]});
+        try (var async = new CenterAsyncExecutor()) {
+            var controller = new AdminController(new AdminTokens(), registry, tasks, null, null, null, async);
+            var partial = (Map<?, ?>) controller.output("Bearer admin", task.id(), 0, 64, 0, -1, "GBK")
+                    .get(1, TimeUnit.SECONDS).getBody();
+            assertEquals("", partial.get("text"));
+            assertEquals(0L, partial.get("next_cursor"));
+            assertEquals(1, partial.get("pending_bytes"));
+            assertEquals(false, partial.get("more"));
+            var before = (TaskView) partial.get("task");
+            var waiting = controller.output("Bearer admin", task.id(), 0, 64, 1000, before.changeSequence(), "GBK");
+            assertThrows(TimeoutException.class, () -> waiting.get(30, TimeUnit.MILLISECONDS));
+            tasks.appendOutput(machine.machineId(), task.id(), 1, new byte[] {bytes[1]});
+            var decoded = (Map<?, ?>) waiting.get(1, TimeUnit.SECONDS).getBody();
+            assertEquals("中", decoded.get("text"));
+            assertEquals("UTF-8", decoded.get("encoding"));
+            assertEquals("GBK", decoded.get("source_encoding"));
+            assertEquals(2L, decoded.get("next_cursor"));
+            assertEquals(Base64.getEncoder().encodeToString(bytes), decoded.get("data_base64"));
+            assertEquals("中", new String(tasks.readOutput(task.id(), 0, 64).data(), java.nio.charset.Charset.forName("GBK")));
+        }
+    }
+
+    @Test
     void wakesForOutputProgressAndCompletionWithoutRepeatingOldLogs() throws Exception {
         var registry = AgentRegistry.forTest("enroll");
         var machine = registry.register(new RegisterRequest("command-agent", "host", "host",
