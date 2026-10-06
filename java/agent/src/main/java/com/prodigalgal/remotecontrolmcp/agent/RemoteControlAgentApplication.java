@@ -1,5 +1,7 @@
 package com.prodigalgal.remotecontrolmcp.agent;
 
+import com.prodigalgal.remotecontrolmcp.protocol.AgentMetadata;
+import com.prodigalgal.remotecontrolmcp.protocol.JsonCodec;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -18,6 +20,12 @@ public final class RemoteControlAgentApplication {
         if (args.length == 1 && "--check-config".equals(args[0])) {
             var config = AgentConfig.fromEnvironment();
             var metadata = config.metadata();
+            // Exercise the same nested records used by heartbeat requests in
+            // the actual Native binary, before a release can be published.
+            var decoded = JsonCodec.read(JsonCodec.write(metadata), AgentMetadata.class);
+            if (!metadata.equals(decoded)) {
+                throw new IllegalStateException("Agent metadata changed during protocol round-trip");
+            }
             LOG.info(() -> "java agent configuration valid: name=" + metadata.name() + ", hostId=" + metadata.hostId()
                     + ", os=" + metadata.os() + ", arch=" + metadata.arch() + ", capabilities=" + metadata.capabilities()
                     + ", maxConcurrency=" + config.maxConcurrency() + ", maxBrowserWorkers=" + config.maxBrowserWorkers()

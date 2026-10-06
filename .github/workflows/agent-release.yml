@@ -162,6 +162,10 @@ jobs:
             set +e; "${bin}" --invalid-arguments >/dev/null 2>&1; code=$?; set -e
             test "${code}" -eq 2
           done
+          REMOTE_CONTROL_MCP_AGENT_CENTER_URL=https://center.invalid \
+            REMOTE_CONTROL_MCP_AGENT_NAME=ci-native-check \
+            REMOTE_CONTROL_MCP_AGENT_STATE_DIR="${GITHUB_WORKSPACE}/out/native-check-state-${TARGET_ARCH}" \
+            "out/${TARGET_ARCH}/agent/rcm-agent" --check-config
           for dir in agent desktop browser updater; do (cd "out/${TARGET_ARCH}/${dir}" && sha256sum $(find . -maxdepth 1 -type f -printf '%f\n' | sort) > SHA256SUMS); done
           agent_archive="remote-control-mcp-agent-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
           desktop_archive="remote-control-mcp-desktop-${RELEASE_VERSION}-linux-${TARGET_ARCH}.zip"
@@ -227,6 +231,11 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $agent = '.\java\agent\build\native\nativeCompile\rcm-agent.exe'
           if (-not (Test-Path -LiteralPath $agent -PathType Leaf)) { throw "Native binary missing: $agent" }
+          $env:REMOTE_CONTROL_MCP_AGENT_CENTER_URL = 'https://center.invalid'
+          $env:REMOTE_CONTROL_MCP_AGENT_NAME = 'ci-native-check'
+          $env:REMOTE_CONTROL_MCP_AGENT_STATE_DIR = Join-Path $env:GITHUB_WORKSPACE 'out/native-check-state-windows'
+          & $agent --check-config
+          if ($LASTEXITCODE -ne 0) { throw 'Agent Native metadata protocol check failed' }
           foreach ($bin in @(
             '.\java\desktop\build\native\nativeCompile\rcm-desktop-companion.exe',
             '.\java\browser\build\native\nativeCompile\rcm-browser-agent.exe',

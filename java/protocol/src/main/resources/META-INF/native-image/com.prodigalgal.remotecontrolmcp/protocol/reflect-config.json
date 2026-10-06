@@ -1,5 +1,6 @@
 [
   {"name":"com.prodigalgal.remotecontrolmcp.protocol.AgentMetadata","allDeclaredConstructors":true,"allDeclaredMethods":true},
+  {"name":"com.prodigalgal.remotecontrolmcp.protocol.AgentUserContext","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remotecontrolmcp.protocol.ArtifactRequest","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remotecontrolmcp.protocol.ArtifactResponse","allDeclaredConstructors":true,"allDeclaredMethods":true},
   {"name":"com.prodigalgal.remotecontrolmcp.protocol.OutputRequest","allDeclaredConstructors":true,"allDeclaredMethods":true},
