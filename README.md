@@ -66,6 +66,16 @@ Console 使用部署时设置的 Admin Token 登录。MCP 客户端凭证和机�
 
 当前 Agent 发布平台为 **Windows amd64、Linux amd64 / arm64**。Native Agent 不要求目标机安装 JDK；启用 Camoufox 浏览器时，目标机需要 Node.js 22.15 及以上和 npm。首次安装必须在目标机执行，之后由更新流程管理。
 
+同一个 Agent 版本分别发布以下二进制包，Center 按机器的系统与架构选包：
+
+| 发布目标 | CPU 指令集基线 |
+| --- | --- |
+| Windows amd64 | x86-64-v2 |
+| Linux amd64 | x86-64-v2，包含无 AVX2 主机的验收 |
+| Linux arm64 | armv8-a |
+
+构建使用明确的 CPU 基线。Linux Agent 的文件名编码在构建时固定为 UTF-8，并在 `C` / `C.UTF-8` 运行环境验证中文和 emoji 路径；Windows 使用系统 Unicode 路径 API。文本文件的 UTF-8、GB18030 和 UTF-16 编码按文件请求处理。机器的系统默认代码页、命令输出编码和文件内容编码需要分别判断；Console 可切换日志解码，MCP 命令日志当前按 UTF-8 读取，执行程序需要输出 UTF-8。其他系统、架构及较旧 Linux 系统库的兼容性需要单独验收。
+
 ### 3. 创建 MCP 连接凭证
 
 在 Console“连接凭证”填写名称与有效期，通过“机器 × 工具”表格选择范围。支持搜索、在线状态筛选、分页和按机器/工具批量勾选；翻页保留已选权限。凭证明文只显示一次。
