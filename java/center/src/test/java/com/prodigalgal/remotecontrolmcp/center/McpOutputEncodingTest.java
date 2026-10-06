@@ -3,6 +3,7 @@ package com.prodigalgal.remotecontrolmcp.center;
 import static org.junit.jupiter.api.Assertions.*;
 import com.prodigalgal.remotecontrolmcp.protocol.*;
 import io.modelcontextprotocol.spec.McpSchema;
+import io.modelcontextprotocol.json.McpJsonDefaults;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
