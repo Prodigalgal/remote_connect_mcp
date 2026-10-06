@@ -85,11 +85,13 @@ class PostgresIntegrationTest {
 
     @AfterAll
     void cleanUp() {
-        if (jdbc != null && aclPrincipalId != null) {
-            jdbc.update("DELETE FROM rcm_principal WHERE principal_id = ?", aclPrincipalId);
-        }
+        // Tasks owned by the ACL principal are removed with their machine
+        // before deleting the principal referenced by those durable rows.
         if (jdbc != null && agentId != null) {
             jdbc.update("DELETE FROM rcm_agent WHERE agent_id = ?", agentId);
+        }
+        if (jdbc != null && aclPrincipalId != null) {
+            jdbc.update("DELETE FROM rcm_principal WHERE principal_id = ?", aclPrincipalId);
         }
         if (dataSource != null) {
             dataSource.close();

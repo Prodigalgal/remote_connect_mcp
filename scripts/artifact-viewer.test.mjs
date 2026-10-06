@@ -38,6 +38,7 @@ test('ready file is a compact themed link with no automatic upload', async () =>
     download_url: 'https://files.example.test/report?signature=test', preview_url: 'https://files.example.test/preview' } });
   assert.equal(ui.root.dataset.theme, 'dark');
   assert.equal(ui.node('name').textContent, '中文报告.docx');
+  assert.equal(ui.node('meta').textContent, 'Word · 1,234 字节');
   assert.equal(ui.node('download').hidden, false);
   assert.equal(ui.node('open').href, 'https://files.example.test/preview');
   assert.equal(ui.node('save').hidden, false);

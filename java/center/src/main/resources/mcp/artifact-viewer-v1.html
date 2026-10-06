@@ -31,6 +31,15 @@
     const el=id=>document.getElementById(id),host=()=>window.openai||{};
     let latestResult=null,generation=0;
     const url=value=>{try{const parsed=new URL(String(value||''));return ['https:','http:'].includes(parsed.protocol)?parsed.href:'';}catch{return '';}};
+    const typeLabel=file=>{
+      const mime=String(file.mime_type||'').toLowerCase(),name=String(file.file_name||'').toLowerCase();
+      if(mime.includes('word')||/\.(docx?|odt|rtf)$/.test(name))return 'Word';
+      if(mime.includes('spreadsheet')||mime.includes('excel')||/\.(xlsx?|ods)$/.test(name))return 'Excel';
+      if(mime.includes('presentation')||mime.includes('powerpoint')||/\.(pptx?|odp)$/.test(name))return 'PowerPoint';
+      if(mime==='application/pdf'||name.endsWith('.pdf'))return 'PDF';
+      if(mime.startsWith('image/'))return '图片';if(mime.startsWith('audio/'))return '音频';if(mime.startsWith('video/'))return '视频';
+      if(mime.startsWith('text/'))return '文本';return '文件';
+    };
     const render=async()=>{
       const current=++generation,bridge=host();
       const theme=bridge.theme;if(theme==='light'||theme==='dark')document.documentElement.dataset.theme=theme;
@@ -51,7 +60,7 @@
         try{download=url((await bridge.getFileDownloadUrl({fileId:file.file_id}))?.downloadUrl);}catch{}
       }
       if(current!==generation)return;
-      el('meta').textContent=[file.mime_type,Number.isFinite(file.bytes)?Number(file.bytes).toLocaleString()+' 字节':''].filter(Boolean).join(' · ')||'文件';
+      el('meta').textContent=[typeLabel(file),Number.isFinite(file.bytes)?Number(file.bytes).toLocaleString()+' 字节':''].filter(Boolean).join(' · ');
       if(!download){el('meta').textContent='文件链接不可用，可通过 artifact(operation=read) 获取新链接';return;}
       const open=el('open');open.href=url(file.preview_url)||download;open.hidden=false;
       const link=el('download');link.href=download;link.download=file.file_name||'artifact';link.hidden=false;

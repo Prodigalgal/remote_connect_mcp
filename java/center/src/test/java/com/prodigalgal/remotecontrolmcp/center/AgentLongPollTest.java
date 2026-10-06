@@ -18,8 +18,9 @@ class AgentLongPollTest {
     @Test
     void finishedTaskWakesAFullCapacityPollWithoutOverDispatching() throws Exception {
         var registry = AgentRegistry.forTest("enrollment");
-        var machine = registry.register(new RegisterRequest("poll-agent", "poll-host", "poll-host", "linux", "amd64",
-                "dev", "/tmp", List.of("command")), "enrollment");
+        var registration = new RegisterRequest("poll-agent", "poll-host", "poll-host", "linux", "amd64",
+                "dev", "/tmp", List.of("command"));
+        var machine = registry.register(registration, "enrollment");
         try (var async = new CenterAsyncExecutor(); var wakes = spy(new AgentWakeRegistry(null))) {
             var beans = new StaticListableBeanFactory();
             beans.addBean("wakes", wakes);
@@ -38,7 +39,7 @@ class AgentLongPollTest {
             var waiting = new CountDownLatch(1);
             doAnswer(call -> { waiting.countDown(); return call.callRealMethod(); }).when(wakes)
                     .awaitChange(eq(machine.machineId()), anyLong(), anyLong());
-            var full = new PollRequest(List.of(first.id()), 0, List.of("command"));
+            var full = new PollRequest(List.of(first.id()), 0, List.of("command"), registration.metadata());
             var pending = controller.poll("Bearer " + machine.token(), machine.machineId(), null, null, full, 25000);
             assertTrue(waiting.await(3, TimeUnit.SECONDS), "poll did not enter event wait");
             tasks.updateState(machine.machineId(), first.id(), new TaskUpdateRequest(TaskStatus.COMPLETED, 0, null, null, null, false), leased.attempt());
@@ -47,7 +48,7 @@ class AgentLongPollTest {
             assertNull(refreshed.task(), "stale zero-slot request must not claim another task");
             assertEquals(TaskStatus.QUEUED, tasks.find(second.id()).orElseThrow().status());
             var next = (PollResponse) controller.poll("Bearer " + machine.token(), machine.machineId(), null, null,
-                    new PollRequest(List.of(), 1, List.of("command")), 0).get(3, TimeUnit.SECONDS).getBody();
+                    new PollRequest(List.of(), 1, List.of("command"), registration.metadata()), 0).get(3, TimeUnit.SECONDS).getBody();
             assertEquals(second.id(), next.task().id());
         }
     }

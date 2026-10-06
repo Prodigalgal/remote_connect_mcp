@@ -935,7 +935,7 @@ public class McpConfiguration {
             @SuppressWarnings("unchecked")
             var payload = new LinkedHashMap<>((Map<String, Object>) result.structuredContent());
             payload.put("transfer", detail ? transferDetailMap(transfer, false) : transferMap(transfer));
-            if ("agent-to-web".equals(transfer.direction()) && fileReady(transfer)) {
+            if (com.prodigalgal.remotecontrolmcp.protocol.FileTransferAction.AGENT_TO_WEB.equals(transfer.direction()) && fileReady(transfer)) {
                 payload.put("file", artifactFileMap(transfer, transfers, origin));
             }
             return artifactHandleResult(payload);
