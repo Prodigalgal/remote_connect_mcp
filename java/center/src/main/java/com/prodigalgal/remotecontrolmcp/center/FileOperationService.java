@@ -16,7 +16,7 @@ final class FileOperationService {
         var json = new String(JsonCodec.write(request), StandardCharsets.UTF_8);
         var task = new TaskCommand("", TaskKind.FILES, "files", json,
                 cwd == null || cwd.isBlank() ? machine.defaultCwd() : cwd, Map.of(), 300, null, Instant.now());
-        var risk = "delete".equals(request.operation()) || request.overwriteValue() ? "high" : request.readOnly() ? "low" : "medium";
+        var risk = request.readOnly() ? "low" : "high";
         return tasks.create(new CreateTaskRequest(machineId, task, retryKey == null || retryKey.isBlank() ? UUID.randomUUID().toString() : retryKey,
                 null, "", risk, false, origin), origin.isConfigured() ? "admin" : "mcp", origin);
     }

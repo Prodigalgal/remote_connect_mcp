@@ -365,6 +365,24 @@ class McpToolContractTest {
         }
     }
 
+    @Test void nativeFileWriteCreatesSupportedContractAndReusesItsTask() {
+        var fixture = fixture();
+        var access = new McpAccessService();
+        var args = Map.<String, Object>of("machine_id", fixture.machineId(), "request",
+                Map.of("operation", "write", "path", "/srv/new.txt", "content", "中文"),
+                "wait_ms", 0, "idempotency_key", "mcp-file-write-risk");
+        var result = McpConfiguration.filesModel(fixture.registry(), fixture.tasks(), access,
+                TaskOrigin.configured(), request("files", args));
+        var id = taskId(result);
+        var task = fixture.tasks().find(id).orElseThrow();
+        assertEquals(LaneMode.WRITE, task.command().contract().laneMode());
+        assertEquals("high", task.command().contract().risk());
+        var retry = McpConfiguration.filesModel(fixture.registry(), fixture.tasks(), access,
+                TaskOrigin.configured(), request("files", args));
+        assertEquals(id, taskId(retry));
+        assertEquals(1, fixture.tasks().totalCount());
+    }
+
     private static void valid(Map<String, Object> schema, Map<String, Object> value) {
         var result = McpJsonDefaults.getSchemaValidator().validate(schema, value);
         assertTrue(result.valid(), result.errorMessage());
