@@ -54,13 +54,7 @@ final class TaskOutputText {
         var fast = false;
         if (encoding.equals("UTF-8")) {
             fast = true;
-            var data = reader.read(cursor, (int) Math.max(1, Math.min(4, size - cursor))).data();
-            if (cursor > 0) {
-                for (var value : data) {
-                    if ((value & 0xc0) != 0x80) break;
-                    start++;
-                }
-            }
+            start = utf8Start(reader, cursor, size);
         } else if (encoding.startsWith("UTF-16")) {
             fast = true;
             start = Math.min(size, (cursor + 1) / 2 * 2);
@@ -68,7 +62,12 @@ final class TaskOutputText {
             if (cursor > 0 && data.length == 2) {
                 var unit = encoding.endsWith("LE") ? (data[0] & 255) | (data[1] & 255) << 8
                         : (data[0] & 255) << 8 | (data[1] & 255);
-                if (unit >= 0xdc00 && unit <= 0xdfff) start += 2;
+                if (unit >= 0xdc00 && unit <= 0xdfff && start >= 2) {
+                    var previous = reader.read(start - 2, 2).data();
+                    var high = encoding.endsWith("LE") ? (previous[0] & 255) | (previous[1] & 255) << 8
+                            : (previous[0] & 255) << 8 | (previous[1] & 255);
+                    if (high >= 0xd800 && high <= 0xdbff) start += 2;
+                }
             }
         } else if (encoding.startsWith("UTF-32")) {
             fast = true;
@@ -128,6 +127,22 @@ final class TaskOutputText {
         var first = text.charAt(0);
         return text.length() == 2 && Character.isSurrogatePair(first, text.charAt(1)) ? 4
                 : first < 0x80 ? 1 : first < 0x800 ? 2 : 3;
+    }
+
+    private static long utf8Start(Reader reader, long cursor, long size) {
+        if (cursor == 0 || cursor == size) return cursor;
+        var offset = Math.max(0, cursor - 3);
+        var data = reader.read(offset, (int) Math.min(7, size - offset)).data();
+        var index = (int) (cursor - offset);
+        if (index >= data.length || (data[index] & 0xc0) != 0x80) return cursor;
+        var lead = index;
+        while (lead > 0 && (data[lead] & 0xc0) == 0x80) lead--;
+        var first = data[lead] & 255;
+        var width = first >= 0xc2 && first <= 0xdf ? 2 : first >= 0xe0 && first <= 0xef ? 3
+                : first >= 0xf0 && first <= 0xf4 ? 4 : 1;
+        if (width <= index - lead) return cursor;
+        var candidate = java.util.Arrays.copyOfRange(data, lead, Math.min(data.length, lead + width));
+        return utf8(candidate) ? Math.min(size, offset + lead + width) : cursor;
     }
 
     private static String detect(byte[] data) {

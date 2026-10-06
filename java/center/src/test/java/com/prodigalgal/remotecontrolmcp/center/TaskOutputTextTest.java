@@ -108,6 +108,9 @@ class TaskOutputTextTest {
         assertEquals(1, wrong.nextCursor());
         assertEquals("é", read(bytes, true, 0, 64, "windows-1252").text());
         assertArrayEquals(bytes, wrong.raw());
+        var malformed = read(new byte[] {'A', (byte) 0x80, 'B'}, true, 1, 64, "UTF-8");
+        assertEquals("\ufffdB", malformed.text());
+        assertTrue(malformed.decodingError());
     }
 
     @Test void tailInsideMultibyteCharactersAndAfterLongAsciiPrefixIsAligned() {
