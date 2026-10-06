@@ -622,6 +622,7 @@ public final class TaskService {
         if (jdbcStore != null) {
             var view = jdbcStore.updateState(machineId, taskId, update, attempt);
             signalChanged(taskId);
+            if (TaskStatus.terminal(view.status())) signalWake(machineId);
             audit("task.state", "agent", machineId, view, view.status(),
                     "attempt=" + attempt);
             return view;
@@ -662,6 +663,7 @@ public final class TaskService {
             if (TaskStatus.terminal(status)) {
                 task.leaseUntil(null);
                 releaseQuota(task);
+                signalWake(machineId);
             }
             signalChanged(taskId);
             audit("task.state", "agent", machineId, taskId, task.command(), task.status(),

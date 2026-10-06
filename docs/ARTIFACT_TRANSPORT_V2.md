@@ -117,19 +117,18 @@ ChatGPT 临时 URL 不写入数据库；Center 重启时会把这类 reservation
 | --- | --- | --- |
 | `artifact(operation=put)` | Web 文件写入终端 | transfer_id、任务状态和摘要 |
 | `artifact(operation=get)` | 终端文件回传 Web | artifact_id、文件元数据 |
-| `artifact(operation=read)` | 按需读取元数据和短期文件对象 | `structuredContent.file` + `ui://remote-control-mcp/artifact-viewer-v1.html` Viewer |
+| `artifact(operation=read)` | 按需读取元数据和短期文件对象 | `structuredContent.file` + 标准 MCP `resource_link` |
 
-现有 `command`、`desktop`、`browser`、`task_read` 工具只引用 Artifact，不复制文件传输逻辑。
+现有 `command`、`desktop`、`browser` 工具只引用 Artifact。`task_read` 可从文件传输任务恢复原有文件句柄，不创建新传输。
 
 ## ChatGPT Web 集成策略
 
-首次接入文件能力时，`artifact` 聚合 Tool 必须同时声明标准 MCP Apps UI 资源和
-ChatGPT 文件输入参数：
+`artifact` 聚合 Tool 声明 ChatGPT 文件输入参数；文件结果本身使用标准 MCP 内容，
+不为每次调用自动挂载 MCP Apps iframe：
 
 ```json
 {
   "_meta": {
-    "ui": { "resourceUri": "ui://remote-control-mcp/artifact-viewer-v1.html" },
     "openai/fileParams": ["file"]
   }
 }
@@ -141,17 +140,21 @@ MCP 请求中消费 `download_url`，只把摘要、哈希和自己的 Artifact 
 读取 ChatGPT 的 `/mnt/data`、浏览器沙箱路径或任何不可公开访问的内部路径，也不能把
 ChatGPT 临时 URL 写入 durable Task/Transfer。
 
-终端回传时，`structuredContent.file` 使用 Center 自己的短期 HTTPS
-`download_url` 和 Artifact `file_id`。Viewer 优先使用该 URL，过期或缺失时使用
-`window.openai.getFileDownloadUrl({ fileId })` 重新取得临时 URL；用户需要把文件保存
-回当前会话或文件库时，Viewer 使用 `window.openai.uploadFile(file)` 或
-`window.openai.uploadFile(file, { library: true })`。文件库能力是可选的，不能作为
-终端回传成功的前置条件。
+终端回传时，`structuredContent.file` 使用 Center 自己的短期 HTTPS `download_url`
+和 RCM `artifact_id`，并附带标准 MCP `resource_link`。待处理、失败和取消的传输不会
+伪装成可下载文件。链接过期时通过 `artifact(operation=read)` 获取新的签名地址；
+RCM ID 不能传给 `window.openai.getFileDownloadUrl` 当作宿主文件 ID。
+
+保留的 `ui://remote-control-mcp/artifact-viewer-v1.html` 是可选的紧凑文件卡片，
+遵循宿主明暗主题，不自动加载预览或下载内容。明确点击“保存到 ChatGPT”时，
+才调用 `window.openai.uploadFile(file)`；此操作限制为 32 MiB，较大文件直接下载。
+该上传 API 和 `openai/fileParams` 都不能保证任意 MCP 文件自动成为原生对话附件。
+原生附件卡片效果须在真实 ChatGPT 网页验收后再确认。
 
 连接器只需在首次加入文件能力或工具声明发生变化后刷新一次。之后保持 `/mcp` 地址、
-工具 schema 和 UI URI 稳定，Center/Agent 普通版本升级不需要重复配置。OpenAI/MCP
-Apps 的标准 `ui.*` 元数据和 `ui/notifications/tool-result` 事件是唯一运行时契约，
-不把 ChatGPT 私有文件系统路径当成 Center 的数据源。
+工具 schema 和可选 UI URI 稳定，Center/Agent 普通版本升级不需要重复配置。
+可选 Viewer 通过标准 `ui/notifications/tool-result` 接收结果，不把 ChatGPT 私有
+文件系统路径当成 Center 的数据源。
 
 ## 安全与资源边界
 

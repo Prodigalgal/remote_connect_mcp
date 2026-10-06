@@ -3,12 +3,34 @@ package com.prodigalgal.remotecontrolmcp.center;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.prodigalgal.remotecontrolmcp.protocol.ExecutionContract;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
 class ExecutionSessionServiceTest {
+    @Test
+    void reconnectKeepsPrincipalOwnershipAndSessionLifetimeChecks() {
+        var sessions = new ExecutionSessionService();
+        var original = new TaskOrigin("owner", "token", "transport-before");
+        var reconnected = new TaskOrigin("owner", "token", "transport-after");
+        var contract = contract("machine-1", "session-1");
+        sessions.ensure(original, contract);
+        assertDoesNotThrow(() -> sessions.authorize(reconnected, contract.sessionId(), "command"));
+        assertThrows(SecurityException.class, () -> sessions.authorize(
+                new TaskOrigin("someone-else", "token", "transport-after"), contract.sessionId(), "command"));
+        assertThrows(SecurityException.class, () -> sessions.authorize(reconnected, contract.sessionId(), "desktop"));
+        sessions.close(original, contract.sessionId());
+        assertThrows(SecurityException.class, () -> sessions.authorize(reconnected, contract.sessionId(), "command"));
+
+        var expired = new ExecutionContract(contract.machineId(), contract.hostId(), contract.laneMode(),
+                "expired-session", contract.capability(), contract.budget(), Instant.now().minusSeconds(1),
+                "expired-key", "low", false, null);
+        sessions.ensure(original, expired);
+        assertThrows(SecurityException.class, () -> sessions.authorize(reconnected, expired.sessionId(), "command"));
+    }
+
     @Test
     void ensureIsIdempotentByPrincipalAndSessionAndCloseIsOwnerScoped() {
         var sessions = new ExecutionSessionService();

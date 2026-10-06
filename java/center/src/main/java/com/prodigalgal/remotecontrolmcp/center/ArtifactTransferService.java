@@ -818,6 +818,22 @@ public final class ArtifactTransferService {
                 downloadUrl(row.artifactId(), row.status(), taskSession(row.taskId()), origin), progressBytes(row)));
     }
 
+    /** Recover a file handle through its durable task, with principal ownership. */
+    public Optional<TransferDescriptor> findByTask(String taskId, TaskOrigin origin) {
+        if (taskId == null || taskId.isBlank() || origin == null) return Optional.empty();
+        String transferId;
+        if (jdbc == null) {
+            transferId = memory.values().stream().map(MemoryTransfer::descriptor)
+                    .filter(value -> taskId.equals(value.taskId()) && origin.principalId().equals(value.principalId()))
+                    .map(TransferDescriptor::transferId).findFirst().orElse(null);
+        } else {
+            transferId = jdbc.query("SELECT transfer_id FROM rcm_file_transfer WHERE task_id = ? AND principal_id = ? ORDER BY created_at DESC LIMIT 1",
+                    ps -> { ps.setString(1, taskId); ps.setString(2, origin.principalId()); },
+                    rs -> rs.next() ? rs.getString(1) : null);
+        }
+        return findByTransfer(transferId, origin);
+    }
+
     /**
      * Read a small, already-delivered image for a direct MCP image content
      * result.  File transfers remain object-store backed and large files never

@@ -6,6 +6,8 @@
 
 Java Center/Agent 的目标发布物是 Java 25 Native Image；JVM JAR 只作为 CI 诊断产物。所有测试、JVM 包、React 资源和 Native Image 均由 GitHub Actions 完成；开发机和目标宿主机不执行任何编译或打包，避免 Native Image 峰值占满内存。
 
+可选 `runtime.user_context` 通过响应头 `X-RCM-Agent-User-Context: 1` 协商。新 Agent 首次注册和未协商的心跳发送原有字段，旧 Center 可正常解析；新 Center 接受后才发送路径提示。Center 回退导致字段被拒绝时，下次正常重试自动恢复原有字段。桌面 companion 的 port/token endpoint 保持原格式，用户路径另写在可选 `desktop-user.json` 中，旧 Agent 不受影响。Windows 桌面路径只在 companion 启动时解析一次，心跳不启动 PowerShell。
+
 ## 构建
 
 提交源码后推送 `main` 或 `java-vX.Y.Z` 标签即可触发工作流：

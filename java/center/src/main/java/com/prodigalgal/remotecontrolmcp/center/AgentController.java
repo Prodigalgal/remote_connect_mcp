@@ -75,7 +75,8 @@ public final class AgentController {
                                                           @RequestBody(required = false) RegisterRequest request) {
         return execute(() -> {
             RegisterResponse response = registry.register(request, bearerValue(authorization));
-            return ResponseEntity.status(HttpStatus.CREATED).body(response);
+            return ResponseEntity.status(HttpStatus.CREATED)
+                    .header(TransportNegotiation.HEADER_USER_CONTEXT, TransportNegotiation.USER_CONTEXT_VERSION).body(response);
         });
     }
 
@@ -95,10 +96,12 @@ public final class AgentController {
                     java.util.Set.of(TransportNegotiation.HTTPS));
             if (normalizedWait > 0 && wakes != null) {
                 return ResponseEntity.ok().header("X-RCM-Long-Poll", "accepted")
+                        .header(TransportNegotiation.HEADER_USER_CONTEXT, TransportNegotiation.USER_CONTEXT_VERSION)
                         .header(TransportNegotiation.HEADER_CAPABILITIES, TransportNegotiation.SERVER_CAPABILITIES)
                         .header(TransportNegotiation.HEADER_SELECTED, selectedTransport).body(response);
             }
             return ResponseEntity.ok().header(TransportNegotiation.HEADER_CAPABILITIES, TransportNegotiation.SERVER_CAPABILITIES)
+                    .header(TransportNegotiation.HEADER_USER_CONTEXT, TransportNegotiation.USER_CONTEXT_VERSION)
                     .header(TransportNegotiation.HEADER_SELECTED, selectedTransport).body(response);
         });
     }
@@ -116,7 +119,7 @@ public final class AgentController {
             var observed = wakes.version(machineId);
             try {
                 var response = pollOnce(machineId, token, request);
-                if (hasWork(response)) return response;
+                if (hasWork(response) || needsCapacityRefresh(machineId, request)) return response;
                 var remaining = deadline - System.nanoTime();
                 if (remaining <= 0) {
                     // A missed wake must not make the deadline return the
@@ -155,6 +158,16 @@ public final class AgentController {
         if (upgrade != null) return new PollResponse(null, java.util.List.of(), upgrade, config);
         var response = tasks.poll(machineId, request);
         return new PollResponse(response.task(), response.cancelTaskIds(), response.upgrade(), config);
+    }
+
+    private boolean needsCapacityRefresh(String machineId, PollRequest request) {
+        // Slot/capability counts are a snapshot taken before the HTTP request.
+        // A finished runner can make that snapshot stale while we are waiting.
+        // Return an empty response so the Agent advertises its current capacity;
+        // never dispatch beyond the capacity it actually reported.
+        return request.runningTaskIds().stream().anyMatch(id -> tasks.find(id)
+                .filter(task -> machineId.equals(task.machineId()))
+                .map(task -> TaskStatus.terminal(task.status())).orElse(false));
     }
 
     private static boolean hasWork(PollResponse response) {

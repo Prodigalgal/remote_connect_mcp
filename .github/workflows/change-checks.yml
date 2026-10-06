@@ -68,6 +68,8 @@ jobs:
         run: node scripts/check-mcp-tool-surface.mjs
       - name: Browser tool contract tests
         run: node --test scripts/browser-worker.test.mjs
+      - name: Artifact presentation contracts
+        run: node --test scripts/artifact-viewer.test.mjs
 
   browser-runtime:
     name: Browser runtime gate

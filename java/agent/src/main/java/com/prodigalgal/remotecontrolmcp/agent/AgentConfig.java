@@ -99,11 +99,22 @@ public record AgentConfig(
         // The release pipeline injects the binary version through the
         // environment. Keeping the default as dev preserves local protocol
         // tests while allowing Center to observe the real deployed version.
+        var desktopAvailable = desktopSessionAvailable();
+        var interactive = desktopAvailable ? DesktopCompanionClient.userContext(stateDir) : null;
+        com.prodigalgal.remotecontrolmcp.protocol.AgentUserContext userContext = null;
+        try {
+            userContext = new com.prodigalgal.remotecontrolmcp.protocol.AgentUserContext(
+                    System.getProperty("user.name", ""), System.getProperty("user.home", ""),
+                    interactive == null ? "" : interactive.interactiveUser(),
+                    interactive == null ? "" : interactive.desktopPath());
+        } catch (IllegalArgumentException ignored) {
+            // Path hints must never prevent a required heartbeat.
+        }
         var runtime = new AgentRuntimeDescriptor(1, Math.max(0L, configGeneration), effectiveConcurrency,
                 Math.min(effectiveConcurrency, maxBrowserWorkers()), maxOutputBytes, maxAggregateOutputBytes,
                 maxTaskChildProcesses(), maxTotalChildProcesses(), maxTaskDurationSeconds(), maxTaskRssBytes(), maxTaskCpuSeconds(),
                 desktopEnabled, !browserAdapter.isBlank(),
-                desktopSessionAvailable(), browserSessionAvailable(), resourceEnforcement());
+                desktopAvailable, browserSessionAvailable(), resourceEnforcement(), userContext);
         var metadata = new AgentMetadata(name, hostId, hostname(), operatingSystem(), architecture(),
                 currentVersion(), defaultCwd, capabilities, runtime);
         ProtocolValidation.validateMetadata(metadata);

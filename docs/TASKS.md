@@ -151,7 +151,7 @@
 | [x] | P1-AT-28 | TTL GC 索引与孤儿对象边界 | Liquibase `029` 增加 `expires_at + artifact_id` 部分索引；filesystem 只在一小时并发写入宽限期后清理无引用 `fs-v1` 对象，HTTP 网关不做无界枚举，由网关生命周期负责孤儿对象；卷容量/对象网关配额压测仍需验收 |
 | [x] | P2-AT-07 | Artifact opaque token 密钥版本化 | 访问票据已加密携带 `kid`，支持 AES/HMAC current/previous key rotation；轮换测试属于验收 |
 | [x] | P2-AT-08 | Viewer 从 Java 内嵌 HTML 解耦为前端资源 | `web/src/artifact-viewer/artifact-viewer-v1.html` 为源文件，Actions 在 Java/Native/React 构建前同步到 classpath，并保留稳定 URI |
-| [x] | P2-AT-09 | Preview Handler 插件化 | Viewer 与 `web/src/artifact-viewer/previewHandlers.ts` 均采用 MIME → handler 注册表，未知类型安全降级下载 |
+| [x] | P2-AT-09 | Console Preview Handler 插件化 | `web/src/artifact-viewer/previewHandlers.ts` 保留 MIME → handler 注册表；MCP 文件结果返回标准资源链接，可选 Viewer 收敛为主题适配的紧凑卡片 |
 | [x] | P2-AT-10 | 文件传输压缩与内容去重 | 可选 SHA-256 content-addressed wrapper 和磁盘 gzip wrapper 已加入，默认关闭 |
 | [x] | P2-AT-11 | Artifact 生命周期策略升级 | 已支持按方向/MIME/大小的有界保留期，以及 `ephemeral`/`task-bound`/`pinned` 管理字段和 Console 固定操作 |
 | [x] | P0-AT-26 | OpenAI 文件生态桥接契约 | `artifact` 发布标准 MCP Apps `ui.resourceUri` 与 `openai/fileParams`；只消费 ChatGPT 提供的 `download_url`，不读取 `/mnt/data` 或持久化临时 URL；Viewer 支持 `getFileDownloadUrl` 续取和 `uploadFile`/Library 回写；默认 `auto` 保持紧凑，小型图片在 Agent→Center 传输完成后 bounded fast path 直接返回 MCP `image` content；用户明确要求立即回显时 `delivery_mode=inline` 按 MIME 返回原生 MCP `image`/`audio`/文本/嵌入资源 Content，小型非图片文件和 `delivery_mode=async` 返回 `file`/签名 URL；较大文件也发布带有界长等待和失败后有限重试的签名 URL，异步完成后由 Viewer 按原 MIME 预览/下载，不要求模型重复编排；真实 Web 双向附件仍属于 P1-TM-17 验收 |

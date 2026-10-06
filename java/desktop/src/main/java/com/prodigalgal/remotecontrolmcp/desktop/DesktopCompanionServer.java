@@ -120,26 +120,40 @@ public final class DesktopCompanionServer {
         Files.createDirectories(stateDir);
         var companionDir = stateDir.resolve(COMPANION_DIR);
         Files.createDirectories(companionDir);
-        try (var lock = DesktopCompanionLock.acquire(companionDir, "desktop-companion.lock");
-             var server = new ServerSocket(requestedPort, 32, InetAddress.getLoopbackAddress());
-             var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+        try (var lock = DesktopCompanionLock.acquire(companionDir, "desktop-companion.lock")) {
             var endpoint = companionDir.resolve("desktop-companion.json");
-            writeEndpoint(endpoint, server.getLocalPort(), token);
+            // Preserve the port/token endpoint for older Agents. Path hints
+            // are an optional, non-secret sidecar written once at startup.
+            var userContext = companionDir.resolve(com.prodigalgal.remotecontrolmcp.protocol.DesktopCompanionProtocol.USER_CONTEXT_FILE);
             var cleanup = new Thread(() -> {
                 terminateLaunchedProcesses();
                 try { Files.deleteIfExists(endpoint); } catch (IOException ignored) { }
+                try { Files.deleteIfExists(userContext); } catch (IOException ignored) { }
             }, "rcm-desktop-companion-cleanup");
-            Runtime.getRuntime().addShutdownHook(cleanup);
-            LOG.info(() -> "desktop companion listening on loopback port " + server.getLocalPort());
-            while (!Thread.currentThread().isInterrupted()) {
-                var client = server.accept();
-                if (!tryDispatch(client, workers)) {
-                    rejectBusy(client);
+            try (var server = new ServerSocket(requestedPort, 32, InetAddress.getLoopbackAddress());
+                 var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+                try {
+                    Files.write(userContext, JsonCodec.write(DesktopUserContext.current()));
+                    restrictOwner(userContext);
+                } catch (IOException ignored) { }
+                writeEndpoint(endpoint, server.getLocalPort(), token);
+                Runtime.getRuntime().addShutdownHook(cleanup);
+                LOG.info(() -> "desktop companion listening on loopback port " + server.getLocalPort());
+                while (!Thread.currentThread().isInterrupted()) {
+                    var client = server.accept();
+                    if (!tryDispatch(client, workers)) {
+                        rejectBusy(client);
+                    }
                 }
+            } finally {
+                try { Runtime.getRuntime().removeShutdownHook(cleanup); } catch (IllegalStateException ignored) { }
+                terminateLaunchedProcesses();
+                // Remove only our own endpoint, while still holding the lock.
+                // A second process that failed to acquire it must not delete
+                // the active companion's endpoint or user path hints.
+                Files.deleteIfExists(endpoint);
+                Files.deleteIfExists(userContext);
             }
-        } finally {
-            terminateLaunchedProcesses();
-            Files.deleteIfExists(companionDir.resolve("desktop-companion.json"));
         }
     }
 

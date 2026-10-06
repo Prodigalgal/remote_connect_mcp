@@ -49,9 +49,14 @@ public final class McpConversationService {
 
     /** Touch the current MCP connection and its parent conversation. */
     public void touch(TaskOrigin origin, String transport) {
+        touch(origin, origin == null ? null : origin.connectionId(), transport);
+    }
+
+    public void touch(TaskOrigin origin, String connectionId, String transport) {
         if (origin == null) throw new SecurityException("MCP transport principal is missing");
         var principal = required(origin.principalId(), "principal_id");
-        var connection = required(origin.connectionId(), "connection_id");
+        var conversation = required(origin.connectionId(), "conversation_id");
+        var connection = required(connectionId, "connection_id");
         var now = Instant.now();
         var expires = now.plus(DEFAULT_TTL);
         var normalizedTransport = normalizeTransport(transport);
@@ -70,7 +75,7 @@ public final class McpConversationService {
                         ON CONFLICT (principal_id, conversation_id) DO UPDATE SET status = 'active',
                             metadata_json = EXCLUDED.metadata_json, last_seen_at = EXCLUDED.last_seen_at,
                             expires_at = EXCLUDED.expires_at
-                        """, connection, principal, metadata, timestamp(now), timestamp(now), timestamp(expires));
+                        """, conversation, principal, metadata, timestamp(now), timestamp(now), timestamp(expires));
                 jdbc.update("""
                         INSERT INTO rcm_mcp_connection(connection_id, conversation_id, principal_id, transport,
                                                        status, metadata_json, created_at, last_seen_at, closed_at)
@@ -78,7 +83,7 @@ public final class McpConversationService {
                         ON CONFLICT (principal_id, connection_id) DO UPDATE SET conversation_id = EXCLUDED.conversation_id,
                             transport = EXCLUDED.transport, status = 'active', metadata_json = EXCLUDED.metadata_json,
                             last_seen_at = EXCLUDED.last_seen_at, closed_at = NULL
-                        """, connection, connection, principal, normalizedTransport, metadata,
+                        """, connection, conversation, principal, normalizedTransport, metadata,
                         timestamp(now), timestamp(now));
             });
         } catch (DataAccessException failure) {

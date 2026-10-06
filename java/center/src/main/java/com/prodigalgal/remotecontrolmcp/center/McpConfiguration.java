@@ -276,35 +276,34 @@ public class McpConfiguration {
         // file parameter declaration is equally important: it tells
         // ChatGPT to inject its host file object (download_url + file_id)
         // instead of exposing an inaccessible /mnt/data path to the model.
-        var artifactUi = new LinkedHashMap<String, Object>();
-        artifactUi.put("resourceUri", ARTIFACT_VIEWER_URI);
         var artifactMeta = new LinkedHashMap<String, Object>();
-        artifactMeta.put("ui", artifactUi);
+        // Files are data results. Do not mount an iframe for pending tasks,
+        // failures or every read; return standard MCP content to the host.
         artifactMeta.put("openai/fileParams", List.of("file"));
         return List.of(
                 tool("machines", "Discover registered machines or fetch one bounded machine detail. Returns stable IDs and compact capability summaries.",
                         machinesModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesModel(agents, access, origin(exchange, conversations), request); }, scheduler, oauth),
-                tool("command", "Run one shell command on a selected machine. wait_ms=0 returns its durable task immediately; a positive wait_ms returns bounded output if it finishes in time.",
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return machinesModel(agents, access, origin(exchange, conversations, request), request); }, scheduler, oauth),
+                tool("command", "Run a shell command as the Agent service account. USERPROFILE/HOME may differ from the desktop user's directory; machines(detail).environment reports known paths. wait_ms=0 returns a task immediately; positive wait_ms returns bounded output if ready. Use task_read to continue.",
                         commandModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandModel(agents, tasks, access, origin(exchange, conversations), request); }, scheduler, oauth),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return commandModel(agents, tasks, access, origin(exchange, conversations, request), request); }, scheduler, oauth),
                 tool("desktop", "Control a desktop-capable user session. wait_ms=0 returns a task immediately; a positive wait_ms returns a bounded result if ready. Use task_read to continue.",
                         desktopModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktopModel(agents, tasks, access, origin(exchange, conversations), request); }, scheduler, oauth),
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return desktopModel(agents, tasks, access, origin(exchange, conversations, request), request); }, scheduler, oauth),
                 tool("browser", "Run one structured browser action. wait_ms=0 returns a task immediately; a positive wait_ms returns a bounded result if ready. Use task_read to continue.",
                         browserModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browserModel(agents, tasks, access, origin(exchange, conversations), request); }, scheduler, oauth),
-                tool("artifact", "put requires machine_id, file and destination_path; get requires machine_id and source_path; read requires exactly one artifact_id or transfer_id. put/get can wait briefly; read inspects an existing file handle.",
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return browserModel(agents, tasks, access, origin(exchange, conversations, request), request); }, scheduler, oauth),
+                tool("artifact", "put uploads a ChatGPT file to a machine; get retrieves one regular file, not a directory; read inspects an existing artifact_id or transfer_id. List or search directories with command first. wait_ms bounds put/get waiting; cursor and limit select inline text only.",
                         artifactModelSchema(), artifactMeta,
                         (exchange, request) -> { requireScope(exchange,
                                 "read".equalsIgnoreCase(asString(modelArguments(request).get("operation"))) ? "mcp:read" : "mcp:execute");
-                            return artifactModel(agents, tasks, access, transfers, origin(exchange, conversations), request); }, scheduler, oauth),
+                            return artifactModel(agents, tasks, access, transfers, origin(exchange, conversations, request), request); }, scheduler, oauth),
                 tool("task_read", "Observe one durable task. include_output=false reads status only; cursor reads new logs; tail_bytes reads the end. include_artifact=true fetches an image; detail=true includes execution details.",
                         taskReadModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, access, origin(exchange, conversations), request); }, scheduler, oauth),
-                tool("task_cancel", "Cancel one queued or running task owned by the current principal and session.",
+                        (exchange, request) -> { requireScope(exchange, "mcp:read"); return taskReadModel(tasks, access, transfers, origin(exchange, conversations, request), request); }, scheduler, oauth),
+                tool("task_cancel", "Cancel one queued or running task owned by the current principal on an authorized machine. Reconnecting does not lose the task.",
                         taskCancelModelSchema(),
-                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancelModel(tasks, access, transfers, origin(exchange, conversations), request); }, scheduler, oauth));
+                        (exchange, request) -> { requireScope(exchange, "mcp:execute"); return taskCancelModel(tasks, access, transfers, origin(exchange, conversations, request), request); }, scheduler, oauth));
     }
 
     private static McpServerFeatures.AsyncToolSpecification tool(String name, String description, Map<String, Object> schema,
@@ -683,8 +682,8 @@ public class McpConfiguration {
                 "status", Map.of("type", "string")), List.of("transfer_id", "artifact_id", "status"));
         transfer.put("additionalProperties", true);
         var file = modelSchema(Map.of(
-                "file_id", Map.of("type", "string"),
-                "download_url", Map.of("type", List.of("string", "null"))), List.of("file_id"));
+                "artifact_id", Map.of("type", "string"),
+                "download_url", Map.of("type", List.of("string", "null"))), List.of("artifact_id"));
         file.put("additionalProperties", true);
         var properties = new LinkedHashMap<String, Object>();
         if ("machines".equals(toolName)) {
@@ -698,9 +697,11 @@ public class McpConfiguration {
                 properties.put("output", output);
                 properties.put("artifact", Map.of("type", "object", "additionalProperties", true));
             }
-            if ("artifact".equals(toolName)) {
+            if ("artifact".equals(toolName) || "task_read".equals(toolName)) {
                 properties.put("transfer", transfer);
                 properties.put("file", file);
+            }
+            if ("artifact".equals(toolName)) {
                 properties.put("delivery_mode", Map.of("const", "inline"));
             }
         }
@@ -720,7 +721,7 @@ public class McpConfiguration {
         return result;
     }
 
-    private static McpSchema.CallToolResult machinesModel(AgentRegistry agents, McpAccessService access,
+    static McpSchema.CallToolResult machinesModel(AgentRegistry agents, McpAccessService access,
                                                           TaskOrigin origin, McpSchema.CallToolRequest request) {
         try {
             var arguments = modelArguments(request);
@@ -893,6 +894,12 @@ public class McpConfiguration {
 
     static McpSchema.CallToolResult taskReadModel(TaskService tasks, McpAccessService access,
                                                   TaskOrigin origin, McpSchema.CallToolRequest request) {
+        return taskReadModel(tasks, access, null, origin, request);
+    }
+
+    static McpSchema.CallToolResult taskReadModel(TaskService tasks, McpAccessService access,
+                                                  ArtifactTransferService transfers, TaskOrigin origin,
+                                                  McpSchema.CallToolRequest request) {
         try {
             var arguments = modelArguments(request);
             var taskId = requiredModelString(arguments, "task_id");
@@ -920,8 +927,18 @@ public class McpConfiguration {
             var view = waitMs == 0 ? new TaskView(current)
                     : tasks.waitForChange(origin, taskId, waitCursor, changeSequence, Duration.ofMillis(waitMs));
             var outputCursor = tailBytes > 0 ? Math.max(0L, view.outputBytes() - tailBytes) : cursor;
-            return taskResult(tasks, origin, view, outputCursor, tailBytes > 0 ? tailBytes : limit,
+            var result = taskResult(tasks, origin, view, outputCursor, tailBytes > 0 ? tailBytes : limit,
                     detail, includeOutput, includeArtifact);
+            if (transfers == null || !TaskKind.FILE_TRANSFER.wireValue().equals(view.kind())) return result;
+            var transfer = transfers.findByTask(taskId, origin).orElse(null);
+            if (transfer == null) return result;
+            @SuppressWarnings("unchecked")
+            var payload = new LinkedHashMap<>((Map<String, Object>) result.structuredContent());
+            payload.put("transfer", detail ? transferDetailMap(transfer, false) : transferMap(transfer));
+            if ("agent-to-web".equals(transfer.direction()) && fileReady(transfer)) {
+                payload.put("file", artifactFileMap(transfer, transfers, origin));
+            }
+            return artifactHandleResult(payload);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return error(exception);
@@ -1068,10 +1085,10 @@ public class McpConfiguration {
             var payload = new LinkedHashMap<String, Object>();
             payload.put("task", taskMap(finalTask));
             payload.put("transfer", transferMap(finalTransfer));
-            if (!Set.of("failed", "canceled").contains(finalTransfer.status())) {
+            if (fileReady(finalTransfer)) {
                 payload.put("file", artifactFileMap(finalTransfer, transfers, origin));
             }
-            return structuredJson(payload);
+            return artifactHandleResult(payload);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             return error(exception);
@@ -1091,15 +1108,14 @@ public class McpConfiguration {
                     : transfers.findByArtifact(args.artifactId(), origin).orElseThrow(() -> new IllegalArgumentException("artifact not found"));
             access.authorizeTool(origin, descriptor.machineId(), "artifact");
             var payload = new LinkedHashMap<String, Object>();
-            payload.put("transfer", transferDetailMap(descriptor, descriptor.downloadUrl() != null
-                    && !descriptor.downloadUrl().isBlank()));
-            if (descriptor.downloadUrl() != null && !descriptor.downloadUrl().isBlank()) {
+            payload.put("transfer", transferDetailMap(descriptor, fileReady(descriptor)));
+            if (fileReady(descriptor)) {
                 payload.put("file", artifactFileMap(descriptor, transfers, origin));
             }
             var inline = inlineArtifactResult(null, descriptor, deliveryMode,
                     args.cursor() == null ? 0L : args.cursor(), initialOutputLimit(args.limit()), transfers, origin);
             if (inline != null) return inline;
-            return structuredJson(payload);
+            return artifactHandleResult(payload);
         } catch (Exception exception) {
             return error(exception);
         }
@@ -1109,7 +1125,8 @@ public class McpConfiguration {
                                                                   ArtifactTransferService.TransferDescriptor descriptor,
                                                                   String deliveryMode, long cursor, int limit,
                                                                   ArtifactTransferService transfers, TaskOrigin origin) {
-        if ("async".equals(deliveryMode) || (task != null && !TaskStatus.COMPLETED.equals(task.status()))) return null;
+        if (!fileReady(descriptor) || "async".equals(deliveryMode)
+                || (task != null && !TaskStatus.COMPLETED.equals(task.status()))) return null;
         if ("inline".equals(deliveryMode) && isInlineText(descriptor.mimeType(), descriptor.fileName())) {
             var page = transfers.readTextPage(descriptor.artifactId(), origin, cursor, limit);
             if (page.isEmpty()) return null;
@@ -1121,7 +1138,7 @@ public class McpConfiguration {
             var value = page.get();
             payload.put("output", Map.of("text", new String(value.data(), StandardCharsets.UTF_8),
                     "cursor", value.cursor(), "next_cursor", value.nextCursor(), "more", value.more()));
-            return structuredJson(payload);
+            return artifactHandleResult(payload);
         }
         if (cursor != 0) throw new IllegalArgumentException("cursor is supported only for inline text");
         // Inspect metadata before opening bytes. Auto non-image delivery is a
@@ -1221,7 +1238,8 @@ public class McpConfiguration {
             previewUrl = withWaitQuery(previewUrl);
         }
         var file = new LinkedHashMap<String, Object>();
-        file.put("file_id", descriptor.artifactId());
+        // This is an RCM artifact id, not a host-registered ChatGPT file id.
+        file.put("artifact_id", descriptor.artifactId());
         file.put("download_url", downloadUrl);
         file.put("preview_url", previewUrl);
         file.put("file_name", descriptor.fileName());
@@ -1299,7 +1317,7 @@ public class McpConfiguration {
                 throw new SecurityException("MCP credential cannot access this machine");
             }
             var machine = agents.findMachine(args.machineId(), Instant.now()).orElseThrow(() -> new IllegalArgumentException("machine not found"));
-            return json(machineMap(machine));
+            return json(Map.of("machine", machineMap(machine)));
         } catch (Exception exception) {
             return error(exception);
         }
@@ -1612,6 +1630,15 @@ public class McpConfiguration {
         // Keep it on the machine record rather than exposing raw process or
         // environment details to the MCP client.
         var runtime = machine.runtime();
+        if (runtime.userContext() != null) {
+            var context = runtime.userContext();
+            var environment = new LinkedHashMap<String, Object>();
+            if (!context.commandUser().isBlank()) environment.put("command_user", context.commandUser());
+            if (!context.commandHome().isBlank()) environment.put("command_home", context.commandHome());
+            if (!context.interactiveUser().isBlank()) environment.put("interactive_user", context.interactiveUser());
+            if (!context.desktopPath().isBlank()) environment.put("desktop_path", context.desktopPath());
+            if (!environment.isEmpty()) value.put("environment", environment);
+        }
         value.put("runtime", Map.ofEntries(
                 Map.entry("schema_version", runtime.schemaVersion()),
                 Map.entry("config_generation", runtime.configGeneration()),
@@ -1647,6 +1674,11 @@ public class McpConfiguration {
         if (task.outputBytes() > 0) value.put("output_bytes", task.outputBytes());
         if (task.outputTruncated()) value.put("output_truncated", true);
         if (task.attempt() > 1) value.put("attempt", task.attempt());
+        if (!TaskStatus.terminal(task.status())) addProgress(value, task);
+        return value;
+    }
+
+    private static void addProgress(Map<String, Object> value, TaskView task) {
         if (task.progressPhase() != null && !task.progressPhase().isBlank())
             value.put("progress_phase", task.progressPhase());
         if (task.progressPercent() != null) value.put("progress_percent", task.progressPercent());
@@ -1658,11 +1690,13 @@ public class McpConfiguration {
             if (task.progressUnit() != null && !task.progressUnit().isBlank())
                 value.put("progress_unit", task.progressUnit());
         }
-        return value;
     }
 
     static Map<String, Object> taskDetailMap(TaskView task) {
         var value = new LinkedHashMap<>(taskMap(task));
+        // Retain the last reported progress for diagnostics, without
+        // presenting it as live progress in terminal task summaries.
+        addProgress(value, task);
         if (task.requiredCapability() != null && !task.requiredCapability().isBlank())
             value.put("required_capability", task.requiredCapability());
         // Browser requests can contain credentials and selectors; the returned
@@ -1710,7 +1744,8 @@ public class McpConfiguration {
         return cwd;
     }
 
-    private static TaskOrigin origin(McpAsyncServerExchange exchange, McpConversationService conversations) {
+    private static TaskOrigin origin(McpAsyncServerExchange exchange, McpConversationService conversations,
+                                     McpSchema.CallToolRequest request) {
         if (exchange == null || exchange.transportContext() == null) {
             throw new SecurityException("MCP transport principal is missing");
         }
@@ -1718,9 +1753,50 @@ public class McpConfiguration {
         if (!(value instanceof McpPrincipal principal)) {
             throw new SecurityException("MCP transport principal is missing");
         }
-        var origin = principal.taskOrigin(exchange.sessionId());
-        if (conversations != null) conversations.touch(origin, "streamable-http");
+        var origin = conversationOrigin(principal, exchange.sessionId(), request);
+        if (conversations != null) conversations.touch(origin, exchange.sessionId(), "streamable-http");
         return origin;
+    }
+
+    static TaskOrigin conversationOrigin(McpPrincipal principal, String connectionId,
+                                         McpSchema.CallToolRequest request) {
+        // A host-provided session is a correlation hint, never authentication.
+        // Namespace it by authenticated identity so unrelated credentials cannot
+        // pin each other's contracts even if they send the same hint.
+        var hint = request == null || request.meta() == null ? null : request.meta().get("openai/session");
+        if (!(hint instanceof String session) || session.isBlank() || session.length() > 256
+                || session.chars().anyMatch(Character::isISOControl)) return principal.taskOrigin(connectionId);
+        try {
+            var raw = principal.principalId() + '\u0000' + principal.tokenId() + '\u0000' + session;
+            var digest = java.security.MessageDigest.getInstance("SHA-256").digest(raw.getBytes(StandardCharsets.UTF_8));
+            return principal.taskOrigin("host-" + java.util.HexFormat.of().formatHex(digest));
+        } catch (java.security.NoSuchAlgorithmException failure) {
+            throw new IllegalStateException("SHA-256 is unavailable", failure);
+        }
+    }
+
+    private static boolean fileReady(ArtifactTransferService.TransferDescriptor descriptor) {
+        return Set.of("ready", "delivered").contains(descriptor.status());
+    }
+
+    static McpSchema.CallToolResult artifactHandleResult(Map<String, Object> payload) {
+        try {
+            var builder = McpSchema.CallToolResult.builder().structuredContent(payload)
+                    .addTextContent(boundedJsonText(payload));
+            if (payload.get("file") instanceof Map<?, ?> file
+                    && file.get("download_url") instanceof String url && !url.isBlank()) {
+                var name = asString(file.get("file_name"));
+                if (name == null || name.isBlank()) name = "artifact";
+                var link = McpSchema.ResourceLink.builder().name(name).title(name).uri(url);
+                var mime = asString(file.get("mime_type"));
+                if (mime != null && !mime.isBlank()) link.mimeType(mime);
+                if (file.get("bytes") instanceof Number bytes && bytes.longValue() >= 0) link.size(bytes.longValue());
+                builder.addContent(link.build());
+            }
+            return builder.build();
+        } catch (IOException exception) {
+            return error(exception);
+        }
     }
 
     private static void requireScope(McpAsyncServerExchange exchange, String scope) {

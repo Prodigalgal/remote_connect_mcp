@@ -15,6 +15,8 @@ public final class TransportNegotiation {
     public static final String HEADER_CAPABILITIES = "X-RCM-Transport-Capabilities";
     public static final String HEADER_PREFERRED = "X-RCM-Transport-Preferred";
     public static final String HEADER_SELECTED = "X-RCM-Transport-Selected";
+    public static final String HEADER_USER_CONTEXT = "X-RCM-Agent-User-Context";
+    public static final String USER_CONTEXT_VERSION = "1";
 
     public static final String HTTPS = "https";
     public static final String WEBSOCKET = "websocket";

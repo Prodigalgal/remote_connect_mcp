@@ -41,6 +41,7 @@ public final class AgentTransportClient implements AgentTransport {
     private final Duration transferStallTimeout;
     private final long longPollSeconds;
     private final AtomicBoolean longPollHonored = new AtomicBoolean();
+    private final AtomicBoolean userContextSupported = new AtomicBoolean();
     private volatile String selectedTransport = TransportNegotiation.HTTPS;
 
     public AgentTransportClient(URI centerUrl) {
@@ -101,14 +102,21 @@ public final class AgentTransportClient implements AgentTransport {
     }
 
     public RegisterResponse register(AgentConfig config) throws IOException, InterruptedException {
+        var metadata = config.registerRequest();
+        // Registration stays readable by older Centers. Optional heartbeat
+        // fields are enabled only after explicit peer acceptance.
+        var baseline = new com.prodigalgal.remotecontrolmcp.protocol.RegisterRequest(metadata.name(), metadata.hostId(),
+                metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(), metadata.defaultCwd(),
+                metadata.capabilities(), metadata.runtime().withoutUserContext());
         var request = newRequest(centerUrl.resolve("/agent/v1/register"))
                 .timeout(requestTimeout)
                 .header("Authorization", "Bearer " + config.enrollmentToken())
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofByteArray(JsonCodec.write(config.registerRequest())))
+                .POST(HttpRequest.BodyPublishers.ofByteArray(JsonCodec.write(baseline)))
                 .build();
         var response = send(request);
+        observeUserContextSupport(response);
         if (response.statusCode() != 201) {
             throw new CenterTransportException("center registration failed", response.statusCode());
         }
@@ -116,6 +124,14 @@ public final class AgentTransportClient implements AgentTransport {
     }
 
     public PollResponse poll(String machineId, String token, PollRequest poll) throws IOException, InterruptedException {
+        if (!userContextSupported.get() && poll.metadata().runtime().userContext() != null) {
+            var metadata = poll.metadata();
+            var baseline = new com.prodigalgal.remotecontrolmcp.protocol.AgentMetadata(metadata.name(), metadata.hostId(),
+                    metadata.hostname(), metadata.os(), metadata.arch(), metadata.version(), metadata.defaultCwd(),
+                    metadata.capabilities(), metadata.runtime().withoutUserContext());
+            poll = new PollRequest(poll.runningTaskIds(), poll.availableSlots(), poll.availableCapabilities(),
+                    baseline, poll.configGeneration());
+        }
         var endpoint = URI.create(centerUrl.resolve("/agent/v1/poll").toString()
                 + "?wait_ms=" + (longPollSeconds * 1000L));
         var request = newRequest(endpoint)
@@ -127,12 +143,21 @@ public final class AgentTransportClient implements AgentTransport {
                 .POST(HttpRequest.BodyPublishers.ofByteArray(JsonCodec.write(poll)))
                 .build();
         var response = send(request);
+        // Clear support on rejection so a Center rollback is followed by a
+        // baseline request on the next normal retry.
+        observeUserContextSupport(response);
         if (response.statusCode() != 200) {
             throw new CenterTransportException("center poll failed", response.statusCode());
         }
         longPollHonored.set(response.headers().firstValue("X-RCM-Long-Poll")
                 .map(value -> "accepted".equalsIgnoreCase(value.trim())).orElse(false));
         return JsonCodec.read(response.body(), PollResponse.class);
+    }
+
+    private void observeUserContextSupport(HttpResponse<?> response) {
+        userContextSupported.set(response.statusCode() >= 200 && response.statusCode() < 300
+                && response.headers().firstValue(TransportNegotiation.HEADER_USER_CONTEXT)
+                .map(TransportNegotiation.USER_CONTEXT_VERSION::equals).orElse(false));
     }
 
     @Override

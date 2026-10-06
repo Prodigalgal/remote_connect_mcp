@@ -22,6 +22,99 @@ import org.junit.jupiter.api.Test;
 
 class McpToolContractTest {
     @Test
+    void taskReadRecoversDeliveredFileWithoutReissuingTheTransfer(@org.junit.jupiter.api.io.TempDir java.nio.file.Path root) throws Exception {
+        var fixture = fixture();
+        var tokens = new CenterTokenConfig() {
+            @Override public String artifactDownloadSecret() { return "contract-test-file-signing"; }
+        };
+        var transfers = new ArtifactTransferService(null, null, new FileSystemArtifactStore(root), fixture.tasks(), tokens);
+        var access = new McpAccessService();
+        var original = McpConfiguration.artifactModel(fixture.registry(), fixture.tasks(), access, transfers,
+                TaskOrigin.configured(), request("artifact", Map.of("operation", "get", "machine_id", fixture.machineId(),
+                        "source_path", "/srv/中文报告.docx", "delivery_mode", "async")));
+        var taskId = taskId(original);
+        var initial = (Map<?, ?>) original.structuredContent();
+        assertFalse(initial.containsKey("file"));
+        assertTrue(original.content().stream().noneMatch(McpSchema.ResourceLink.class::isInstance));
+        var transferId = (String) ((Map<?, ?>) initial.get("transfer")).get("transfer_id");
+        var leased = fixture.tasks().poll(fixture.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        assertEquals(taskId, leased.id());
+        fixture.tasks().updateState(fixture.machineId(), taskId, new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), leased.attempt());
+        var bytes = "test document bytes".getBytes(StandardCharsets.UTF_8);
+        var digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        transfers.receiveFromAgent(fixture.machineId(), transferId, new java.io.ByteArrayInputStream(bytes), bytes.length,
+                digest, "中文报告.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", leased.attempt());
+        fixture.tasks().updateState(fixture.machineId(), taskId, new TaskUpdateRequest(TaskStatus.COMPLETED, 0, null, null, null, false), leased.attempt());
+        var result = McpConfiguration.taskReadModel(fixture.tasks(), access, transfers, TaskOrigin.configured(),
+                request("task_read", Map.of("task_id", taskId)));
+        assertFalse(Boolean.TRUE.equals(result.isError()), result.content().toString());
+        @SuppressWarnings("unchecked") var payload = (Map<String, Object>) result.structuredContent();
+        valid(McpConfiguration.modelOutputSchema("task_read"), payload);
+        assertEquals(transferId, ((Map<?, ?>) payload.get("transfer")).get("transfer_id"));
+        var file = (Map<?, ?>) payload.get("file");
+        assertEquals("中文报告.docx", file.get("file_name"));
+        assertEquals(digest, file.get("sha256"));
+        assertFalse(file.containsKey("file_id"));
+        assertTrue(result.content().stream().anyMatch(McpSchema.ResourceLink.class::isInstance));
+    }
+
+    @Test
+    void machineDetailAndErrorsSatisfyTheirPublishedOutputSchema() {
+        var fixture = fixture();
+        var result = McpConfiguration.machinesModel(fixture.registry(), new McpAccessService(),
+                TaskOrigin.configured(), request("machines", Map.of("operation", "detail", "machine_id", fixture.machineId())));
+        assertFalse(Boolean.TRUE.equals(result.isError()));
+        @SuppressWarnings("unchecked") var payload = (Map<String, Object>) result.structuredContent();
+        valid(McpConfiguration.modelOutputSchema("machines"), payload);
+        assertEquals(fixture.machineId(), ((Map<?, ?>) payload.get("machine")).get("id"));
+        var missing = McpConfiguration.machinesModel(fixture.registry(), new McpAccessService(),
+                TaskOrigin.configured(), request("machines", Map.of("operation", "detail", "machine_id", "missing")));
+        assertTrue(Boolean.TRUE.equals(missing.isError()));
+        @SuppressWarnings("unchecked") var failure = (Map<String, Object>) missing.structuredContent();
+        valid(McpConfiguration.modelOutputSchema("machines"), failure);
+    }
+
+    @Test
+    void hostSessionCorrelationSurvivesReconnectWithoutBecomingAnAuthority() {
+        var principal = new McpPrincipal("owner", "token-1", "Owner", java.util.Set.of("mcp:read"), false, null);
+        var call = new McpSchema.CallToolRequest("machines", Map.of(), Map.of("openai/session", "host-session"));
+        var before = McpConfiguration.conversationOrigin(principal, "transport-1", call);
+        var after = McpConfiguration.conversationOrigin(principal, "transport-2", call);
+        assertEquals(before, after);
+        assertEquals("owner", after.principalId());
+        assertEquals("token-1", after.tokenId());
+        assertFalse(after.connectionId().contains("host-session"));
+        var otherToken = new McpPrincipal("owner", "token-2", "Owner", principal.scopes(), false, null);
+        assertNotEquals(after.connectionId(), McpConfiguration.conversationOrigin(otherToken, "transport-2", call).connectionId());
+        for (var invalid : List.of("", "x".repeat(257), "bad\nvalue", 123)) {
+            assertEquals("transport-2", McpConfiguration.conversationOrigin(principal, "transport-2",
+                    new McpSchema.CallToolRequest("machines", Map.of(), Map.of("openai/session", invalid))).connectionId());
+        }
+        assertEquals("transport-2", McpConfiguration.conversationOrigin(principal, "transport-2", request("machines", Map.of())).connectionId());
+    }
+
+    @Test
+    void fileHandlesUsePortableResourceLinksWithoutImpersonatingHostFiles() {
+        var file = Map.<String, Object>of("artifact_id", "rcm-artifact", "file_name", "中文报告.docx",
+                "mime_type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "bytes", 1234L, "download_url", "https://files.example.test/report?signature=test");
+        var result = McpConfiguration.artifactHandleResult(Map.of("file", file,
+                "transfer", Map.of("transfer_id", "transfer-1", "artifact_id", "rcm-artifact", "status", "delivered")));
+        assertFalse(Boolean.TRUE.equals(result.isError()));
+        var link = result.content().stream().filter(McpSchema.ResourceLink.class::isInstance)
+                .map(McpSchema.ResourceLink.class::cast).findFirst().orElseThrow();
+        assertEquals("中文报告.docx", link.name());
+        assertEquals(file.get("download_url"), link.uri());
+        assertEquals(1234L, link.size());
+        @SuppressWarnings("unchecked") var payload = (Map<String, Object>) result.structuredContent();
+        valid(McpConfiguration.modelOutputSchema("artifact"), payload);
+        assertFalse(file.containsKey("file_id"));
+        var pending = McpConfiguration.artifactHandleResult(Map.of("transfer",
+                Map.of("transfer_id", "t", "artifact_id", "a", "status", "pending")));
+        assertTrue(pending.content().stream().noneMatch(McpSchema.ResourceLink.class::isInstance));
+    }
+
+    @Test
     void artifactCallsWithoutRetryKeyCreateFreshTransfersAndExplicitRetriesReuseThem() {
         var fixture = fixture();
         var tokens = new CenterTokenConfig() {

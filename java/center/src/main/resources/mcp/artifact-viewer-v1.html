@@ -1,121 +1,78 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Remote Control Artifact</title>
+  <title>Remote Control 文件</title>
   <style>
-    body{font:14px system-ui,sans-serif;margin:16px;color:#172033;background:#fff}
-    main{display:grid;gap:10px}header{font-weight:600;word-break:break-word}
-    small{color:#65718a}img,video,iframe{max-width:100%;max-height:70vh;border:1px solid #d9dfeb;border-radius:6px}
-    pre{white-space:pre-wrap;max-height:60vh;overflow:auto;background:#f5f7fb;padding:10px;border-radius:6px}
-    a{color:#1769e0}button{padding:6px 10px;border:1px solid #b7c2d6;border-radius:5px;background:#f5f7fb;cursor:pointer}
+    :root{color-scheme:light dark;--bg:#f5f5f5;--fg:#202123;--muted:#6b6b6b;--border:#ddd}
+    @media(prefers-color-scheme:dark){:root{--bg:#292929;--fg:#eee;--muted:#aaa;--border:#444}}
+    :root[data-theme=dark]{--bg:#292929;--fg:#eee;--muted:#aaa;--border:#444}
+    :root[data-theme=light]{--bg:#f5f5f5;--fg:#202123;--muted:#6b6b6b;--border:#ddd}
+    *{box-sizing:border-box}body{font:14px system-ui,sans-serif;margin:8px;color:var(--fg);background:transparent}
+    main{display:flex;align-items:center;gap:14px;max-width:640px;padding:14px 16px;border:1px solid var(--border);border-radius:16px;background:var(--bg)}
+    #icon{font-size:24px;color:#238fe8}.info{min-width:0;flex:1}header{font-weight:600;overflow-wrap:anywhere}small{display:block;color:var(--muted);margin-top:4px}
+    .actions{display:flex;flex-wrap:wrap;gap:8px}a,button{color:inherit;font:inherit;font-size:12px;border:1px solid var(--border);background:transparent;border-radius:8px;padding:6px 9px;text-decoration:none;cursor:pointer}
+    [hidden]{display:none!important}button:disabled{opacity:.6;cursor:default}@media(max-width:480px){main{flex-wrap:wrap}.actions{margin-left:38px}}
   </style>
 </head>
 <body>
-  <main>
-    <header id="name">Artifact</header>
-    <small id="meta"></small>
-    <section id="preview"></section>
-    <a id="download" rel="noreferrer" download>Download</a>
-    <button id="save" hidden>Save to ChatGPT</button>
-    <button id="library" hidden>Save to Library</button>
+  <main aria-live="polite">
+    <span id="icon" aria-hidden="true">▤</span>
+    <div class="info"><header id="name">文件</header><small id="meta">等待文件结果</small></div>
+    <div class="actions">
+      <a id="open" target="_blank" rel="noreferrer" hidden>打开</a>
+      <a id="download" rel="noreferrer" download hidden>下载</a>
+      <button id="save" hidden>保存到 ChatGPT</button>
+    </div>
   </main>
   <script>
   (function(){
-    let latestResult=null;
-    const host=()=>window.openai||{};
-    const output=()=>host().toolOutput||null;
-    const pick=()=>{const result=latestResult||{};const o=result.structuredContent||result.structured_content||output()||result||{};return o.file||o.artifact||o.transfer||o;};
-    const inferredMime=(value,name)=>{const raw=String(value||'').toLowerCase();if(raw&&raw!=='application/octet-stream')return raw;const n=String(name||'').toLowerCase();if(/\.png$/.test(n))return 'image/png';if(/\.(jpe?g)$/.test(n))return 'image/jpeg';if(/\.webp$/.test(n))return 'image/webp';if(/\.gif$/.test(n))return 'image/gif';if(/\.svg$/.test(n))return 'image/svg+xml';return raw||'application/octet-stream';};
-    const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    const hostFileUrl=async(file)=>{
-      const fileId=file&&file.file_id;
-      if(!fileId||typeof host().getFileDownloadUrl!=='function')return '';
-      try{
-        const result=await host().getFileDownloadUrl({fileId});
-        return result&&result.downloadUrl?String(result.downloadUrl):'';
-      }catch(error){return '';}
-    };
-    // A pending transfer is already event-driven on the Center side.  Media
-    // elements cannot inspect an HTTP 425/5xx response, so retry only after a
-    // failed load, with a small bounded backoff.  This is not a background
-    // polling loop and stops once the preview succeeds or the budget is spent.
-    const mediaRetryDelays=[1000,2000,4000,8000,15000,30000];
-    const attachMediaRetry=(element,url)=>{
-      let attempt=0;
-      const retry=()=>{
-        if(attempt>=mediaRetryDelays.length){
-          element.removeEventListener('error',retry);
-          return;
-        }
-        const delay=mediaRetryDelays[attempt++];
-        window.setTimeout(()=>{
-          if(!element.isConnected)return;
-          const separator=url.includes('?')?'&':'?';
-          element.src=url+separator+'rcm_retry='+Date.now();
-        },delay);
-      };
-      element.addEventListener('error',retry);
-      element.src=url;
-    };
-    const fetchArtifact=async(file,url,options={})=>{
-      let current=String(url||'');
-      let response=null;
-      try{if(current)response=await fetch(current,{credentials:'omit',...options});}catch(error){}
-      if(response&&response.ok)return {response,url:current};
-      const refreshed=await hostFileUrl(file);
-      if(!refreshed||refreshed===current){if(response)return {response,url:current};throw new Error('artifact download URL unavailable');}
-      response=await fetch(refreshed,{credentials:'omit',...options});
-      return {response,url:refreshed};
-    };
-    const readPreview=async(file,url,limit)=>{
-      const fetched=await fetchArtifact(file,url,{headers:{Range:'bytes=0-'+(limit-1)}});
-      const response=fetched.response;
-      if(!response.ok&&response.status!==206)throw new Error('preview request failed');
-      if(!response.body)return (await response.text()).slice(0,limit);
-      const reader=response.body.getReader(),parts=[],decoder=new TextDecoder();let total=0;
-      try{while(total<limit){const next=await reader.read();if(next.done)break;const remaining=limit-total;const chunk=next.value.slice(0,remaining);parts.push(decoder.decode(chunk,{stream:total+chunk.length<limit}));total+=chunk.length;if(chunk.length<next.value.length||total>=limit){try{await reader.cancel()}catch(error){}break;}}}
-      finally{try{reader.releaseLock()}catch(error){}}
-      return parts.join('');
-    };
-    const previewHandlers=[];
-    const registerPreviewHandler=(name,matches,render)=>previewHandlers.push({name,matches,render});
-    registerPreviewHandler('image',mime=>mime.startsWith('image/'),(p,url,name)=>{const image=document.createElement('img');image.alt=name;attachMediaRetry(image,url);p.replaceChildren(image);});
-    registerPreviewHandler('pdf',mime=>mime==='application/pdf',(p,url,name)=>{const frame=document.createElement('iframe');frame.title=name;frame.style='width:100%;height:70vh';attachMediaRetry(frame,url);p.replaceChildren(frame);});
-    registerPreviewHandler('video',mime=>mime.startsWith('video/'),(p,url)=>{const video=document.createElement('video');video.controls=true;attachMediaRetry(video,url);p.replaceChildren(video);});
-    registerPreviewHandler('audio',mime=>mime.startsWith('audio/'),(p,url)=>{const audio=document.createElement('audio');audio.controls=true;attachMediaRetry(audio,url);p.replaceChildren(audio);});
-    registerPreviewHandler('diff', (mime,name)=>mime.includes('diff')||/\.(diff|patch)$/i.test(name), (p,url,name,mime,file)=>{readPreview(file,url,262144).then(t=>{p.innerHTML='<pre class="artifact-diff">'+esc(t)+'</pre>';}).catch(()=>{p.innerHTML='<small>Diff preview unavailable; use download.</small>';});});
-    registerPreviewHandler('text', (mime,name)=>mime.startsWith('text/')||mime.includes('json')||mime.includes('xml')||mime.includes('csv')||mime.includes('javascript')||mime.includes('yaml')||mime.includes('markdown')||/\.(md|markdown|csv|json|ya?ml|toml|ini|log|txt|xml|html?|css|js|ts|java|go|py|sh|ps1|sql)$/i.test(name), (p,url,name,mime,file)=>{readPreview(file,url,262144).then(t=>{p.innerHTML='<pre>'+esc(t)+'</pre>';}).catch(()=>{p.innerHTML='<small>Preview unavailable; use download.</small>';});});
-    registerPreviewHandler('office', (mime,name)=>mime.includes('officedocument')||mime.includes('msword')||mime.includes('vnd.ms-')||/\.(docx?|xlsx?|pptx?|odt|ods|odp|rtf)$/i.test(name), (p,url,name)=>{p.innerHTML='<small>Office 文档为下载后本地打开，避免在 MCP App 中执行或解压不可信内容：'+esc(name)+'</small>';});
-    registerPreviewHandler('archive', (mime,name)=>mime.includes('zip')||mime.includes('gzip')||mime.includes('x-7z')||mime.includes('x-rar')||mime.includes('x-tar')||/\.(zip|7z|rar|tar|gz|tgz)$/i.test(name), (p,url,name)=>{p.innerHTML='<small>压缩包为下载后本地打开，MCP App 不会自动解压：'+esc(name)+'</small>';});
-    window.rcmArtifactViewer={registerPreviewHandler,previewHandlers};
-    const resultHandler=result=>{latestResult=result&&result.params?result.params:result;render();};
-    let renderGeneration=0;
+    const el=id=>document.getElementById(id),host=()=>window.openai||{};
+    let latestResult=null,generation=0;
+    const url=value=>{try{const parsed=new URL(String(value||''));return ['https:','http:'].includes(parsed.protocol)?parsed.href:'';}catch{return '';}};
     const render=async()=>{
-      const generation=++renderGeneration;
-      const f=pick(),directPreview=f.preview_url||f.download_url||f.url||'',directDownload=f.download_url||f.url||directPreview;
-      const url=directPreview||await hostFileUrl(f),downloadUrl=directDownload||url;
-      const name=f.file_name||f.name||'artifact',mime=inferredMime(f.mime_type||f.mime,name);
-      if(generation!==renderGeneration)return;
-      document.querySelector('#name').textContent=name;
-      document.querySelector('#meta').textContent=[mime,f.bytes?Number(f.bytes).toLocaleString()+' bytes':'',f.sha256?'sha256 '+f.sha256:'',f.artifact_id?'artifact '+f.artifact_id:''].filter(Boolean).join(' · ');
-      const p=document.querySelector('#preview');p.replaceChildren();const safe=esc(url);
-      if(!url){p.innerHTML='<small>Artifact is not ready yet. Call artifact_read again after task_wait reports delivered.</small>';return;}
-      const handler=previewHandlers.find(value=>value.matches(mime,name));
-      if(handler)handler.render(p,url,name,mime,f);else p.innerHTML='<small>This file type is download-only. The original file remains available for download.</small>';
-      const a=document.querySelector('#download');a.href=downloadUrl;a.download=name;a.textContent='Download '+name;
-      const save=document.querySelector('#save'),library=document.querySelector('#library'),canUpload=!!(window.openai&&typeof window.openai.uploadFile==='function');
-      const upload=async(target,libraryMode)=>{target.disabled=true;try{const fetched=await fetchArtifact(f,downloadUrl);if(!fetched.response.ok)throw new Error('download failed');const blob=await fetched.response.blob();const file=new File([blob],name,{type:mime});const uploaded=libraryMode?await host().uploadFile(file,{library:true}):await host().uploadFile(file);const id=uploaded&&(uploaded.id||uploaded.file_id||uploaded.fileId);target.textContent=libraryMode?'Saved to Library':'Saved to ChatGPT';if(id)document.querySelector('#meta').textContent+=' · file '+id;}catch(error){target.textContent=libraryMode?'Library save failed':'Save failed';}finally{target.disabled=false;}};
-      save.hidden=!downloadUrl||!canUpload;save.onclick=()=>upload(save,false);
-      library.hidden=!downloadUrl||!canUpload;library.onclick=()=>upload(library,true);
+      const current=++generation,bridge=host();
+      const theme=bridge.theme;if(theme==='light'||theme==='dark')document.documentElement.dataset.theme=theme;
+      const result=latestResult||bridge.toolOutput||{},data=result.structuredContent||result.structured_content||result;
+      const file=data.file||{},transfer=data.transfer||{},task=data.task||{},status=transfer.status||task.status||'';
+      for(const id of ['open','download','save']){el(id).hidden=true;el(id).removeAttribute('href');}
+      el('name').textContent=file.file_name||transfer.file_name||'文件';
+      const failure=data.error||transfer.error||task.error;
+      if(failure||['failed','canceled','expired'].includes(status)){
+        el('meta').textContent=typeof failure==='string'?failure:failure?.message||'文件任务未完成：'+status;return;
+      }
+      if(!['ready','delivered','completed'].includes(status)){
+        el('meta').textContent=task.id?'文件准备中，可通过 task_read 查询 '+task.id:'等待文件结果';return;
+      }
+      // RCM artifact_id is never passed to a host API as a ChatGPT file_id.
+      let download=url(file.download_url);
+      if(!download&&file.file_id&&typeof bridge.getFileDownloadUrl==='function'){
+        try{download=url((await bridge.getFileDownloadUrl({fileId:file.file_id}))?.downloadUrl);}catch{}
+      }
+      if(current!==generation)return;
+      el('meta').textContent=[file.mime_type,Number.isFinite(file.bytes)?Number(file.bytes).toLocaleString()+' 字节':''].filter(Boolean).join(' · ')||'文件';
+      if(!download){el('meta').textContent='文件链接不可用，可通过 artifact(operation=read) 获取新链接';return;}
+      const open=el('open');open.href=url(file.preview_url)||download;open.hidden=false;
+      const link=el('download');link.href=download;link.download=file.file_name||'artifact';link.hidden=false;
+      const save=el('save');save.textContent='保存到 ChatGPT';save.disabled=false;
+      // Registration is an explicit user action. It is not an output-file API
+      // and does not promise an automatic native conversation attachment card.
+      save.hidden=typeof bridge.uploadFile!=='function'||!Number.isFinite(file.bytes)||file.bytes>32*1024*1024;
+      save.onclick=async()=>{
+        save.disabled=true;
+        try{
+          const response=await fetch(download,{credentials:'omit'});if(!response.ok)throw new Error('下载失败');
+          const blob=await response.blob();if(blob.size>32*1024*1024)throw new Error('请直接下载大文件');
+          await bridge.uploadFile(new File([blob],file.file_name||'artifact',{type:file.mime_type||blob.type}));
+          if(current===generation)save.textContent='已保存到 ChatGPT';
+        }catch(error){if(current===generation)save.textContent=error.message||'保存失败';}
+        finally{if(current===generation)save.disabled=false;}
+      };
     };
+    window.addEventListener('message',event=>{const message=event.data;if(message?.method==='ui/notifications/tool-result'){latestResult=message.params||{};render();}});
+    window.addEventListener('openai:set_globals',()=>render());
     render();
-    // MCP Apps delivers tool results through the standard UI notification
-    // channel.  Do not subscribe to historical host-specific callbacks: a
-    // single result path keeps the viewer deterministic and avoids silently
-    // accepting an obsolete host contract.
-    window.addEventListener('message',event=>{const data=event&&event.data;if(data&&data.method==='ui/notifications/tool-result')resultHandler(data.params||{});});
   })();
   </script>
 </body>

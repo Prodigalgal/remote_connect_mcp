@@ -48,10 +48,25 @@ class McpResultProjectionTest {
         assertEquals("process failed", failed.get("error"));
         assertEquals(true, failed.get("output_truncated"));
         assertEquals(3, failed.get("attempt"));
-        assertEquals(50, failed.get("progress_percent"));
+        assertFalse(failed.containsKey("progress_percent"));
+        assertFalse(failed.containsKey("progress_phase"));
+        assertEquals(50, McpConfiguration.taskDetailMap(new TaskView(state)).get("progress_percent"));
         assertFalse(failed.containsKey("progress_current"));
         assertFalse(failed.containsKey("command"));
         assertFalse(failed.containsKey("execution_session_id"));
+    }
+
+    @Test
+    void terminalSummariesDoNotPresentLastReportedProgressAsLive() {
+        var command = new TaskCommand("", TaskKind.COMMAND, "command", "echo", "/tmp", Map.of(), 0, null, null);
+        for (var status : List.of(TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELED)) {
+            var state = new TaskState("task-" + status, "machine", command, "key", Instant.now());
+            state.progressPhase("running");
+            state.progressPercent(0);
+            state.status(status);
+            assertFalse(McpConfiguration.taskMap(new TaskView(state)).containsKey("progress_percent"));
+            assertEquals(0, McpConfiguration.taskDetailMap(new TaskView(state)).get("progress_percent"));
+        }
     }
 
     @Test

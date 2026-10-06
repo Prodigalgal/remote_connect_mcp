@@ -15,6 +15,7 @@ public final class DesktopCompanionProtocol {
     public static final String COMPANION_DIR = "desktop";
     public static final String ENDPOINT_FILE = "desktop-companion.json";
     public static final String TOKEN_FILE = "desktop-companion.token";
+    public static final String USER_CONTEXT_FILE = "desktop-user.json";
 
     private DesktopCompanionProtocol() {
     }

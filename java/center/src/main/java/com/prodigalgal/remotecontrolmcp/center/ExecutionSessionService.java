@@ -243,9 +243,9 @@ public final class ExecutionSessionService {
                     || state.expiresAt() == null || !now.isBefore(state.expiresAt())) {
                 throw new SecurityException("execution session is expired or unavailable");
             }
-            if (origin != null && !state.conversationId().equals(origin.connectionId())) {
-                throw new SecurityException("execution session belongs to another conversation");
-            }
+            // A transport reconnect changes its connection id. Ownership is
+            // the authenticated principal; machine/tool grants are checked
+            // by the MCP entry point before any result bytes are returned.
             if (requiredCapability != null && state.contract() != null
                     && !requiredCapability.equals(state.contract().capability())) {
                 throw new SecurityException("execution session capability does not match task");
@@ -256,17 +256,15 @@ public final class ExecutionSessionService {
                 SELECT EXISTS (
                     SELECT 1 FROM rcm_execution_session
                      WHERE principal_id = ? AND session_id = ? AND status = 'active'
-                       AND conversation_id = ?
                        AND expires_at > CURRENT_TIMESTAMP
                        AND (? = '' OR contract_json ->> 'capability' = ?)
                 )
                 """, ps -> {
             ps.setString(1, principal);
             ps.setString(2, session);
-            ps.setString(3, required(origin == null ? null : origin.connectionId(), "conversation_id"));
             var capability = requiredCapability == null ? "" : requiredCapability;
+            ps.setString(3, capability);
             ps.setString(4, capability);
-            ps.setString(5, capability);
         }, rs -> rs.next() && rs.getBoolean(1));
         if (!Boolean.TRUE.equals(allowed)) throw new SecurityException("execution session is expired or unavailable");
     }

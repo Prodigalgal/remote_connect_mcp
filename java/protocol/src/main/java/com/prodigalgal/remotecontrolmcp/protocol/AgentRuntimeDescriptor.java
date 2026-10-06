@@ -19,7 +19,22 @@ public record AgentRuntimeDescriptor(
         @JsonProperty("browser_adapter_configured") boolean browserAdapterConfigured,
         @JsonProperty("desktop_session_available") boolean desktopSessionAvailable,
         @JsonProperty("browser_session_available") boolean browserSessionAvailable,
-        @JsonProperty("resource_enforcement") String resourceEnforcement) {
+        @JsonProperty("resource_enforcement") String resourceEnforcement,
+        @JsonProperty("user_context") @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        AgentUserContext userContext) {
+
+    /** Construction overload for peers that have not accepted optional user context. */
+    public AgentRuntimeDescriptor(int schemaVersion, long configGeneration, int maxConcurrency,
+                                  int maxBrowserWorkers, long maxOutputBytes, long maxAggregateOutputBytes,
+                                  int maxChildProcesses, int maxTotalChildProcesses, long maxTaskDurationSeconds,
+                                  long maxRssBytes, long maxCpuSeconds, boolean desktopEnabled,
+                                  boolean browserAdapterConfigured, boolean desktopSessionAvailable,
+                                  boolean browserSessionAvailable, String resourceEnforcement) {
+        this(schemaVersion, configGeneration, maxConcurrency, maxBrowserWorkers, maxOutputBytes,
+                maxAggregateOutputBytes, maxChildProcesses, maxTotalChildProcesses, maxTaskDurationSeconds,
+                maxRssBytes, maxCpuSeconds, desktopEnabled, browserAdapterConfigured,
+                desktopSessionAvailable, browserSessionAvailable, resourceEnforcement, null);
+    }
 
     /** Highest runtime descriptor schema understood by this release. */
     public static final int CURRENT_SCHEMA_VERSION = 1;
@@ -64,6 +79,15 @@ public record AgentRuntimeDescriptor(
         return new AgentRuntimeDescriptor(1, 0, 1, 1, 64L * 1024 * 1024,
                 64L * 1024 * 1024, 32, 32, 0, 0, 0, false, false,
                 false, false, "process-tree");
+    }
+
+    public AgentRuntimeDescriptor withoutUserContext() {
+        if (userContext == null) return this;
+        return new AgentRuntimeDescriptor(schemaVersion, configGeneration, maxConcurrency,
+                maxBrowserWorkers, maxOutputBytes, maxAggregateOutputBytes, maxChildProcesses,
+                maxTotalChildProcesses, maxTaskDurationSeconds, maxRssBytes, maxCpuSeconds,
+                desktopEnabled, browserAdapterConfigured, desktopSessionAvailable,
+                browserSessionAvailable, resourceEnforcement);
     }
 
 }

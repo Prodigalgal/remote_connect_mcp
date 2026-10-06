@@ -207,6 +207,30 @@ class PostgresIntegrationTest {
         org.junit.jupiter.api.Assertions.assertThrows(SecurityException.class,
                 () -> access.authorizeTool(aclOrigin, agentId, "browser"));
 
+        // Exercise the production JDBC session path across actual connection
+        // ids. Memory-only tests cannot detect an extra SQL conversation fence.
+        var recoveryCommand = new TaskCommand("", TaskKind.COMMAND, "command", "echo recoverable", "/tmp",
+                Map.of(), 30, null, Instant.now());
+        var recoveryTask = taskService.create(new CreateTaskRequest(agentId, recoveryCommand, "reconnect-it"), "mcp", aclOrigin);
+        var recoveryLease = taskService.poll(agentId, new PollRequest(List.of(), 1, List.of("command"))).task();
+        assertEquals(recoveryTask.id(), recoveryLease.id());
+        taskService.updateState(agentId, recoveryTask.id(), new TaskUpdateRequest(TaskStatus.RUNNING, null, null, null, null, false), recoveryLease.attempt());
+        taskService.appendOutput(agentId, recoveryTask.id(), 0, "recoverable\n".getBytes(StandardCharsets.UTF_8), recoveryLease.attempt());
+        taskService.updateState(agentId, recoveryTask.id(), new TaskUpdateRequest(TaskStatus.COMPLETED, 0, null, null, null, false), recoveryLease.attempt());
+        var reconnected = new TaskOrigin(aclPrincipalId, "acl-token", "new-transport");
+        var readRequest = new io.modelcontextprotocol.spec.McpSchema.CallToolRequest("task_read", Map.of("task_id", recoveryTask.id()), Map.of());
+        var recovered = McpConfiguration.taskReadModel(taskService, access, reconnected, readRequest);
+        assertTrue(!Boolean.TRUE.equals(recovered.isError()), recovered.content().toString());
+        assertEquals("recoverable\n", ((Map<?, ?>) ((Map<?, ?>) recovered.structuredContent()).get("output")).get("text"));
+        var outsider = new TaskOrigin("another-principal", "another-token", "new-transport");
+        assertTrue(Boolean.TRUE.equals(McpConfiguration.taskReadModel(taskService, access, outsider, readRequest).isError()));
+        access.grantTokenMachines("acl-token", Map.of(agentId, Set.of("command")));
+        assertTrue(Boolean.TRUE.equals(McpConfiguration.taskReadModel(taskService, access, reconnected, readRequest).isError()));
+        access.grantTokenMachines("acl-token", Map.of(agentId, Set.of("command", "task_read")));
+        jdbc.update("UPDATE rcm_mcp_token SET revoked_at = CURRENT_TIMESTAMP WHERE token_id = 'acl-token'");
+        assertTrue(Boolean.TRUE.equals(McpConfiguration.taskReadModel(taskService, access, reconnected, readRequest).isError()));
+        jdbc.update("UPDATE rcm_mcp_token SET revoked_at = NULL WHERE token_id = 'acl-token'");
+
         // Test wildcard machine grant
         var wildcardPrincipal = "acl_wc_" + UUID.randomUUID().toString().replace("-", "");
         jdbc.update("""

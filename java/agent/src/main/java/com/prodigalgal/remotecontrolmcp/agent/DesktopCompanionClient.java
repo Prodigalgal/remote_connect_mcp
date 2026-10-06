@@ -40,6 +40,18 @@ final class DesktopCompanionClient {
         }
     }
 
+    static com.prodigalgal.remotecontrolmcp.protocol.AgentUserContext userContext(Path stateDir) {
+        try {
+            var file = DesktopCompanionProtocol.companionDirectory(stateDir).resolve(DesktopCompanionProtocol.USER_CONTEXT_FILE);
+            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.size(file) > 8192) return null;
+            var bytes = Files.readAllBytes(file);
+            if (bytes.length > 8192) return null;
+            return JsonCodec.read(bytes, com.prodigalgal.remotecontrolmcp.protocol.AgentUserContext.class);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
     DesktopCompanionProtocol.Response call(TaskCommand.DesktopAction action, Duration timeout) throws IOException {
         return call(action, null, timeout);
     }

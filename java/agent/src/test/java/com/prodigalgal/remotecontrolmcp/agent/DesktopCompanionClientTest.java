@@ -2,6 +2,7 @@ package com.prodigalgal.remotecontrolmcp.agent;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import com.prodigalgal.remotecontrolmcp.protocol.JsonCodec;
 import com.prodigalgal.remotecontrolmcp.protocol.DesktopCompanionProtocol;
@@ -22,6 +23,30 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class DesktopCompanionClientTest {
+    @Test
+    void metadataSeparatesServiceIdentityFromInteractiveDesktopAndToleratesOlderCompanions(@TempDir Path stateDir) throws Exception {
+        var companionDir = Files.createDirectories(stateDir.resolve("desktop"));
+        var endpoint = companionDir.resolve(DesktopCompanionProtocol.ENDPOINT_FILE);
+        Files.write(endpoint, JsonCodec.write(new DesktopCompanionProtocol.Endpoint(12345, "test-token")));
+        var config = new AgentConfig(java.net.URI.create("https://center.invalid"), "enrollment", "agent", "host",
+                stateDir.toString(), List.of("command", "desktop"), true, stateDir, Duration.ofSeconds(5), 1);
+        assertEquals("", config.metadata().runtime().userContext().desktopPath());
+        var contextFile = companionDir.resolve(DesktopCompanionProtocol.USER_CONTEXT_FILE);
+        Files.write(contextFile, JsonCodec.write(new com.prodigalgal.remotecontrolmcp.protocol.AgentUserContext(
+                "", "", "interactive-zzp", "C:\\Users\\interactive-zzp\\OneDrive\\桌面")));
+        var reported = config.metadata().runtime().userContext();
+        assertEquals(System.getProperty("user.name"), reported.commandUser());
+        assertEquals(System.getProperty("user.home"), reported.commandHome());
+        assertEquals("interactive-zzp", reported.interactiveUser());
+        assertEquals("C:\\Users\\interactive-zzp\\OneDrive\\桌面", reported.desktopPath());
+        Files.delete(endpoint);
+        assertEquals("", config.metadata().runtime().userContext().interactiveUser());
+        Files.writeString(contextFile, "x".repeat(8193));
+        assertNull(DesktopCompanionClient.userContext(stateDir));
+        Files.writeString(contextFile, "malformed");
+        assertNull(DesktopCompanionClient.userContext(stateDir));
+    }
+
     @Test
     void discoversLoopbackEndpointAndKeepsArtifactBounded(@TempDir Path stateDir) throws Exception {
         var companionDir = Files.createDirectories(stateDir.resolve("desktop"));
