@@ -33,7 +33,9 @@ schema 1；runtime descriptor 缺失或字段不完整时直接拒绝，不猜�
   `LISTEN rcm_task_change`/`NOTIFY`；不同任务不会互相唤醒并查询，不会按固定间隔持续查询。通知丢失或监听器故障时，
   等待在调用方的截止时间返回当前快照；下一次显式 `task_read` 再读取权威任务行。内存模式
   使用本地条件变量。任务行始终是唯一事实来源。
-- `task_read` 使用字节 cursor 分页，单页最多 64 KiB；cursor 可以直接跳到已知字节偏移。`tail_bytes` 可从当前输出末尾读取有界字节，与 cursor/limit 互斥。顺序读取时调用方保存 `next_cursor`，不能把整段输出塞回 MCP 上下文。
+- 命令日志保留源字节，回显文本统一为 UTF-8。`task_read` 的 cursor、`next_cursor`、`tail_bytes` 和任务 `output_bytes` 始终对应源字节；`limit` 约束转换后的 UTF-8 文本，最多 64 KiB，不足一个字符时允许一个完整字符。`tail_bytes` 与 cursor/limit 互斥。顺序读取保存 `next_cursor`，不要把整段输出塞回 MCP 上下文。
+- `command` 的首次回显与 `task_read` 支持 `source_encoding`；默认 `auto` 识别 BOM、UTF-8 和常见中文编码，歧义字节可明确指定 JDK 支持的字符集。源编码仅影响本次读取，后续读取沿用同一编码；不修改命令、宿主机设置或已保留的字节，也不参与任务参数指纹。
+- 回显报告 `encoding=UTF-8` 和已选择的 `source_encoding`。末尾字符不完整时，返回已解码文本与 `pending_bytes`，保留未完成字符的 cursor，`more=false` 表示当前没有完整的下一页。携带 `change_seq` 和正数 `wait_ms` 等待后续字节或终态，不能仅因 `next_cursor < output_bytes` 就空读。终态无效字节显示替代字符并带 `decoding_error=true`，可换源编码从头重读原日志。
 - `idempotency_key` 在同一 Agent 上绑定命令参数；重试得到原任务视图，参数变化会被拒绝。
 - `wait_ms` 和制品 `delivery_mode` 只影响本次结果呈现，不参与服务端自动幂等键的参数指纹；切换等待方式不会变成另一项任务。
 - `task_cancel` 是幂等的：排队任务立即取消，已派发任务先进入 `cancel_requested`，由 Agent 杀掉进程并上报终态。
@@ -45,6 +47,7 @@ schema 1；runtime descriptor 缺失或字段不完整时直接拒绝，不猜�
 - PostgreSQL 写入以单事务完成状态、租约、游标和工件更新；数据库断线不会创建第二个任务。任务创建/取消/状态变更会 best-effort 发布 `pg_notify`：一条通道唤醒 Agent，另一条通道唤醒 `task_read`。高频输出/工件增量使用带任务摘要的 task-local 通知，不把每个 chunk 广播到所有 Admin/Agent；通知丢失时由长轮询截止时间和下一次显式读取补偿，不启动固定查询循环。
 - `queued -> dispatching` 使用租约和 `SKIP LOCKED`；新任务、取消和升级会按机器发送唤醒提示，租约过期后由下一次正常派发请求按机器范围修复：无超时任务重新排队并允许原 Agent 带任务 ID 恢复，限时任务因执行结果未知而终止观察，必须先检查机器再重试。修复产生的任务 ID 在事务提交后精准唤醒 `task_read`。
 - Center 每次派发都会递增并把 `attempt` 放入任务响应；Agent 在状态、输出和工件请求中携带 `X-Task-Attempt`，Center 对已回收的旧 attempt fail-closed；缺少 attempt 的请求一律拒绝。
+- Center 在回显层统一解码；UTF-8、UTF-16/32 与单字节编码可直接定位，多字节及有状态字符集通过固定缓冲重放必要前缀来恢复状态，不加载整份日志。自动识别不能保证区分所有源编码，也不能可靠拆分无标记的混合编码流；这类来源应明确指定或在执行程序中分开输出。
 - Agent 轮询时按机器修复过期任务租约；Center 还每分钟检查离线机器，不让 `running`/`cancel_requested` 因机器不再轮询而无限悬挂。可恢复的持久任务回到队列，无法安全重放的限时命令以明确错误结束，取消中的任务收敛为已取消；原任务 ID、输出和 attempt 栅栏保持不变。
 
 ## Agent
@@ -59,9 +62,9 @@ schema 1；runtime descriptor 缺失或字段不完整时直接拒绝，不猜�
 
 React 控制台只请求分页摘要；Admin API 同时返回 `offset`、`limit`、`total` 和 `has_more`，列表不会因为机器或任务数量增长而一次性加载无界数据。Admin Token 仅保存在内存。验证 Token 后挂起一个 Admin 事件长连接，只有收到变更才重新读取分页摘要；传输故障才使用带退避的重连，AbortController 在请求截止时取消失联请求。
 
-展开任务时，Console 使用既有 `GET /api/v1/admin/tasks/{id}/output` 按字节 cursor 读取；可选 `wait_ms` 为 0–25000，`change_seq` 用于同时等待状态和进度变化，响应中的 `task` 是当前任务快照。日志增量沿任务自己的通知通道唤醒，单页最多 64 KiB；完成、折叠或离开页面后停止跟随。正在执行的长日志只保留有界的最近预览，终态日志可从头分页读取；UTF-8 解码跨页保留未完成字符，避免中文在分块边界损坏。
+展开任务时，Console 使用既有 `GET /api/v1/admin/tasks/{id}/output` 按源字节 cursor 读取；可选 `wait_ms` 为 0–25000，`change_seq` 用于同时等待状态和进度变化，`source_encoding` 指定本次源编码，响应中的 `task` 是当前任务快照。日志增量沿任务自己的通知通道唤醒，单页文本最多 64 KiB；完成、折叠或离开页面后停止跟随。正在执行的长日志只保留有界的最近预览，终态日志可从头分页读取；Center 保留未完成字符的位置并等待剩余字节，Console 按 `more` 判断是否继续读完整分页。
 
-Console 日志编码可选择 UTF-8、GB18030（含 GBK）或 UTF-16LE。编码切换会取消当前读取、重置解码器和字节 cursor，从零重新读取，原始日志字节与任务不变。非 UTF-8 日志不从任意尾部偏移开始解码，避免把多字节字符中间误当字符起点；运行中仍保留有界预览。命令的转义转换仅用于显示，原文与复制内容保持不变；不能确认的字节、路径及控制转义保留原文。
+Console 默认自动识别源编码，也可选择或输入字符集名称；编码切换取消当前读取并把 cursor 置零，由 Center 重新解码，原日志及任务不变。当前 Center 响应中的 `text` 已统一为 UTF-8，Console 不再重复解码 `data_base64`；只有连接旧 Center 时，才使用浏览器的跨页原始字节解码兼容。命令的转义转换仅用于显示，原文与复制内容保持不变；不能确认的字节、路径及控制转义保留原文。
 
 ## 无稳态轮询门禁
 
