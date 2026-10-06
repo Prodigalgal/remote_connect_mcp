@@ -77,8 +77,9 @@ class AdminFilesControllerTest {
                 Map.of("operation", "delete", "path", source),
                 Map.of("operation", "archive", "path", source, "destination_path", target),
                 Map.of("operation", "extract", "path", source, "destination_path", target));
+        var transfers = new ArtifactTransferService(null, null, new FileSystemArtifactStore(root.resolve("objects")), tasks, tokens());
         try (var async = new CenterAsyncExecutor()) {
-            var controller = new AdminFilesController(tokens(), registry, tasks, null, async);
+            var controller = new AdminFilesController(tokens(), registry, tasks, transfers, async);
             for (var operation : requests) {
                 var name = (String)operation.get("operation");
                 var body = new AdminFilesController.OperationBody(operation, null, "risk-" + name, 0);
