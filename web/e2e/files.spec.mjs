@@ -58,6 +58,8 @@ test('Chinese directory pagination, machine selection and batch copy stay compac
   expect(copies.map(item => item.destination_path)).toEqual(['/srv/备份/中文25.txt', '/srv/备份/中文26.txt'])
   await page.screenshot({ path: testInfo.outputPath('files-desktop.png'), fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.locator('.sidebar')).not.toBeInViewport()
+  await expect(page.getByRole('button', { name: '上一级', exact: true })).toBeInViewport()
   await page.screenshot({ path: testInfo.outputPath('files-mobile.png'), fullPage: true })
 })
 
