@@ -6,6 +6,8 @@
     "desktop",
     "browser",
     "artifact",
+    "files",
+    "file_card",
     "task_read",
     "task_cancel"
   ],

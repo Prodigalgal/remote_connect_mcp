@@ -6,6 +6,8 @@ import java.util.regex.Pattern;
 
 public final class ProtocolValidation {
     public static final int MAX_COMMAND_BYTES = 256 * 1024;
+    // A 64 KiB text write may expand sixfold when JSON escapes control characters.
+    public static final int MAX_FILES_REQUEST_BYTES = 512 * 1024;
     public static final int MAX_CWD_BYTES = 16 * 1024;
     public static final int MAX_ENV_ENTRIES = 256;
     public static final int MAX_ENV_KEY_BYTES = 256;
@@ -36,7 +38,7 @@ public final class ProtocolValidation {
         Objects.requireNonNull(task, "task");
         requireText(task.id(), "id", 256);
         if (task.command() != null) {
-            requireBytes(task.command(), "command", MAX_COMMAND_BYTES);
+            requireBytes(task.command(), "command", task.kind() == TaskKind.FILES ? MAX_FILES_REQUEST_BYTES : MAX_COMMAND_BYTES);
         }
         if (task.cwd() != null) {
             requireBytes(task.cwd(), "cwd", MAX_CWD_BYTES);
@@ -153,6 +155,13 @@ public final class ProtocolValidation {
         }
         if (task.kind() == TaskKind.FILE_TRANSFER) {
             validateFileTransfer(task.fileTransfer());
+        }
+        if (task.kind() == TaskKind.FILES) {
+            if (!AgentCapability.FILES.wireValue().equals(task.requiredCapability()))
+                throw new IllegalArgumentException("file operations require the files capability");
+            if (task.command() == null || task.command().isBlank()) throw new IllegalArgumentException("file request is required");
+            var request = JsonCodec.read(task.command().getBytes(java.nio.charset.StandardCharsets.UTF_8), FileRequest.class);
+            request.validate();
         }
     }
 

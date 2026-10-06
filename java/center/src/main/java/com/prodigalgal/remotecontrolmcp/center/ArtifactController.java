@@ -61,8 +61,8 @@ public final class ArtifactController {
         // them wait for bytes that this response intentionally does not send.
         headers.setContentLength(range.length());
         var disposition = "preview".equalsIgnoreCase(purpose)
-                ? ContentDisposition.inline().filename(artifact.fileName()).build()
-                : ContentDisposition.attachment().filename(artifact.fileName()).build();
+                ? ContentDisposition.inline().filename(artifact.fileName(), java.nio.charset.StandardCharsets.UTF_8).build()
+                : ContentDisposition.attachment().filename(artifact.fileName(), java.nio.charset.StandardCharsets.UTF_8).build();
         headers.setContentDisposition(disposition);
         headers.set("X-RCM-Artifact-SHA256", artifact.sha256());
         headers.setCacheControl("private, no-store");

@@ -3,6 +3,11 @@ name: Change checks
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      native_agent_checks:
+        description: "Also validate Linux/Windows Native Agent contracts without publishing"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -128,6 +133,38 @@ jobs:
         working-directory: java
         run: bash ./gradlew :agent:test :desktop:test :browser:test --no-daemon
 
+  native-agent-checks:
+    name: Native Agent contracts (${{ matrix.os }})
+    needs: agent-test
+    if: github.event_name == 'workflow_dispatch' && inputs.native_agent_checks
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: graalvm/setup-graalvm@0426e2e191540e8514dff98dc52a5f5146a2a276 # v1.6.6
+        with:
+          java-version: '25'
+          distribution: graalvm-community
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: false
+      - name: Compile and validate Native Agent metadata and encodings
+        working-directory: java
+        shell: pwsh
+        run: |
+          if ($IsWindows) { & .\gradlew.bat -PnativeMarch=x86-64-v2 :agent:nativeCompile --no-daemon }
+          else { & bash ./gradlew -PnativeMarch=x86-64-v2 :agent:nativeCompile --no-daemon }
+          if ($LASTEXITCODE -ne 0) { throw 'Native Agent compilation failed' }
+          $binary = if ($IsWindows) { './agent/build/native/nativeCompile/rcm-agent.exe' } else { './agent/build/native/nativeCompile/rcm-agent' }
+          $env:REMOTE_CONTROL_MCP_AGENT_CENTER_URL = 'https://center.invalid'
+          $env:REMOTE_CONTROL_MCP_AGENT_NAME = 'ci-native-file-check'
+          $env:REMOTE_CONTROL_MCP_AGENT_STATE_DIR = Join-Path $env:RUNNER_TEMP 'native-file-contracts'
+          & $binary --check-config
+          if ($LASTEXITCODE -ne 0) { throw 'Native Agent file/metadata/encoding contracts failed' }
+
   console-test:
     name: Console selective test
     needs: changes
@@ -146,3 +183,18 @@ jobs:
       - name: Console build
         working-directory: web
         run: pnpm install --frozen-lockfile && pnpm build
+      - name: Console filesystem browser checks
+        working-directory: web
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm exec playwright test
+      - name: Console preview and browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: console-preview-and-browser-evidence
+          path: |
+            web/dist
+            web/test-results
+            web/playwright-report
+          retention-days: 7

@@ -70,7 +70,9 @@ public record AgentConfig(
         if (name == null || name.isBlank() || hostId == null || hostId.isBlank()) {
             throw new IllegalArgumentException("Agent name and hostId are required");
         }
-        capabilities = capabilities == null ? List.of() : List.copyOf(capabilities);
+        var localCapabilities = new java.util.LinkedHashSet<>(capabilities == null ? List.<String>of() : capabilities);
+        if (localCapabilities.contains("file_transfer")) localCapabilities.add("files");
+        capabilities = List.copyOf(localCapabilities);
         pollInterval = pollInterval == null ? Duration.ofSeconds(5) : pollInterval;
         if (pollInterval.isNegative() || pollInterval.isZero()) {
             throw new IllegalArgumentException("pollInterval must be positive");

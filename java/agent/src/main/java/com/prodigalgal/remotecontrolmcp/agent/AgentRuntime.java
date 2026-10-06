@@ -141,6 +141,7 @@ public final class AgentRuntime {
                             case DESKTOP -> new DesktopTaskRunner(config, taskIdentity, task, transport);
                             case BROWSER -> new BrowserTaskRunner(config, taskIdentity, task, transport, resourceBudget, processBudget);
                             case FILE_TRANSFER -> new FileTransferTaskRunner(config, taskIdentity, task, transport);
+                            case FILES -> new FileTaskRunner(config, taskIdentity, task, transport);
                         };
                         // FutureTask removes itself from the running map in its
                         // completion callback; no second waiter thread is needed

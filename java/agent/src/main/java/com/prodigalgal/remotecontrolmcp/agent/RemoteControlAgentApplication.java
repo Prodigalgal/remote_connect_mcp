@@ -26,6 +26,14 @@ public final class RemoteControlAgentApplication {
             if (!metadata.equals(decoded)) {
                 throw new IllegalStateException("Agent metadata changed during protocol round-trip");
             }
+            var fileRequest = com.prodigalgal.remotecontrolmcp.protocol.FileRequest.from(java.util.Map.of(
+                    "operation", "write", "path", "中文文件.txt", "content", "中文😀", "encoding", "UTF-16LE", "bom", true));
+            if (!fileRequest.equals(JsonCodec.read(JsonCodec.write(fileRequest), com.prodigalgal.remotecontrolmcp.protocol.FileRequest.class))) {
+                throw new IllegalStateException("Native file request changed during protocol round-trip");
+            }
+            // Catch missing legacy charsets in the Native binary before rollout.
+            var legacyCharset = java.nio.charset.Charset.forName("GB18030");
+            if (!"中文".equals(new String("中文".getBytes(legacyCharset), legacyCharset))) throw new IllegalStateException("Native GB18030 codec unavailable");
             LOG.info(() -> "java agent configuration valid: name=" + metadata.name() + ", hostId=" + metadata.hostId()
                     + ", os=" + metadata.os() + ", arch=" + metadata.arch() + ", capabilities=" + metadata.capabilities()
                     + ", maxConcurrency=" + config.maxConcurrency() + ", maxBrowserWorkers=" + config.maxBrowserWorkers()

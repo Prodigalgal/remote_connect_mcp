@@ -434,6 +434,42 @@ export async function createTask(token: string, payload: unknown): Promise<Task>
   return mapTask(body)
 }
 
+export type FileEntry = { name: string; path: string; type: 'file' | 'directory' | 'symlink' | 'other'; bytes: number; modified_at: string; readable: boolean; writable: boolean; link_target?: string }
+export type NativeFileRequest = {
+  operation: 'roots' | 'list' | 'search' | 'stat' | 'read' | 'write' | 'mkdir' | 'copy' | 'move' | 'delete' | 'archive' | 'extract'
+  path?: string; destination_path?: string; pattern?: string; content?: string; encoding?: string
+  offset?: number; limit?: number; recursive?: boolean; overwrite?: boolean; expected_sha256?: string; bom?: boolean
+  max_depth?: number; max_entries?: number; max_bytes?: number
+}
+export type NativeFileResult = {
+  operation: string; path?: string; cwd?: string; roots?: string[]; entries?: FileEntry[] | number; entry?: FileEntry
+  pattern?: string; max_depth?: number
+  offset?: number; next_offset?: number; has_more?: boolean; scanned?: number; scan_truncated?: boolean; depth_limited?: boolean
+  text?: string; encoding?: string; bom?: boolean; bytes?: number; cursor?: number; next_cursor?: number; sha256?: string
+}
+export type FileTaskResponse = { task: Task; result?: NativeFileResult; file?: { file_name: string; mime_type: string; bytes: number; sha256: string; download_url: string } }
+const fileTaskResponse = (body: Record<string, unknown>): FileTaskResponse => ({ task: mapTask(body.task as Record<string, unknown>), result: body.result as NativeFileResult | undefined, file: body.file as FileTaskResponse['file'] })
+
+export async function operateFiles(token: string, machineId: string, action: NativeFileRequest, key: string, signal?: AbortSignal): Promise<FileTaskResponse> {
+  return fileTaskResponse(await request<Record<string, unknown>>(`/api/v1/admin/machines/${encodeURIComponent(machineId)}/files`, token,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request: action, idempotency_key: key, wait_ms: 2000 }) }, 12000, signal))
+}
+export async function readFileTask(token: string, task: Task, signal?: AbortSignal): Promise<FileTaskResponse> {
+  return fileTaskResponse(await request<Record<string, unknown>>(`/api/v1/admin/tasks/${encodeURIComponent(task.id)}/files?wait_ms=20000&change_seq=${task.changeSeq ?? 0}`, token, undefined, 28000, signal))
+}
+export async function recoverFileRequest(token: string, machineId: string, key: string, signal?: AbortSignal): Promise<FileTaskResponse> {
+  return fileTaskResponse(await request<Record<string, unknown>>(`/api/v1/admin/machines/${encodeURIComponent(machineId)}/files/requests/${encodeURIComponent(key)}`, token, undefined, 12000, signal))
+}
+export async function downloadMachineFile(token: string, machineId: string, path: string, key: string, signal?: AbortSignal): Promise<FileTaskResponse> {
+  return fileTaskResponse(await request<Record<string, unknown>>(`/api/v1/admin/machines/${encodeURIComponent(machineId)}/files/download`, token,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_path: path, idempotency_key: key }) }, 12000, signal))
+}
+export async function uploadMachineFile(token: string, machineId: string, path: string, file: File, overwrite: boolean, key: string, signal?: AbortSignal): Promise<FileTaskResponse> {
+  const body = new FormData(); body.set('file', file); body.set('destination_path', path); body.set('overwrite', String(overwrite)); body.set('idempotency_key', key)
+  return fileTaskResponse(await request<Record<string, unknown>>(`/api/v1/admin/machines/${encodeURIComponent(machineId)}/files/upload`, token,
+    { method: 'POST', body }, 120000, signal))
+}
+
 export async function cancelTask(token: string, taskId: string): Promise<Task> {
   const body = await request<Record<string, unknown>>(`/api/v1/admin/tasks/${encodeURIComponent(taskId)}/cancel`, token, { method: 'POST' })
   return mapTask(body)

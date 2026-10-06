@@ -56,6 +56,14 @@ class McpToolContractTest {
         assertEquals(digest, file.get("sha256"));
         assertFalse(file.containsKey("file_id"));
         assertTrue(result.content().stream().anyMatch(McpSchema.ResourceLink.class::isInstance));
+        var count = fixture.tasks().totalCount();
+        var card = McpConfiguration.fileCardModel(fixture.registry(), fixture.tasks(), access, transfers, TaskOrigin.configured(),
+                request("file_card", Map.of("artifact_id", file.get("artifact_id"))));
+        assertFalse(Boolean.TRUE.equals(card.isError()), card.content().toString());
+        @SuppressWarnings("unchecked") var cardPayload = (Map<String, Object>)card.structuredContent();
+        valid(McpConfiguration.modelOutputSchema("file_card"), cardPayload);
+        assertEquals(count, fixture.tasks().totalCount(), "presentation must reuse the existing transfer");
+        assertFalse(cardPayload.toString().contains("file_id"));
     }
 
     @Test
@@ -72,6 +80,64 @@ class McpToolContractTest {
         assertTrue(Boolean.TRUE.equals(missing.isError()));
         @SuppressWarnings("unchecked") var failure = (Map<String, Object>) missing.structuredContent();
         valid(McpConfiguration.modelOutputSchema("machines"), failure);
+    }
+
+    @Test void machineSearchFiltersAuthorizedInventoryBeforePagination() {
+        var fixture = fixture(); var access = new McpAccessService();
+        var hidden = fixture.registry().register(new RegisterRequest("hidden-tool-agent", "host-hidden", "host-hidden", "linux", "amd64",
+                "dev", "/srv", List.of("command")), "enroll-test");
+        var origin = new TaskOrigin("owner", "search-token", "connection");
+        access.grantTokenMachines(origin.tokenId(), Map.of(fixture.machineId(), java.util.Set.of("command")));
+        var found = McpConfiguration.machinesModel(fixture.registry(), access, origin, request("machines", Map.of("operation", "list", "query", "TOOL", "limit", 1)));
+        var result = (Map<?, ?>)found.structuredContent(); assertEquals(1, result.get("total"));
+        assertEquals(fixture.machineId(), ((Map<?, ?>)((List<?>)result.get("machines")).getFirst()).get("id"));
+        assertFalse(result.toString().contains(hidden.machineId()));
+        var absent = (Map<?, ?>)McpConfiguration.machinesModel(fixture.registry(), access, origin,
+                request("machines", Map.of("operation", "list", "query", "not-present"))).structuredContent();
+        assertEquals(0, absent.get("total"));
+    }
+
+    @Test void filesUseExistingTaskRecoveryAndRequireTheirOwnCredentialPermission() throws Exception {
+        var fixture = fixture(); var access = new McpAccessService();
+        var origin = new TaskOrigin("owner", "files-token", "before-reconnect");
+        access.grantTokenMachines(origin.tokenId(), Map.of(fixture.machineId(), java.util.Set.of("artifact", "task_read")));
+        var args = Map.<String, Object>of("machine_id", fixture.machineId(), "request", Map.of("operation", "roots"), "idempotency_key", "files-contract-retry");
+        var denied = McpConfiguration.filesModel(fixture.registry(), fixture.tasks(), access, origin, request("files", args));
+        assertTrue(Boolean.TRUE.equals(denied.isError())); assertEquals(0, fixture.tasks().totalCount());
+        access.grantTokenMachines(origin.tokenId(), Map.of(fixture.machineId(), java.util.Set.of("files", "task_read")));
+        var first = McpConfiguration.filesModel(fixture.registry(), fixture.tasks(), access, origin, request("files", args));
+        var id = taskId(first);
+        var repeated = McpConfiguration.filesModel(fixture.registry(), fixture.tasks(), access, origin, request("files", args));
+        assertEquals(id, taskId(repeated));
+        assertEquals(com.prodigalgal.remotecontrolmcp.protocol.LaneMode.READ, fixture.tasks().find(id).orElseThrow().command().contract().laneMode());
+        var leased = fixture.tasks().poll(fixture.machineId(), new PollRequest(List.of(), 1, List.of("files"))).task();
+        fixture.tasks().updateState(fixture.machineId(), id, new TaskUpdateRequest("running", null, null, null, null, false), leased.attempt());
+        var bytes = com.prodigalgal.remotecontrolmcp.protocol.JsonCodec.write(Map.of("operation", "roots", "roots", List.of("/"), "cwd", "/srv"));
+        var digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        fixture.tasks().appendArtifact(fixture.machineId(), id, "application/vnd.rcm.files+json", digest, bytes, leased.attempt());
+        fixture.tasks().updateState(fixture.machineId(), id, new TaskUpdateRequest("completed", 0, null, null, null, false), leased.attempt());
+        var reconnected = new TaskOrigin(origin.principalId(), origin.tokenId(), "after-reconnect");
+        var observed = McpConfiguration.taskReadModel(fixture.tasks(), access, null, reconnected, request("task_read", Map.of("task_id", id)));
+        assertFalse(Boolean.TRUE.equals(observed.isError()), observed.content().toString());
+        @SuppressWarnings("unchecked") var payload = (Map<String, Object>)observed.structuredContent();
+        valid(McpConfiguration.modelOutputSchema("files"), payload);
+        assertEquals(List.of("/"), ((Map<?, ?>)payload.get("result")).get("roots"));
+        assertEquals(1, fixture.tasks().totalCount());
+        access.grantTokenMachines(origin.tokenId(), Map.of(fixture.machineId(), java.util.Set.of("files")));
+        assertTrue(Boolean.TRUE.equals(McpConfiguration.taskReadModel(fixture.tasks(), access, null, reconnected, request("task_read", Map.of("task_id", id))).isError()));
+    }
+
+    @Test void fileRequestSchemaRejectsCrossOperationParametersAndInvalidWaitCannotCreateWork() {
+        var schema = McpConfiguration.filesModelSchema();
+        valid(schema, Map.of("machine_id", "m", "request", Map.of("operation", "read", "path", "/tmp/中文.txt", "encoding", "GB18030")));
+        valid(schema, Map.of("machine_id", "m", "request", Map.of("operation", "write", "path", "/tmp/a.txt", "content", "", "overwrite", false)));
+        invalid(schema, Map.of("machine_id", "m", "request", Map.of("operation", "stat", "path", "/tmp", "content", "ignored")));
+        invalid(schema, Map.of("machine_id", "m", "request", Map.of("operation", "copy", "path", "/tmp/a.txt")));
+        invalid(schema, Map.of("machine_id", "m", "request", Map.of("operation", "list", "path", "/tmp", "limit", 101)));
+        var fixture = fixture();
+        var result = McpConfiguration.filesModel(fixture.registry(), fixture.tasks(), new McpAccessService(), TaskOrigin.configured(),
+                request("files", Map.of("machine_id", fixture.machineId(), "request", Map.of("operation", "delete", "path", "/tmp/a"), "wait_ms", 15001)));
+        assertTrue(Boolean.TRUE.equals(result.isError())); assertEquals(0, fixture.tasks().totalCount());
     }
 
     @Test
@@ -311,7 +377,7 @@ class McpToolContractTest {
     private static Fixture fixture() {
         var registry = AgentRegistry.forTest("enroll-test");
         var machine = registry.register(new RegisterRequest("tool-agent", "host-tool", "host-tool", "linux", "amd64",
-                "dev", "/srv", List.of("command", "browser", "desktop", "file_transfer")), "enroll-test");
+                "dev", "/srv", List.of("command", "browser", "desktop", "file_transfer", "files")), "enroll-test");
         return new Fixture(registry, new TaskService(registry), machine.machineId());
     }
 

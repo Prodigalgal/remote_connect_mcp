@@ -452,11 +452,12 @@ public final class AgentTransportClient implements AgentTransport {
             if (chunk.length != size) throw new IOException("source file ended during resumable upload");
             var end = offset + chunk.length - 1;
             var endpoint = centerUrl.resolve("/agent/v1/transfers/" + encodePath(transferId) + "/content");
+            // The Unicode filename already lives in the JSON transfer record.
+            // Java HttpClient rejects non-ASCII header values; do not repeat it here.
             var builder = newRequest(endpoint).timeout(transferTimeout)
                     .header("Authorization", "Bearer " + token)
                     .header("X-Machine-ID", machineId)
                     .header("Content-Type", mimeType == null || mimeType.isBlank() ? "application/octet-stream" : mimeType)
-                    .header("X-RCM-File-Name", fileName == null ? source.getFileName().toString() : fileName)
                     .header("X-RCM-Expected-Bytes", Long.toString(expectedBytes))
                     .header("Content-Range", "bytes " + offset + "-" + end + "/" + expectedBytes)
                     .header("X-RCM-Transfer-Chunk", "1");

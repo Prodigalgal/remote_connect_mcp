@@ -240,6 +240,17 @@ public final class TaskService {
         return Optional.of(task);
     }
 
+    Optional<TaskView> findIdempotent(TaskOrigin origin, String machineId, String key) {
+        if (key == null || key.isBlank() || key.length() > 256) throw new IllegalArgumentException("idempotency key is invalid");
+        if (jdbcStore != null) return jdbcStore.findIdempotent(machineId, origin.principalId(), key)
+                .flatMap(task -> findFor(origin, task.id())).map(TaskView::new);
+        lock.lock();
+        try {
+            var id = idempotency.get(idempotencyKey(machineId, origin.principalId(), key));
+            return id == null ? Optional.empty() : findFor(origin, id).map(TaskView::new);
+        } finally { lock.unlock(); }
+    }
+
     TaskView cancel(TaskOrigin origin, String taskId) {
         findFor(origin, taskId);
         return cancel(taskId);
@@ -649,14 +660,10 @@ public final class TaskService {
             if (update.error() != null && !update.error().isBlank()) {
                 task.error(compactError(update.error()));
             }
-            if (update.startedAt() != null) {
-                task.startedAt(update.startedAt());
-            } else if (TaskStatus.RUNNING.equals(status) && task.startedAt() == null) {
+            if (TaskStatus.RUNNING.equals(status) && task.startedAt() == null) {
                 task.startedAt(Instant.now());
             }
-            if (update.finishedAt() != null) {
-                task.finishedAt(update.finishedAt());
-            } else if (TaskStatus.terminal(status) && task.finishedAt() == null) {
+            if (TaskStatus.terminal(status) && task.finishedAt() == null) {
                 task.finishedAt(Instant.now());
             }
             task.outputTruncated(task.outputTruncated() || update.outputTruncated());
@@ -1202,6 +1209,9 @@ public final class TaskService {
             case DESKTOP, BROWSER -> LaneMode.EXCLUSIVE;
             case FILE_TRANSFER -> command.fileTransfer() != null && command.fileTransfer().agentToWeb()
                     ? LaneMode.READ : LaneMode.WRITE;
+            case FILES -> com.prodigalgal.remotecontrolmcp.protocol.JsonCodec.read(
+                    command.command().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    com.prodigalgal.remotecontrolmcp.protocol.FileRequest.class).readOnly() ? LaneMode.READ : LaneMode.WRITE;
             case COMMAND -> {
                 // Arbitrary shell commands are treated as writes. Explicit
                 // read-only hints are accepted only for command tasks.
@@ -1416,6 +1426,9 @@ public final class TaskService {
             if (kind == TaskKind.FILE_TRANSFER && !AgentCapability.FILE_TRANSFER.wireValue().equals(requested)) {
                 throw new IllegalArgumentException("file transfer tasks require the file_transfer capability");
             }
+            if (kind == TaskKind.FILES && !AgentCapability.FILES.wireValue().equals(requested)) {
+                throw new IllegalArgumentException("file operations require the files capability");
+            }
             if (kind == TaskKind.COMMAND
                     && !AgentCapability.COMMAND.wireValue().equals(requested)
                     && !AgentCapability.DURABLE_TASKS.wireValue().equals(requested)) {
@@ -1427,6 +1440,7 @@ public final class TaskService {
             case DESKTOP -> AgentCapability.DESKTOP.wireValue();
             case BROWSER -> AgentCapability.BROWSER.wireValue();
             case FILE_TRANSFER -> AgentCapability.FILE_TRANSFER.wireValue();
+            case FILES -> AgentCapability.FILES.wireValue();
             case COMMAND -> AgentCapability.COMMAND.wireValue();
         };
     }

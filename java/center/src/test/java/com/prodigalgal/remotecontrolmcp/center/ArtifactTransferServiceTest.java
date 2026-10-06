@@ -23,6 +23,53 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class ArtifactTransferServiceTest {
+    @Test void commonOfficeMimeTypesAndChineseBasenamesAreInferred(@TempDir Path root) {
+        var registry = AgentRegistry.forTest("enroll");
+        var machine = registry.register(new RegisterRequest("files-agent", "files-host", "files-host", "linux", "amd64",
+                "test", root.toString(), List.of("file_transfer")), "enroll");
+        var tasks = new TaskService(registry);
+        var service = new ArtifactTransferService(null, null, new FileSystemArtifactStore(root.resolve("objects")), tasks, new CenterTokenConfig() {
+            @Override public String artifactDownloadSecret() { return "office-test-signing"; }
+        });
+        for (var sample : Map.of("报告.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "报告.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "报告.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "报告.csv", "text/csv").entrySet()) {
+            var task = new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null, root.toString(), Map.of(), 0, null, Instant.now());
+            var transfer = service.createAgentToWeb(TaskOrigin.configured(), new CreateTaskRequest(machine.machineId(), task, sample.getKey()),
+                    root.resolve(sample.getKey()).toString(), null, null).transfer();
+            assertEquals(sample.getKey(), transfer.fileName()); assertEquals(sample.getValue(), transfer.mimeType());
+        }
+    }
+
+    @Test void consoleUploadUsesStreamingTransferAndRejectsRetryKeyWithChangedBytes(@TempDir Path root) throws Exception {
+        var registry = AgentRegistry.forTest("enroll");
+        var machine = registry.register(new RegisterRequest("upload-agent", "upload-host", "upload-host", "linux", "amd64",
+                "test", root.toString(), List.of("file_transfer")), "enroll");
+        var tasks = new TaskService(registry);
+        var store = org.mockito.Mockito.spy(new FileSystemArtifactStore(root.resolve("objects")));
+        var service = new ArtifactTransferService(null, null, store, tasks, new CenterTokenConfig() {
+            @Override public String artifactDownloadSecret() { return "upload-test-signing"; }
+        });
+        var request = new CreateTaskRequest(machine.machineId(), new TaskCommand("", TaskKind.FILE_TRANSFER, "file_transfer", null,
+                root.toString(), Map.of(), 0, null, Instant.now()), "console-retry");
+        var bytes = "中文 payload".getBytes(StandardCharsets.UTF_8);
+        var destination = root.resolve("中文.xlsx").toString();
+        var created = service.createConsoleToAgent(TaskOrigin.configured(), request, destination, "中文.xlsx", "application/octet-stream",
+                new ByteArrayInputStream(bytes), bytes.length, false);
+        var repeated = service.createConsoleToAgent(TaskOrigin.configured(), request, destination, "中文.xlsx", "application/octet-stream",
+                new ByteArrayInputStream(bytes), bytes.length, false);
+        assertEquals(created.task().id(), repeated.task().id()); assertEquals(1, tasks.totalCount());
+        assertEquals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", created.transfer().mimeType());
+        var changed = "other".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IllegalArgumentException.class, () -> service.createConsoleToAgent(TaskOrigin.configured(), request, destination, "中文.xlsx", "application/octet-stream",
+                new ByteArrayInputStream(changed), changed.length, false));
+        var leased = tasks.poll(machine.machineId(), new PollRequest(List.of(), 1, List.of("file_transfer"))).task();
+        assertNotNull(leased);
+        try (var download = service.openForAgent(machine.machineId(), created.transfer().transferId(), leased.attempt()).body()) {
+            assertArrayEquals(bytes, download.readAllBytes());
+        }
+    }
+
     @Test
     void largeTextIsStreamedInUtf8PagesWithoutLoadingTheWholeObject(@TempDir Path root) throws Exception {
         var registry = AgentRegistry.forTest("enrollment");
