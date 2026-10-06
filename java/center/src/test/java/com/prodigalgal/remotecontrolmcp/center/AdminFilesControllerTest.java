@@ -17,6 +17,9 @@ class AdminFilesControllerTest {
             var request = new AdminFilesController.OperationBody(Map.of("operation", "roots"), null, "invalid-wait", 15001);
             assertEquals(401, controller.operate("Bearer wrong", "missing", request).get(1, TimeUnit.SECONDS).getStatusCode().value());
             assertEquals(400, controller.operate("Bearer admin", "missing", request).get(1, TimeUnit.SECONDS).getStatusCode().value());
+            var invalidFields = new AdminFilesController.OperationBody(Map.of("operation", "roots", "unknown_field", true), null, "unknown-field", 0);
+            assertEquals(400, controller.operate("Bearer admin", "missing", invalidFields).get(1, TimeUnit.SECONDS).getStatusCode().value(),
+                    "wrapped JSON validation errors remain client errors, not uncertain server failures");
             assertEquals(0, tasks.totalCount());
         }
     }

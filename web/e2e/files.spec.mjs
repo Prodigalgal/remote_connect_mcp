@@ -6,7 +6,7 @@ const entries = Array.from({ length: 55 }, (_, i) => ({ name: `中文${String(i)
   type: 'file', bytes: 100, modified_at: '2026-10-06T05:00:00Z', readable: true, writable: true }))
 
 async function setup(page) {
-  const calls = [], tasks = new Map(), requests = new Map(); let sequence = 0, loseResponse = false
+  const calls = [], credentials = [], tasks = new Map(), requests = new Map(); let sequence = 0, loseResponse = false
   const complete = (id, result) => ({ task: { id, machine_id: 'machine-0', kind: 'files', status: 'completed', change_sequence: 2, attempt: 1, output_bytes: 0 }, result })
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname
@@ -14,6 +14,10 @@ async function setup(page) {
     if (path.endsWith('/events')) { await new Promise(resolve => setTimeout(resolve, 1000)); return json({ cursor: 1, changed: false }) }
     if (path === '/api/v1/admin/machines') return json({ items: machines, has_more: false, total: 50 })
     if (path === '/api/v1/admin/releases') return json({ items: [], available: true })
+    if (path === '/api/v1/admin/mcp-tokens' && request.method() === 'POST') {
+      const body = request.postDataJSON(); credentials.push(body)
+      return json({ ...body, token_id: 'ui-test-credential', token: 'ui-test-issued' })
+    }
     if (/^\/api\/v1\/admin\/(tasks|upgrades|audit)$/.test(path)) return json({ items: [], has_more: false })
     const recovered = path.match(/\/files\/requests\/([^/]+)$/)
     if (recovered) return requests.has(recovered[1]) ? json(tasks.get(requests.get(recovered[1]))) : json({ error: 'task not found' }, 404)
@@ -40,7 +44,7 @@ async function setup(page) {
     await page.getByRole('button', { name: '文件与工件', exact: true }).click()
   }
   await page.goto('/'); await login(); await expect(page.locator('.file-table tbody tr')).toHaveCount(25)
-  return { calls, tasks, login, loseNextCreation() { loseResponse = true } }
+  return { calls, credentials, tasks, login, loseNextCreation() { loseResponse = true } }
 }
 
 test('Chinese directory pagination, machine selection and batch copy stay compact', async ({ page }, testInfo) => {
@@ -86,4 +90,17 @@ test('lost creation response is recovered after reload without repeating the mut
   await expect(page.locator('.file-table tbody tr')).toHaveCount(25)
   expect(fixture.calls.filter(item => item.operation === 'mkdir')).toHaveLength(1)
   await expect(page.getByRole('button', { name: '核对原任务' })).toHaveCount(0)
+})
+
+test('credential file-management grants remain separate from transfers across machine pages', async ({ page }) => {
+  const fixture = await setup(page)
+  await page.getByRole('button', { name: '连接凭证', exact: true }).click()
+  await page.getByLabel('为当前筛选机器批量选择文件管理', { exact: true }).check()
+  await expect(page.locator('.permission-selection')).toContainText('50 台 · 50 项权限')
+  await page.getByRole('button', { name: '创建连接凭证', exact: true }).click()
+  await expect(page.getByText('ui-test-issued', { exact: true })).toBeVisible()
+  expect(fixture.credentials).toHaveLength(1)
+  const grants = Object.values(fixture.credentials[0].machine_permissions)
+  expect(grants).toHaveLength(50)
+  expect(grants.every(tools => tools.length === 1 && tools[0] === 'files')).toBe(true)
 })

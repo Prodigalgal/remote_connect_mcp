@@ -113,7 +113,7 @@ export function MachinePermissionPicker({ machines, token, permissions, onChange
           })}
         </tr></thead>
         <tbody>{pagination.pagedItems.length === 0
-          ? <tr><td colSpan={7} className="permission-empty">{rows.length ? '没有匹配的机器，请调整筛选条件。' : '当前没有已注册机器。'}</td></tr>
+          ? <tr><td colSpan={TOOL_OPTIONS.length + 1} className="permission-empty">{rows.length ? '没有匹配的机器，请调整筛选条件。' : '当前没有已注册机器。'}</td></tr>
           : pagination.pagedItems.map((machine) => {
             const available = availableTools(machine)
             const count = available.filter((tool) => permissions[machine.id]?.includes(tool.id)).length

@@ -114,7 +114,9 @@ public final class AdminFilesController {
 
     private CompletableFuture<ResponseEntity<?>> execute(java.util.concurrent.Callable<ResponseEntity<?>> call) {
         return async.submit(call).exceptionally(error -> {
-            var cause = error; while (cause.getCause() != null) cause = cause.getCause();
+            var cause = error;
+            while ((cause instanceof java.util.concurrent.CompletionException || cause instanceof java.util.concurrent.ExecutionException)
+                    && cause.getCause() != null) cause = cause.getCause();
             var status = cause instanceof SecurityException ? HttpStatus.UNAUTHORIZED : cause instanceof IllegalArgumentException ? HttpStatus.BAD_REQUEST : HttpStatus.INTERNAL_SERVER_ERROR;
             return ResponseEntity.status(status).cacheControl(CacheControl.noStore()).body(Map.of("error", status == HttpStatus.INTERNAL_SERVER_ERROR ? "file operation request failed" : SensitiveValueRedactor.redact(cause.getMessage() == null ? "request failed" : cause.getMessage())));
         });
