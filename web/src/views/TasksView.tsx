@@ -568,7 +568,7 @@ function TaskItem({
   const [canceling, setCanceling] = useState(false)
   const [expanded, setExpanded] = useState(autoExpand)
   const [showOriginalCommand, setShowOriginalCommand] = useState(false)
-  const [outputEncoding, setOutputEncoding] = useState('utf-8')
+  const [outputEncoding, setOutputEncoding] = useState('auto')
   const logs = useTaskOutput(token, listedTask, expanded, outputEncoding)
   const task = logs.task
   const { readableCommand, requestSummary } = useMemo(() => {

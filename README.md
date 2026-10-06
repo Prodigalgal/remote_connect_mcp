@@ -74,7 +74,7 @@ Console 使用部署时设置的 Admin Token 登录。MCP 客户端凭证和机�
 | Linux amd64 | x86-64-v2，包含无 AVX2 主机的验收 |
 | Linux arm64 | armv8-a |
 
-构建使用明确的 CPU 基线。Linux Agent 的文件名编码在构建时固定为 UTF-8，并在 `C` / `C.UTF-8` 运行环境验证中文和 emoji 路径；Windows 使用系统 Unicode 路径 API。文本文件的 UTF-8、GB18030 和 UTF-16 编码按文件请求处理。机器的系统默认代码页、命令输出编码和文件内容编码需要分别判断；Console 可切换日志解码，MCP 命令日志当前按 UTF-8 读取，执行程序需要输出 UTF-8。其他系统、架构及较旧 Linux 系统库的兼容性需要单独验收。
+构建使用明确的 CPU 基线。Linux Agent 的文件名编码在构建时固定为 UTF-8，并在 `C` / `C.UTF-8` 运行环境验证中文和 emoji 路径；Windows 使用系统 Unicode 路径 API。文本文件的 UTF-8、GB18030 和 UTF-16 编码按文件请求处理。机器的系统默认代码页、命令输出编码和文件内容编码需要分别判断；Agent 原样保留命令输出，Center 按源编码解码后统一以 UTF-8 向 MCP 和 Console 回显，不要求宿主机程序改变编码。其他系统、架构及较旧 Linux 系统库的兼容性需要单独验收。
 
 ### 3. 创建 MCP 连接凭证
 
@@ -117,6 +117,10 @@ Authorization: Bearer <Console 生成的 RCM 连接凭证>
 执行类工具都创建持久任务。`wait_ms=0` 立即返回任务句柄；正数有界等待，任务完成时直接返回结果，等待到期仍可继续 `task_read(task_id)`。新调用创建新任务，同一次调用的网络重试应复用 `idempotency_key`，防止再次执行。
 
 日志默认读取 16 KiB，长日志可用 `task_read(tail_bytes=8192)` 查看尾部。只观察状态时传 `change_seq` 与 `wait_ms`，默认不重复附带旧输出；`include_output=true` 读取日志/文件结果，`include_artifact=true` 获取截图。浏览器可通过 `request.include_snapshot=true` 在操作后一起观察页面。
+
+命令日志的原始字节保留，回显 `output.text` 始终使用 UTF-8。默认 `source_encoding: "auto"` 识别 BOM、UTF-8 和常见中文输出；无 BOM、歧义字节或其他字符集可在 `command` 的首次回显、后续 `task_read` 或 Console 的源编码选项中明确指定，例如 `GBK`、`UTF-16LE`、`windows-1252`。指定编码只改变本次读取，不改变命令或宿主机设置；继续读取时沿用同一源编码。Center Native 构建包含 JDK 支持的字符集；自动识别无法保证区分所有编码，也不能可靠分辨同一流中任意混杂的多种编码。
+
+`limit` 约束转换后 UTF-8 文本的大小；不足一个字符时最多返回一个完整字符。`cursor`、`next_cursor`、`tail_bytes` 和任务的 `output_bytes` 均指原始字节位置，转码不会重置游标。实时回传的末尾不完整字符会等待剩余字节；任务结束后仍无效的字节显示替代字符并带 `decoding_error: true`，可指定正确源编码重新读取原始数据，无须再次执行命令。
 
 文件浏览请求示例（`machine_id` 使用 `machines` 返回的真实 ID）：
 

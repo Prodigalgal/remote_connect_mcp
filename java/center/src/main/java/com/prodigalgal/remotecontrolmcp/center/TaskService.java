@@ -261,6 +261,17 @@ public final class TaskService {
         return readOutput(taskId, cursor, limit);
     }
 
+    TaskOutputText.Page readTextOutput(TaskOrigin origin, String taskId, long cursor, int limit, String encoding) {
+        findFor(origin, taskId);
+        return readTextOutput(taskId, cursor, limit, encoding);
+    }
+
+    TaskOutputText.Page readTextOutput(String taskId, long cursor, int limit, String encoding) {
+        var task = find(taskId).orElseThrow(() -> new IllegalArgumentException("task not found"));
+        return TaskOutputText.read((offset, size) -> readOutput(taskId, offset, size), task.outputBytes(),
+                TaskStatus.terminal(task.status()) || task.outputTruncated(), cursor, limit, encoding);
+    }
+
     Optional<ArtifactData> readArtifact(TaskOrigin origin, String taskId) {
         findFor(origin, taskId);
         return readArtifact(taskId);
